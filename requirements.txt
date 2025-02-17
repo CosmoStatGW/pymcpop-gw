@@ -1,0 +1,4 @@
+astropy
+jax
+numpyro
+corner
