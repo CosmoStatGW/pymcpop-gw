@@ -38,6 +38,7 @@ sys.path.append(MGCpath)
 from dataStructures.O1O2data import O1O2Data
 from dataStructures.O3adata import O3aData
 from dataStructures.O3bdata import O3bData
+from dataStructures.mockData import GWMockData
 
 
 import data_tools as dt
@@ -47,14 +48,14 @@ import data_tools as dt
 def logit(p):
     return np.log(p) - np.log(1 - p)
 
-def flogit(p):
-    return np.log(1 + p) - np.log(1 - p)
+def flogit(p, xmin=-1, xmax=1):
+    return np.log(-xmin + p) - np.log(xmax - p)
 
 def inv_logit(p):
     return np.exp(p) / (1 + np.exp(p))
 
-def inv_flogit(p):
-    return (np.exp(p) - 1 ) / (1 + np.exp(p))
+def inv_flogit(p, xmin=-1, xmax=1):
+    return ( np.exp(p)*xmax+xmin ) / (1 + np.exp(p) )
 
 def m1m2_from_Mcq(Mc, q):
     
@@ -87,6 +88,8 @@ def fit_cho(allsamples, allNsamples,spins='default'):
         
         qlogit = logit(qs)
 
+        pts_ = [ np.log(Mcs), qlogit, np.log(dLs),]
+
         if spins=='default':
             chi1 = allsamples[i, :jmax, 3]
             chi2 = allsamples[i, :jmax, 4]
@@ -97,8 +100,22 @@ def fit_cho(allsamples, allNsamples,spins='default'):
             lchi2 = logit(chi2)
             lcost1 = flogit(cost1)
             lcost2 = flogit(cost2)
+
+            pts_.append( lchi1) 
+            pts_.append(lchi2) 
+            pts_.append( lcost1) 
+            pts_.append( lcost2  )
+            
+        elif spins=='aligned':
+            chi1z = allsamples[i, :jmax, 3]
+            chi2z = allsamples[i, :jmax, 4]
+            pts_.append(  flogit(chi1z) ) 
+            pts_.append(  flogit(chi2z)  )
+        elif spins=='none':
+            pass
+            
         
-        pts = np.stack( [ np.log(Mcs), qlogit, np.log(dLs), lchi1, lchi2, lcost1, lcost2 ] ).T
+        pts = np.stack( pts_ ).T
         
         samples_means.append( pts.mean(axis=0) )
         samples_cho_covs.append( np.linalg.cholesky( np.cov(pts, rowvar=False) ) )
@@ -113,7 +130,7 @@ def fit_cho(allsamples, allNsamples,spins='default'):
     return samples_means, samples_cho_covs
 
 
-def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, rescale_logit=False, spins='default', n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10):
+def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10):
 
     gmm_log_wts_l = []
     gmm_means_l = []
@@ -134,44 +151,64 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, rescale_logi
         m1ds = allsamples[i, :jmax, 0]
         m2ds = allsamples[i, :jmax, 1]
         dLs = allsamples[i, :jmax, 2]
+
+        Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
+        qs = m2ds/m1ds 
+        qlogit = logit(qs)
+        
+        pts_ = [dil_factor*np.log(Mcs), qlogit, np.log(dLs),]
+
         
         if spins=='default':
             chi1 = allsamples[i, :jmax, 3]
             chi2 = allsamples[i, :jmax, 4]
             cost1 = allsamples[i, :jmax, 5]
             cost2 = allsamples[i, :jmax, 6]
-
-        Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
-        qs = m2ds/m1ds 
-
-        if rescale_logit:       
-            qlogit = logit( (qs-np.mean(qs))/np.std(qs) )
-            if spins=='default':
-                lchi1 = logit((chi1-np.mean(chi1))/np.std(chi1))
-                lchi2 = logit((chi2-np.mean(chi2))/np.std(chi2))
-                lcost1 = flogit((cost1-np.mean(cost1))/np.std(cost1))
-                lcost2 = flogit((cost2-np.mean(cost2))/np.std(cost2))
-                
-        else:
-            qlogit = logit(qs)
-            if spins=='default':
-                lchi1 = logit(chi1)
-                lchi2 = logit(chi2)
-                lcost1 = flogit(cost1)
-                lcost2 = flogit(cost2)
-
-        q_mean, q_std = np.mean(qs), np.std(qs)
-        if spins=='default':
-            chi1_mean, chi1_std = np.mean(chi1), np.std(chi1)
-            chi2_mean, chi2_std = np.mean(chi2), np.std(chi2)
-            cost1_mean, cost1_std = np.mean(cost1), np.std(cost1)
-            cost2_mean, cost2_std = np.mean(cost2), np.std(cost2)
-
-
+            lchi1 = logit(chi1)
+            lchi2 = logit(chi2)
+            lcost1 = flogit(cost1)
+            lcost2 = flogit(cost2)
             
+
+            s_start = 7
+
+            pts_.append(dil_factor*lchi1) 
+            pts_.append(dil_factor*lchi2) 
+            pts_.append(dil_factor*lcost1) 
+            pts_.append(dil_factor*lcost2 )
         
-        if spins=='default':
-            pts = np.stack( [dil_factor*np.log(Mcs), qlogit, np.log(dLs), dil_factor*lchi1, dil_factor*lchi2, dil_factor*lcost1, dil_factor*lcost2  ] ).T
+        elif spins=='aligned':
+            chi1z = allsamples[i, :jmax, 3]
+            chi2z = allsamples[i, :jmax, 4]
+            lchi1z = flogit(chi1z)
+            lchi2z = flogit(chi2z)
+   
+            s_start = 5
+
+            pts_.append(dil_factor*lchi1z) 
+            pts_.append(dil_factor*lchi2z )
+        
+        elif spins=='none':
+            s_start = 3
+            pass
+
+
+        if skymap:
+            ra = allsamples[i, :jmax, s_start]
+            dec = allsamples[i, :jmax, s_start+1]
+            pts_.append( flogit(ra, xmin=0,xmax=2*np.pi) )
+            pts_.append( flogit(dec, xmin=-np.pi/2, xmax=np.pi/2) )
+            istart = s_start+2
+        else:
+            istart = s_start
+                    
+        if inclination:
+            iota = allsamples[i, :jmax, istart]
+            pts_.append( flogit(iota, xmin=0,xmax=np.pi)  )
+            
+        print('Number of dimensions of each event: %s'%len(pts_))
+        
+        pts = np.stack( pts_ ).T
 
 
         print('\nEvent %s is fit between %s and %s components'%(allNames[i], n_components[i][0], n_components[i][1]))
@@ -333,11 +370,8 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, rescale_logi
         gmm_covs_l_full[i, :ngm_] = gmm_covs_l[i]
         gmm_log_dets_l_full[i, :ngm_] = gmm_log_dets_l[i]
 
-    # q_mean, q_std, chi1_mean, chi1_std, chi2_mean, chi2_std, cost1_mean, cost1_std, cost2_mean, cost2_std
-    logit_means = { 'q':q_mean, 'chi1': chi1_mean, 'chi2':chi2_mean, 'cost1':cost1_mean, 'cost2':cost2_mean } 
-    logit_stds = { 'q':q_std, 'chi1': chi1_std, 'chi2':chi2_std, 'cost1':cost1_std, 'cost2':cost2_std } 
     
-    return gmm_means_l_full, gmm_icovs_l_full, gmm_covs_l_full, gmm_cho_covs_l_full, gmm_log_dets_l_full, gmm_log_wts_l_full, all_gmm_l, allNgm, logit_means, logit_stds
+    return gmm_means_l_full, gmm_icovs_l_full, gmm_covs_l_full, gmm_cho_covs_l_full, gmm_log_dets_l_full, gmm_log_wts_l_full, all_gmm_l, allNgm
 
 
 
@@ -345,7 +379,13 @@ def plot_samples(allsamples,
                  all_gmm_l,  
                  allNsamples,
                  pval_th=0.05,
-                 imax=None, names_plot=None, allNames=None, spins='default', rescale_logit=False, lmeans=None, lstds=None, dil_factor=1, fout=None, fout_suff='', KS=False, show=False, nbins=50, ngm=None, ):
+                 imax=None, 
+                 names_plot=None, 
+                 allNames=None, 
+                 spins='default',  
+                 skymap=False,
+                 inclination=False,
+                 lmeans=None, lstds=None, dil_factor=1, fout=None, fout_suff='', KS=False, show=False, nbins=50, ngm=None, ):
 
 
     if names_plot is not None and imax is not None:
@@ -396,6 +436,12 @@ def plot_samples(allsamples,
             ld = s1s[2]
     
             qs = inv_logit(lq) 
+
+            m1s, m2s = m1m2_from_Mcq(np.exp(lMc), qs )
+            dLs = np.exp(ld)
+
+            a2_ = [m1s, m2s, dLs,]
+            
     
             
             if spins=='default':
@@ -403,18 +449,33 @@ def plot_samples(allsamples,
                 chi2 = inv_logit(s1s[4]/dil_factor)
                 cost1 = inv_flogit(s1s[5]/dil_factor)
                 cost2 = inv_flogit(s1s[6]/dil_factor)
-    
-            if rescale_logit:
-    
-                qs = lmeans['q']+qs*lstds['q']
-                chi1 = lmeans['chi1']+chi1*lstds['chi1']
-                chi2 = lmeans['chi2']+chi2*lstds['chi2']
-                cost1 = lmeans['cost1']+cost1*lstds['cost1']
-                cost2 = lmeans['cost2']+cost2*lstds['cost2']
+                s_start=7
+                a2_+=[chi1, chi2, cost1, cost2]
+            elif spins=='aligned':
+                chi1z = inv_flogit(s1s[3]/dil_factor)
+                chi2z = inv_flogit(s1s[4]/dil_factor)
+                a2_+=[chi1z, chi2z, ]
+                s_start=5
+            elif spins=='none':
+                s_start=3
+                pass
+
+            if skymap:
+                ra = inv_flogit( s1s[s_start], xmin=0, xmax=2*np.pi)
+                dec = inv_flogit( s1s[s_start+1], xmin=-np.pi/2, xmax=np.pi/2 )
+                i_start = s_start+2
+                a2_+=[ra, dec,]
+            else:
+                i_start=s_start
+                
+            if inclination:
+                iota = inv_flogit(s1s[i_start], xmin=0, xmax=np.pi)
+                a2_+=[iota]
                 
     
-            m1s, m2s = m1m2_from_Mcq(np.exp(lMc), qs )
-            dLs = np.exp(ld)
+                     
+    
+            a2 = np.asarray(a2_).T
 
             if KS:
                 if allsamples is None:
@@ -449,18 +510,56 @@ def plot_samples(allsamples,
      
             print('---- Plot in the space of detector-frame variables: m1, m2, d_L, spins')
 
-            labels = [r'$m_1^d$', r'$m_2^d$', r'$d_L$', r'$\chi_1$', r'$\chi_2$', r'$\cos \theta_1$', r'$\cos \theta_2$']
+            labels = [r'$m_1^d$', r'$m_2^d$', r'$d_L$', ]
+            if spins=='default':
+                labels+=[r'$\chi_1$', r'$\chi_2$', r'$\cos \theta_1$', r'$\cos \theta_2$']
+            elif spins=='aligned':
+                labels+=[r'$\chi_{1,z}$', r'$\chi_{2,z}$',]
+            
+            if skymap:
+                 labels+=[r'$\alpha$', r'$\delta$',]
+            if inclination:
+                labels+=[r'$\iota$',]
+                      
+                      
+                      
+            
             
             if allsamples is not None:
-                if spins=='default':    
-                    myr = [ ( max(0, min( np.percentile(allsamples[i, :nsam, 0], .1), np.percentile( m1s, .1) ) ), max( np.percentile(allsamples[i, :nsam, 0], 97), np.percentile(m1s, 97) )  ),
+                a1_ =   [ allsamples[i, :nsam, k] for k in range(3)] 
+                myr = [ ( max(0, min( np.percentile(allsamples[i, :nsam, 0], .1), np.percentile( m1s, .1) ) ), max( np.percentile(allsamples[i, :nsam, 0], 97), np.percentile(m1s, 97) )  ),
                     ( max(0,min( allsamples[i, :nsam, 1].min(), m2s.min() )*(1-0.1) ), max( allsamples[i, :nsam, 1].max(), m2s.max() )  ),
-                    ( max(0, min( allsamples[i, :nsam, 2].min(), dLs.min() )*(1-0.1) ), max( allsamples[i, :nsam, 2].max(), dLs.max() )  ),
-                       ( -0.1, 1.1 ), (-0.1,1.1), (-1.1,1.1), (-1.1, 1.1)
-                      ]
+                    ( max(0, min( allsamples[i, :nsam, 2].min(), dLs.min() )*(1-0.1) ), max( allsamples[i, :nsam, 2].max(), dLs.max() )  ),]
+                
+                if spins=='default':  
+                    a1_+=[allsamples[i, :nsam, k] for k in range(3,7)]
+                    s_start=7   
+                    myr+=[( -0.1, 1.1 ), (-0.1,1.1), (-1.1,1.1), (-1.1, 1.1)]
+                
+                elif spins=='aligned':
+                    a1_+=[allsamples[i, :nsam, k] for k in range(3,5)]
+                    s_start=5
+                    myr+=[(-1.1,1.1), (-1.1, 1.1)]
+                if skymap:
+                    a1_+= [allsamples[i, :nsam, k] for k in range(s_start,s_start+2) ]
+                    istart=s_start+2
+                    myr+=[( max(0, min( np.percentile(allsamples[i, :nsam, s_start], .1), np.percentile( ra, .1) ) ), max( np.percentile(allsamples[i, :nsam, s_start], 97), np.percentile(ra, 97) )  ),
+                         ( max(0, min( np.percentile(allsamples[i, :nsam, s_start+1], .1), np.percentile( dec, .1) ) ), max( np.percentile(allsamples[i, :nsam, s_start+1], 97), np.percentile(dec, 97) )  )
+                         ]
+                else:
+                    istart=s_start
+                if inclination:
+                    a1_+= [allsamples[i, :nsam, k] for k in range(istart,istart+1)] 
+                    myr+=[( max(0, min( np.percentile(allsamples[i, :nsam, istart], .1), np.percentile( iota, .1) ) ), max( np.percentile(allsamples[i, :nsam, istart], 97), np.percentile(iota, 97) )  ),]
+                    
+                    
+                    
+
+                a1 =  np.asarray( a1_ ).T
+                    
                     
             
-                a1 =  np.asarray( [ allsamples[i, :nsam, k] for k in range(7)] ).T
+                
                 fig = corner.corner(a1,
                                    color='darkred',
                                  
@@ -478,14 +577,19 @@ def plot_samples(allsamples,
                                )
 
             else:
+                # No original samples provided 
+                
                 fig=None
-                myr = [ ( max(0,  np.percentile( m1s, .1) ) ,  np.percentile(m1s, 97)  ),
+                if spins=='default' and not skymap and not inclination:
+                    myr = [ ( max(0,  np.percentile( m1s, .1) ) ,  np.percentile(m1s, 97)  ),
                     ( max(0, m2s.min() )*(1-0.1),  m2s.max() )  ,
                     ( max(0,  dLs.min() )*(1-0.1) ,  dLs.max()   ),
                        ( -0.1, 1.1 ), (-0.1,1.1), (-1.1,1.1), (-1.1, 1.1)
                       ]
+                else:
+                    myr=None
             
-            a2 = np.asarray([m1s, m2s, dLs,chi1, chi2, cost1, cost2 ]).T
+            
             fig=corner.corner( a2, fig=fig,
                                    color='darkblue',
                                  
@@ -520,7 +624,21 @@ def plot_samples(allsamples,
             print()
             print('---- Plot in the space of remapped detector-frame variables (see paper)')
 
-            labels_remap = [r'$\log \mathcal{M}_c^D$', r'$\log \frac{q}{1-q}$', r'$\log d_L$', r'$\log \frac{\chi_1}{1-\chi_1}$', r'$\log \frac{\chi_2}{1-\chi_2}$', r'$\log \frac{1+\cos \theta_1}{1-\cos \theta_1}$', r'$\log \frac{1+\cos \theta_2}{1-\cos \theta_2}$']
+            labels_remap = [r'$\log \mathcal{M}_c^D$', r'$\log \frac{q}{1-q}$', r'$\log d_L$', ]
+            
+            if spins=='default':
+                labels_remap+=[r'$\log \frac{\chi_1}{1-\chi_1}$', r'$\log \frac{\chi_2}{1-\chi_2}$', r'$\log \frac{1+\cos \theta_1}{1-\cos \theta_1}$', r'$\log \frac{1+\cos \theta_2}{1-\cos \theta_2}$']
+            elif spins=='aligned':
+                labels_remap+=[r'$\log \frac{\chi_{1,z}}{1-\chi_{1,z}}$', r'$\log \frac{\chi_{2,z}}{1-\chi_{2,z}}$', ]
+            
+            if skymap:
+                 labels_remap+=[r'$\log \frac{ \alpha }{2\pi - \alpha}$', r'$\log \frac{ \delta + \pi/2}{\pi/2- \delta}$']
+            if inclination:
+                labels_remap+=[r'$\log \frac{ \iota }{\pi - \iota}$',]
+                            
+                            
+                            
+                            
 
             
             if allsamples is not None:
@@ -531,26 +649,61 @@ def plot_samples(allsamples,
                 lMC_s = np.log(Mcs)
                 lq_s = logit( allsamples[i, :nsam, 1]/allsamples[i, :nsam, 0] )
                 ld_s =  np.log(allsamples[i, :nsam, 2])
-    
-                lchi1_s = logit(allsamples[i, :nsam, 3])
-                lchi2_s = logit(allsamples[i, :nsam, 4])
-                lcost1_s = flogit(allsamples[i, :nsam, 5])
-                lcost2_s = flogit(allsamples[i, :nsam, 6])
-    
-            
-                if spins=='default':
-                    myr = [ ( min( np.percentile( lMC_s, 0.1), np.percentile( lMc, 0.1) ), max( np.percentile(lMC_s, 99), np.percentile( lMc , 99)  )),
+
+
+                a1_ = [ lMC_s, lq_s,ld_s, ]
+                myr=myr = [ ( min( np.percentile( lMC_s, 0.1), np.percentile( lMc, 0.1) ), max( np.percentile(lMC_s, 99), np.percentile( lMc , 99)  )),
                     ( min( lq_s.min(), lq.min() ), max( lq_s.max(), lq.max() )  ),
-                    ( min( ld_s.min(), ld.min() ), max(ld_s.max(), ld.max() )  ),
+                    ( min( ld_s.min(), ld.min() ), max(ld_s.max(), ld.max() )  ),]
+
+                if spins=='default':
+                    
+                    lchi1_s = logit(allsamples[i, :nsam, 3])
+                    lchi2_s = logit(allsamples[i, :nsam, 4])
+                    lcost1_s = flogit(allsamples[i, :nsam, 5])
+                    lcost2_s = flogit(allsamples[i, :nsam, 6])
+    
+                    a1_+=[ lchi1_s, lchi2_s,lcost1_s,lcost2_s ]
+                
+                    myr+=[
                    (  min( lchi1_s.min(), s1s[3].min() ) , max( lchi1_s.max(), s1s[3].max() )  ),
                    ( min( lchi2_s.min(), s1s[4].min() ) , max( lchi2_s.max(), s1s[4].max() )  ),
                    ( min( lcost1_s.min(), s1s[5].min() ) , max( lcost1_s.max(), s1s[5].max() )  ),
                    ( min( lcost2_s.min(), s1s[6].min() ) , max( lcost2_s.max(), s1s[6].max() ) ) 
                        
                   ]
-            
+                    s_start=7
+                elif spins=='aligned':
+                    lchi1_s = flogit(allsamples[i, :nsam, 3])
+                    lchi2_s = flogit(allsamples[i, :nsam, 4])
+                    a1_+=[ lchi1_s, lchi2_s ]
+                    myr+=[
+                   (  min( lchi1_s.min(), s1s[3].min() ) , max( lchi1_s.max(), s1s[3].max() )  ),
+                   ( min( lchi2_s.min(), s1s[4].min() ) , max( lchi2_s.max(), s1s[4].max() )  ),
+                  ]
+                    s_start=5
+                else:
+                    s_start=3
+
+
+                if skymap:
+                    lra = flogit(allsamples[i, :nsam, s_start], xmin=0, xmax=2*np.pi)
+                    ldec = flogit(allsamples[i, :nsam, s_start+1], xmin=-np.pi/2, xmax=np.pi/2)
+                    a1_+=[ lra, ldec ]
+                    istart=s_start+2
+                    myr+=[  (  min( lra.min(), s1s[s_start].min() ) , max( lra.max(), s1s[s_start].max() )  ),
+                   ( min( ldec.min(), s1s[s_start+1].min() ) , max( ldec.max(), s1s[s_start+1].max() )  ),
+                         ]
+                else:
+                    istart=s_start
+                if inclination:
+                    liota = flogit(allsamples[i, :nsam, istart], xmin=0, xmax=np.pi)
+                    a1_+=[ liota ]
+                    myr+=[  (  min( liota.min(), s1s[istart].min() ) , max( liota.max(), s1s[istart].max() )  ),
+                   
+                         ]
                 
-                a1 = np.asarray( [ lMC_s, lq_s,ld_s, lchi1_s, lchi2_s,lcost1_s,lcost2_s ] ).T
+                a1 = np.asarray( a1_ ).T
                 
             
                 fig = corner.corner( a1,
@@ -571,6 +724,8 @@ def plot_samples(allsamples,
                                )
 
             else:
+                # original samples not provided
+                # does not work yet withour spin models, inclination and skymap
                 fig=None
 
                 if spins=='default':
@@ -629,6 +784,9 @@ parser.add_argument("--fnames", nargs='+', type=str, required=True)
 parser.add_argument("--fout", default='GWTC-fits', type=str, required=False)
 parser.add_argument("--ps_prior", default='nocosmo', type=str, required=False)
 parser.add_argument("--plot", default=1, type=int, required=False)
+parser.add_argument("--skymap", default=0, type=int, required=False)
+parser.add_argument("--inclination", default=0, type=int, required=False)
+parser.add_argument("--spins", default='default', type=str, required=False)
 
 if __name__=='__main__':
     
@@ -663,7 +821,7 @@ if __name__=='__main__':
 
         if run_name == 'O1O2':
     
-            data = O1O2Data(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins='default' )
+            data = O1O2Data(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins=FLAGS.spins )
         
         elif run_name == 'O3a':
             
@@ -675,7 +833,7 @@ if __name__=='__main__':
             data = O3aData(fname_, 
                            GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
-              which_spins='default',
+              which_spins=FLAGS.spins,
               suffix_name=FLAGS.ps_prior
              )
         
@@ -689,14 +847,27 @@ if __name__=='__main__':
             data = O3bData(fname_, 
               #GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
-              which_spins='default',
+              which_spins=FLAGS.spins,
               suffix_name=FLAGS.ps_prior
              )
+
+        else:
+            # We are using simulated data 
+            data = GWMockData( fname_, 
+                                SNR_th=FLAGS.snr_th, 
+                                which_spins=FLAGS.spins,
+                                inclination=FLAGS.inclination
+                             )
             
+        
         flist = ['%s'%(FLAGS.fout), 
                   '%s/%s/'%(FLAGS.fout, run_name),
                   '%s/%s/snrth-%s_farth-%s/'%(FLAGS.fout,  run_name, int(FLAGS.snr_th), int(FLAGS.far_th), ),
-                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)  ]
+                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor),
+                '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins),
+                 '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s/skymap-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins, FLAGS.skymap),
+                 '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s/skymap-%s/inclination-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins, FLAGS.skymap, FLAGS.inclination),
+                ]
         
         if run_name in ('O3a', 'O3b'):
             flist+= ['%s/%s/snrth-%s_farth-%s/dil_factor-%s/%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.ps_prior) , ]
@@ -733,6 +904,7 @@ if __name__=='__main__':
                     line = line.strip()
                     # Append the line to the list
                     allnames_prev.append(line)
+            print(allnames_prev)
                 
             assert data.events==allnames_prev
             print('Previous fit found')
@@ -746,44 +918,64 @@ if __name__=='__main__':
             n_comp_all = np.asarray( [ (FLAGS.n_gmm_min, FLAGS.n_gmm_max)   for i in range(len(data.events))] )
             refit = False
             fout_suff_plot =''
-        print('N. of components to fit:')
-        print( [ ( data.events[i], n_comp_all[i] ) for i in range(len(n_comp_all)) ]  )
+        
+        #print('N. of components to fit:')
+        #print( [ ( data.events[i], n_comp_all[i] ) for i in range(len(n_comp_all)) ]  )
+
+        
+        allsamples_ = [ data.m1z, data.m2z, data.dL, ]
+        print('data m1z shape: %s'%str(data.m1z.shape))
+        
+        
+        if FLAGS.spins!='none':
+            for i in range(len(data.spins)):
+                allsamples_.append(data.spins[i])
+
+        if FLAGS.skymap:
+            print('data ra shape: %s'%str(data.ra.shape))
+            print('data dec shape: %s'%str(data.dec.shape))
+            allsamples_.append(data.ra)
+            allsamples_.append(data.dec)
+        if FLAGS.inclination:
+            allsamples_.append(data.iota,)
+        
+        for k in range(len(allsamples_)):
+            print('allsamples_ %s comp shape: %s'%(k,allsamples_[k].shape ))
+        allsamples_ = np.stack(allsamples_).transpose(1,2,0)
     
-        allsamplesO1O2 = np.stack([data.m1z, data.m2z, data.dL, data.spins[0], data.spins[1], data.spins[2], data.spins[3]]).transpose(1,2,0)
+        gmm_means_, gmm_icovs_, gmm_covs_, gmm_cho_covs_, gmm_log_dets_, gmm_log_wts_, all_gmm_, allNgm_ = fit_gmm( allsamples_, 
+                                                                                                                                             data.Nsamples, 
+                                                                                                                                             allNames = data.events, 
+                                                                                                                                             fout_plot = base_fname, 
+                                                                                                                                             spins = FLAGS.spins, 
+                                                                                                                                             n_components = n_comp_all, 
+                                                                                                                                             dil_factor = FLAGS.dil_factor, 
+                                                                                                                                             refit = refit, 
+                                                                                                                                             fname_base = run_name ,
+                                                                                                                                            skymap=FLAGS.skymap,
+                                inclination=FLAGS.inclination
+                                                                                                                                            )
     
-        gmm_means_O1O2, gmm_icovs_O1O2, gmm_covs_O1O2, gmm_cho_covs_O1O2, gmm_log_dets_O1O2, gmm_log_wts_O1O2, all_gmm_O1O2, allNgm_O1O2,  logit_means, logit_stds = fit_gmm( allsamplesO1O2, 
-                                                                                                       data.Nsamples, 
-                                                                                                       allNames=data.events,
-                                                                                                       fout_plot=base_fname,
-                                                                                                        rescale_logit=False, 
-                                                                                                      spins='default',
-                                                                                                       n_components = n_comp_all, #np.arange(FLAGS.n_gmm_min,FLAGS.n_gmm_max),
-                                                                                                      dil_factor=FLAGS.dil_factor,
-                                                                                                        refit=refit, 
-                                                                                                        fname_base=run_name                                                                    
-                                                                                                        
-                                                                                                        )
+        means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins)
     
-        means_O1O2, cho_covs_O1O2 = fit_cho(allsamplesO1O2, data.Nsamples, spins='default')
-    
-        np.savetxt( fngmm, allNgm_O1O2 ) 
+        np.savetxt( fngmm, allNgm_ ) 
     
         np.savetxt( os.path.join(base_fname, '%s_allNames.txt'%run_name), data.events, delimiter=" ", fmt="%s" ) 
-        np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name), means_O1O2, )
-        np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name), cho_covs_O1O2, )
+        np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name), means_, )
+        np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name), cho_covs_, )
         
         
         
-        np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name), gmm_means_O1O2, )
-        np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name), gmm_icovs_O1O2, )
-        np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name), gmm_covs_O1O2, )
-        np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name), gmm_cho_covs_O1O2, )
-        np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name), gmm_log_dets_O1O2, )
-        np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name), gmm_log_wts_O1O2, )
+        np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name), gmm_means_, )
+        np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name), gmm_icovs_, )
+        np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name), gmm_covs_, )
+        np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name), gmm_cho_covs_, )
+        np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name), gmm_log_dets_, )
+        np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name), gmm_log_wts_, )
     
         if FLAGS.plot:
-            plot_samples(allsamplesO1O2, 
-                 all_gmm_O1O2,   
+            plot_samples(allsamples_, 
+                 all_gmm_,   
                  data.Nsamples,
                  #means_O1O2, 
                  #cho_covs_O1O2,
@@ -792,7 +984,10 @@ if __name__=='__main__':
                  allNames=data.events,
                  dil_factor=FLAGS.dil_factor,
                      fout=base_fname,
-                     fout_suff=fout_suff_plot
+                     fout_suff=fout_suff_plot,
+                spins=FLAGS.spins, 
+                         skymap=FLAGS.skymap,
+                 inclination=FLAGS.inclination,
                 )
 
 
