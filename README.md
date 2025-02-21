@@ -9,14 +9,36 @@ Python package for running GW population inference with Hamiltonian Monte Carlo 
 
 ##### Fitting GMM interpolants of posterior samples
 
-The module ```fit_posterior_samples``` fits a GMM on each GW event posterior distribution taken from public LVK data releases. 
+The module ```fit_posterior_samples``` fits a GMM on each GW event posterior distribution either taken from public LVK data releases or from simulations. 
 This module uses the package [MGCosmoPop](https://github.com/CosmoStatGW/MGCosmoPop) to load the LVK posterior samples. This needs to be cloned in a directory at the same level of pymcpop (but note that is not included in requirements). 
+
+##### Fitting GWTC-3
 
 Fits of the 69 events of the GWTC-3 catalog detected with FAR<1/yr will be made available on [Zenodo](https://zenodo.org/records/14826108), together with a version of public LVK software injections to compute the selection effects, ready for the code to run.
 
-More docs to come...
+##### Fitting simulations
 
-##### Run
+To fit the simulation:
+
+```
+> fdata=../galaxy_catalog_simulated_data/O5_v3/
+> fout=$fdata/gmm_fits
+> mkdir $fout
+> python fit_model.py --fin_data $fin_data --fin_injections $finj --fin_priors=priors_files/priors_GWTC2_cosmo.json --rate_model='MD' --mass_model='PLPreg' --spin_model='none' --dLprior='dLsq' --use_sel_spin=0 --ivals=initvals_files/init_sim_MICE_apj.json --params_fix=initvals_files/fiducials_sim_MICE_apj.json --log_lik_var_min=1 --spin_inj='none' --sel_smoothing='sigmoid' --fout=$fout --nsteps=100 --ntune=50 --nchains=2 --ncores=2
+```
+
+##### Run on simulation
+
+```
+> finj=.../galaxy_catalog_simulated_data/O5_v3/injections/injections_20M_sources_PLP_v9s2_H1-L1-Virgo-KAGRA-LIGOI_IMRPhenomHM_snr_th-20_dutyfac-1_fmin-10_noiseless_
+> fin_data=../galaxy_catalog_simulated_data/O5_v3/gmm_fits/O5_samples_from_fisher_allpars_snrth-25_ieth-0.05_DelOmTh-inf.h5/snrth-0_farth-0/dil_factor-1/spin-none/skymap-1/inclination-0/O5_samples_from_fisher_allpars_snrth-25_ieth-0.05_DelOmTh-inf.h5_
+> fout=test_mock_MICE_apj_1
+> mkdir $fout
+> python fit_model.py --fin_data $fin_data --fin_injections $finj --fin_priors=priors_files/priors_GWTC2_cosmo.json --rate_model='MD' --mass_model='PLPreg' --spin_model='none' --dLprior='dLsq' --use_sel_spin=0 --ivals=initvals_files/init_sim_MICE_apj.json --params_fix=initvals_files/fiducials_sim_MICE_apj.json --log_lik_var_min=2  --spin_inj='none' --sel_smoothing='sigmoid' --fout=$fout --nsteps=100 --ntune=50 --nchains=2 --ncores=2 --n_inj_use=0.05
+
+```
+
+##### Run on GWTC-3
 
 To analyze the GWTC-3 catalog with this package (see referenced paper below), download the data products from [Zenodo](https://zenodo.org/records/14826108). 
 
