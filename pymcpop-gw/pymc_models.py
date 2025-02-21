@@ -80,6 +80,12 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM])
 
     ###################################
+    # jacobian
+    
+    log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dL=dL)
+
+    
+    ###################################
     # return log pdf
     ####################################
     
@@ -173,6 +179,7 @@ def make_model(  priors,
                  N_DP_comp_max = 10,
                  fix_H0Om = True,
                  fix_Xi0n = True,
+               params_fix=None,
                  Neff_min=4,
                 Neff_min_lik=1,
                log_lik_var_min=1,
@@ -279,6 +286,11 @@ def make_model(  priors,
          coords['GWdimension'] = at.arange(nd).eval()
 
 
+    if params_fix is None:
+        print('No values for parameters to fix passed. Default values will be used. If fixing parameters, check that the values are consistent. Values of fixed parameters:')
+        print(PLPeakO3params)
+        params_fix=PLPeakO3params
+        
     ################################################
     # Build model
     ################################################
@@ -289,8 +301,8 @@ def make_model(  priors,
         # Cosmological parameters
         ################################################
         if fix_H0Om:
-            H0_ =  at.as_tensor_variable(PLPeakO3params['H0'])
-            Om_ = at.as_tensor_variable(PLPeakO3params['Om'])
+            H0_ =  at.as_tensor_variable(params_fix['H0'])
+            Om_ = at.as_tensor_variable(params_fix['Om'])
         else:
             H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1])
             Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1]) 
@@ -393,6 +405,8 @@ def make_model(  priors,
                 print("Sampling in log(alpha-1), log(beta-1)")
                 raise NotImplementedError()
 
+        else:
+            print('No model of the spin distribution.')
                 
 
             
@@ -448,16 +462,16 @@ def make_model(  priors,
                 
                 Mc = at.exp(log_Mc_det)            
                 q = atools.inv_logitat(logit_q)
-                m1det, m2det = m1m2_from_Mcq_at(Mc, q)
+                m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
                 logd = samples[:,2]
                 d = at.exp(logd)
     
-                if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
+                if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
         
                     chieff = atools.inv_flogitat(samples[:,3])
                     chip = atools.inv_logitat(samples[:,4])
         
-                elif (spin_model == 'default') or (spin_model == 'none') :
+                elif (spin_model == 'default'):
                     # we have chi1, chi2, cost1, cost2
         
                     chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
@@ -511,7 +525,7 @@ def make_model(  priors,
             
         
         # Population prior of all events, without the term T_obs*R0
-        log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_,rate_model, mass_model, spin_model)
+        log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model)
 
         
         if dLprior=='dLsq':

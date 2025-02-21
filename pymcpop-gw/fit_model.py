@@ -44,7 +44,7 @@ parser.add_argument("--pop_only", default=0, type=int, required=False)
 
 
 parser.add_argument("--rate_model", default='MD', type=str, required=False)
-parser.add_argument("--mass_model", default='PLP', type=str, required=False)
+parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
 parser.add_argument("--spin_model", default='none', type=str, required=False)
 parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
 parser.add_argument("--marginal_R0", default=1, type=int, required=False)
@@ -55,15 +55,17 @@ parser.add_argument("--massprior", default=0, type=int, required=False)
 parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
 
 
-parser.add_argument("--sampling_gw", default='cho', type=str, required=False)
+parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
 parser.add_argument("--cho_dil", default=1., type=float, required=False)
 parser.add_argument("--sel", default='Tobs', type=str, required=False)
 parser.add_argument("--ivals", default='', type=str, required=False)
+parser.add_argument("--params_fix", default='', type=str, required=False)
+
 
 parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
 parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
-parser.add_argument("--min_Neff", default=4, type=int, required=False)
-parser.add_argument("--Neff_min_lik", default=1, type=int, required=False)
+parser.add_argument("--min_Neff", default=0, type=int, required=False)
+parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
 parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
 
 parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
@@ -71,8 +73,8 @@ parser.add_argument("--spin_inj", default='none', type=str, required=False)
 parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
 parser.add_argument("--transform_samples", default=1, type=int, required=False)
 parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-parser.add_argument("--sel_smoothing", default='poly', type=str, required=False)
-parser.add_argument("--alpha_beta_prior", default='poly', type=str, required=False)
+parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
+parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
 parser.add_argument("--dil_factor", default=1, type=int, required=False)
 parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
 
@@ -109,6 +111,12 @@ if __name__=='__main__':
     # save priors for memory
     with open(os.path.join(FLAGS.fout, 'priors.json' ), 'w') as fp:
         json.dump(priors, fp)
+
+    if FLAGS.params_fix!='':
+        with open(FLAGS.params_fix) as json_file:
+            params_fix = json.load(json_file) 
+    else:
+        params_fix=None
 
     ################################################
     # Load data
@@ -318,7 +326,8 @@ if __name__=='__main__':
                                     sel_smoothing = FLAGS.sel_smoothing,
                                     alpha_beta_prior = FLAGS.alpha_beta_prior,
                                     dil_factor=FLAGS.dil_factor,
-                                    use_log_alpha_beta=FLAGS.use_log_alpha_beta
+                                    use_log_alpha_beta=FLAGS.use_log_alpha_beta,
+                                    params_fix=params_fix
                                 )
 
     print('Done.')
@@ -479,7 +488,7 @@ if __name__=='__main__':
                         
                         Mc = at.exp(samples[:,0]/FLAGS.dil_factor)            
                         q = atools.inv_logitat(samples[:,1])
-                        m1det, m2det = models.m1m2_from_Mcq_at(Mc, q)
+                        m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
                         logd = samples[:,2]
                         d = at.exp(logd)
                         

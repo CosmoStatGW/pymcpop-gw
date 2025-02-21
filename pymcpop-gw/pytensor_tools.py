@@ -74,7 +74,11 @@ def m1m2_from_Mcq_at(Mc, q):
 
     return m1, m2
 
+def log_sigmoid(x, m, sig):
+    return -at.log1p(at.exp(-(x-m)/sig))
 
+def sigmoid(x, m, sig):
+    return 1/(1+at.exp((-(x-m)/sig)))
 
 ##########################
 ####### Interpolators and integrators ########
