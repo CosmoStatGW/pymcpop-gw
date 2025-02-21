@@ -29,7 +29,7 @@ Then, to run the population-only (fixed cosmology) analysis that reproduces LVK 
 >
 > mkdir $fout
 >
-> python fit_model.py --fin_data $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O1O2/snrth-0_farth-1/dil_factor-1/O1O2_ $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O3a/snrth-0_farth-1/dil_factor-1/nocosmo/O3a_ $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O3b/snrth-0_farth-1/dil_factor-1/nocosmo/O3b_ --fin_injections $fdata/injections_LVK/injections_bbh_rwspin/snrthO1O2-10_farth-1_pycbcbbh_gstlal_mbta/injections_LVK_ --fin_priors='priors_files/priors_GWTC2.json' --rate_model='PL' --mass_model='PLPreg' --spin_model='default' --dLprior='dLsq' --use_sel_spin=1 --sampling_gw='gmm' --ivals='initvals_files/init_GWTC3_lowVar_verylow.json' --fout=$fout --sampler='std' --nchains=4 --ncores=4 --target_accept=0.9 --spin_inj='chi12xyz' --sel_uncertainty=0 --sel_smoothing='sigmoid' --min_Neff=0 --log_lik_var_min=1 --alpha_beta_prior='sigmoid' --nsteps=1000 --ntune=500 --fix_H0Om=1 --fix_Xi0n=1
+> python fit_model.py --fin_data $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O1O2/snrth-0_farth-1/dil_factor-1/O1O2_ $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O3a/snrth-0_farth-1/dil_factor-1/nocosmo/O3a_ $fdata/GWTC-fits_lMlqld_defaultspin_nmax-500/O3b/snrth-0_farth-1/dil_factor-1/nocosmo/O3b_ --fin_injections $fdata/injections_LVK/injections_bbh_rwspin/snrthO1O2-10_farth-1_pycbcbbh_gstlal_mbta/injections_LVK_ --fin_priors='priors_files/priors_GWTC2.json' --rate_model='PL' --mass_model='PLPreg' --spin_model='default' --dLprior='dLsq' --use_sel_spin=1 --sampling_gw='gmm' --ivals='initvals_files/init_GWTC3_lowVar.json' --fout=$fout --sampler='std' --nchains=4 --ncores=4 --target_accept=0.9 --spin_inj='chi12xyz' --sel_uncertainty=0 --sel_smoothing='sigmoid' --min_Neff=0 --log_lik_var_min=1 --alpha_beta_prior='sigmoid' --nsteps=1000 --ntune=500 --fix_H0Om=1 --fix_Xi0n=1
 ```
 
 To run with varying Hubble constant and matter density parameter, use ```--fix_H0Om=0```
@@ -94,16 +94,16 @@ In this case we have to uninstall the existing version of ```pymc``` first, then
 
 ### Citation
 
-If using this code, please cite this repository and the paper [Sampling the full hierarchical population posterior distribution in gravitational-wave astronomy](<https://arxiv.org/abs/>). Bibtex:
+If using this code, please cite this repository and the paper [Sampling the full hierarchical population posterior distribution in gravitational-wave astronomy](<https://arxiv.org/abs/2502.12156>). Bibtex:
 
 ```
-@article{Mancarella:2025xxx,
+@article{Mancarella:2025uat,
     author = "Mancarella, Michele and Gerosa, Davide",
     title = "{Sampling the full hierarchical population posterior distribution in gravitational-wave astronomy}",
-    eprint = "2502.XXXX",
+    eprint = "2502.12156",
     archivePrefix = "arXiv",
     primaryClass = "gr-qc",
-    month = "02",
+    month = "2",
     year = "2025"
 }
 ```
