@@ -12,11 +12,11 @@ Python package for running GW population inference with Hamiltonian Monte Carlo 
 The module ```fit_posterior_samples``` fits a GMM on each GW event posterior distribution either taken from public LVK data releases or from simulations. 
 This module uses the package [MGCosmoPop](https://github.com/CosmoStatGW/MGCosmoPop) to load the LVK posterior samples. This needs to be cloned in a directory at the same level of pymcpop (but note that is not included in requirements). 
 
-##### Fitting GWTC-3
+##### Fitting GMMs on GWTC-3
 
 Fits of the 69 events of the GWTC-3 catalog detected with FAR<1/yr will be made available on [Zenodo](https://zenodo.org/records/14826108), together with a version of public LVK software injections to compute the selection effects, ready for the code to run.
 
-##### Fitting simulations
+##### Fitting GMMs on simulations
 
 To fit the simulation:
 
@@ -24,7 +24,7 @@ To fit the simulation:
 > fdata=../galaxy_catalog_simulated_data/O5_v3/
 > fout=$fdata/gmm_fits
 > mkdir $fout
-> python fit_model.py --fin_data $fin_data --fin_injections $finj --fin_priors=priors_files/priors_GWTC2_cosmo.json --rate_model='MD' --mass_model='PLPreg' --spin_model='none' --dLprior='dLsq' --use_sel_spin=0 --ivals=initvals_files/init_sim_MICE_apj.json --params_fix=initvals_files/fiducials_sim_MICE_apj.json --log_lik_var_min=1 --spin_inj='none' --sel_smoothing='sigmoid' --fout=$fout --nsteps=100 --ntune=50 --nchains=2 --ncores=2
+> python fit_posterior_samples.py --snr_th=0 --far_th=0 --n_gmm_max=10 --fin_data $fdata --fnames 'O5_samples_from_fisher_allpars_snrth-25_ieth-0.05_DelOmTh-inf.h5' --fout=$fout --plot=1 --skymap=1 --spins='none'
 ```
 
 ##### Run on simulation
