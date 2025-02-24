@@ -177,7 +177,8 @@ def make_model(  priors,
                  fix_inj_len = False,
                  sel_method='Tobs',
                  N_DP_comp_max = 10,
-                 fix_H0Om = True,
+                 fix_H0 = True,
+                fix_Om = True,
                  fix_Xi0n = True,
                params_fix=None,
                  Neff_min=4,
@@ -300,11 +301,16 @@ def make_model(  priors,
         ################################################
         # Cosmological parameters
         ################################################
-        if fix_H0Om:
+
+        
+        if fix_H0:
             H0_ =  at.as_tensor_variable(params_fix['H0'])
-            Om_ = at.as_tensor_variable(params_fix['Om'])
         else:
             H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1])
+        
+        if fix_Om:
+            Om_ = at.as_tensor_variable(params_fix['Om'])
+        else:
             Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1]) 
         
         w0_ = at.as_tensor_variable(-1.)
