@@ -318,8 +318,9 @@ def p_z_MD(z, gamma, kappa, zp, Om, normalize=True, zmax=20, dc=None):
 
 
 def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
-    lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
-    log_psiz = lC0+gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
+    #lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
+    log_psiz = gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
+    # alphaRedshift*np.log1p(z)-np.log(1+((1+z)/(1+zp))**(alphaRedshift+betaRedshift))
     log_dVdz = log_dV_dz_at(z, H0, Om, w0, dc=dc )
 
     return log_psiz+log_dVdz-at.log1p(z)
