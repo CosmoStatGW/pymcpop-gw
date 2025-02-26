@@ -130,7 +130,7 @@ def fit_cho(allsamples, allNsamples,spins='default'):
     return samples_means, samples_cho_covs
 
 
-def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10):
+def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1):
 
     gmm_log_wts_l = []
     gmm_means_l = []
@@ -143,8 +143,18 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     
     nevs = len(allsamples)
     print('There are %s events'%nevs)
+
+    if imax==-1:
+        iend=nevs
+    elif imax<nevs:
+        iend=imax
+        
+    else:
+        raise ValueError()
+    nevs_fit = iend-imin
+    print('Fitting events between %s and %s. Total %s'%(imin, iend, nevs_fit))
     
-    for i in tqdm(range(nevs), ): 
+    for i in tqdm(range(imin, iend), ): 
 
         jmax = allNsamples[i]
     
@@ -353,14 +363,14 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     allNgm = [len(gmm_log_wts_l[i]) for i in range(len(gmm_log_wts_l))]
     Ngm = max(allNgm)
     
-    gmm_log_wts_l_full = np.log(np.zeros( (nevs, Ngm) ))
-    gmm_means_l_full = np.zeros( (nevs, Ngm, nd) )
-    gmm_icovs_l_full = np.zeros( (nevs, Ngm, nd, nd) )
-    gmm_cho_covs_l_full = np.zeros( (nevs, Ngm, nd, nd) )
-    gmm_covs_l_full = np.zeros( (nevs, Ngm, nd, nd) )
-    gmm_log_dets_l_full = np.log(np.ones( (nevs, Ngm) ))
+    gmm_log_wts_l_full = np.log(np.zeros( (nevs_fit, Ngm) ))
+    gmm_means_l_full = np.zeros( (nevs_fit, Ngm, nd) )
+    gmm_icovs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
+    gmm_cho_covs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
+    gmm_covs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
+    gmm_log_dets_l_full = np.log(np.ones( (nevs_fit, Ngm) ))
 
-    for i in range(nevs):
+    for i in range(imin, iend):
         ngm_  =  allNgm[i]
 
         gmm_log_wts_l_full[i, :ngm_] = gmm_log_wts_l[i]
@@ -787,6 +797,8 @@ parser.add_argument("--plot", default=1, type=int, required=False)
 parser.add_argument("--skymap", default=0, type=int, required=False)
 parser.add_argument("--inclination", default=0, type=int, required=False)
 parser.add_argument("--spins", default='default', type=str, required=False)
+parser.add_argument("--imin", default=0, type=int, required=False)
+parser.add_argument("--imax", default=1, type=int, required=False)
 
 if __name__=='__main__':
     
@@ -953,7 +965,9 @@ if __name__=='__main__':
                                                                                                                                              refit = refit, 
                                                                                                                                              fname_base = run_name ,
                                                                                                                                             skymap=FLAGS.skymap,
-                                inclination=FLAGS.inclination
+                                inclination=FLAGS.inclination,
+                                                                                                                   imin=FLAGS.imin,
+                                                                                                                   imax=FLAGS.imax
                                                                                                                                             )
     
         means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins)
