@@ -88,6 +88,7 @@ parser.add_argument("--ncores", default=1, type=int, required=False)
 parser.add_argument("--target_accept", default=0.8, type=float, required=False)
 parser.add_argument("--fix_H0", default=1, type=int, required=False)
 parser.add_argument("--fix_Om", default=1, type=int, required=False)
+parser.add_argument("--fix_w0", default=1, type=int, required=False)
 parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
 
 
@@ -315,6 +316,7 @@ if __name__=='__main__':
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
+                                    fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
                                     Neff_min=FLAGS.min_Neff,
                                     Neff_min_lik = FLAGS.Neff_min_lik,
@@ -431,6 +433,11 @@ if __name__=='__main__':
             _ = ivals.pop('H0')
         if FLAGS.fix_Om:
             _ = ivals.pop('Om')
+        if FLAGS.fix_w0:
+            try:
+                _ = ivals.pop('w0')
+            except:
+                pass
         if FLAGS.fix_Xi0n:
             _ = ivals.pop('Xi0')
             _ = ivals.pop('n')

@@ -703,6 +703,3 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=2
     return at.log(attrapzvec(ps,ms))
 
          
-
-
-

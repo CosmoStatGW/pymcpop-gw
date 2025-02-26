@@ -78,6 +78,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         
         lp, al, bb, dm, ml, mh, muM, sM = Lambda[-8:]
         lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM])
+        
+    elif mass_model=='BNSgauss':
+        muM, sM = Lambda[-2:]
+        lpmass = atools.logpdf_gauss([m1s, m2s], [muM, sM] )
 
     ###################################
     # jacobian
@@ -179,6 +183,7 @@ def make_model(  priors,
                  N_DP_comp_max = 10,
                  fix_H0 = True,
                 fix_Om = True,
+               fix_w0 = True,
                  fix_Xi0n = True,
                params_fix=None,
                  Neff_min=4,
@@ -312,8 +317,11 @@ def make_model(  priors,
             Om_ = at.as_tensor_variable(params_fix['Om'])
         else:
             Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1]) 
-        
-        w0_ = at.as_tensor_variable(-1.)
+
+        if fix_w0:
+            w0_ = at.as_tensor_variable(-1.)
+        else:
+            raise NotImplementedError()
         
         if fix_Xi0n:
             Xi0_ =  at.as_tensor_variable(1.)
@@ -437,6 +445,15 @@ def make_model(  priors,
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
+        elif mass_model=='BNSgauss':
+
+            # Uncorrelated gaussians
+            print('Modeling mass distribution with uncorrelated gaussian distributions')
+            
+            muM_ = pm.Uniform('muMass', lower=priors['muMass'][0], upper=priors['muMass'][1])
+            sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
+            Lambda_ += [muM_, sM_ ]
+
 
         ################################################
         # If including total normalization of the rate, add it here
@@ -487,12 +504,17 @@ def make_model(  priors,
                     cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
                 else:
                     print("No spins computed")
+            
 
+                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+                zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
+                m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
+                m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
 
-            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
-            m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
-            m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
+            else:
+                # we are not using GMM for p(D|theta)
+                raise NotImplementedError()
+                
 
         else:
             # we are sampling the usual marginalise likelihood, with "only" pop parameters
