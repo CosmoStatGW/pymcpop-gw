@@ -146,11 +146,11 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
 
     if imax==-1:
         iend=nevs
-    elif imax<nevs:
-        iend=imax
-        
+    elif imax<=nevs:
+        iend=imax   
     else:
         raise ValueError()
+        
     nevs_fit = iend-imin
     print('Fitting events between %s and %s. Total %s'%(imin, iend, nevs_fit))
     
