@@ -487,7 +487,7 @@ def make_model(  priors,
                 q = atools.inv_logitat(logit_q)
                 m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
                 logd = samples[:,2]
-                d = at.exp(logd)
+                d = pm.Deterministic('dL', at.exp(logd) , dims="event_index")
     
                 if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
         
