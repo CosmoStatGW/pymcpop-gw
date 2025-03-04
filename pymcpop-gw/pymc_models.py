@@ -82,6 +82,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     elif mass_model=='BNSgauss':
         muM, sM = Lambda[-2:]
         lpmass = atools.logpdf_gauss([m1s, m2s], [muM, sM] )
+    elif mass_model=='BNSgaussCond':
+        muM, sM = Lambda[-2:]
+        lpmass = atools.logpdf_gauss_cond([m1s, m2s], [muM, sM] )
 
     ###################################
     # jacobian
@@ -445,11 +448,15 @@ def make_model(  priors,
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
-        elif mass_model=='BNSgauss':
+        elif 'BNSgauss' in mass_model:
 
-            # Uncorrelated gaussians
-            print('Modeling mass distribution with uncorrelated gaussian distributions')
-            
+            if mass_model=='BNSgauss':
+                # Uncorrelated gaussians
+                print('Modeling mass distribution with uncorrelated gaussian distributions')
+            elif mass_model=='BNSgaussCond':
+                # Conditioned gaussians
+                print('Modeling mass distribution with gaussian distributions with p(m1, m2) = p(m1) p(m2|m1) H(m1-m2)')
+                
             muM_ = pm.Uniform('muMass', lower=priors['muMass'][0], upper=priors['muMass'][1])
             sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
             Lambda_ += [muM_, sM_ ]
@@ -578,7 +585,7 @@ def make_model(  priors,
             
             log_p_pop -= lpi
 
-          
+
 
         # add R0*Tobs if needed. 
         if not marginal_R0:
@@ -797,7 +804,13 @@ def make_model(  priors,
             
             _ = pm.Potential('selection_bias', selection_bias)
 
-
+            if marginal_R0:
+                if include_sel_uncertainty:
+                    print("Including selection function uncertainty as in Farr 2019s")
+                    # from Farr 2019
+                    sel_uncertainty = (3*N+N**2)/(2*Neff)
+                    
+                    _ = pm.Potential('selection_uncertainty', sel_uncertainty)
             
 
     return model

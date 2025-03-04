@@ -478,6 +478,13 @@ def logpdf_gauss(theta, lambdaBBHmass):
     
     return logpdf_gauss_single(m1, loc, scale, xmin=0) + logpdf_gauss_single(m2, loc, scale, xmin=0)
 
+def logpdf_gauss_cond(theta, lambdaBBHmass):  
+    m1, m2 = theta
+    loc, scale = lambdaBBHmass
+    
+    logpdfm1 = truncGausslower_at_lpdf( m1, xmin=0., loc=loc, scale=scale)
+    logpdfm2 = truncGausslowerupper_at_lpdf( m2, xmin=0., xmax=m1, loc=loc, scale=scale)
+    return logpdfm1+logpdfm2
 
 
 
