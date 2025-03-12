@@ -336,7 +336,7 @@ if __name__=='__main__':
                                     dil_factor=FLAGS.dil_factor,
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
                                     params_fix=params_fix,
-                                  allTobs=FLAGS.allTobs
+                                      allTobs=FLAGS.allTobs
                                 )
 
     print('Done.')

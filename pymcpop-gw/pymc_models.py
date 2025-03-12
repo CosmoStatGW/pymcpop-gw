@@ -592,7 +592,7 @@ def make_model(  priors,
         # Put it all together
         if not pop_only:
             # just sum log likelihoods
-            likelihood_val = pm.Deterministic("lik", at.sum( log_p_pop ) ) 
+            likelihood_val = at.sum( log_p_pop ) #pm.Deterministic("lik", at.sum( log_p_pop ) ) 
         else:
             # marginalise over single events parameters first
             # shape of p_pop is (hopefully) n_evs x n_samples
@@ -605,7 +605,7 @@ def make_model(  priors,
             
 
             # then sum log likelihoods
-            likelihood_val = pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
+            likelihood_val = at.sum( log_p_pop_marg ) #pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
 
             # Check number of effective samples for computing MC integral 
             logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*at.log(allNsamples)
@@ -631,7 +631,7 @@ def make_model(  priors,
             # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = N*( lR0+at.log(Ttot) )
+            poiss_term = at.sum(Nevs*at.log(allTobs))+N*lR0
             #at.sum(Nevs*at.log(allTobs))+N*lR0
             #N*(lR0+at.log(Tobs))
             likelihood_val += poiss_term
@@ -679,8 +679,9 @@ def make_model(  priors,
                     sel_effect = -R0*Ttot*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
                     print('R0 is %s'%R0.eval())
                     print('Ttot is %s'%Ttot.eval())
-                    print('log_mu_ is %s'%log_mu_.eval())
-                    print('sel effect is %s'%sel_effect.eval())
+                    print('Lambda is %s'%str([L.eval() for L in Lambda]))
+                    print('mu_ is %s'%at.exp(log_mu_).eval())
+                    print('N_exp is %s'%(-sel_effect.eval()))
                 else:
                     sel_effect = -N*log_mu_
     
