@@ -211,7 +211,7 @@ def make_model(  priors,
     ## GW data
     if not pop_only:
         # gw data are interpolants of single-event posteriors
-        wts_l, mus_l, cho_covs_l, Tobs = GWData
+        wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
 
     else:
         # gw data are single-event posterior samples
@@ -268,6 +268,8 @@ def make_model(  priors,
         ngmm = mus_l.shape[1]
         nd = mus_l.shape[2]
         print('N:%s, max ngmm: %s, nd: %s '%(N.eval(), ngmm.eval(), nd.eval()))
+        print('N evs is %s'%Nevs.eval())
+        print('Tobs is %s'%Tobs.eval())
     else:
         N = m1det.shape[0] # number of events in total
         Nsamples = m1det.shape[1]
@@ -594,7 +596,7 @@ def make_model(  priors,
             # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = atools.sum(Nevs*at.log(Tobs))+at.sum(Nevs)*lR0
+            poiss_term = N*(lR0+at.log(Tobs))#atools.sum(Nevs*at.log(Tobs))+N*lR0
             log_p_pop += poiss_term
         else:
             print("Will marginalise over R0 with flat-in-log prior.")
@@ -646,8 +648,7 @@ def make_model(  priors,
         if sel_method=='skip':
             print('No selection bias!')
         else:
-            # add sel effects
-            
+            # add sel effects    
             if ndata.eval()==1:
                 # we passed a single injection set corresponding to multiple observing runs,
                 # with injections already containing the correct weights
@@ -671,8 +672,8 @@ def make_model(  priors,
                 log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name)
                 
                 if not marginal_R0:
-                    # This is really the number of expected events in the observing run
-                    sel_effect = -at.exp(log_mu_+lR0)*Tobs
+                    # This is really the number of expected events 
+                    sel_effect = -R0*Tobs*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
                 else:
                     sel_effect = -N*log_mu_
     

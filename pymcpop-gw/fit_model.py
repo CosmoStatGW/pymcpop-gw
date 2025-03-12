@@ -272,7 +272,8 @@ if __name__=='__main__':
                        at.exp(gmm_log_wts), 
                        gmm_means, 
                        gmm_cho_covs, 
-                       at.as_tensor_variable(injections['Tobs'])
+                       at.as_tensor_variable(injections['Tobs']),
+                        Nevents
                       ]
 
     else:
