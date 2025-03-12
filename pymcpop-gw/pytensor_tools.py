@@ -328,9 +328,8 @@ def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
 
 
 def log_psi_z_MD(z, gamma, kappa, zp):
-
-    log_psiz = gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
-
+    lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
+    log_psiz = lC0+gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
     return log_psiz-at.log1p(z)
 
 

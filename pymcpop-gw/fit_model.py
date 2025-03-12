@@ -91,6 +91,9 @@ parser.add_argument("--fix_Om", default=1, type=int, required=False)
 parser.add_argument("--fix_w0", default=1, type=int, required=False)
 parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
 
+parser.add_argument("--allTobs", nargs='+', type=float, required=False)
+
+
 
 if __name__=='__main__':
 
@@ -332,7 +335,8 @@ if __name__=='__main__':
                                     alpha_beta_prior = FLAGS.alpha_beta_prior,
                                     dil_factor=FLAGS.dil_factor,
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
-                                    params_fix=params_fix
+                                    params_fix=params_fix,
+                                  allTobs=FLAGS.allTobs
                                 )
 
     print('Done.')

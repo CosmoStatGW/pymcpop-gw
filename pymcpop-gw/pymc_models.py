@@ -201,7 +201,8 @@ def make_model(  priors,
                sel_smoothing='poly',
                alpha_beta_prior='poly',
                dil_factor=1,
-               use_log_alpha_beta=False      
+               use_log_alpha_beta=False ,
+               allTobs=None
                 ):
 
     ################################################
@@ -596,7 +597,9 @@ def make_model(  priors,
             # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = N*(lR0+at.log(Tobs))#atools.sum(Nevs*at.log(Tobs))+N*lR0
+            poiss_term = N*(lR0+at.log(Ttot))
+            #at.sum(Nevs*at.log(allTobs))+N*lR0
+            #N*(lR0+at.log(Tobs))
             log_p_pop += poiss_term
         else:
             print("Will marginalise over R0 with flat-in-log prior.")
@@ -673,7 +676,8 @@ def make_model(  priors,
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
-                    sel_effect = -R0*Tobs*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
+                    sel_effect = -R0*Ttot*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
+                    print('sel effect is %s'%sel_effect.eval())
                 else:
                     sel_effect = -N*log_mu_
     
@@ -756,7 +760,12 @@ def make_model(  priors,
 
             
             Neff = pm.Deterministic('Neff', Neff_ )
-            log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*at.log(N)) )
+
+            if marginal_R0:
+                log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*at.log(N)) )
+            else:
+                log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+            
      
 
             if ((Neff_min==0) and (log_lik_var_min==0)):
