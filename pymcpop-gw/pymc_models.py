@@ -589,26 +589,10 @@ def make_model(  priors,
             log_p_pop -= lpi
 
 
-
-        # add R0*Tobs if needed. 
-        if not marginal_R0:
-            print("Will not marginalise over R0.")
-            # each term p_pop is multiplied by
-            # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
-            # observing run. R0 is the same for every run so I just have
-            # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = N*(lR0+at.log(Ttot))
-            #at.sum(Nevs*at.log(allTobs))+N*lR0
-            #N*(lR0+at.log(Tobs))
-            log_p_pop += poiss_term
-        else:
-            print("Will marginalise over R0 with flat-in-log prior.")
-
-
         # Put it all together
         if not pop_only:
             # just sum log likelihoods
-            likelihood = pm.Deterministic("lik", at.sum( log_p_pop ) ) 
+            likelihood_val = pm.Deterministic("lik", at.sum( log_p_pop ) ) 
         else:
             # marginalise over single events parameters first
             # shape of p_pop is (hopefully) n_evs x n_samples
@@ -621,7 +605,7 @@ def make_model(  priors,
             
 
             # then sum log likelihoods
-            likelihood = pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
+            likelihood_val = pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
 
             # Check number of effective samples for computing MC integral 
             logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*at.log(allNsamples)
@@ -638,8 +622,24 @@ def make_model(  priors,
                 print(ind_l.eval())
             else:
                 print("No bound on effective number of samples for individual event MC integrals")
-            
+
         
+        # add R0*Tobs if needed. 
+        if not marginal_R0:
+            print("Will not marginalise over R0.")
+            # each term p_pop is multiplied by
+            # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
+            # observing run. R0 is the same for every run so I just have
+            # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
+            poiss_term = N*( lR0+at.log(Ttot) )
+            #at.sum(Nevs*at.log(allTobs))+N*lR0
+            #N*(lR0+at.log(Tobs))
+            likelihood_val += poiss_term
+        else:
+            print("Will marginalise over R0 with flat-in-log prior.")
+
+        
+        likelihood = pm.Deterministic("lik", likelihood_val )
         _ = pm.Potential("likelihood", likelihood ) 
 
 
@@ -677,6 +677,9 @@ def make_model(  priors,
                 if not marginal_R0:
                     # This is really the number of expected events 
                     sel_effect = -R0*Ttot*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
+                    print('R0 is %s'%R0.eval())
+                    print('Ttot is %s'%Ttot.eval())
+                    print('log_mu_ is %s'%log_mu_.eval())
                     print('sel effect is %s'%sel_effect.eval())
                 else:
                     sel_effect = -N*log_mu_
