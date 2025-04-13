@@ -370,7 +370,7 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     gmm_covs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
     gmm_log_dets_l_full = np.log(np.ones( (nevs_fit, Ngm) ))
 
-    for i in range(imin, iend):
+    for i in range(nevs_fit):
         ngm_  =  allNgm[i]
 
         gmm_log_wts_l_full[i, :ngm_] = gmm_log_wts_l[i]

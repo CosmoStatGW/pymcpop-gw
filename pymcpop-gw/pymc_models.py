@@ -179,8 +179,6 @@ def make_model(  priors,
                  spin_inj = 'none',
                  marginal_R0 = True,
                  dLprior = 'none',
-                 spinprior = False,
-                massprior = False,
                  fix_inj_len = False,
                  sel_method='Tobs',
                  N_DP_comp_max = 10,
@@ -535,7 +533,7 @@ def make_model(  priors,
             # AND for each sample! 
             
             d_stacked  = at.flatten(d)
-            zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_ )
+            zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_ )
             
             zs = at.reshape( zs_stacked, (N, Nsamples) )
             m1src = m1det/(1+zs)
@@ -679,7 +677,7 @@ def make_model(  priors,
                     sel_effect = -R0*Ttot*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
                     print('R0 is %s'%R0.eval())
                     print('Ttot is %s'%Ttot.eval())
-                    print('Lambda is %s'%str([L.eval() for L in Lambda]))
+                    print('Lambda is %s'%str([L.eval() for L in Lambda_]))
                     print('mu_ is %s'%at.exp(log_mu_).eval())
                     print('N_exp is %s'%(-sel_effect.eval()))
                 else:
