@@ -14,7 +14,7 @@ This module uses the package [MGCosmoPop](https://github.com/CosmoStatGW/MGCosmo
 
 ##### Fitting GMMs on GWTC-3
 
-Fits of the 69 events of the GWTC-3 catalog detected with FAR<1/yr will be made available on [Zenodo](https://zenodo.org/records/14826108), together with a version of public LVK software injections to compute the selection effects, ready for the code to run.
+Fits of the 69 events of the GWTC-3 catalog detected with FAR<1/yr are available on [Zenodo](https://zenodo.org/records/14826108), together with a version of public LVK software injections to compute the selection effects, ready for the code to run.
 
 
 ##### Run on GWTC-3
@@ -108,3 +108,6 @@ If using this code, please cite this repository and the paper [Sampling the full
     year = "2025"
 }
 ```
+The paper is associated to v0.1.0 [![DOI](https://zenodo.org/badge/928357030.svg)](https://doi.org/10.5281/zenodo.15207439)
+
+Data products are available at [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14826108.svg)](https://doi.org/10.5281/zenodo.14826108)
