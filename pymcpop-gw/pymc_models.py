@@ -432,7 +432,7 @@ def make_model(  priors,
             print('Modeling spin distribution with default spin model, gaussian distribution for magnitudes')
 
             muChi_ = pm.Uniform('muChi', lower=priors['muChi'][0], upper=priors['muChi'][1])
-            sigmaChi_ = pm.Uniform('varChi', lower=priors['sigmaChi'][0], upper=priors['sigmaChi'][1])
+            sigmaChi_ = pm.Uniform('sigmaChi', lower=priors['sigmaChi'][0], upper=priors['sigmaChi'][1])
             
             zeta_ = pm.Uniform('zeta', lower=priors['zeta'][0], upper=priors['zeta'][1])
             sigmat_ = pm.Uniform('sigmat', lower=priors['sigmat'][0], upper=priors['sigmat'][1])

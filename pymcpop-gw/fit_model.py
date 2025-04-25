@@ -436,12 +436,12 @@ if __name__=='__main__':
                 ivals["logBetaMinusOne"] = np.log(betaChi_-1)
         elif FLAGS.spin_model=='default_gauss':
             try:
+                _ = ivals.pop('varChi')
                 _ = ivals.pop('muEff')
                 _ = ivals.pop('sigEff')
                 _ = ivals.pop('muP')
                 _ = ivals.pop('sigP')
                 _ = ivals.pop('rho')
-                _ = ivals.pop('varChi')
             except:
                 pass
             
