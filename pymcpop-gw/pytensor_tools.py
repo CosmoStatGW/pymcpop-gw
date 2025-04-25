@@ -636,10 +636,10 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
 def logpdf_PLP_reg(theta, lambdaBBHmass):
     
         m1, m2 = theta
-        lambdaPeak1, lambdaPeak2, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
+        lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
                 
 
-        lpdfm1 = logpdfm1_PLP_reg(m1,  lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass )
+        lpdfm1 = logpdfm1_PLP_reg(m1, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass )
         lpdfm2 = logpdfm2_PLP_reg(m2, beta, deltam, ml)
         
         lC = logC_PLP_reg(m1, beta, deltam,  ml) 

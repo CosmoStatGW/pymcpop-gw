@@ -312,8 +312,6 @@ if __name__=='__main__':
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
-                                    spinprior = FLAGS.spinprior,
-                                    massprior = FLAGS.massprior,
                                     sel_method=FLAGS.sel,
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     marginal_R0 = FLAGS.marginal_R0,
