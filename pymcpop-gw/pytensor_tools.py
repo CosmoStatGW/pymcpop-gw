@@ -404,6 +404,23 @@ def logpdf_default_spin(theta, lambdaBBHspin):
     return logpdfampl + logsumexp( at.log(2.0)+at.log(zeta)-at.log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, at.log(1.0-zeta)-at.log(4.0) )
 
 
+def logpdf_default_spin_gauss(theta, lambdaBBHspin):
+
+    chi1, chi2, cost1, cost2 = theta
+    muChi, sigmaChi, zeta, sigmat = lambdaBBHspin
+  
+        
+    lpdfs1 = truncGausslowerupper_at_lpdf_nonly(chi1, muChi, sigmaChi, xmin=0, xmax=1)
+    lpdfs2 = truncGausslowerupper_at_lpdf_nonly(chi2, muChi, sigmaChi, xmin=0, xmax=1)
+
+    logpdfampl = lpdfs1 + lpdfs2
+   
+  
+    lpdfcos1_gauss = -0.5*(1.0-cost1)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
+    lpdfcos2_gauss = -0.5*(1.0-cost2)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
+
+    return logpdfampl + logsumexp( at.log(2.0)+at.log(zeta)-at.log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, at.log(1.0-zeta)-at.log(4.0) )
+
     
         
 
@@ -453,6 +470,14 @@ def truncGausslowerupper_at_lpdf(x, loc, scale, xmin=0, xmax=1):
     
     return at.where( (x>=xmin) & (x<=xmax), 
                     -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
+
+
+def truncGausslowerupper_at_lpdf_nonly(x, loc, scale, xmin=0, xmax=1):    
+
+    Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
+    Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
+    
+    return -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) 
 
 def truncGausslower_at_lpdf(x, loc, scale, xmin=0):    
 
@@ -611,7 +636,7 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
 def logpdf_PLP_reg(theta, lambdaBBHmass):
     
         m1, m2 = theta
-        lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
+        lambdaPeak1, lambdaPeak2, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
                 
 
         lpdfm1 = logpdfm1_PLP_reg(m1,  lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass )
@@ -709,4 +734,130 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=2
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass  ))
     return at.log(attrapzvec(ps,ms))
 
-         
+
+
+####### double Power Law + double Peak  LVK low-end ########
+
+
+def log_broken_power_law_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl=0.05):
+    """
+    Log of the broken power-law PDF (JAX-compatible, log-space)
+    """
+    
+    
+    # Compute log normalization constant
+    norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
+    norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
+    log_N = at.log(norm1 + norm2)
+
+    # log(pdf) in each regime
+    log_val1 = -alpha1 * at.log(m1 / mb)
+    log_val2 = -alpha2 * at.log(m1 / mb)
+
+  
+    # Smooth weight function (sigmoid transition)
+    w = sigmoid( -m1, -mb, epsilon)
+    #1.0 / (1.0 + at.exp((m1 - mb) / epsilon))
+
+
+    # Use log-sum-exp trick to compute:
+    # log(w * exp(log_val1) + (1-w) * exp(log_val2))
+    log_mix_val = logsumexp(
+        at.log(w) + log_val1,
+        at.log1p(-w) + log_val2
+    )
+
+    # Outside bounds, set log-prob to -inf
+    #valid_mask = (m1 >= m1_low) & (m1 < m_high)
+    #return at.where(valid_mask, log_mix_val - log_N, MIN)
+    return log_mix_val - log_N + at.log(1-sigmoid(m1, m_high, sh)) + log_sigmoid(m1, m1_low, sl)
+
+
+def logpdfm1_DPLDP(
+    m1, alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high, delta_m1,
+    lambda0, lambda1,
+    ):
+    """
+    Log of the mixture model. Assumes other components return log-probabilities.
+    """
+    log_lambda0 = at.log(lambda0)
+    log_lambda1 = at.log(lambda1)
+    log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
+
+    log_ppl = log_broken_power_law_pdf(m1, alpha1, alpha2, mb, m1_low, m_high)
+    log_pnorm1 = truncGausslowerupper_at_lpdf_nonly(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) 
+    log_pnorm2 = truncGausslowerupper_at_lpdf_nonly(m1, mu2, sigma2, xmin=m1_low, xmax=m_high) 
+    log_S = logS_PLP(m1, delta_m1, m1_low,)
+
+    # logsumexp of the weighted logs
+    log_mix = logsumexp(
+        logsumexp(log_lambda0 + log_ppl, log_lambda1 + log_pnorm1),
+        log_lambda2 + log_pnorm2
+    )
+
+    return log_mix + log_S
+
+
+def logpdf_DPLDP(theta, lambdaBBHmass):
+    
+        m1, m2 = theta
+        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2 = lambdaBBHmass
+                
+
+        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1,)
+    
+        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low)
+        
+        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low) 
+        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1)
+
+        lpdf = lpdfm1+lpdfm2-lC-ln
+
+        return  lpdf
+        
+     
+
+def logC_DPLDP( m, beta, deltam, ml, res=500):
+    '''
+    Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
+    '''
+
+    max_m = at.as_tensor_variable(500)
+  
+   
+    # lower edge
+    ms1 = at.linspace(ml, 100, res)
+
+    # upper edge
+    ms5 = at.linspace(100.1, max_m, 100 )
+    
+    xx=at.concatenate([ms1, ms5] )
+    
+    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml))
+    
+    cdf = atcumtrapz(p2, xx, )
+    itr = atinterp( m, xx[1:], at.log(cdf))
+    
+    return itr
+
+
+def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, res=1000):
+    
+    '''
+        Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
+
+    '''
+    # lower edge
+    ms1 = at.linspace(ml, 100, res)
+
+    # after max
+    ms5 = at.linspace(100.1, m_high, 100 )
+    
+    ms=at.concatenate([ms1, ms5] )
+            
+    #ms = at.linspace(m1_low, m_high, res)
+    
+    ps = at.exp( logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1  ))
+    return at.log(attrapzvec(ps,ms))
