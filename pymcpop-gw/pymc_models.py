@@ -67,6 +67,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         alphaChi, betaChi, zeta, sigmat = Lambda[istart:istart+4]
         lpspin = atools.logpdf_default_spin(spins, [alphaChi, betaChi, zeta, sigmat])
     
+    elif spin_model=='default_gauss':
+        muChi, sigmaChi, zeta, sigmat = Lambda[istart:istart+4]
+        lpspin = atools.logpdf_default_spin_gauss(spins, [muChi, sigmaChi, zeta, sigmat])
+   
     else:
         lpspin = at.zeros( z.shape )
 
@@ -107,7 +111,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
 
     H0, Om, w0, Xi0, n  = Lambda[:5]
 
-    if spin_model=='default':
+    if (spin_model=='default') or (spin_model=='default_gauss'):
         spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
     elif spin_model=='none':
         spinsInj_sel = []
@@ -226,7 +230,7 @@ def make_model(  priors,
             qs = atools.inv_logitat(lq) 
     
             
-            if spin_model=='default':
+            if (spin_model=='default') or (spin_model=='default_gauss'):
                 chi1 = atools.inv_logitat(spin_samples[0])
                 chi2 = atools.inv_logitat(spin_samples[1])
                 cost1 = atools.inv_flogitat(spin_samples[2])
@@ -244,7 +248,7 @@ def make_model(  priors,
             print("allNsamples availabe is %s, but %s will be used"%(allNsamples, Nsamplesuse))
             allNsamples =  Nsamplesuse        
         
-        if spin_model=='default':
+        if (spin_model=='default') or (spin_model=='default_gauss'):
            chi1, chi2, cost1, cost2 = spin_samples
         else:
             raise NotImplementedError()
@@ -255,7 +259,7 @@ def make_model(  priors,
     elif spin_inj == 'chieffchip':
         dLinj, m1inj, m2inj, chiefffInj, chipInj, lpdinj, Ndraw, Ndet = InjData
     elif (spin_inj == 'chi12xyz' or spin_inj == 'default'):
-        if spin_model=='default':
+        if (spin_model=='default') or (spin_model=='default_gauss'):
             dLinj, m1inj, m2inj, chi1Inj, chi2Inj, cost1Inj, cost2Inj, lpdinj, Ndraw, Ndet = InjData
         elif spin_model == 'none':
             dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet = InjData
@@ -417,12 +421,24 @@ def make_model(  priors,
                     # alternative. 
                     # _ = pm.Potential('bound_alphaChi', at.switch( at.le(alphaChi_, at.as_tensor_variable(1.) ), -atools.INF, at.as_tensor_variable(0.) ) )
                 # _ = pm.Potential('bound_betaChi', at.switch( at.le(betaChi_, at.as_tensor_variable(1.) ), -atools.INF, at.as_tensor_variable(0.)) )
-
+        
             else:
                 # still to be tested. Might improve sampling/divergences
                 print("Sampling in log(alpha-1), log(beta-1)")
                 raise NotImplementedError()
+                
+        elif spin_model=='default_gauss':
 
+            print('Modeling spin distribution with default spin model, gaussian distribution for magnitudes')
+
+            muChi_ = pm.Uniform('muChi', lower=priors['muChi'][0], upper=priors['muChi'][1])
+            sigmaChi_ = pm.Uniform('varChi', lower=priors['sigmaChi'][0], upper=priors['sigmaChi'][1])
+            
+            zeta_ = pm.Uniform('zeta', lower=priors['zeta'][0], upper=priors['zeta'][1])
+            sigmat_ = pm.Uniform('sigmat', lower=priors['sigmat'][0], upper=priors['sigmat'][1])
+
+            Lambda_ += [muChi_, sigmaChi_, zeta_, sigmat_]
+            
         else:
             print('No model of the spin distribution.')
                 
@@ -502,7 +518,7 @@ def make_model(  priors,
                     chieff = atools.inv_flogitat(samples[:,3])
                     chip = atools.inv_logitat(samples[:,4])
         
-                elif (spin_model == 'default'):
+                elif (spin_model == 'default') or (spin_model == 'default_gauss'):
                     # we have chi1, chi2, cost1, cost2
         
                     chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
@@ -551,7 +567,7 @@ def make_model(  priors,
 
             spins = [ chieff, chip  ]
 
-        elif spin_model == 'default':
+        elif (spin_model == 'default') or (spin_model == 'default_gauss'):
 
             spins = [chi1, chi2, cost1, cost2]
 
@@ -660,7 +676,7 @@ def make_model(  priors,
                     
                     if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
                         spinsInj = [ chiefffInj[0], chipInj[0] ]
-                    elif spin_model == 'default':
+                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
                         spinsInj = [ chi1Inj[0], chi2Inj[0], cost1Inj[0], cost2Inj[0] ]
                     else:
                         spinsInj = []
@@ -701,7 +717,7 @@ def make_model(  priors,
                         spinsInj = at.set_subtensor( spinsInj[:, 1, :], chi2Inj )
                     
                     
-                    elif spin_model == 'default':
+                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
                     
                         spinsInj = at.zeros( (ndata, 4, ninj) )
                         spinsInj = at.set_subtensor( spinsInj[:, 0, :], chi1Inj )

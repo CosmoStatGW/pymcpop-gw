@@ -164,7 +164,7 @@ if __name__=='__main__':
         allNsamples = at.as_tensor_variable(data['allNsamples'])
         where_compute = at.as_tensor_variable(data['where_compute'])
 
-        if FLAGS.spin_model=='default':
+        if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
             chi1_samples = at.as_tensor_variable(data['chi1_samples'])
             chi2_samples = at.as_tensor_variable(data['chi2_samples'])
@@ -218,7 +218,7 @@ if __name__=='__main__':
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
 
-            if FLAGS.spin_model=='default':
+            if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
                 print("Computing chi1, chi2, cost1, cost2 in injections...")
     
@@ -402,6 +402,7 @@ if __name__=='__main__':
                 _ = ivals.pop('varChi')
                 _ = ivals.pop('zeta')
                 _ = ivals.pop('sigmat')
+                _ = ivals.pop('sigmaChi')
             except:
                 pass
         elif FLAGS.spin_model=='chieffchip_uc':
@@ -411,6 +412,7 @@ if __name__=='__main__':
                 _ = ivals.pop('varChi')
                 _ = ivals.pop('zeta')
                 _ = ivals.pop('sigmat')
+                _ = ivals.pop('sigmaChi')
             except:
                 pass
         elif FLAGS.spin_model=='default':
@@ -420,6 +422,7 @@ if __name__=='__main__':
                 _ = ivals.pop('muP')
                 _ = ivals.pop('sigP')
                 _ = ivals.pop('rho')
+                _ = ivals.pop('sigmaChi')
             except:
                 pass
             if FLAGS.use_log_alpha_beta:
@@ -433,7 +436,17 @@ if __name__=='__main__':
                 
                 ivals["logAlphaMinusOne"] = np.log(alphaChi_-1)
                 ivals["logBetaMinusOne"] = np.log(betaChi_-1)
-        
+        elif FLAGS.spin_model=='default_gauss':
+            try:
+                _ = ivals.pop('muEff')
+                _ = ivals.pop('sigEff')
+                _ = ivals.pop('muP')
+                _ = ivals.pop('sigP')
+                _ = ivals.pop('rho')
+                _ = ivals.pop('varChi')
+            except:
+                pass
+            
         if FLAGS.fix_H0:
             _ = ivals.pop('H0')
         if FLAGS.fix_Om:
