@@ -48,6 +48,8 @@ parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
 parser.add_argument("--spin_model", default='none', type=str, required=False)
 parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
 parser.add_argument("--marginal_R0", default=1, type=int, required=False)
+parser.add_argument("--pairing", default=1, type=int, required=False)
+
 
 parser.add_argument("--dLprior", default='none', type=str, required=False)
 parser.add_argument("--spinprior", default=0, type=int, required=False)
@@ -320,6 +322,7 @@ if __name__=='__main__':
                                     sampling_GW = FLAGS.sampling_gw,
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
+                                    pairing=FLAGS.pairing,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,

@@ -12,11 +12,10 @@ import numpy as np
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
-
 #####################################################
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, pairing):
 
     ###################################
     # get parameters and compute log p_pop
@@ -81,7 +80,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     if mass_model=='PLPreg':
         
         lp, al, bb, dm, ml, mh, muM, sM = Lambda[-8:]
-        lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM])
+        lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], pairing=pairing)
         
     elif mass_model=='BNSgauss':
         muM, sM = Lambda[-2:]
@@ -106,7 +105,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
 
 
-def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model):
+def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, pairing):
 
 
     H0, Om, w0, Xi0, n  = Lambda[:5]
@@ -120,7 +119,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
-    log_p_pop = log_p_pop_at(m1Src, m2Src, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model)
+    log_p_pop = log_p_pop_at(m1Src, m2Src, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, pairing=pairing)
 
     log_sel_b = log_p_pop-log_p_draw
   
@@ -195,6 +194,7 @@ def make_model(  priors,
                  sampling_GW = 'gmm',
                  rate_model = 'MD',
                  mass_model = 'PLP',
+                 pairing=True,
                  spin_model = 'none',
                  spin_inj = 'none',
                  marginal_R0 = True,
@@ -478,6 +478,8 @@ def make_model(  priors,
 
             # Power law + peak
             print('Modeling mass distribution with LVK Power Law + Peak with regularized edge')
+            if not pairing:
+                print('No pairing function C(m1)')
             
             lamP_ = pm.Uniform('lambdaPeak', lower=priors['lambdaPeak'][0], upper=priors['lambdaPeak'][1])
             alpha_ = pm.Uniform('alpha', lower=priors['alpha'][0], upper=priors['alpha'][1])
@@ -664,7 +666,7 @@ def make_model(  priors,
             
         
         # Population prior of all events, without the term T_obs*R0
-        log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model)
+        log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, pairing=pairing)
 
         
         if dLprior=='dLsq':
@@ -779,7 +781,7 @@ def make_model(  priors,
                     spinsInj = []
                     spin_model_name = 'none'
                 
-                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name)
+                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, pairing)
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
@@ -829,7 +831,7 @@ def make_model(  priors,
                     print("Loop over injections sets, dynamical slicing")
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, pairing ), 
                                           sequences = [ at.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
                     log_mu_vec = res_i[0]
@@ -840,7 +842,7 @@ def make_model(  priors,
                     print("Loop over injections sets, no slicing")
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, pairing ), 
                                       sequences = [ at.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
 

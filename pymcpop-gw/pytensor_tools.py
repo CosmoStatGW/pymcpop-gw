@@ -532,7 +532,7 @@ def truncated_power_law(m, alpha, ml, mh):
 
 
 
-def logpdf_PLP(theta, lambdaBBHmass):
+def logpdf_PLP(theta, lambdaBBHmass, pairing=True):
     
         m1, m2 = theta
         lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
@@ -541,7 +541,8 @@ def logpdf_PLP(theta, lambdaBBHmass):
 
         lpdfm1 = at.where(where_compute, logpdfm1_PLP(m1,  lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass ), MIN )
         lpdfm2 = at.where(where_compute,logpdfm2_PLP(m2, beta, deltam, ml), MIN )
-        lC = at.where(where_compute, logC_PLP(m1, beta, deltam,  ml, ), MIN )
+        if pairing:
+            lC = at.where(where_compute, logC_PLP(m1, beta, deltam,  ml, ), MIN )
         ln = at.where(where_compute, logNorm_PLP( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass), MIN )
         
         return at.where( where_compute, lpdfm1+lpdfm2+lC-ln, MIN )
@@ -640,7 +641,7 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
 
 
 
-def logpdf_PLP_reg(theta, lambdaBBHmass):
+def logpdf_PLP_reg(theta, lambdaBBHmass,  pairing=True):
     
         m1, m2 = theta
         lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
@@ -648,13 +649,13 @@ def logpdf_PLP_reg(theta, lambdaBBHmass):
 
         lpdfm1 = logpdfm1_PLP_reg(m1, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass )
         lpdfm2 = logpdfm2_PLP_reg(m2, beta, deltam, ml)
-        
-        lC = logC_PLP_reg(m1, beta, deltam,  ml) 
         ln = logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass)
+        lpdf = lpdfm1+lpdfm2-ln
+        if pairing:
+            return lpdf-logC_PLP_reg(m1, beta, deltam,  ml) 
+        else:
+            return lpdf
 
-        lpdf = lpdfm1+lpdfm2-lC-ln
-
-        return  lpdf
         
 
 
