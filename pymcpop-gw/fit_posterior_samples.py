@@ -65,7 +65,7 @@ def m1m2_from_Mcq(Mc, q):
     return m1, m2
 
 
-def fit_cho(allsamples, allNsamples,spins='default'):
+def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=False):
 
     samples_means = []
     samples_cho_covs = []
@@ -105,16 +105,37 @@ def fit_cho(allsamples, allNsamples,spins='default'):
             pts_.append(lchi2) 
             pts_.append( lcost1) 
             pts_.append( lcost2  )
+
+            s_start = 7
             
         elif spins=='aligned':
             chi1z = allsamples[i, :jmax, 3]
             chi2z = allsamples[i, :jmax, 4]
             pts_.append(  flogit(chi1z) ) 
             pts_.append(  flogit(chi2z)  )
-        elif spins=='none':
-            pass
+
+            s_start = 5
             
-        
+        elif spins=='none':
+            s_start = 3
+            pass
+
+
+        if skymap:
+            ra = allsamples[i, :jmax, s_start]
+            dec = allsamples[i, :jmax, s_start+1]
+            pts_.append( flogit(ra, xmin=0,xmax=2*np.pi) )
+            pts_.append( flogit(dec, xmin=-np.pi/2, xmax=np.pi/2) )
+            istart = s_start+2
+        else:
+            istart = s_start
+                    
+        if inclination:
+            iota = allsamples[i, :jmax, istart]
+            pts_.append( flogit(iota, xmin=0,xmax=np.pi)  )
+
+        print('Number of dimensions of each event: %s'%len(pts_))
+            
         pts = np.stack( pts_ ).T
         
         samples_means.append( pts.mean(axis=0) )
@@ -808,7 +829,7 @@ parser.add_argument("--skymap", default=0, type=int, required=False)
 parser.add_argument("--inclination", default=0, type=int, required=False)
 parser.add_argument("--spins", default='default', type=str, required=False)
 parser.add_argument("--imin", default=0, type=int, required=False)
-parser.add_argument("--imax", default=1, type=int, required=False)
+parser.add_argument("--imax", default=-1, type=int, required=False)
 
 if __name__=='__main__':
     
@@ -980,7 +1001,7 @@ if __name__=='__main__':
                                                                                                                    imax=FLAGS.imax
                                                                                                                                             )
     
-        means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins)
+        means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins, skymap=FLAGS.skymap, inclination=FLAGS.inclination, )
     
         np.savetxt( fngmm, allNgm_ ) 
     

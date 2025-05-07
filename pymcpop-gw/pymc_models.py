@@ -166,7 +166,23 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     return log_mu, Neff, var_log_lik_u
     
 
+#####################################################
 
+def get_sample_from_cho_lMclqld(x, mu, L):
+    
+    
+    # for cholesky rules see 
+    # https://www.cs.helsinki.fi/u/ahonkela/teaching/compstats1/book/multivariate-normal-distributions-and-numerical-linear-algebra.html
+    
+    # x, mu have shape 3
+    # L has shape 3x3
+    # nd = mu.shape[0]
+
+    #mvals = mu+at.dot(L,x)  
+    
+    #mlik = -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
+    
+    return  mu+at.dot(L,x) , -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
 
 
 
@@ -214,7 +230,16 @@ def make_model(  priors,
     ## GW data
     if not pop_only:
         # gw data are interpolants of single-event posteriors
-        wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
+        if sampling_GW=='gauss' :
+            # we sample single-event parameters from broad gaussian approximations of the posteriors
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
+        elif sampling_GW=='gmm':
+            # we sample single-event parameters from the actual single-event posteriors
+            wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
+        else:
+            raise ValueError('sampling_GW can be cho or gauss ')
+            
+        
 
     else:
         # gw data are single-event posterior samples
@@ -506,12 +531,8 @@ def make_model(  priors,
     
                 log_Mc_det = samples[:,0]/dil_factor
                 logit_q = samples[:,1]
-                
-                Mc = at.exp(log_Mc_det)            
-                q = atools.inv_logitat(logit_q)
-                m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
                 logd = samples[:,2]
-                d = pm.Deterministic('dL', at.exp(logd) , dims="event_index")
+                
     
                 if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
         
@@ -530,16 +551,82 @@ def make_model(  priors,
                     print("No spins computed")
             
 
-                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-                zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
-                m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
-                m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
+            
+            elif sampling_GW=='gauss' : # to be tested with spins
+                
+                print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
 
-            else:
-                # we are not using GMM for p(D|theta)
-                raise NotImplementedError()
+                
+                res, _ = pytensor.scan( lambda iev, X, M, L: get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev] )  ,
+                                        sequences = [ at.arange(N)],
+                                        non_sequences = [ x, mus_s, cho_s]
+                    ) 
+
+                log_Mc_det = res[0][:,0]
+                logit_q = res[0][:,1]
+                logd = res[0][:,2]
+                pilik = res[1]
                 
 
+                if spin_model == 'none' :
+                    
+                    vals = at.zeros( (3, N) )
+                
+                    vals = at.set_subtensor( vals[0], log_Mc_det )
+                    vals = at.set_subtensor( vals[1], logit_q )
+                    vals = at.set_subtensor( vals[2], logd )
+
+                elif spin_model == 'default' :
+
+                    chi1 = atools.inv_logitat(res[0][:,3])
+                    chi2 = atools.inv_logitat(res[0][:,4])
+        
+                    cost1 = atools.inv_flogitat(res[0][:,5])
+                    cost2 = atools.inv_flogitat(res[0][:,6])
+            
+
+                    vals = at.zeros( (7, N) )
+                
+                    vals = at.set_subtensor( vals[0], log_Mc_det )
+                    vals = at.set_subtensor( vals[1], logit_q )
+                    vals = at.set_subtensor( vals[2], logd )
+                    vals = at.set_subtensor( vals[3], res[0][:,3] )
+                    vals = at.set_subtensor( vals[4], res[0][:,4] )
+                    vals = at.set_subtensor( vals[5], res[0][:,5] )
+                    vals = at.set_subtensor( vals[6], res[0][:,6] )
+                    
+                
+                
+                # gw likelihood
+                
+                logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
+                                       pytensor.scan( lambda ig, X, M, F, logD, logW  :
+                                       -0.5*( (X[: , iobs]-M[iobs, ig]).dot( F[iobs, ig].dot( (X[ :, iobs]-M[iobs, ig]).T )) )-0.5*nd*at.log(2*atools.PI)-0.5*logD[iobs, ig]+logW[iobs, ig],  
+                                               sequences = [ at.arange( ngmm ) ],
+                                         non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
+                                                      )   ,                      
+                             sequences = [ at.arange(N)  ],
+                             non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
+                                              ]
+                            )
+                gwl = at.logsumexp(logps, axis=1) # sum on gmm components
+        
+            
+            else:
+                raise NotImplementedError()
+
+
+            Mc = at.exp(log_Mc_det)            
+            q = atools.inv_logitat(logit_q)
+            m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
+            d = pm.Deterministic('dL', at.exp(logd) , dims="event_index")
+    
+            
+            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
+            m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
+            m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
+                
         else:
             # we are sampling the usual marginalise likelihood, with "only" pop parameters
             print('We are running inference only on population parameters.')
@@ -603,6 +690,12 @@ def make_model(  priors,
             log_p_pop -= lpi
 
 
+        if not pop_only:
+            if sampling_GW=='gauss' :
+                # Add gw likelihood and correct for sampling prior pdf
+                log_p_pop -= pilik
+                log_p_pop += gwl
+        
         # Put it all together
         if not pop_only:
             # just sum log likelihoods
@@ -646,8 +739,6 @@ def make_model(  priors,
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
             poiss_term = at.sum(Nevs*at.log(allTobs))+N*lR0
-            #at.sum(Nevs*at.log(allTobs))+N*lR0
-            #N*(lR0+at.log(Tobs))
             likelihood_val += poiss_term
         else:
             print("Will marginalise over R0 with flat-in-log prior.")
@@ -676,8 +767,10 @@ def make_model(  priors,
                     
                     if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
                         spinsInj = [ chiefffInj[0], chipInj[0] ]
+                        
                     elif (spin_model == 'default') or (spin_model == 'default_gauss'):
                         spinsInj = [ chi1Inj[0], chi2Inj[0], cost1Inj[0], cost2Inj[0] ]
+                        
                     else:
                         spinsInj = []
 

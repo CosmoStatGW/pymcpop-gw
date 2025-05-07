@@ -39,6 +39,12 @@ To run with varying Hubble constant and matter density parameter, use ```--fix_H
 ### Sampling with jax and numpyro (needed for GPU)
 
 
+This works only with the option 
+
+```
+--sampling_gw='gauss'
+```
+
 Use
 
 ```

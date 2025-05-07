@@ -140,7 +140,7 @@ if __name__=='__main__':
     if not FLAGS.pop_only:
 
         data = dt.load_data_interp(FLAGS.fin_data)
-    
+
         samples_means_at = at.as_tensor_variable(data['samples_means'])
         samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
     
@@ -278,6 +278,17 @@ if __name__=='__main__':
                        at.as_tensor_variable(injections['Tobs']),
                         Nevents
                       ]
+        elif FLAGS.sampling_gw=='gauss':
+            GWData =  [samples_means_at, 
+                       samples_cho_covs_at, 
+                       gmm_log_wts, 
+                       gmm_means, 
+                       gmm_icovs, 
+                       gmm_log_dets, 
+                       at.as_tensor_variable(injections['Tobs']),
+                       Nevents, 
+                      ]
+            
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
@@ -415,12 +426,12 @@ if __name__=='__main__':
                 pass
         elif FLAGS.spin_model=='default':
             try:
+                _ = ivals.pop('sigmaChi')
                 _ = ivals.pop('muEff')
                 _ = ivals.pop('sigEff')
                 _ = ivals.pop('muP')
                 _ = ivals.pop('sigP')
                 _ = ivals.pop('rho')
-                _ = ivals.pop('sigmaChi')
             except:
                 pass
             if FLAGS.use_log_alpha_beta:
@@ -581,6 +592,107 @@ if __name__=='__main__':
                         if idx_init<=-ncomp:
                             raise ValueError('Initialization of masses failed. Check prior range.')
                 
+                elif FLAGS.sampling_gw=='gauss': # this might not work with spins
+
+
+                    
+                    N = gmm_means.shape[0] # number of events in total
+                    ngmm = gmm_means.shape[1]
+                    nd = gmm_means.shape[2]
+
+
+                    res, _ = pytensor.scan( lambda iev, X, M, L: models.get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev]),
+                                        sequences = [at.arange(N)],
+                                        non_sequences = [ ivals['x'], samples_means_at, samples_cho_covs_at]
+                        ) 
+
+                    
+                    log_Mc_det = res[0][:,0]
+                    logit_q = res[0][:,1]
+                    logd = res[0][:,2]
+                    pilik = res[1]
+
+                    #print('Initial sample ok.')
+
+                    if FLAGS.spin_model == 'default' :
+
+                        chi1 = atools.inv_logitat(res[0][:,3])
+                        chi2 = atools.inv_logitat(res[0][:,4])
+            
+                        cost1 = atools.inv_flogitat(res[0][:,5])
+                        cost2 = atools.inv_flogitat(res[0][:,6])
+                    
+                    Mc = at.exp(log_Mc_det)            
+                    q = atools.inv_logitat(logit_q)
+                    m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
+                    d = at.exp(logd)
+
+                    #print('Mc')
+                    #print(Mc.eval())
+                
+                
+                
+                    zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
+                    m1src = m1det/(1+zs)
+                    m2src = m2det/(1+zs)
+
+                    #print('zs')
+                    #print(zs.eval())
+    
+                    c1 = np.any(m1src.eval()>priors['mh'][1])
+                    c2 = np.any(m2src.eval()<priors['ml'][0])
+    
+                    if c1 | c2:
+                        #idx_init -=1
+                        #it+=1
+                        print("Initial conditions not good ")
+                        if c1:
+                            print("m1 source outside mh prior range for:")
+                            print( np.where(m1src.eval()>priors['mh'][1]) )
+                            print(m1src.eval()[m1src.eval()>priors['mh'][1]])
+                        if c2:
+                            print("m2 source outside ml prior range for:")
+                            print( np.where(m2src.eval()<priors['ml'][0]) )
+                            print(m2src.eval()[m2src.eval()>priors['ml'][0]])
+                            
+    
+                    if FLAGS.spin_model == 'default' :
+                        vals = at.zeros( (7, N) )
+                
+                        vals = at.set_subtensor( vals[0], log_Mc_det )
+                        vals = at.set_subtensor( vals[1], logit_q )
+                        vals = at.set_subtensor( vals[2], logd )
+                        vals = at.set_subtensor( vals[3], res[0][:,3] )
+                        vals = at.set_subtensor( vals[4], res[0][:,4] )
+                        vals = at.set_subtensor( vals[5], res[0][:,5] )
+                        vals = at.set_subtensor( vals[6], res[0][:,6] )
+
+                    else:
+                        vals = at.zeros( (3, N) )
+                
+                        vals = at.set_subtensor( vals[0], log_Mc_det )
+                        vals = at.set_subtensor( vals[1], logit_q )
+                        vals = at.set_subtensor( vals[2], logd )
+                    
+                       
+                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
+                                           pytensor.scan( lambda ig, X, M, F, logD, logW  :
+                                           -0.5*( (X[: , iobs]-M[iobs, ig]).dot( F[iobs, ig].dot( (X[ :, iobs]-M[iobs, ig]).T )) )-0.5*nd*at.log(2*atools.PI)-0.5*logD[iobs, ig]+logW[iobs, ig],  
+                                                   sequences = [ at.arange( ngmm ) ],
+                                             non_sequences =  [vals,  gmm_means, gmm_icovs, gmm_log_dets, gmm_log_wts ],     
+                                                          )   ,                      
+                                 sequences = [ at.arange(N)  ],
+                                 non_sequences =  [vals,  gmm_means, gmm_icovs, gmm_log_dets, gmm_log_wts
+                                                  ]
+                                )
+                    gwl = at.logsumexp(logps, axis=1)
+
+                    
+                    
+
+                else:
+                    raise ValueError()    
+            
             else:
                 # sampling only pop hyperparamters
                 pass
