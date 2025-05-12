@@ -21,7 +21,7 @@ c_light_at = at.as_tensor_variable(c_light)
 MIN = at.as_tensor_variable(-np.inf)
 INF = at.as_tensor_variable(np.inf)
  
-if pytensor.__version__=='2.30.3':
+if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
         zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=5), at.logspace(start=-30, stop=-4, base=10, steps=30), 
                      #at.linspace(start=1.1e-03, end=10, steps=50),
                      at.logspace(start=-4, stop=1, base=10, steps=100), 
@@ -683,31 +683,32 @@ def logpdfm2_PLP_noreg(m, beta, deltam, ml,):
            
         
 
-def logC_PLP_reg( m, beta, deltam, ml, res=200):
+def logC_PLP_reg( m, beta, deltam, ml, res=1000):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
 
-    max_m = at.as_tensor_variable(500)
+    #max_m = at.as_tensor_variable(500)
   
    
     # lower edge
-    ms1 = at.linspace(ml, 15, res)
+    #ms1 = at.linspace(ml, 15, res)
     
     # before gaussian peak
-    ms2 = at.linspace( 15.1, 25, res )
+    #ms2 = at.linspace( 15.1, 25, res )
     
     # around gaussian peak
-    ms3= at.linspace( 25.1, 40, res)
+    #ms3= at.linspace( 25.1, 40, res)
     
     # after gaussian peak
-    ms4 = at.linspace(40.1, 100, res )
+    #ms4 = at.linspace(40.1, 100, res )
 
     # after gaussian peak
-    ms5 = at.linspace(100.1, max_m, int(res/2) )
+    #ms5 = at.linspace(100.1, max_m, int(res/2) )
     
-    xx=at.concatenate([ms1,ms2, ms3, ms4, ms5] )
+    #xx=at.concatenate([ms1,ms2, ms3, ms4, ms5] )
 
+    xx = at.linspace(ml, 500, res)
     
     p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml))
     cdf = atcumtrapz(p2, xx, )
@@ -715,29 +716,28 @@ def logC_PLP_reg( m, beta, deltam, ml, res=200):
     return itr
 
 
-def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=200):
+def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=1000):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
 
     '''
-    
-    
+     
             
     # lower edge
-    ms1 = at.linspace(ml, 15, res)
+    #ms1 = at.linspace(ml, 15, res)
     
     # before gaussian peak
-    ms2 = at.linspace( 15.1, 25, res )
+    #ms2 = at.linspace( 15.1, 25, res )
     
     # around gaussian peak
-    ms3= at.linspace( 25.1, 40, res)
+    #ms3= at.linspace( 25.1, 40, res)
     
     # after gaussian peak
-    ms4 = at.linspace(40.1, mh, int(res/2) )
+    #ms4 = at.linspace(40.1, mh, int(res/2) )
     
-    ms=at.concatenate([ms1,ms2, ms3, ms4] )
-    
+    #ms=at.concatenate([ms1,ms2, ms3, ms4] )
+    ms = at.linspace(ml, mh, res)
     
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass  ))
     return at.log(attrapzvec(ps,ms))

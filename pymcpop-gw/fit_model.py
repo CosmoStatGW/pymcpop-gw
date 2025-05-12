@@ -14,6 +14,7 @@ import pymc as pm
 import argparse
 import json
 import jax
+jax.config.update('jax_enable_x64', True)
 import jax.numpy as np
 import numpy as onp
 import sys
@@ -25,11 +26,13 @@ print(jax.default_backend())
 print(jax.devices())
 print(f"Running on PyMC v{pm.__version__}")
 
+
 import pymc_models as models
 import data_tools as dt
 import pytensor_tools as atools
 
-
+os.environ['ENABLE_PJRT_COMPATIBILITY'] = '1'
+pytensor.config.floatX = "float64"
 
 
 parser = argparse.ArgumentParser()
@@ -82,7 +85,7 @@ parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
 
 parser.add_argument("--fout", default='results/', type=str, required=True)
 
-parser.add_argument("--sampler", default='std', type=str, required=False)
+parser.add_argument("--sampler", default='pymc', type=str, required=False)
 parser.add_argument("--nsteps", default=100, type=int, required=True)
 parser.add_argument("--ntune", default=100, type=int, required=True)
 parser.add_argument("--nchains", default=1, type=int, required=False)
@@ -707,8 +710,37 @@ if __name__=='__main__':
     ################################################
     # Run sampler
     ################################################
+
+    if pymc.__version__.split('.')[1]>22: # recent versions of pymc
+        sampler_kwargs = {
+                    "draws": FLAGS.nsteps,
+                    "tune":FLAGS.ntune,
+                    "target_accept": FLAGS.target_accept,
+                    "chains": FLAGS.nchains,
+                    "random_seed": 42,
+                    "initvals": ivals,
+                    "cores": FLAGS.ncores
+                }
+        
+        if FLAGS.sampler=='pymc':
+            
+            #sampler_kwargs['cores'] = FLAGS.ncores
+            sampler_kwargs['trace'] = backend
+            sampler_kwargs['progressbar'] = 'split+stats'
+            #sampler_kwargs['step'] = pm.NUTS( target_accept=sampler_kwargs.pop("target_accept"))
+        
+        elif FLAGS.sampler=='numpyro':
+            
+            sampler_kwargs['progressbar'] = 'split+stats'
+
+        print('Sampling with %s...' %FLAGS.sampler)
+        with model:
+            trace = pm.sample( nuts_sampler=FLAGS.sampler, **sampler_kwargs )
+        
     
-    if FLAGS.sampler=='std' :
+    else:  # works with older versions (but also with newer)
+
+        if FLAGS.sampler=='pymc' :
             with model:          
                 trace = pm.sample(  draws=FLAGS.nsteps, 
                                     tune=FLAGS.ntune, 
@@ -718,49 +750,91 @@ if __name__=='__main__':
                                   #init='jitter+adapt_diag_grad',
                                     step = pm.NUTS( target_accept=FLAGS.target_accept),
                                     trace=backend,
-                                    progressbar=1
+                                    progressbar=True
                                  )
+        
+            
+        elif FLAGS.sampler=='blackjax':
+            try:
+                import pymc.sampling_jax
+                with model:
+                    trace = pymc.sampling_jax.sample_blackjax_nuts(draws=FLAGS.nsteps, 
+                                               tune=FLAGS.ntune, 
+                                               chains=FLAGS.nchains, 
+                                               target_accept=FLAGS.target_accept, 
+                                               #random_seed=None, 
+                                               initvals=ivals, 
+                                               #model=None, 
+                                               #var_names=None, 
+                                               #keep_untransformed=False, 
+                                               #chain_method='parallel', 
+                                               #postprocessing_backend=None, 
+                                               #postprocessing_vectorize='scan', 
+                                               #idata_kwargs=None, 
+                                               #trace=backend,
+                                              )
+            except:
+                import pymc.sampling.jax as pmjax
+                with model:
+                    trace = pmjax.sample_blackjax_nuts(draws=FLAGS.nsteps, 
+                                               tune=FLAGS.ntune, 
+                                               chains=FLAGS.nchains, 
+                                               target_accept=FLAGS.target_accept, 
+                                               #random_seed=None, 
+                                               initvals=ivals, 
+                                               #model=None, 
+                                               #var_names=None, 
+                                               #keep_untransformed=False, 
+                                               #chain_method='parallel', 
+                                               #postprocessing_backend=None, 
+                                               #postprocessing_vectorize='scan', 
+                                               #idata_kwargs=None, 
+                                               #trace=backend,
+                                              )
+        
+        elif FLAGS.sampler=='numpyro':
+            try:
+                import pymc.sampling_jax
+                with model:
+                    trace = pymc.sampling_jax.sample_numpyro_nuts(draws=FLAGS.nsteps, 
+                                               tune=FLAGS.ntune, 
+                                               chains=FLAGS.nchains, 
+                                               target_accept=FLAGS.target_accept, 
+                                               #random_seed=None, 
+                                               initvals=ivals, 
+                                               #model=None, 
+                                               #var_names=None, 
+                                               #keep_untransformed=False, 
+                                               #chain_method='parallel', # 'vectorized'
+                                               #postprocessing_backend=None, 
+                                               #postprocessing_vectorize='scan', 
+                                               #idata_kwargs=None, 
+                                                progressbar=True
+                                                                 )
+            except:
+                import pymc.sampling.jax as pmjax
+                with model:
+                    trace = pmjax.sample_numpyro_nuts(draws=FLAGS.nsteps, 
+                                               tune=FLAGS.ntune, 
+                                               chains=FLAGS.nchains, 
+                                               target_accept=FLAGS.target_accept, 
+                                               #random_seed=None, 
+                                               initvals=ivals, 
+                                               #model=None, 
+                                               #var_names=None, 
+                                               #keep_untransformed=False, 
+                                               #chain_method='parallel', # 'vectorized'
+                                               #postprocessing_backend=None, 
+                                               #postprocessing_vectorize='scan', 
+                                               #idata_kwargs=None, 
+                                                progressbar=True
+                                                                 )
 
-    
-    elif FLAGS.sampler=='jax':
+        else:
+            raise ValueError('sampler argument can be pymc, blackjax or numpyro')
 
-        import pymc.sampling_jax
-        with model:
-            trace = pymc.sampling_jax.sample_blackjax_nuts(draws=FLAGS.nsteps, 
-                                           tune=FLAGS.ntune, 
-                                           chains=FLAGS.nchains, 
-                                           target_accept=FLAGS.target_accept, 
-                                           random_seed=None, 
-                                           initvals=ivals, 
-                                           model=None, 
-                                           var_names=None, 
-                                           keep_untransformed=False, 
-                                           chain_method='parallel', 
-                                           postprocessing_backend=None, 
-                                           postprocessing_chunks=None, 
-                                           idata_kwargs=None, 
-                                           #trace=backend,
-                                            #progressbar=1
-                                          )
 
-    elif FLAGS.sampler=='numpyro':
-
-        import pymc.sampling_jax
-        with model:
-            trace = pymc.sampling_jax.sample_numpyro_nuts(draws=FLAGS.nsteps, 
-                                           tune=FLAGS.ntune, 
-                                           chains=FLAGS.nchains, 
-                                           target_accept=FLAGS.target_accept, 
-                                           random_seed=None, 
-                                           initvals=None, 
-                                           model=None, 
-                                           var_names=None, 
-                                           keep_untransformed=False, 
-                                           chain_method='parallel', 
-                                           postprocessing_backend=None, 
-                                           postprocessing_chunks=None, 
-                                           idata_kwargs=None, 
-                                          )
+        
 
 
 
