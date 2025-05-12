@@ -711,7 +711,7 @@ if __name__=='__main__':
     # Run sampler
     ################################################
 
-    if pm.__version__.split('.')[1]>22: # recent versions of pymc
+    if int(pm.__version__.split('.')[1])>22: # recent versions of pymc
         sampler_kwargs = {
                     "draws": FLAGS.nsteps,
                     "tune":FLAGS.ntune,
