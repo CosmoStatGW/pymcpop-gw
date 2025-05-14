@@ -31,8 +31,9 @@ import pymc_models as models
 import data_tools as dt
 import pytensor_tools as atools
 
-os.environ['ENABLE_PJRT_COMPATIBILITY'] = '1'
+#os.environ['ENABLE_PJRT_COMPATIBILITY'] = '1'
 pytensor.config.floatX = "float64"
+#pytensor.config.floatX = "float32"
 
 
 parser = argparse.ArgumentParser()
@@ -64,7 +65,10 @@ parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
 parser.add_argument("--cho_dil", default=1., type=float, required=False)
 parser.add_argument("--sel", default='Tobs', type=str, required=False)
 parser.add_argument("--ivals", default='', type=str, required=False)
+parser.add_argument("--eps_init", default=0.01, type=float, required=False)
 parser.add_argument("--params_fix", default='', type=str, required=False)
+parser.add_argument("--check_init", default=1, type=int, required=False)
+parser.add_argument("--debug", default=1, type=int, required=False)
 
 
 parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
@@ -358,7 +362,7 @@ if __name__=='__main__':
 
     print()
     print('*'*80)
-    print('Running inference...')
+    print('Initializing inference...')
     print('*'*80)
     print()
     
@@ -484,7 +488,7 @@ if __name__=='__main__':
             print("Setting user-provided intial values...")
         
             for k in ivals.keys():
-                sig_init = ivals[k]/100
+                sig_init = ivals[k]*FLAGS.eps_init
                 good = False
                 iter = 0
                 while not good:
@@ -511,7 +515,7 @@ if __name__=='__main__':
                 N = gmm_log_wts.shape[0].eval()
                 nd = gmm_means.shape[2].eval()
                     
-                ivals['x'] = onp.random.randn(len(data['gmm_means']), nd)*0.01
+                ivals['x'] = onp.random.randn(len(data['gmm_means']), nd)*FLAGS.eps_init
     
                 if FLAGS.sampling_gw=='gmm': # this is ok with spins
     
@@ -703,7 +707,7 @@ if __name__=='__main__':
                 # sampling only pop hyperparamters
                 pass
             
-            print('Init done. ')
+            print('Initial point obtained. ')
          
 
 
@@ -711,7 +715,8 @@ if __name__=='__main__':
     # Run sampler
     ################################################
 
-    if int(pm.__version__.split('.')[1])>22: # recent versions of pymc
+    if int(pm.__version__.split('.')[1])>20: # recent versions of pymc
+        
         sampler_kwargs = {
                     "draws": FLAGS.nsteps,
                     "tune":FLAGS.ntune,
@@ -719,22 +724,61 @@ if __name__=='__main__':
                     "chains": FLAGS.nchains,
                     "random_seed": 42,
                     "initvals": ivals,
-                    "cores": FLAGS.ncores
+                    "cores": FLAGS.ncores,
+                    "progressbar": True,
+                    "trace": backend
                 }
-        
-        if FLAGS.sampler=='pymc':
-            
-            #sampler_kwargs['cores'] = FLAGS.ncores
-            sampler_kwargs['trace'] = backend
-            sampler_kwargs['progressbar'] = 'split+stats'
-            #sampler_kwargs['step'] = pm.NUTS( target_accept=sampler_kwargs.pop("target_accept"))
-        
-        elif FLAGS.sampler=='numpyro':
-            
-            sampler_kwargs['progressbar'] = 'split+stats'
 
-        print('Sampling with %s...' %FLAGS.sampler)
+        
         with model:
+            if FLAGS.sampler=='pymc' and ivals is not None:
+                
+                #sampler_kwargs['cores'] = FLAGS.ncores
+                #sampler_kwargs['trace'] = backend
+                #sampler_kwargs['progressbar'] = 'split+stats'
+                #sampler_kwargs['progressbar_theme'] = pm.util.default_progress_theme
+                #sampler_kwargs["initvals"] = ivals
+                
+                sampler_kwargs['step'] = pm.NUTS( target_accept=sampler_kwargs.pop("target_accept"))
+                
+            
+            #else: #if FLAGS.sampler=='numpyro':
+                
+                #sampler_kwargs['progressbar'] = True #'split+stats'
+                #sampler_kwargs['nuts_sampler_kwargs'] = {'initvals' : ivals}
+                #sampler_kwargs['jitter'] = True
+                #sampler_kwargs["initvals"] = ivals
+
+            if FLAGS.debug:
+                print()
+                print('*'*80)
+                print('Debugging...')
+                print('*'*80)
+                print()
+        
+                model.debug()
+
+                print('\nDone. ')
+
+            if FLAGS.check_init:
+                print()
+                print('*'*80)
+                print('Check initial point...')
+                print('*'*80)
+                print()
+                # initial points
+                init_point = model.initial_point()
+                for key, val in init_point.items():
+                        print(f"{key}: {val}")
+                print('\nDone. ')
+               
+            print()
+            print('*'*80)
+            print('Sampling...')
+            print('*'*80)
+            print()
+            
+            print('Sampling with %s...' %FLAGS.sampler)
             trace = pm.sample( nuts_sampler=FLAGS.sampler, **sampler_kwargs )
         
     
