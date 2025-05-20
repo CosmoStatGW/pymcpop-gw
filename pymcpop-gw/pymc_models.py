@@ -625,8 +625,7 @@ def make_model(  priors,
     
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            #zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
-            zs = pm.Deterministic('z', at.ones(d.shape), dims= "event_index" )
+            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
                 
