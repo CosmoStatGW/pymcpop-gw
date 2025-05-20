@@ -22,17 +22,17 @@ MIN = at.as_tensor_variable(-np.inf)
 INF = at.as_tensor_variable(np.inf)
  
 if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
-        zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=5), at.logspace(start=-30, stop=-4, base=10, steps=30), 
+        zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
                      #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, stop=1, base=10, steps=100), 
-                     at.logspace(start=1, stop=2, base=10, steps=20), at.logspace(start=2, stop=5, base=10, steps=5) ])))
+                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
+                     at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
 
 else:
     
-    zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=5), at.logspace(start=-30, end=-4, base=10, steps=30), 
+    zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
                      #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, end=1, base=10, steps=100), 
-                     at.logspace(start=1, end=2, base=10, steps=20), at.logspace(start=2, end=5, base=10, steps=5) ])))
+                     at.logspace(start=-4, end=1, base=10, steps=1000), 
+                     at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
 
 zGridGlobals = np.array(zGridGlobals_at.eval())
 
