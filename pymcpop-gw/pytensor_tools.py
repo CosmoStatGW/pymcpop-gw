@@ -495,11 +495,16 @@ def truncGausslower_at_lpdf(x, loc, scale, xmin=0):
                     -at.log(scale)-0.5*at.log(2*PI)-at.log(1.-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
 
 
+def double_gauss_norm(mu, sigma):
+    z = -mu / sigma
+    C = 0.5 * (1 + at.erf(z / at.sqrt(2)))
+    return 0.5 - C + 0.5 * C**2
+
 
 def logpdf_gauss_single(x, loc, scale, xmin=0):  
-    #Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
-    #return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
-    return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
+    Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
+    return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
+    #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 
 
@@ -507,7 +512,7 @@ def logpdf_gauss(theta, lambdaBBHmass):
     m1, m2 = theta
     loc, scale = lambdaBBHmass
     
-    return logpdf_gauss_single(m1, loc, scale, xmin=0) + logpdf_gauss_single(m2, loc, scale, xmin=0)
+    return logpdf_gauss_single(m1, loc, scale, xmin=0) + logpdf_gauss_single(m2, loc, scale, xmin=0) -at.log(double_gauss_norm(loc, scale))
 
 def logpdf_gauss_cond(theta, lambdaBBHmass):  
     m1, m2 = theta
