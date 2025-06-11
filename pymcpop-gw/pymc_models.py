@@ -15,7 +15,7 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 #####################################################
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, pairing):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, pairing=True):
 
     ###################################
     # get parameters and compute log p_pop
@@ -76,18 +76,48 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     
     ###################################
     # mass
-    
+
+    ### BBH
     if mass_model=='PLPreg':
         
         lp, al, bb, dm, ml, mh, muM, sM = Lambda[-8:]
         lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], pairing=pairing)
-        
+
+    ### BNS
     elif mass_model=='BNSgauss':
         muM, sM = Lambda[-2:]
         lpmass = atools.logpdf_gauss([m1s, m2s], [muM, sM] )
+        
     elif mass_model=='BNSgaussCond':
         muM, sM = Lambda[-2:]
         lpmass = atools.logpdf_gauss_cond([m1s, m2s], [muM, sM] )
+
+    ### Non - parametric
+    elif mass_model=='DPUC':
+
+        w, mu, sd, logw  = Lambda[-5:-1]
+        Nmax=Lambda[-1]
+
+        # This is the pdf of two independent gaussians - one for log(Mc), one for logit(q)
+        # (there must be a smarter way of writing it instead of the loop. Do it for performance please)
+
+
+        logpmass_1, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
+                                                -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
+                                            sequences = [  at.arange(Nmax) ],
+                                             non_sequences =  [m1s, mu[0], sd[0], at.log(sd[0]), ],
+                                         )
+
+
+        logpmass_2, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
+                                                -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
+                                            sequences = [  at.arange(Nmax) ],
+                                             non_sequences =  [m2s, mu[1], sd[1], at.log(sd[1]), ],
+                                         )
+
+        lpmass = at.logsumexp(logpmass_1+logpmass_2+logw[:, None], axis=0) # sum on gmm components
+    
+        #lpmass = at.zeros(m1s.shape)
 
     ###################################
     # jacobian
@@ -119,7 +149,21 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
-    log_p_pop = log_p_pop_at(m1Src, m2Src, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, pairing=pairing)
+    if mass_model=='DPUC':
+        Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+        log_Mc_src_inj = at.log(Mc_src_inj)
+        logit_q_inj = atools.logitat(q_inj)      
+        mass_1_use = log_Mc_src_inj
+        mass_2_use = logit_q_inj
+    else:
+        mass_1_use = m1Src
+        mass_2_use = m2Src
+
+    log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, pairing=pairing)
+
+    if mass_model=='DPUC':
+        # remove jacobian m1, m2 --> log(Mc), logit(q)
+        log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
 
     log_sel_b = log_p_pop-log_p_draw
   
@@ -201,7 +245,7 @@ def make_model(  priors,
                  dLprior = 'none',
                  fix_inj_len = False,
                  sel_method='Tobs',
-                 N_DP_comp_max = 10,
+                 N_DP_comp_max = 20,
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -263,7 +307,6 @@ def make_model(  priors,
                 spin_samples = [chi1, chi2, cost1, cost2]
 
             m1det, m2det = atools.m1m2_from_Mcq_at(at.exp(lMc), qs )
-            print(m1det.eval())
             d = at.exp(ld)
             
 
@@ -318,6 +361,10 @@ def make_model(  priors,
     print('ninj: :%s, %s datasets,'%(Ndet.eval(), ndata.eval()))
 
     coords = {'event_index': event_index}
+
+    if 'DP' in mass_model:
+        coords['component'] = at.arange(N_DP_comp_max).eval()
+        coords['GMMdimension'] = at.arange(2.).eval()
 
     if pop_only:
         coords['nsamples'] = at.arange( Nsamples ).eval()
@@ -476,6 +523,8 @@ def make_model(  priors,
             
         if mass_model=='PLPreg':
 
+            ### BBH
+            
             # Power law + peak
             print('Modeling mass distribution with LVK Power Law + Peak with regularized edge')
             if not pairing:
@@ -492,6 +541,7 @@ def make_model(  priors,
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
+        ### BNS
         elif 'BNSgauss' in mass_model:
 
             if mass_model=='BNSgauss':
@@ -505,7 +555,65 @@ def make_model(  priors,
             sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
             Lambda_ += [muM_, sM_ ]
 
+        ### Non - parametric
+        elif mass_model=='DPUC':
+            print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
 
+            
+            alpha = pm.Gamma("alpha", 1.0, 1.0)
+            beta = pm.Beta("beta", 1.0, alpha, dims="component" )
+            w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
+            logw = at.log(w)
+
+
+            #### Sigma prior limits: 
+
+
+            # Option 1: Fixes std from (\tau * \lambda ) parametrization
+            # Here check how to choose the parameters of the Gamma priors!
+            tau1 = pm.Gamma("tau1", 10.0, 1.0, dims="component")
+            lambda1_ = pm.Gamma("lambda1_", 15.0, 1.0, dims="component" )
+
+            tau2 = pm.Gamma("tau2", 1.0, 1.0, dims="component")
+            lambda2_ = pm.Gamma("lambda2_", 0.8, 1.0, dims="component" )
+            
+            sig1 = pm.Deterministic("sig1", 1./at.sqrt(lambda1_*tau1), dims= "component" )
+            sig2 = pm.Deterministic("sig2", 1./at.sqrt(lambda2_*tau2), dims= "component" )
+
+            # Option 2: Fixes std from std on m1, m2
+            #sd_ = pm.Uniform( 'sigm1m2', lower=priors['sig'][0], upper=priors['sig'][1], dims=("GMMdimension",  "component") )
+            #sig1 = at.sqrt(sd_[0]**2 * (3/(5*mu_[0]) - 1/(5*(mu_[0]-mu_[1])))**2 + sd_[1]**2 * (3/(5*mu_[1]) - 1/(5*(mu_[1]-mu_[0])))**2)
+            #sig2 = at.sqrt(sd_[0]**2 * (1/(mu_[0]-mu_[1]))**2 + sd_[1]**2 * (mu_[0]/(mu_[1]*(mu_[0]-mu_[1])))**2)
+        
+            # Option 3: Fixes std from given prior
+            #sig1 = pm.Uniform('siglMc', lower=priors['siglMc'][0], upper=priors['siglMc'][1], dims=("component" ))
+            #sig2 = pm.Uniform('siglq', lower=priors['siglq'][0], upper=priors['siglq'][1], dims= ("component")) 
+
+            sigval = at.zeros( (2, N_DP_comp_max) )
+            sigval = at.set_subtensor( sigval[0], sig1 )
+            sigval = at.set_subtensor(  sigval[1], sig2 )
+            sd = pm.Deterministic("sig", sigval, dims=("GMMdimension" , "component" ))
+
+
+            #### Mean prior limits:  remember that mu is log(Mc), logit(q).
+
+            # Option 1 : sample mean of the gaussians from given prior
+            # with this choice, the prior on the mean will be flat in log(Mc), logit(q).
+        
+            mu1 = pm.Uniform('mulMc', lower=priors['mulMc'][0], upper=priors['mulMc'][1], dims= ("component" ))
+            mu2 = pm.Uniform('mulq', lower=priors['mulq'][0], upper=priors['mulq'][1], dims= ("component" ))
+
+            muval = at.zeros( (2, N_DP_comp_max) )
+            muval = at.set_subtensor( muval[0], mu1 )
+            muval = at.set_subtensor( muval[1], mu2 )
+            mu = pm.Deterministic("mu", muval, dims=("GMMdimension" , "component" ))
+
+            # Option 2: check ...
+
+            Lambda_ += [ w, mu, sd, logw ]
+
+            Lambda_ += [N_DP_comp_max]
+        
         ################################################
         # If including total normalization of the rate, add it here
         ################################################
@@ -663,10 +771,21 @@ def make_model(  priors,
         elif spin_model == 'none':
             
             spins = []
-            
+
         
         # Population prior of all events, without the term T_obs*R0
-        log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, pairing=pairing)
+        if mass_model=='DPUC':
+
+            # dirichelet processs will be for log(Mc_src), logit(q) ...
+            logMc_src =  log_Mc_det - at.log1p(zs)
+            
+            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model)
+            # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
+            log_p_pop -=  at.log(m2src) + at.log(m1src-m2src) + at.log1p(zs) 
+            
+        else:    
+        
+            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, pairing=pairing)
 
         
         if dLprior=='dLsq':
@@ -728,7 +847,6 @@ def make_model(  priors,
                 # see https://discourse.pymc.io/t/conditionally-reject-samples/3107
                 ind_sw_l = pm.Deterministic('ind_l', 1. * (Neff_lik<Neff_min_lik) )
                 ind_l = pm.Bernoulli('Neff_l_bound', ind_sw_l, observed=at.zeros(N).eval(), testval=at.zeros(N) )
-                print(ind_l.eval())
             else:
                 print("No bound on effective number of samples for individual event MC integrals")
 
@@ -780,25 +898,22 @@ def make_model(  priors,
                     print("Spin distribution will not be used in the sel effect")
                     spinsInj = []
                     spin_model_name = 'none'
-                
+
+                    
                 log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, pairing)
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
-                    sel_effect = -R0*Ttot*at.exp(log_mu_) #-at.exp(log_mu_+lR0)*Tobs
-                    print('R0 is %s'%R0.eval())
-                    print('Ttot is %s'%Ttot.eval())
-                    print('Lambda is %s'%str([L.eval() for L in Lambda_]))
-                    print('mu_ is %s'%at.exp(log_mu_).eval())
-                    print('N_exp is %s'%(-sel_effect.eval()))
+                    sel_effect = -R0*Ttot*at.exp(log_mu_)
                 else:
                     sel_effect = -N*log_mu_
     
             else:
                 # we passed multiple injections set corresponding to multiple observing runs
                 # they need to be properly combined
-                # This is useful only if using older injection sets,
+                # This is useful only if using older LVK injection sets,
                 # Deprecated after GWTC-3 
+
                 
                 print("Combining selection effects from different injections campaigns")
 

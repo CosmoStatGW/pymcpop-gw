@@ -81,11 +81,23 @@ def m1m2_from_Mcq_at(Mc, q):
 
     return m1, m2
 
+def Mcq_from_m1m2_at(m1, m2):
+   
+    Mc  = ((m1*m2)**(3./5.))/((m1+m2)**(1./5.))
+    q = m2/m1
+    
+    return Mc, q
+
 def log_sigmoid(x, m, sig):
     return -at.log1p(at.exp(-(x-m)/sig))
 
 def sigmoid(x, m, sig):
     return 1/(1+at.exp((-(x-m)/sig)))
+
+
+def stick_breaking(beta):
+    portion_remaining = at.concatenate([[1], at.extra_ops.cumprod(1 - beta)[:-1]])
+    return beta * portion_remaining
 
 ##########################
 ####### Interpolators and integrators ########
@@ -148,7 +160,7 @@ def atcumtrapz(y, x=None, dx=1.0, axis=-1, initial=None):
     return res
 
 
-def attrapzvec(y, x,  axis=-1):
+def attrapzvec11(y, x,  axis=-1):
 
     # works in 1D and 2D
 
@@ -169,11 +181,39 @@ def attrapzvec(y, x,  axis=-1):
         # Operations didn't work, cast to ndarray
         # d = np.asarray(d)
         # y = np.asarray(y)        
-        ret = at.sum( d * (y[:, 1: ]+y[:, :-1])/2.0, axis )
-        
+        ret = at.sum( d * (y[:, 1: ]+y[:, :-1])/2.0, axis )    
     else:
       raise NotImplementedError()
     return ret
+
+
+def attrapzvec(y, x,  dx=1., axis=-1):
+        if x is None:
+                d = dx
+        else:
+                #x = asanyarray(x)
+                if x.ndim == 1:
+                    d = at.diff(x)
+                    # reshape to correct shape
+                    shape = [1]*y.ndim
+                    shape[axis] = d.shape[0]
+                    d = at.reshape(d, shape)
+                else:
+                    d = at.diff(x, axis=axis)
+        
+        nd = y.ndim
+        slice1 = [slice(None)]*nd
+        slice2 = [slice(None)]*nd
+        slice1[axis] = slice(1, None)
+        slice2[axis] = slice(None, -1)
+        try:
+            ret = (d * (y[tuple(slice1)] + y[tuple(slice2)]) / 2.0).sum(axis)
+        except ValueError:
+            # Operations didn't work, cast to ndarray
+            d = np.asarray(d)
+            y = np.asarray(y)
+            ret = add.reduce(d * (y[tuple(slice1)]+y[tuple(slice2)])/2.0, axis)
+        return ret
 
 
 
@@ -263,6 +303,27 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dL=None):
         
     return res
 
+
+# no dependence on H0 (as in Finke et.al.)
+# dc * H0/c
+def u_z_at(z, Om, w0):
+    zz = at.linspace(0, z, 100).T
+    E = Efun_at(zz, Om, w0)
+    u = attrapzvec(1./E, zz)
+    return u
+
+# dV/dzdOm * H0^3/c^3/4pi
+def log_j_z_at(z, Om, w0, ):
+    E = Efun_at(z, Om, w0)
+    u = u_z_at(z, Om, w0).T
+    logj = 2*at.log(u) - at.log(E)
+    return logj
+
+def log_j_z_at_norm(z, Om, w0, zmax):
+    logj = log_j_z_at(z, Om, w0)
+    zz = at.geomspace(1e-7, zmax, 10000) # fixed (zmin, zmax)
+    log_norm = at.log(attrapzvec(at.exp(log_j_z_at(zz, Om, w0)), zz))
+    return logj - log_norm
 
 
 ##########################
