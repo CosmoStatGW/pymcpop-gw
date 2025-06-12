@@ -225,7 +225,17 @@ def get_sample_from_cho_lMclqld(x, mu, L):
     
     #mlik = -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
     
-    return  mu+at.dot(L,x) , -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
+    #return  mu+at.dot(L,x) , -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
+
+    sample = mu + (L @ x[:, None])[:, 0]   # instead of at.dot(L, x)
+
+    # Log probability of standard normal x
+    logp = (
+    -0.5 * at.sum(x**2)   # instead of at.dot(x.T, x)
+    - 0.5 * mu.shape[0] * at.log(2 * atools.PI)
+    - at.sum(at.log(at.diagonal(L)))  # log determinant of L
+    )
+    return sample, logp
 
 
 
@@ -636,9 +646,21 @@ def make_model(  priors,
     
                 print('Sampling m1d, m2d, dL from GMM')
                 ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
-    
-                samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
-    
+
+                # old way. leave it here  please
+                # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
+                
+                # Select means and Cholesky factors per batch
+                mu_selected = mus_l[at.arange(N), ig, :]         # shape (N, D)
+                L_selected = cho_covs_l[at.arange(N), ig, :, :]  # shape (N, D, D)
+                 
+                # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+                
+                # Final transformed sample
+                samples = mu_selected + Lx                # shape (N, D)
+
+                
                 log_Mc_det = samples[:,0]/dil_factor
                 logit_q = samples[:,1]
                 logd = samples[:,2]
@@ -708,8 +730,8 @@ def make_model(  priors,
                 
                 
                 # gw likelihood
-                
-                logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
+                if False:
+                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
                                        pytensor.scan( lambda ig, X, M, F, logD, logW  :
                                        -0.5*( (X[: , iobs]-M[iobs, ig]).dot( F[iobs, ig].dot( (X[ :, iobs]-M[iobs, ig]).T )) )-0.5*nd*at.log(2*atools.PI)-0.5*logD[iobs, ig]+logW[iobs, ig],  
                                                sequences = [ at.arange( ngmm ) ],
@@ -719,6 +741,22 @@ def make_model(  priors,
                              non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
                                               ]
                             )
+
+                else:
+
+                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
+                                       pytensor.scan( lambda ig, X, M, F, logD, logW  :
+                                       -0.5 * at.sum((X[: , iobs]-M[iobs, ig]) * (F[iobs, ig] @ (X[: , iobs]-M[iobs, ig])[:, None])[:, 0])- 0.5 * nd * at.log(2 * atools.PI)- 0.5 * logD[iobs, ig]+ logW[iobs, ig],  
+                                               sequences = [ at.arange( ngmm ) ],
+                                         non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
+                                                      )   ,                      
+                             sequences = [ at.arange(N)  ],
+                             non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
+                                              ]
+                            )
+
+
+
                 gwl = at.logsumexp(logps, axis=1) # sum on gmm components
         
             
