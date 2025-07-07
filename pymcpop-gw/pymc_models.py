@@ -9,6 +9,7 @@ import pytensor.tensor as at
 import pytensor
 import pymc as pm
 import numpy as np
+import os
 from pytensor.gradient import grad, DisconnectedInputError
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
