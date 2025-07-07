@@ -10,6 +10,7 @@ import pymc as pm
 import jax
 from pytensor.graph import Apply, Op
 import pytensor
+from pytensor.gradient import grad
 
 from jax.numpy import array
 from jax.numpy import concatenate
@@ -23,19 +24,31 @@ INF = at.as_tensor_variable(np.inf)
  
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
-        zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
-                     #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
-                     at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
+        zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+            #at.logspace(start=-100, stop=-15, base=10, steps=50), 
+            at.logspace(start=-10, stop=-4, base=10, steps=5), 
+                     at.logspace(start=-4, stop=1, base=10, steps=100), 
+                     at.logspace(start=1, stop=2, base=10, steps=10), 
+            #at.logspace(start=2, stop=5, base=10, steps=50) 
+        ])))
 
 except:
     
-    zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
-                     #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, end=1, base=10, steps=1000), 
-                     at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
+    zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+        #at.logspace(start=-100, end=-15, base=10, steps=50), 
+        at.logspace(start=-10, end=-4, base=10, steps=5), 
+                     at.logspace(start=-4, end=1, base=10, steps=100), 
+                     at.logspace(start=1, end=2, base=10, steps=10), 
+        #at.logspace(start=2, end=5, base=10, steps=50) 
+    ])))
+
+
+#zGridGlobals_at = at.linspace(start=0, end=3, steps=500) 
 
 zGridGlobals = np.array(zGridGlobals_at.eval())
+
+
+
 
 
 
@@ -106,19 +119,46 @@ def stick_breaking(beta):
 
 
 
-def atinterp(x, xs, ys):
+def atinterp(x, xs, ys, return_grad=False):
+    """
+    Linearly interpolate ys(x) from (xs, ys) to x.
+    Optionally returns gradient dy/dx.
 
-  idxs = at.searchsorted(xs, x,  side='left', sorter=None)
+    Args:
+        x: TensorVariable (N,) — interpolation points
+        xs: TensorVariable (M,) — fixed grid (sorted)
+        ys: TensorVariable (M,) — values on the grid
+        return_grad: bool — whether to return dy/dx
 
-  xl = xs[idxs-1]
-  yl = ys[idxs-1]
-  xh = xs[idxs]
-  yh = ys[idxs]
+    Returns:
+        y_interp: interpolated values at x
+        (optional) grad: dy/dx at x
+    """
+    x = x.ravel()
+    xs = xs.ravel()
+    ys = ys.ravel()
 
-  r = (x-xl)/(xh-xl);
+    # Inject NaN if out-of-bounds
+    #out_of_bounds = ~at.all((x >= xs[0]) & (x <= xs[-1]))
+    #_ = at.switch(out_of_bounds, float("nan"), 0.0)
 
-  return r*yh + (1.0-r)*yl;
+    # Interpolation indices
+    idxs = at.searchsorted(xs, x, side='left')
+    idxs = at.clip(idxs, 1, xs.shape[0] - 1)
 
+    xl = xs[idxs - 1]
+    xh = xs[idxs]
+    yl = ys[idxs - 1]
+    yh = ys[idxs]
+
+    r = (x - xl) / (xh - xl)
+    y_interp = r * yh + (1.0 - r) * yl
+
+    if return_grad:
+        dy_dx = (yh - yl) / (xh - xl)
+        return y_interp, dy_dx
+    else:
+        return y_interp
 
 def jnptinterp(x, xs, ys):
 
@@ -270,10 +310,21 @@ def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
     return np.array(z2dL)
 
 
-def z_from_dL_at(r, H0, Om, w0, Xi0, n ):
-    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
-    z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
-    return z2dL 
+def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000 ):
+    if not is_GP_dL:
+        Xi0, n = Lambda_MG
+        dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
+        return atinterp( r, dLGrid_at, zGridGlobals_at )  
+    else:
+        gp = Lambda_MG[0]
+        
+        dLGrid_EM_at = dLfun_at( zGridGlobals_at, H0, Om, w0, 1., 0 )
+
+        log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range)
+        
+        dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
+
+        return dLGrid_at, log_distance_ratio, grad_log_distance_ratio
 
 
     
@@ -284,20 +335,23 @@ def log_j_at(z, Om, H0=70, dc=None, ):
     dc*=H0/c_light*1e03
     return at.log(4*PI)+2*at.log(dc)-at.log(Efun_at(z, Om=Om))
 
-def log_dV_dz_at(z, H0, Om0, w0, dc=None):
+
+def log_dV_dz_at(z, Lambda_c, dc=None):
+
+    H0, Om0, w0 = Lambda_c
     if dc is None:
         dc = dcfun_at(z, H0, Om0, w0)    
     res =  at.log(4*PI)+at.log(c_light)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
+
     return res
+
     
-def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dL=None):
+def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None):
     
     # H0 in Mpc, dLs in Gpc
     
-    if dL is None:
-        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=False)*H0/c_light
-    else:
-        dc = dL/(1+z)
+    if dc is None:
+        dc = dcfun_at(z, H0, Om0,  w0, interp=False)*H0/c_light
     
     Xi = Xifun_at(z, Xi0, n)
     res = at.log( ( Xi -n*(1-Xi0)/(1+z)**n )* dc + Xi*c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
@@ -386,13 +440,13 @@ def p_z_MD(z, gamma, kappa, zp, Om, normalize=True, zmax=20, dc=None):
     return psiz*dVdz/(1+z)/norm
 
 
-def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
+def log_p_z_MD_unnorm(z, gamma, kappa, zp, Lambda_c, dc=None):
     #lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
     
     log_psiz = log_psi_z_MD(z, gamma, kappa, zp) #gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
-    
-    log_dVdz = log_dV_dz_at(z, H0, Om, w0, dc=dc )
 
+    log_dVdz = log_dV_dz_at(z, Lambda_c, dc=dc )
+    
     return log_psiz+log_dVdz
 
 
@@ -414,14 +468,132 @@ def log_p_z_PL_norm(z, gamma, H0, Om, w0, dc=None):
     log_dVdz = log_dV_dz_at(z, H0, Om, w0, dc=dc )
 
     zz = at.geomspace(1e-07, 500, steps=2000).T #at.linspace(0, 5, steps=2000).T
-    pz = at.exp( gamma*at.log1p(zz)+log_dV_dz_at(zz, H0, Om, w0,dc=None )-at.log1p(zz) )
+    pz = at.exp( gamma*at.log1p(zz)+log_dV_dz_at(zz, H0, Om, w0,dc=dc )-at.log1p(zz) )
     norm = attrapzvec(pz, zz)
     
     return log_psiz+log_dVdz-at.log1p(z)-at.log(norm)
 
 
 
+#####################################################
+# Gaussian processes for d
+#####################################################
 
+
+
+def min_max_scaler(X_raw, data_range, feature_range=(0, 1)):
+    data_min, data_max = data_range
+    feature_min, feature_max = feature_range
+
+    X_std = (X_raw - data_min) / (data_max - data_min)
+    X_scaled = X_std * (feature_max - feature_min) + feature_min
+    return X_scaled
+
+
+
+def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
+    data_min, data_max = data_range
+    feature_min, feature_max = feature_range
+
+    X_std = (X_scaled - feature_min) / (feature_max - feature_min)
+    X_raw = X_std * (data_max - data_min) + data_min
+    return X_raw
+
+
+
+U = at.as_tensor_variable(1.0)         # upper bound for σ with high probability
+alpha = at.as_tensor_variable(0.01)    # small tail probability
+lambda_ = at.log(1 / alpha) / U
+
+alpha_ell = at.as_tensor_variable(0.01)
+#L = at.as_tensor_variable(0.01)
+
+d_GP = at.as_tensor_variable(1)
+
+
+def frechet_logp_full(l, lambda_ell, d):
+    return at.log(d * lambda_ell / 2) \
+         - (d / 2 + 1) * at.log(l) \
+         - lambda_ell * l ** (-d / 2)
+
+
+def find_beta(L, alpha, p0=0.01):
+    import scipy.stats as stats
+    from scipy.optimize import bisect
+    # Define function for root-finding: GammaCDF(L; alpha, beta) - p0 = 0
+    def func(beta):
+        return stats.gamma.cdf(L, a=alpha, scale=1/beta) - p0
+
+    # beta must be positive, try searching between a small number and a large number
+    beta_opt = bisect(func, 1e-6, 100)
+    return beta_opt
+
+#####################################################
+
+
+
+def compute_gp_interp(X_list, gp, data_range, name="f", res=100,):
+    """
+    Evaluate GP on fixed grid, and interpolate function + gradient at input points.
+
+    Args:
+        X_list: list of two tensors (e.g., [X_data, X_inj])
+        ℓ: lengthscale (symbolic)
+        η: amplitude (symbolic)
+        name: name of the GP random variable
+        res: number of grid points
+
+    Returns:
+        zs_list: interpolated GP values at X_list
+        grads_list: interpolated gradients at X_list
+    """
+    
+        
+    X_test = at.linspace(0, 1, res)[:, None]
+    dx = X_test[1] - X_test[0]
+    f_test =  at.cumsum(at.softplus( gp.prior( name, X_test, reparameterize=True) ))*dx
+
+         
+    # Interpolate values and gradients at requested points
+    z_data, grad_data_scaled = atinterp( min_max_scaler( X_list[0], data_range=data_range), X_test, f_test, return_grad=True)
+    z_inj, grad_inj_scaled   = atinterp( min_max_scaler( X_list[1], data_range=data_range), X_test, f_test, return_grad=True)
+    grad_data = grad_data_scaled/ (dmax - dmin)
+    grad_inj = grad_inj_scaled/ (dmax - dmin)
+                
+    
+    return [z_data, z_inj], [grad_data, grad_inj], [X_test, f_test]
+
+
+
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000,):
+
+    if data_range is not None:
+        zmin, zmax = data_range
+    
+        X_test = at.linspace(0, 1, res)[:, None]
+        #dx = X_test[1] - X_test[0]
+        X_eval = min_max_scaler(z_grid, data_range=data_range)
+    else:
+        # this is just a trick, since we need the gradient.
+        X_test = z_grid[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
+        X_eval = z_grid
+    
+    log_distance_ratio_grid = gp.prior( "f", X=X_test, reparameterize=True) 
+    #at.cumsum( at.softplus(gp.prior( "f", X=X_test, reparameterize=True) ) )*dx
+    
+         
+    # Interpolate values and gradients at requested points
+    log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
+    if data_range is not None:
+        grad_log_distance_ratio /= (zmax - zmin)
+                
+    
+    return log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid
+
+    
+
+#####################################################
+#####################################################
 
 
 ##########################

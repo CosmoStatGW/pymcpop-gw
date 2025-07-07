@@ -67,9 +67,9 @@ parser.add_argument("--sel", default='Tobs', type=str, required=False)
 parser.add_argument("--ivals", default='', type=str, required=False)
 parser.add_argument("--eps_init", default=0.01, type=float, required=False)
 parser.add_argument("--params_fix", default='', type=str, required=False)
-parser.add_argument("--check_init", default=1, type=int, required=False)
-parser.add_argument("--debug", default=1, type=int, required=False)
-
+parser.add_argument("--check_init", default=0, type=int, required=False)
+parser.add_argument("--debug", default=0, type=int, required=False)
+parser.add_argument("--map_init", default=0, type=int, required=False)
 
 parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
 parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
@@ -95,6 +95,12 @@ parser.add_argument("--ntune", default=100, type=int, required=True)
 parser.add_argument("--nchains", default=1, type=int, required=False)
 parser.add_argument("--ncores", default=1, type=int, required=False)
 parser.add_argument("--target_accept", default=0.8, type=float, required=False)
+
+
+parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
+parser.add_argument("--find_GP_L", default=1, type=int, required=False)
+
+
 parser.add_argument("--fix_H0", default=1, type=int, required=False)
 parser.add_argument("--fix_Om", default=1, type=int, required=False)
 parser.add_argument("--fix_w0", default=1, type=int, required=False)
@@ -337,6 +343,10 @@ if __name__=='__main__':
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     marginal_R0 = FLAGS.marginal_R0,
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
+                                    is_GP_dL = FLAGS.is_GP_dL,
+                                    find_GP_L = FLAGS.find_GP_L,
+                                    monotonicity=FLAGS.monotonicity,
+                                    fout=FLAGS.fout,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
@@ -465,20 +475,30 @@ if __name__=='__main__':
                 _ = ivals.pop('rho')
             except:
                 pass
-            
-        if FLAGS.fix_H0:
-            _ = ivals.pop('H0')
-        if FLAGS.fix_Om:
-            _ = ivals.pop('Om')
-        if FLAGS.fix_w0:
-            try:
-                _ = ivals.pop('w0')
-            except:
-                pass
-        if FLAGS.fix_Xi0n:
+
+
+        if FLAGS.is_GP_dL:
             _ = ivals.pop('Xi0')
             _ = ivals.pop('n')
+            _ = ivals.pop('H0')
+            _ = ivals.pop('Om')
+
+        else:
+            if FLAGS.fix_H0:
+                _ = ivals.pop('H0')
+            if FLAGS.fix_Om:
+                _ = ivals.pop('Om')
+            if FLAGS.fix_w0:
+                try:
+                    _ = ivals.pop('w0')
+                except:
+                    pass
+            if FLAGS.fix_Xi0n:
+                _ = ivals.pop('Xi0')
+                _ = ivals.pop('n')
         
+        
+            
         
         print("Parameters names: %s" %str(list(ivals.keys())))
         vplot = list(ivals.keys())
@@ -492,25 +512,33 @@ if __name__=='__main__':
                 good = False
                 iter = 0
                 while not good:
-                    ivals[k] += onp.random.randn()*sig_init
-                    if (ivals[k] < priors[k][0]) | (ivals[k] > priors[k][1]) :
-                        good=False
-                        sig_init/=2
-                        iter += 1
-                    else:
-                        good=True
+                    try:
+                        ivals[k] += onp.random.randn()*sig_init
+                        if (ivals[k] < priors[k][0]) | (ivals[k] > priors[k][1]) :
+                            good=False
+                            sig_init/=2
+                            iter += 1
+                        else:
+                            good=True
+                            
+                        if iter==100:
+                            print("not able to initialize %s. Value: %s. Prior range: %s, %s"%(k,ivals[k] , priors[k][0], priors[k][1]))
+                            raise ValueError('Initialization failed! Check your prior ranges and initial values.')
                         
-                    if iter==100:
-                        print("not able to initialize %s. Value: %s. Prior range: %s, %s"%(k,ivals[k] , priors[k][0], priors[k][1]))
-                        raise ValueError('Initialization failed! Check your prior ranges and initial values.')
-                        
-                        
-                
-            
+                    except:
+                        print('No prior range specified for %s'%k)
+                        good = True
+
+
             print(ivals)
             print()
             
-            
+            if FLAGS.is_GP_dL:
+                ivals['f_rotated_'] = onp.random.randn(atools.zGridGlobals_at.shape[0].eval())*FLAGS.eps_init
+                #at.zeros(models.X_test.shape.eval()) #onp.random.randn(models.X_test.shape[0].eval())*FLAGS.eps_init
+                #print('f_rotated_ set to ')
+                #print(onp.random.randn(models.X_test.shape[0].eval())*FLAGS.eps_init)
+                
             if not FLAGS.pop_only:
                 N = gmm_log_wts.shape[0].eval()
                 nd = gmm_means.shape[2].eval()
@@ -539,7 +567,7 @@ if __name__=='__main__':
                         logd = samples[:,2]
                         d = at.exp(logd)
                         
-                        zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
+                        zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], [1., 2.] , is_GP_dL=False )
                         m1src = m1det/(1+zs)
                         m2src = m2det/(1+zs)
                  
@@ -783,9 +811,58 @@ if __name__=='__main__':
         
     
     else:  # works with older versions (but also with newer)
+        
+        if FLAGS.check_init:
+                print()
+                print('*'*80)
+                print('Check initial point...')
+                print('*'*80)
+                print()
+                # initial points
+                
+                
+                # Compile logp function
+                logp_func = model.logp
 
+                init_point = model.initial_point()
+                print("Initial point:")
+                for key, val in init_point.items():
+                        print(f"{key}: {val}")
+                # Evaluate logp at initial point
+                initial_logp = logp_func(**init_point)
+
+                
+                print("Initial logp:", initial_logp) 
+        
+                print('\nDone. ')
+
+        if FLAGS.debug:
+                print()
+                print('*'*80)
+                print('Debugging...')
+                print('*'*80)
+                print()
+
+    
+
+                print("Potentials:", model.potentials)
+                print("Potentials:")
+                for p in model.potentials:
+                    print("  ", repr(p), "-> type:", type(p))
+                        
+                model.debug()
+
+                print('\nDone. ')
+        
         if FLAGS.sampler=='pymc' :
             with model:          
+                
+                if FLAGS.map_init:
+                    map_estimate = pm.find_MAP()
+    
+                    print(f"Estimated length scale (ℓ): {map_estimate[ℓ]}")
+
+                
                 trace = pm.sample(  draws=FLAGS.nsteps, 
                                     tune=FLAGS.ntune, 
                                     chains=FLAGS.nchains,
