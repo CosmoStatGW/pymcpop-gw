@@ -528,6 +528,18 @@ def find_beta(L, alpha, p0=0.01):
     beta_opt = bisect(func, 1e-6, 100)
     return beta_opt
 
+def find_al(L, beta, p0=0.01):
+    import scipy.stats as stats
+    from scipy.optimize import bisect
+    # Define function for root-finding: GammaCDF(L; alpha, beta) - p0 = 0
+    def func(al):
+        return stats.invgamma.cdf(L, a=al, scale=1/beta) - p0
+
+    # beta must be positive, try searching between a small number and a large number
+    alpha_opt = bisect(func, 1e-6, 100)
+    return alpha_opt
+
+
 #####################################################
 
 
@@ -739,7 +751,6 @@ def logpdf_gauss_single(x, loc, scale, xmin=0):
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
     return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
     #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
-
 
 
 def logpdf_gauss(theta, lambdaBBHmass):  
