@@ -491,7 +491,7 @@ def make_model(  priors,
         ℓ_vals = at.geomspace(1e-05, 10, 1000)
         logp_vals = atools.frechet_logp_full(ℓ_vals, lambda_ell, atools.d_GP) 
         pdf_gamma = gamma.pdf(ℓ_vals.eval(), a=2., scale=1/beta)
-        pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=10. )
+        pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=1/10 )
         pdf_l = halfnorm(scale=1).pdf(ℓ_vals.eval())
         plt.plot(ℓ_vals.eval(), at.exp(logp_vals).eval(), label='frechet')
         plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
@@ -568,7 +568,7 @@ def make_model(  priors,
                 ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
                 print('ℓ prior is Gamma')
             elif GP_prior=='gammainv':
-                ℓ = pm.InverseGamma("ℓ", alpha=al, beta=0.1)
+                ℓ = pm.InverseGamma("ℓ", alpha=al, beta=0.1 )
                 print('ℓ prior is Inverse Gamma')
             
             η = pm.Exponential("η", lam=atools.lambda_)
