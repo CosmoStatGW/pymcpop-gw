@@ -297,6 +297,7 @@ def make_model(  priors,
                find_GP_L = True,
                fout=None,
                monotonicity = True,
+               GP_prior = 'beta',
                rescale_GP=False,
                  fix_H0 = True,
                 fix_Om = True,
@@ -553,9 +554,11 @@ def make_model(  priors,
 
             
             # Actual length scale
-            #ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, atools.d_GP, lambda_ell)  )
-
-            ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
+            if GP_prior=='frechet':
+                ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, atools.d_GP, lambda_ell)  )
+            
+            elif GP_prior=='beta':
+                ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
             
             η = pm.Exponential("η", lam=atools.lambda_)
 
