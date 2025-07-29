@@ -561,7 +561,7 @@ def make_model(  priors,
             
             # Actual length scale
             if GP_prior=='frechet':
-                ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, atools.d_GP, lambda_ell)  )
+                ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, lambda_ell, atools.d_GP)  )
                 print('ℓ prior is frechet')
             
             elif GP_prior=='gamma':
