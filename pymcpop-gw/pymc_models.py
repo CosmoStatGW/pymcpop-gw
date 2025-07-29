@@ -297,7 +297,7 @@ def make_model(  priors,
                find_GP_L = True,
                fout=None,
                monotonicity = True,
-               GP_prior = 'beta',
+               GP_prior = 'gamma',
                rescale_GP=False,
                  fix_H0 = True,
                 fix_Om = True,
@@ -466,7 +466,9 @@ def make_model(  priors,
             #print(allL.shape.eval())
             L = at.max(allL, axis=0)
 
-            beta = atools.find_beta(L.eval(), 2., 0.01)
+            beta = atools.find_beta(L.eval(), 2., p0=0.01)
+
+            al = atools.find_al(L.eval(), 10., p0=0.01)
 
             
         else:
@@ -475,6 +477,7 @@ def make_model(  priors,
             #L = at.mean(at.diff(at.sort( d_ )))
         print('L is %s'%L.eval())
         print(f"Found beta: {beta:.4f}")
+        print(f"Found alpha: {al:.4f}")
         print(f"Mean length scale: {2 / beta:.4f}")
         
         #if True:
@@ -484,13 +487,16 @@ def make_model(  priors,
         import matplotlib.pyplot as plt
         from scipy.stats import gamma
         from scipy.stats import halfnorm
+        from scipy.stats import invgamma
         ℓ_vals = at.geomspace(1e-05, 10, 1000)
         logp_vals = atools.frechet_logp_full(ℓ_vals, lambda_ell, atools.d_GP) 
         pdf_gamma = gamma.pdf(ℓ_vals.eval(), a=2., scale=1/beta)
+        pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=10. )
         pdf_l = halfnorm(scale=1).pdf(ℓ_vals.eval())
         plt.plot(ℓ_vals.eval(), at.exp(logp_vals).eval(), label='frechet')
         plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
         plt.plot(ℓ_vals.eval(), pdf_l, label='halfnorm')
+        plt.plot(ℓ_vals.eval(), pdf_gamma_inv, label='inv gamma')
         plt.xlabel("ℓ")
         plt.ylabel("Prior density")
         plt.title("PC prior on ℓ")
@@ -556,9 +562,14 @@ def make_model(  priors,
             # Actual length scale
             if GP_prior=='frechet':
                 ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, atools.d_GP, lambda_ell)  )
+                print('ℓ prior is frechet')
             
-            elif GP_prior=='beta':
+            elif GP_prior=='gamma':
                 ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
+                print('ℓ prior is Gamma')
+            elif GP_prior=='gammainv':
+                ℓ = pm.InverseGamma("ℓ", alpha=al, beta=0.1)
+                print('ℓ prior is Inverse Gamma')
             
             η = pm.Exponential("η", lam=atools.lambda_)
 
