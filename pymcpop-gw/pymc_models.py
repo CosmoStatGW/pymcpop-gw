@@ -17,7 +17,7 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=True, dr_val=None, ddr_dz=None, is_inj=False):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=True, dr_val=None, ddr_dz=None, is_inj=False, monotonicity=False):
 
     ###################################
     # get parameters and compute log p_pop
@@ -25,27 +25,36 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
     Lambda_c = Lambda[:3] 
     H0, Om, w0 = Lambda_c 
-    # Needed for comoving volume. It is always the EM one !
-    if not is_inj:
-        dc = pm.Deterministic('d_c', atools.dcfun_at(z, H0, Om, w0) ) 
-    else:
-        dc = atools.dcfun_at(z, H0, Om, w0)
-    
+
     if is_GP_dL:
+
+        # d_EM = dL^GW/(d_L^GW/d_EM) = dL^GW/(distance_ratio) 
+        # d_c = d_EM/(1+z)
+        dc = dL/dr_val/(1+z) 
         
         iastro = 4
         gp = Lambda[3] 
-        # jacobian
-        #dz_ddL = at.grad(z.sum(), dL)
-        # log_ddL_dz = ( at.log(  at.abs ( 1/ dz_ddL)) ) 
         
+        
+        # jacobian
         dL_em = dc*(1+z)
         ddLem_dz = at.exp( atools.log_ddL_dz( z, H0, Om, w0, 1., 0., dc=dc ) )
         
         log_ddL_dz = at.log( at.abs( dL_em*ddr_dz + dr_val*ddLem_dz ) )
 
+        if monotonicity and not is_inj:
+            print('Imposing d(dL)/dz >0')
+            # Probit model: P(f′ > 0) = Φ(f′ / ν)
+            # scale of transition to zero
+            ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
+            Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz) / ν, -10, 10)))
+            # Binary likelihood: all 1s (indicating positive slope)
+            _ = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz.shape[0]).eval() )
+
     else:
 
+        dc =  atools.dcfun_at(z, H0, Om, w0)
+        
         Xi0, n = Lambda[3:5] 
         
         iastro = 5
@@ -295,7 +304,7 @@ def make_model(  priors,
                find_GP_L = True,
                fout=None,
                monotonicity = True,
-               GP_prior = 'gamma',
+               GP_prior = 'gammainv',
                GP_zero_point = False,
                rescale_GP=False,
                  fix_H0 = True,
@@ -950,13 +959,6 @@ def make_model(  priors,
                 distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))
                 d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio)
 
-                if monotonicity:
-                    # Probit model: P(f′ > 0) = Φ(f′ / ν)
-                    # scale of transition to zero
-                    ν = pm.HalfNormal("ν", sigma=0.05)
-                    Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip(d_distance_ratio_d_z / ν, -10, 10)))
-                    # Binary likelihood: all 1s (indicating positive slope)
-                    _ = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(N).eval() )
                 
                      
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
@@ -1013,7 +1015,7 @@ def make_model(  priors,
             
         else:    
         
-            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z)
+            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z, monotonicity=monotonicity)
              
         
         if dLprior=='dLsq':
