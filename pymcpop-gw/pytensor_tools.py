@@ -594,9 +594,11 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
 
     log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
 
-    # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
-    f_pseudo = log_distance_ratio_grid[0]
-    pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
+    if GP_zero_point:
+        print('Enforcing distance ratio at redshift 0 is 1.')
+        # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
+        f_pseudo = log_distance_ratio_grid[0]
+        pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
            
     # Interpolate values and gradients at requested points
     log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
