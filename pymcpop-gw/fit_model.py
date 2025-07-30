@@ -539,11 +539,13 @@ if __name__=='__main__':
             print()
             
             if FLAGS.is_GP_dL:
-                ivals['f_rotated_'] = onp.random.randn(atools.zGridGlobals_at.shape[0].eval())*FLAGS.eps_init
-                #at.zeros(models.X_test.shape.eval()) #onp.random.randn(models.X_test.shape[0].eval())*FLAGS.eps_init
-                #print('f_rotated_ set to ')
-                #print(onp.random.randn(models.X_test.shape[0].eval())*FLAGS.eps_init)
+
+                isize=atools.zGridGlobals_at.shape[0].eval()
+                if FLAGS.GP_zero_point:
+                    isize += 1
                 
+                ivals['f_rotated_'] = onp.random.randn(isize)*FLAGS.eps_init
+                    
             if not FLAGS.pop_only:
                 N = gmm_log_wts.shape[0].eval()
                 nd = gmm_means.shape[2].eval()

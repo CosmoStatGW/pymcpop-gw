@@ -475,8 +475,9 @@ def make_model(  priors,
 
             
         else:
-            L = at.as_tensor_variable(0.4)
-            beta = 4
+            L = at.as_tensor_variable(0.02867221802205662)
+            beta = 5.1811
+            al = 0.5579
             #L = at.mean(at.diff(at.sort( d_ )))
         print('L is %s'%L.eval())
         print(f"Found beta: {beta:.4f}")

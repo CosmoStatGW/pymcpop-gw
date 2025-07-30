@@ -325,7 +325,7 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, 
         
         dLGrid_EM_at = dLfun_at( zGridGlobals_at, H0, Om, w0, 1., 0 )
 
-        log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -600,6 +600,8 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
 
     log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
 
+    
+
     if GP_zero_point:
         print('Enforcing distance ratio at redshift 0 is 1.')
         # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
@@ -612,7 +614,7 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         grad_log_distance_ratio /= (zmax - zmin)
                 
     
-    return log_distance_ratio, grad_log_distance_ratio, X_test[1:], log_distance_ratio_grid[1:]
+    return log_distance_ratio, grad_log_distance_ratio
 
     
 
