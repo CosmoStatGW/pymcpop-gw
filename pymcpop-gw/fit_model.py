@@ -485,8 +485,8 @@ if __name__=='__main__':
         if FLAGS.is_GP_dL:
             _ = ivals.pop('Xi0')
             _ = ivals.pop('n')
-            _ = ivals.pop('H0')
-            _ = ivals.pop('Om')
+            #_ = ivals.pop('H0')
+            #_ = ivals.pop('Om')
 
         else:
             if FLAGS.fix_H0:
