@@ -26,9 +26,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     Lambda_c = Lambda[:3] 
     H0, Om, w0 = Lambda_c 
     # Needed for comoving volume. It is always the EM one !
-    dc = atools.dcfun_at(z, H0, Om, w0)
+    dc = pm.Deterministic('d_c', atools.dcfun_at(z, H0, Om, w0) ) 
 
-    
     if is_GP_dL:
         
         iastro = 4
@@ -298,6 +297,7 @@ def make_model(  priors,
                fout=None,
                monotonicity = True,
                GP_prior = 'gamma',
+               GP_zero_point = False,
                rescale_GP=False,
                  fix_H0 = True,
                 fix_Om = True,
@@ -932,15 +932,18 @@ def make_model(  priors,
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
             if not is_GP_dL:
+                
                 zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL ), dims= "event_index" )
                 distance_ratio , d_distance_ratio_d_z = None, None
+            
             else:
+                
                 if rescale_GP:
                     data_range=(atools.zGridGlobals_at.min(), atools.zGridGlobals_at.max())
                 else:
                     data_range=None
                 
-                dLGrid_at, log_distance_ratio, grad_log_distance_ratio = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range )
+                dLGrid_at, log_distance_ratio, grad_log_distance_ratio = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point )
 
                 zs = pm.Deterministic('z', atools.atinterp( d, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
                 d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio )        

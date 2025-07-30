@@ -25,6 +25,7 @@ INF = at.as_tensor_variable(np.inf)
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
         zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+            #[at.as_tensor_variable(0.)],
             #at.logspace(start=-100, stop=-15, base=10, steps=50), 
             at.logspace(start=-10, stop=-4, base=10, steps=5), 
                      at.logspace(start=-4, stop=1, base=10, steps=100), 
@@ -35,6 +36,7 @@ try:
 except:
     
     zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+        #[at.as_tensor_variable(0.)],
         #at.logspace(start=-100, end=-15, base=10, steps=50), 
         at.logspace(start=-10, end=-4, base=10, steps=5), 
                      at.logspace(start=-4, end=1, base=10, steps=100), 
@@ -310,17 +312,17 @@ def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
     return np.array(z2dL)
 
 
-def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000 ):
+def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, GP_zero_point=False):
     if not is_GP_dL:
         Xi0, n = Lambda_MG
-        dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
-        return atinterp( r, dLGrid_at, zGridGlobals_at )  
+        dLGrid_at = at.concatenate([ at.constant([0.0]), dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )])
+        return atinterp( r, dLGrid_at, at.concatenate([ at.constant([0.0]), zGridGlobals_at]) )  
     else:
         gp = Lambda_MG[0]
         
         dLGrid_EM_at = dLfun_at( zGridGlobals_at, H0, Om, w0, 1., 0 )
 
-        log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range)
+        log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -501,7 +503,7 @@ def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
 
 
 
-U = at.as_tensor_variable(1.0)         # upper bound for σ with high probability
+U = at.as_tensor_variable(2.5)         # upper bound for σ with high probability
 alpha = at.as_tensor_variable(0.01)    # small tail probability
 lambda_ = at.log(1 / alpha) / U
 
@@ -577,7 +579,7 @@ def compute_gp_interp(X_list, gp, data_range, name="f", res=100,):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000,):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False ):
 
     if data_range is not None:
         zmin, zmax = data_range
@@ -587,20 +589,22 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         X_eval = min_max_scaler(z_grid, data_range=data_range)
     else:
         # this is just a trick, since we need the gradient.
-        X_test = z_grid[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
-        X_eval = z_grid
-    
-    log_distance_ratio_grid = gp.prior( "f", X=X_test, reparameterize=True) 
-    #at.cumsum( at.softplus(gp.prior( "f", X=X_test, reparameterize=True) ) )*dx
-    
-         
+        X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
+        X_eval = z_grid #at.concatenate( [ at.constant([0.0]), z_grid])
+
+    log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
+
+    # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
+    f_pseudo = log_distance_ratio_grid[0]
+    pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
+           
     # Interpolate values and gradients at requested points
     log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
     if data_range is not None:
         grad_log_distance_ratio /= (zmax - zmin)
                 
     
-    return log_distance_ratio, grad_log_distance_ratio, X_test, log_distance_ratio_grid
+    return log_distance_ratio, grad_log_distance_ratio, X_test[1:], log_distance_ratio_grid[1:]
 
     
 

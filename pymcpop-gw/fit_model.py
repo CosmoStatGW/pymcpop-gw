@@ -101,6 +101,7 @@ parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
 parser.add_argument("--find_GP_L", default=1, type=int, required=False)
 parser.add_argument("--monotonicity", default=1, type=int, required=False)
 parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
+parser.add_argument("--GP_zero_point", default=0, type=int, required=False)
 
 
 parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -349,6 +350,7 @@ if __name__=='__main__':
                                     find_GP_L = FLAGS.find_GP_L,
                                     monotonicity=FLAGS.monotonicity,
                                     GP_prior=FLAGS.GP_prior,
+                                    GP_zero_point=FLAGS.GP_zero_point,
                                     fout=FLAGS.fout,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
