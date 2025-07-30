@@ -313,10 +313,13 @@ def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
 
 
 def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, GP_zero_point=False):
+    
     if not is_GP_dL:
+        
         Xi0, n = Lambda_MG
         dLGrid_at = at.concatenate([ at.constant([0.0]), dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )])
         return atinterp( r, dLGrid_at, at.concatenate([ at.constant([0.0]), zGridGlobals_at]) )  
+    
     else:
         gp = Lambda_MG[0]
         
@@ -585,12 +588,15 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         zmin, zmax = data_range
     
         X_test = at.linspace(0, 1, res)[:, None]
-        #dx = X_test[1] - X_test[0]
         X_eval = min_max_scaler(z_grid, data_range=data_range)
     else:
         # this is just a trick, since we need the gradient.
-        X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
-        X_eval = z_grid #at.concatenate( [ at.constant([0.0]), z_grid])
+        if GP_zero_point:
+            X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
+        else:
+            X_test = z_grid[:, None]
+        
+        X_eval = z_grid
 
     log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
 
