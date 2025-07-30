@@ -17,7 +17,7 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=True, dr_val=None, ddr_dz=None):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=True, dr_val=None, ddr_dz=None, is_inj=False):
 
     ###################################
     # get parameters and compute log p_pop
@@ -26,8 +26,11 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     Lambda_c = Lambda[:3] 
     H0, Om, w0 = Lambda_c 
     # Needed for comoving volume. It is always the EM one !
-    dc = pm.Deterministic('d_c', atools.dcfun_at(z, H0, Om, w0) ) 
-
+    if not is_inj:
+        dc = pm.Deterministic('d_c', atools.dcfun_at(z, H0, Om, w0) ) 
+    else:
+        dc = atools.dcfun_at(z, H0, Om, w0)
+    
     if is_GP_dL:
         
         iastro = 4
@@ -195,7 +198,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
         mass_1_use = m1Src
         mass_2_use = m2Src
 
-    log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z)
+    log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z, is_inj=True)
 
     if mass_model=='DPUC':
         # remove jacobian m1, m2 --> log(Mc), logit(q)
@@ -572,6 +575,7 @@ def make_model(  priors,
                 print('ℓ prior is Inverse Gamma')
             
             η = pm.Exponential("η", lam=atools.lambda_)
+            print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
 
             cov = η**2 * pm.gp.cov.Matern52(1, ℓ) + pm.gp.cov.WhiteNoise(1e-5)
             gp = pm.gp.Latent(cov_func=cov)
