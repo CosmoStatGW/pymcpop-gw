@@ -60,10 +60,6 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         
         gamma, kappa, zp = Lambda[iastro:iastro+3]
 
-        if  is_GP_dL:
-                print('debug GP . gamma, kappa, zp')
-                print( gamma.eval(), kappa.eval(), zp.eval() )
-
         # This term contains the comoving distance
         # If there is MG, d_c is not d_L/(1+z)!
         lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, Lambda_c , dc=dc )
@@ -574,6 +570,8 @@ def make_model(  priors,
             elif GP_prior=='gammainv':
                 ℓ = pm.InverseGamma("ℓ", alpha=al, beta=0.1 )
                 print('ℓ prior is Inverse Gamma')
+            else:
+                raise ValueError()
             
             η = pm.Exponential("η", lam=atools.lambda_)
             print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
@@ -595,9 +593,6 @@ def make_model(  priors,
             zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1])
 
             Lambda_ += [gamma_, kappa_, zp_]
-            if  is_GP_dL:
-                print('debug GP . gamma, kappa, zp')
-                print( gamma_.eval(), kappa_.eval(), zp_.eval() )
 
         elif rate_model=='PL':
             print('Modeling evolution of merger rate with a power law')
@@ -977,7 +972,7 @@ def make_model(  priors,
             
             d_stacked  = at.flatten(d)
             if not is_GP_dL:
-                zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_ )
+                zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Lambda_MG_ )
             else:
                 raise NotImplementedError()
             

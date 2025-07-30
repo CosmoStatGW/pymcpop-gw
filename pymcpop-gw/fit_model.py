@@ -99,9 +99,9 @@ parser.add_argument("--target_accept", default=0.8, type=float, required=False)
 
 parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
 parser.add_argument("--find_GP_L", default=1, type=int, required=False)
-parser.add_argument("--monotonicity", default=1, type=int, required=False)
-parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
-parser.add_argument("--GP_zero_point", default=0, type=int, required=False)
+parser.add_argument("--monotonicity", default=0, type=int, required=False)
+parser.add_argument("--GP_prior", default='gammainv', type=str, required=False)
+parser.add_argument("--GP_zero_point", default=1, type=int, required=False)
 
 
 parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -488,21 +488,20 @@ if __name__=='__main__':
             #_ = ivals.pop('H0')
             #_ = ivals.pop('Om')
 
-        else:
-            if FLAGS.fix_H0:
-                _ = ivals.pop('H0')
-            if FLAGS.fix_Om:
-                _ = ivals.pop('Om')
-            if FLAGS.fix_w0:
-                try:
-                    _ = ivals.pop('w0')
-                except:
-                    pass
+        else:  
             if FLAGS.fix_Xi0n:
                 _ = ivals.pop('Xi0')
                 _ = ivals.pop('n')
         
-        
+        if FLAGS.fix_H0:
+                _ = ivals.pop('H0')
+        if FLAGS.fix_Om:
+            _ = ivals.pop('Om')
+        if FLAGS.fix_w0:
+            try:
+                _ = ivals.pop('w0')
+            except:
+                pass
             
         
         print("Parameters names: %s" %str(list(ivals.keys())))
@@ -677,7 +676,7 @@ if __name__=='__main__':
                 
                 
                 
-                    zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
+                    zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], [models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0']], is_GP_dL=False )
                     m1src = m1det/(1+zs)
                     m2src = m2det/(1+zs)
 

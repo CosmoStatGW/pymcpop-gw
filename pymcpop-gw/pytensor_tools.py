@@ -25,31 +25,25 @@ INF = at.as_tensor_variable(np.inf)
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
         zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
-            #[at.as_tensor_variable(0.)],
-            #at.logspace(start=-100, stop=-15, base=10, steps=50), 
-            at.logspace(start=-10, stop=-4, base=10, steps=5), 
-                     at.logspace(start=-4, stop=1, base=10, steps=100), 
+        at.logspace(start=-10, stop=-4, base=10, steps=10), 
+                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
                      at.logspace(start=1, stop=2, base=10, steps=10), 
-            #at.logspace(start=2, stop=5, base=10, steps=50) 
-        ])))
+        
+    ])))
 
 except:
     
     zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
-        #[at.as_tensor_variable(0.)],
-        #at.logspace(start=-100, end=-15, base=10, steps=50), 
-        at.logspace(start=-10, end=-4, base=10, steps=5), 
-                     at.logspace(start=-4, end=1, base=10, steps=100), 
-                     at.logspace(start=1, end=2, base=10, steps=10), 
-        #at.logspace(start=2, end=5, base=10, steps=50) 
+        at.logspace(start=-10, end=-4, base=10, steps=10 ), 
+                     at.logspace(start=-4, end=1, base=10, steps=1000), 
+                     at.logspace(start=1, end=2, base=10, steps=10 ), 
+        
     ])))
 
 
 #zGridGlobals_at = at.linspace(start=0, end=3, steps=500) 
 
 zGridGlobals = np.array(zGridGlobals_at.eval())
-
-
 
 
 
@@ -315,7 +309,6 @@ def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
 def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, GP_zero_point=False):
     
     if not is_GP_dL:
-        
         Xi0, n = Lambda_MG
         dLGrid_at = at.concatenate([ at.constant([0.0]), dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )])
         return atinterp( r, dLGrid_at, at.concatenate([ at.constant([0.0]), zGridGlobals_at]) )  
@@ -353,13 +346,13 @@ def log_dV_dz_at(z, Lambda_c, dc=None):
     
 def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None):
     
-    # H0 in Mpc, dLs in Gpc
+    # H0 in Mpc, ds in Gpc
     
     if dc is None:
-        dc = dcfun_at(z, H0, Om0,  w0, interp=False)*H0/c_light
+        dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
     
     Xi = Xifun_at(z, Xi0, n)
-    res = at.log( ( Xi -n*(1-Xi0)/(1+z)**n )* dc + Xi*c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+    res = at.log( ( Xi -n*(1-Xi0)/(1+z)**(n) )* dc + Xi*c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
         
     return res
 
