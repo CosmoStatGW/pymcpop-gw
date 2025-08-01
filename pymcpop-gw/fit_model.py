@@ -102,6 +102,7 @@ parser.add_argument("--find_GP_L", default=1, type=int, required=False)
 parser.add_argument("--monotonicity", default=0, type=int, required=False)
 parser.add_argument("--GP_prior", default='gammainv', type=str, required=False)
 parser.add_argument("--GP_zero_point", default=1, type=int, required=False)
+parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
 
 
 parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -123,7 +124,6 @@ if __name__=='__main__':
     sys.stdout = myLog
     sys.stderr = myLog
 
-
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
     
@@ -141,6 +141,11 @@ if __name__=='__main__':
     else:
         params_fix=None
 
+
+    if not FLAGS.invert_dL_GP:
+        raise ValueError('Gaussian Process for distance ratio requires inversion at least for selection effects! This option at the moment is impossible.')
+
+    
     ################################################
     # Load data
     ################################################
@@ -169,6 +174,10 @@ if __name__=='__main__':
         gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
         allNgm = at.as_tensor_variable(data['allNgm'])
         Nevents = at.as_tensor_variable(data['Nevents'])
+
+        gmm_means_sub = at.as_tensor_variable(data['gmm_means_sub'])
+        gmm_icovs_sub = at.as_tensor_variable(data['gmm_icovs_sub'])
+        gmm_log_dets_sub = at.as_tensor_variable(data['gmm_log_dets_sub'])
 
     else:
         print("Using n max samples = %s"%FLAGS.nsamplesmax)
@@ -289,13 +298,26 @@ if __name__=='__main__':
     if not FLAGS.pop_only:  
     
         if FLAGS.sampling_gw=='gmm':
-            GWData =  [
-                       at.exp(gmm_log_wts), 
-                       gmm_means, 
-                       gmm_cho_covs, 
-                       at.as_tensor_variable(injections['Tobs']),
-                        Nevents
-                      ]
+            #GWData =  [
+            #           at.exp(gmm_log_wts), 
+            #           gmm_means, 
+            #           gmm_cho_covs, 
+            #           at.as_tensor_variable(injections['Tobs']),
+            #            Nevents
+            #          ]
+
+            GWData =  [at.exp(gmm_log_wts), 
+    					   gmm_means, 
+    					   gmm_cho_covs,
+                           gmm_icovs,
+                           gmm_log_dets,
+                           gmm_means_sub, 
+                           gmm_icovs_sub,
+                           gmm_log_dets_sub,
+    					   at.as_tensor_variable(injections['Tobs']),
+                           Nevents
+    					  ]
+        
         elif FLAGS.sampling_gw=='gauss':
             GWData =  [samples_means_at, 
                        samples_cho_covs_at, 
@@ -351,6 +373,7 @@ if __name__=='__main__':
                                     monotonicity=FLAGS.monotonicity,
                                     GP_prior=FLAGS.GP_prior,
                                     GP_zero_point=FLAGS.GP_zero_point,
+                                    invert_dL_GP=FLAGS.invert_dL_GP,
                                     fout=FLAGS.fout,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
@@ -544,6 +567,8 @@ if __name__=='__main__':
                     isize += 1
                 
                 ivals['f_rotated_'] = onp.random.randn(isize)*FLAGS.eps_init
+
+                
                     
             if not FLAGS.pop_only:
                 N = gmm_log_wts.shape[0].eval()
@@ -635,6 +660,9 @@ if __name__=='__main__':
                         
                         if idx_init<=-ncomp:
                             raise ValueError('Initialization of masses failed. Check prior range.')
+
+                        if not FLAGS.invert_dL_GP:
+                            ivals['z'] = zs
                 
                 elif FLAGS.sampling_gw=='gauss': # this might not work with spins
 

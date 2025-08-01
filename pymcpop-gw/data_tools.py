@@ -6,6 +6,7 @@
 
 import numpy as onp
 import sys
+from scipy import linalg
 
 
 
@@ -83,7 +84,6 @@ def load_data_samples(fin, nmax=None):
 
 def load_data_interp(fin):
 
-
     samples_means_dict =  {}
     samples_cho_covs_dict = {}
 
@@ -93,6 +93,11 @@ def load_data_interp(fin):
     gmm_covs_dict = {}
     gmm_cho_covs_dict = {}
     gmm_log_dets_dict = {}
+    
+    gmm_means_dict_sub = {}
+    gmm_icovs_dict_sub = {}
+    gmm_log_dets_dict_sub = {}
+    
     allNgm_dict = {}
     nevs_dict = {}
 
@@ -127,16 +132,36 @@ def load_data_interp(fin):
             samples_means = onp.concatenate([samples_means, samples_means_])
             samples_cho_covs = onp.concatenate([samples_cho_covs, samples_cho_covs_])
 
-    
         print('Done.')
         
         # load samples interpolants 
     
-        print('Loading gmm parameters...')
-    
+        print('Loading gmm...')
+        
         gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' ) 
         gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' ) 
         gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' ) 
+
+        print('gmm_means shape:')
+        print(gmm_means_dict[fid].shape)
+
+        print('gmm_icovs shape:')
+        print(gmm_icovs_dict[fid].shape)
+        #print(type(gmm_icovs_dict[fid]))
+        
+        gmm_means_dict_sub[fid] =  gmm_means_dict[fid][:, :, :2] #onp.load( fid+'gmm_means_sub.npy' ) 
+        print('gmm_means_dict_sub shape:')
+        print(gmm_means_dict_sub[fid].shape)
+        
+        gmm_icovs_dict_sub[fid] =  gmm_icovs_dict[fid][:, :, :2, :2] #onp.load( fid+'gmm_icovs_sub.npy' ) 
+        print('gmm_icovs_dict_sub shape:')
+        print(gmm_icovs_dict_sub[fid].shape)
+
+        #print('checl icov sub el 1:')
+        #for i in range(2):
+        #    for j in range(2):
+        #        print( gmm_icovs_dict[fid][0, 0, i, j]-  gmm_icovs_dict_sub[fid][0, 0, i, j]  )
+        
         try:
             gmm_cho_covs_dict[fid] =  onp.load( fid+'gmm_cho_covs.npy' )
         except:
@@ -151,8 +176,39 @@ def load_data_interp(fin):
             gmm_covs_dict[fid] = onp.asarray(gmm_covs)
             
         gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' ) 
-        allNgm_dict[fid] = onp.loadtxt( fid+'allNgm.txt' ).astype('int') 
 
+        print('gmm_log_dets shape:')
+        print(gmm_log_dets_dict[fid].shape)
+        print(gmm_log_dets_dict[fid][:10])
+
+        print('Computing reduced determinants...')
+        gmm_log_dets_dict_sub[fid] = onp.zeros(gmm_log_dets_dict[fid].shape)
+        for m, icovs_ in enumerate(gmm_icovs_dict_sub[fid]):
+            if m==0:
+                print(icovs_.shape)
+
+            for l in range(len(icovs_)):
+                
+                icov_ = icovs_[l]
+                if m==0 and l==0:
+                    print(icov_.shape)
+                idet_ = linalg.det(icov_)
+                if idet_==0:
+                    log_det_=0
+                else:
+                    log_det_ = onp.log(1./idet_)
+                if m==0 and l==0:
+                    print(log_det_)
+                gmm_log_dets_dict_sub[fid][m,l] = log_det_
+        print('gmm_log_dets_dict_sub shape:')
+        print(gmm_log_dets_dict_sub[fid].shape)
+        print(gmm_log_dets_dict_sub[fid][:10])
+            
+
+        
+        #gmm_log_dets_dict_sub[fid] = gmm_log_dets_dict[:, :,] #onp.load( fid+'gmm_log_dets_sub.npy' )
+         
+        allNgm_dict[fid] = onp.loadtxt( fid+'allNgm.txt' ).astype('int') 
 
         if i==0:
             allNgm = allNgm_dict[fid]
@@ -171,6 +227,7 @@ def load_data_interp(fin):
         nevs_all += len(gmm_log_wts_dict[fid])
 
         nd = gmm_means_dict[fid][0].shape[1]
+        nsub = gmm_means_dict_sub[fid][0].shape[1]
 
     nevs_arr = onp.asarray([ nevs_dict[k] for k in nevs_dict.keys() ])
     print('\nDone. Events:%s. Total: %s events. Max GMM number: %s. Number of dimensions: %s'%(nevs_arr,nevs_all, Ngm_max, nd))
@@ -183,6 +240,10 @@ def load_data_interp(fin):
     gmm_covs = onp.zeros( (nevs_all, Ngm_max, nd, nd) )
     gmm_cho_covs = onp.zeros( (nevs_all, Ngm_max, nd, nd) )
     gmm_log_dets = onp.log( onp.ones( (nevs_all, Ngm_max) ))
+    
+    gmm_means_sub = onp.zeros( (nevs_all, Ngm_max, nsub) )
+    gmm_icovs_sub = onp.zeros( (nevs_all, Ngm_max, nsub, nsub) )
+    gmm_log_dets_sub = onp.log( onp.ones( (nevs_all, Ngm_max) ))
 
     iev = 0
     for k,fid in enumerate(fin):
@@ -199,10 +260,13 @@ def load_data_interp(fin):
             gmm_cho_covs[iev, :ngm_] = gmm_cho_covs_dict[fid][i]
             gmm_covs[iev, :ngm_] = gmm_covs_dict[fid][i]
             gmm_log_dets[iev, :ngm_] = gmm_log_dets_dict[fid][i]
+            
+            gmm_means_sub[iev, :ngm_] = gmm_means_dict_sub[fid][i]
+            gmm_icovs_sub[iev, :ngm_] = gmm_icovs_dict_sub[fid][i]
+            gmm_log_dets_sub[iev, :ngm_] = gmm_log_dets_dict_sub[fid][i]
 
             iev+=1
     
-
     return {'samples_means': samples_means, 
             'samples_cho_covs': samples_cho_covs,
             'gmm_log_wts': gmm_log_wts,
@@ -211,6 +275,11 @@ def load_data_interp(fin):
             'gmm_covs': gmm_covs,
             'gmm_cho_covs': gmm_cho_covs,
             'gmm_log_dets': gmm_log_dets,
+            
+            'gmm_means_sub': gmm_means_sub,
+            'gmm_icovs_sub': gmm_icovs_sub,
+            'gmm_log_dets_sub': gmm_log_dets_sub,
+            
             'allNgm': allNgm,
             'Nevents': nevs_arr
            }

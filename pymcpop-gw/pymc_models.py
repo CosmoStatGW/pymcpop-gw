@@ -17,7 +17,16 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=True, dr_val=None, ddr_dz=None, is_inj=False, monotonicity=False):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, 
+                 is_GP_dL, 
+                 pairing=True, 
+                 log_ddL_dz=None,
+                 dc=None, 
+                 #ddr_dz=None, 
+                 is_inj=False, 
+                 #monotonicity=False, 
+                 invert_dL_GP=True
+                ):
 
     ###################################
     # get parameters and compute log p_pop
@@ -27,51 +36,43 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     H0, Om, w0 = Lambda_c 
 
     if is_GP_dL:
-
-        # d_EM = dL^GW/(d_L^GW/d_EM) = dL^GW/(distance_ratio) 
-        # d_c = d_EM/(1+z)
-        dc = dL/dr_val/(1+z) 
         
         iastro = 4
         gp = Lambda[3] 
+    
+        # older version. now log_ddL_dz is pre-computed
         
-        
+        # d_EM = dL^GW/(d_L^GW/d_EM) = dL^GW/(distance_ratio) 
+        # d_c = d_EM/(1+z)
+        #dL_em = dL/dr_val
+        #dc = dL_em/(1+z) 
         # jacobian
-        dL_em = dc*(1+z)
-        ddLem_dz = at.exp( atools.log_ddL_dz( z, H0, Om, w0, 1., 0., dc=dc ) )
-        
-        log_ddL_dz = at.log( at.abs( dL_em*ddr_dz + dr_val*ddLem_dz ) )
+        #dL_em = dc*(1+z)
+        #ddLem_dz = at.exp( atools.log_ddL_dz( z, H0, Om, w0, 1., 0., dc=dc ) )
+        #log_ddL_dz = at.log( at.abs( dL_em*ddr_dz + dr_val*ddLem_dz ) )
 
-        if monotonicity and not is_inj:
-            print('Imposing d(dL)/dz >0')
-            # Probit model: P(f′ > 0) = Φ(f′ / ν)
-            # scale of transition to zero
-            ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
-            Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz) / ν, -10, 10)))
-            # Binary likelihood: all 1s (indicating positive slope)
-            _ = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz.shape[0]).eval() )
 
     else:
 
-        dc =  atools.dcfun_at(z, H0, Om, w0)
-        
         Xi0, n = Lambda[3:5] 
-        
         iastro = 5
 
+        #dc =  atools.dcfun_at(z, H0, Om, w0)
         # jacobian
-        log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
+        #log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
 
     ##################################
     # redshift 
-    
+
     if rate_model=='MD':
         
         gamma, kappa, zp = Lambda[iastro:iastro+3]
 
-        # This term contains the comoving distance
-        # If there is MG, d_c is not d_L/(1+z)!
-        lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, Lambda_c , dc=dc )
+        if (invert_dL_GP or (not is_GP_dL) or is_inj ):
+            
+            # This term contains the comoving distance
+            # If there is MG, d_c is not d_L/(1+z)!
+            lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, Lambda_c , dc=dc )
         
         
         istart = 8
@@ -80,7 +81,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     elif rate_model=='PL':
         
         gamma = Lambda[iastro]
-        lpz = atools.log_p_z_PL_unnorm(z, gamma, H0, Om, w0, dc=dc)
+        if (invert_dL_GP or (not is_GP_dL) or is_inj ):
+            lpz = atools.log_p_z_PL_unnorm(z, gamma, H0, Om, w0, dc=dc)
+        
         istart = iastro+1
 
     # ##################################
@@ -169,13 +172,42 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     # return log pdf
     ####################################
 
-    lp =  lpz - log_ddL_dz - 2*at.log1p(z) + lpmass + lpspin
+    lp = lpmass + lpspin - log_ddL_dz - 2*at.log1p(z) 
+
+    if (invert_dL_GP or (not is_GP_dL) or is_inj ):
+
+        # if we sampled from p(z) directly, we don't need to add p(z) twice
+        
+        print('Adding p(z) to p_pop')
+        lp += lpz 
+
+    if (is_inj and is_GP_dL and (not invert_dL_GP)):
+            
+            # we sampled from a normalised p(z) at the numerator, so for injections we need to normalize
+            print('In the selection bias, normalizing p(z) to its integral to match numerator')
+            zgrid_ = at.sort(at.unique(at.concatenate( [at.linspace(0, 1e-05, 10 ), at.linspace(1e-05, 20, 500), at.linspace(20, 100, 20) ] )))
+            
+            zint_ = at.exp(log_p_z_MD_unnorm(zgrid_, gamma, kappa, zp, Lambda_c, dc=dc))
+            znorm = atools.attrapzvec(zint_, zgrid_)
+
+            lp -= at.log(znorm)
 
     return lp
 
 
 
-def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, is_GP_dL, pairing, distance_ratio=None, d_distance_ratio_d_z=None, zinj=None):
+def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
+                                 Lambda,  
+                                 Ndraw, 
+                                 rate_model, mass_model, spin_model, 
+                                 is_GP_dL, 
+                                 pairing, 
+                                 #distance_ratio=None, 
+                                 #d_distance_ratio_d_z=None, 
+                                 log_ddL_dz_inj = None,
+                                 zinj = None,
+                                 dcinj = None,
+                                ):
 
 
     if (spin_model=='default') or (spin_model=='default_gauss'):
@@ -187,7 +219,9 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     if not is_GP_dL:
         H0, Om, w0, Xi0, n  = Lambda[:5]
         zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, [Xi0, n] , is_GP_dL )
-        distance_ratio , d_distance_ratio_d_z = None, None
+        #distance_ratio , d_distance_ratio_d_z = None, None
+        dcinj = atools.dcfun_at( zinj, H0, Om, w0 )
+        log_ddL_dz_inj = atools.log_ddL_dz( zinj, H0, Om, w0, Xi0, n, dc=dcinj )
         
     
     m1Src  = m1inj/(1+zinj)
@@ -203,7 +237,21 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
         mass_1_use = m1Src
         mass_2_use = m2Src
 
-    log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z, is_inj=True)
+    log_p_pop = log_p_pop_at(mass_1_use, 
+                             mass_2_use, 
+                             zinj, 
+                             dLinj, 
+                             spinsInj_sel, 
+                             Lambda, 
+                             rate_model, mass_model, spin_model, 
+                             is_GP_dL, 
+                             pairing=pairing, 
+                             #dr_val=distance_ratio, 
+                             #ddr_dz=d_distance_ratio_d_z, 
+                             dc = dcinj,
+                             log_ddL_dz = log_ddL_dz_inj,
+                             is_inj=True
+                            )
 
     if mass_model=='DPUC':
         # remove jacobian m1, m2 --> log(Mc), logit(q)
@@ -307,6 +355,7 @@ def make_model(  priors,
                GP_prior = 'gammainv',
                GP_zero_point = False,
                rescale_GP=False,
+               invert_dL_GP = True,
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -334,13 +383,22 @@ def make_model(  priors,
 
     ## GW data
     if not pop_only:
+        
         # gw data are interpolants of single-event posteriors
         if sampling_GW=='gauss' :
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
+        
         elif sampling_GW=='gmm':
-            # we sample single-event parameters from the actual single-event posteriors
-            wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
+
+            wts_l, mus_l, cho_covs_l, icovs_l, log_dets_l, mus_l_sub, icovs_l_sub, log_dets_l_sub, Tobs, Nevs = GWData
+            nsub = mus_l_sub.shape[2]
+            print('nsub is %s'%nsub.eval())
+            
+            if not invert_dL_GP:
+                nsub = mus_l_sub.shape[2]
+                print('nsub is %s'%nsub.eval())
+            
         else:
             raise ValueError('sampling_GW can be cho or gauss ')
             
@@ -570,7 +628,12 @@ def make_model(  priors,
             
             # Actual length scale
             if GP_prior=='frechet':
-                ℓ = pm.DensityDist( "ℓ", logp=lambda x: atools.frechet_logp_full(x, lambda_ell, atools.d_GP)  )
+                ℓ = pm.CustomDist( "ℓ", 
+                                  lambda_ell,
+                                  atools.d_GP,
+                                  logp=atools.frechet_logp_full,
+                                    #size=(1,)
+                                 )
                 print('ℓ prior is frechet')
             
             elif GP_prior=='gamma':
@@ -850,6 +913,7 @@ def make_model(  priors,
                     cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
                 else:
                     print("No spins computed")
+              
             
 
             
@@ -936,31 +1000,168 @@ def make_model(  priors,
             Mc = at.exp(log_Mc_det)            
             q = atools.inv_logitat(logit_q)
             m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-            d = pm.Deterministic('dL', at.exp(logd) , dims="event_index")
+            dval = at.exp(logd)
     
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
             if not is_GP_dL:
                 
-                zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL ), dims= "event_index" )
-                distance_ratio , d_distance_ratio_d_z = None, None
+                zs = pm.Deterministic('z', atools.z_from_dL_at(dval, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL ), dims= "event_index" )
+
+                dc = pm.Deterministic('dc', atools.dcfun_at(zs , H0_, Om0_,  w0_, ), dims= "event_index" )
+                 
+                #distance_ratio , d_distance_ratio_d_z = None, None
+                log_ddL_dz = atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc )
             
             else:
-                
+
                 if rescale_GP:
                     data_range=(atools.zGridGlobals_at.min(), atools.zGridGlobals_at.max())
                 else:
                     data_range=None
-                
-                dLGrid_at, log_distance_ratio, grad_log_distance_ratio = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point )
 
-                zs = pm.Deterministic('z', atools.atinterp( d, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
-                d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio )        
-                distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))
-                d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio)
+                if invert_dL_GP:
 
-                
+                    # we sampled distance from the posterior. need to invert the dL-z relation
+                          
+                    
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point )
+    
+                    zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
                      
+                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
+                    
+
+                    # now derivative d(dL)/dz and comoving distance
+                    d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
+                    d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
+
+                    dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
+                    dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
+
+                    ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
+    
+                    distance_ratio_grid = at.exp(log_distance_ratio_grid)
+    
+                    log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                    
+    
+                    log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
+                    dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
+                             
+                    if monotonicity:
+
+                        print('Imposing d(dL)/dz >0 on all the domain')
+               
+                        # Probit model: P(f′ > 0) = Φ(f′ / ν)
+                        # scale of transition to zero
+                        ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
+                        Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz_grid) / ν, -10, 10)))
+                        # Binary likelihood: all 1s (indicating positive slope)
+                        monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
+                    
+                
+                
+                else:
+
+                    # we sample z from the pop prior. no need to invert the dL-z relation
+                    print('Sampling redshift from population prior')
+
+                    # sample redshift from p(z) ~ ψ(z)/(1+z)*dV/dz
+                    if rate_model=='MD':
+                        zs = pm.CustomDist( 'z', 
+											 gamma_, kappa_, zp_, [H0_, Om_, w0_],
+											 logp = atools.log_p_z_MD_unnorm,
+											 #random = , 
+											 size=(N,))
+                    else:
+                        raise NotImplementedError()
+
+                    # obtain luminosity distance and the derivative, including the GP
+
+                    # this is log(distance ratio) and its derivative computed on the grid
+                    # zGridGlobals_at
+                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point )
+                    
+                    # now compute distance ratio at the actual events redshifts
+                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))
+
+                    # ... and its derivative
+                    d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio ) 
+                    d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio)
+
+                    dc = atools.dcfun_at(zs, H0_, Om_, w0_)
+                    d_EM = (zs+1.0)*dc
+
+                    raise NotImplementedError('Here, need to compute log_ddL_dz')
+
+                    # finally, the GW luminosity distance is distance_ratio * dEM
+                    dval = d_EM*distance_ratio
+
+                    
+
+            
+                    ### correct for the GW likelihood ratio
+
+                    if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
+                        spins = [chieff, chip]
+                        vals = at.stack([log_Mc_det, logit_q, at.log(dval), chieff, chip, 
+                                         ])
+                                        
+                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+                        spins = [chieff, chip, cost1, cost2]
+                        vals = at.stack([log_Mc_det, logit_q, at.log(dval), chi1, chi2, cost1, cost2, 
+                                         ])
+                                        
+                    elif spin_model == 'none':
+                        spins = []
+                        vals = at.stack([log_Mc_det, logit_q, at.log(dval),  
+                                         ])
+
+                    ## full GW likelihood 
+                    logps, _ = pytensor.scan(fn=lambda iobs, X, M, F, logD, logW: # iobs = event index
+				
+												pytensor.scan(fn=lambda ig, X, M, F, logD, logW: 
+
+												-0.5*at.sum((X[: , iobs] - M[iobs, ig])*(F[iobs, ig] @ (X[: , iobs] - M[iobs, ig])[:, None])[:, 0])
+            									-0.5*nd*at.log(2*atools.PI)
+												-0.5 * logD[iobs, ig]
+												+ logW[iobs, ig],
+									
+												sequences=[at.arange(ngmm)], non_sequences=[vals, mus_l, icovs_l, log_dets_l, wts_l]),
+						
+									sequences=[at.arange(N)], non_sequences=[vals, mus_l, icovs_l, log_dets_l, wts_l])
+
+					# sum of the gmm interpolants over all the gmm components
+                    gwl = at.logsumexp(logps, axis=1) # shape (nev,)
+
+
+                    ## subspace likelihood of the variables sampled from the gmm (all except distance)
+                    
+                    # consider just the masses (and later spins. but for now spins are not supported )
+                    vals_sub = vals[:nsub]  # shape (2, N)
+                
+                    logps_sub, _ = pytensor.scan(fn=lambda iobs, X_sub, M_sub, F_sub, logD_sub, logW: 
+            
+                                            pytensor.scan(fn=lambda ig, X_sub, M_sub, F_sub, logD_sub, logW: 
+
+                                            -0.5*at.sum((X_sub[: , iobs] - M_sub[iobs, ig])*(F_sub[iobs, ig] @ (X_sub[: , iobs] - M_sub[iobs, ig])[:, None])[:, 0])
+                                            -0.5*2.*at.log(2*atools.PI)
+                                            -0.5 * logD_sub[iobs, ig]
+                                            + logW[iobs, ig],
+                                
+                                            sequences=[at.arange(ngmm)], non_sequences=[vals_sub, mus_l_sub, icovs_l_sub, log_dets_l_sub, wts_l]),
+                    
+                                    sequences=[at.arange(N)], non_sequences=[vals_sub, mus_l_sub, icovs_l_sub, log_dets_l_sub, wts_l])
+
+                    gwl_sub = at.logsumexp(logps_sub, axis=1)
+
+                    # add this to the toal likelihood
+                    logR = gwl - gwl_sub
+                
+            
+            # save values of GW distance and source-frame masses
+            d = pm.Deterministic('dL', dval , dims="event_index")      
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
                 
@@ -1009,13 +1210,34 @@ def make_model(  priors,
             # dirichelet processs will be for log(Mc_src), logit(q) ...
             logMc_src =  log_Mc_det - at.log1p(zs)
             
-            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, is_GP_dL, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z)
+            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, 
+                                     Lambda_, 
+                                     rate_model, mass_model, spin_model, 
+                                     is_GP_dL, 
+                                     #dr_val=distance_ratio, 
+                                     #ddr_dz=d_distance_ratio_d_z
+                                     log_ddL_dz = log_ddL_dz,
+                                     dc = dc, 
+                                     invert_dL_GP=invert_dL_GP
+                                    )
+            
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
             log_p_pop -=  at.log(m2src) + at.log(m1src-m2src) + at.log1p(zs) 
             
         else:    
         
-            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, is_GP_dL, pairing=pairing, dr_val=distance_ratio, ddr_dz=d_distance_ratio_d_z, monotonicity=monotonicity)
+            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, 
+                                     Lambda_, 
+                                     rate_model, mass_model, spin_model, 
+                                     is_GP_dL, 
+                                     pairing=pairing, 
+                                     #dr_val=distance_ratio, 
+                                     #ddr_dz=d_distance_ratio_d_z, 
+                                     #monotonicity=monotonicity, 
+                                     log_ddL_dz = log_ddL_dz,
+                                     dc = dc, 
+                                     invert_dL_GP=invert_dL_GP
+                                    )
              
         
         if dLprior=='dLsq':
@@ -1046,6 +1268,12 @@ def make_model(  priors,
                 # Add gw likelihood and correct for sampling prior pdf
                 log_p_pop -= pilik
                 log_p_pop += gwl
+
+
+        if (is_GP_dL and (not invert_dL_GP)):
+            print('Correcting likelihood from factor R coming from sampling redshift from pop prior')
+            log_p_pop += logR
+        
         
         # Put it all together
         if not pop_only:
@@ -1141,12 +1369,37 @@ def make_model(  priors,
 
 
                 if is_GP_dL:
-                    zinj = atools.atinterp( dLinj[0], dLGrid_at, atools.zGridGlobals_at )
-                    d_log_distance_ratio_d_z_inj = atools.atinterp( zinj, atools.zGridGlobals_at, grad_log_distance_ratio )        
-                    distance_ratio_inj = at.exp(atools.atinterp( zinj, atools.zGridGlobals_at, log_distance_ratio ))
-                    d_distance_ratio_d_z_inj = d_log_distance_ratio_d_z_inj*distance_ratio_inj
                     
-                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, is_GP_dL, pairing, distance_ratio=distance_ratio_inj, d_distance_ratio_d_z=d_distance_ratio_d_z_inj, zinj=zinj )
+                    zinj = atools.atinterp( dLinj[0], dLGrid_at, atools.zGridGlobals_at )
+                    #d_log_distance_ratio_d_z_inj = atools.atinterp( zinj, atools.zGridGlobals_at, grad_log_distance_ratio )        
+                    #distance_ratio_inj = at.exp(atools.atinterp( zinj, atools.zGridGlobals_at, log_distance_ratio ))
+                    #d_distance_ratio_d_z_inj = d_log_distance_ratio_d_z_inj*distance_ratio_inj
+                    log_ddL_dz_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, log_ddL_dz_grid )
+                    dc_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, dc_grid )
+                else:
+                    zinj, log_ddL_dz_inj, dc_inj = None, None, None
+                    
+                    
+                    
+                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], 
+                                                                         m2inj[0], 
+                                                                         dLinj[0], 
+                                                                         spinsInj, 
+                                                                         lpdinj[0], 
+                                                                         Lambda_, 
+                                                                         Ndraw, 
+                                                                         rate_model, 
+                                                                         mass_model, 
+                                                                         spin_model_name, 
+                                                                         is_GP_dL, 
+                                                                         pairing, 
+                                                                         #distance_ratio=distance_ratio_inj,
+                                                                         #d_distance_ratio_d_z=d_distance_ratio_d_z_inj,
+                                                                         log_ddL_dz_inj = log_ddL_dz_inj,
+                                                                         zinj = zinj ,
+                                                                         dcinj = dc_inj,
+                                                                        
+                                                                        )
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
@@ -1159,7 +1412,8 @@ def make_model(  priors,
                 # they need to be properly combined
                 # This is useful only if using older LVK injection sets,
                 # Deprecated after GWTC-3 
-
+                if is_GP_dL:
+                    raise NotImplementedError()
                 
                 print("Combining selection effects from different injections campaigns")
 
@@ -1192,7 +1446,8 @@ def make_model(  priors,
                     print("Loop over injections sets, dynamical slicing")
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, is_GP_dL, pairing, ), 
+
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]], spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata],                                                                                                                                   rate_model, mass_model, spin_model_name, is_GP_dL, pairing, ), 
                                           sequences = [ at.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
                     log_mu_vec = res_i[0]

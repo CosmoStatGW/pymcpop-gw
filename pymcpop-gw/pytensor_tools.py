@@ -593,7 +593,6 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
 
     log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
 
-    
 
     if GP_zero_point:
         print('Enforcing distance ratio at redshift 0 is 1.')
