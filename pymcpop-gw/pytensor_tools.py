@@ -95,6 +95,9 @@ def log_sigmoid(x, m, sig):
 def sigmoid(x, m, sig):
     return 1/(1+at.exp((-(x-m)/sig)))
 
+def safe_sigmoid(x, x0, eps):
+    s = 1.0 / (1.0 + at.exp(-(x - x0) / eps))
+    return at.clip(s, 1e-15, 1 - 1e-15)
 
 def stick_breaking(beta):
     portion_remaining = at.concatenate([[1], at.extra_ops.cumprod(1 - beta)[:-1]])
@@ -104,7 +107,16 @@ def stick_breaking(beta):
 ####### Interpolators and integrators ########
 ##########################
 
+def meshgrid_at(x, y):
+    x = at.as_tensor_variable(x)
+    y = at.as_tensor_variable(y)
+    nx = x.shape[0]
+    ny = y.shape[0]
 
+    X = at.alloc(x, nx, ny)      # Broadcast x along columns
+    Y = at.alloc(y, nx, ny).T    # Broadcast y along rows, then transpose
+
+    return X.T, Y.T
 
 def atinterp(x, xs, ys):
 
@@ -218,6 +230,50 @@ def attrapzvec(y, x,  dx=1., axis=-1):
 
 
 
+class TrapzOp(Op):
+    itypes = [at.dmatrix, at.dmatrix]   # y: (M,N), x: (1,N)
+    otypes = [at.dvector]               # output: (M,)
+
+    def __init__(self, axis=1):
+        self.axis = axis
+
+    def perform(self, node, inputs, outputs):
+        y, x = inputs                    # y: (M,N), x: (1,N)
+        # Broadcast x to (M,N)
+        x_b = np.broadcast_to(x, y.shape)
+        out = np.trapz(y, x_b, axis=self.axis)  # (M,)
+        outputs[0][0] = out
+
+    def grad(self, inputs, output_grads):
+        y, x = inputs                    # y: (M,N), x: (1,N)
+        (gz,) = output_grads             # (M,)
+
+        class JaxTrapzGrad(Op):
+            itypes = [at.dmatrix, at.dmatrix]   # y: (M,N), x: (1,N)
+            otypes = [at.dmatrix, at.dmatrix]   # dy: (M,N), dx: (1,N)
+
+            def perform(inner_self, node, inputs, outputs):
+                yv, xv = inputs                  # yv: (M,N), xv: (1,N)
+                # Broadcast x to (M,N)
+                xv_b = jnp.broadcast_to(xv, yv.shape)
+
+                def trapz_sum(y_, x_):
+                    return jnp.sum(jnp.trapz(y_, x_, axis=1))
+
+                dy = jax.grad(trapz_sum, argnums=0)(yv, xv_b)  # (M,N)
+                dx_full = jax.grad(trapz_sum, argnums=1)(yv, xv_b)  # (M,N)
+
+                # Sum dx over M dimension to get (N,)
+                dx = jnp.sum(dx_full, axis=0)   # (N,)
+                dx = dx[None, :]                # (1,N)
+
+                outputs[0][0] = np.asarray(dy)
+                outputs[1][0] = np.asarray(dx)
+
+        jax_grad_op = JaxTrapzGrad()
+        dy, dx = jax_grad_op(y, x)
+
+        return [gz[:, None] * dy, gz[:, None] * dx]  # dx broadcasted
 
 ##########################
 ####### Distances and cosmology ########
@@ -563,9 +619,14 @@ def double_gauss_norm(mu, sigma):
     return 0.5 - C + 0.5 * C**2
 
 
-def logpdf_gauss_single(x, loc, scale, xmin=0):  
+def truncGausslower_at_logpdf(x, loc, scale, xmin=0):  
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
     return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
+    #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
+
+def truncGausslower_at_pdf(x, loc, scale, xmin=0):  
+    Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
+    return at.where(x>xmin, at.exp( -(x-loc)**2/(2*scale**2))/(at.sqrt(2.*PI)*scale)/(1.-Phialpha) , at.as_tensor_variable(0.) )
     #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 
@@ -574,7 +635,7 @@ def logpdf_gauss(theta, lambdaBBHmass):
     m1, m2 = theta
     loc, scale = lambdaBBHmass
     
-    return logpdf_gauss_single(m1, loc, scale, xmin=0) + logpdf_gauss_single(m2, loc, scale, xmin=0) -at.log(double_gauss_norm(loc, scale))
+    return truncGausslower_at_logpdf(m1, loc, scale, xmin=0) + truncGausslower_at_logpdf(m2, loc, scale, xmin=0) -at.log(double_gauss_norm(loc, scale))
 
 def logpdf_gauss_cond(theta, lambdaBBHmass):  
     m1, m2 = theta
@@ -814,16 +875,16 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=1
 ####### double Power Law + double Peak  LVK low-end ########
 
 
-def log_broken_power_law_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl=0.05):
+def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl=0.05, epsilon=0.01):
     """
-    Log of the broken power-law PDF (JAX-compatible, log-space)
-    """
-    
+    Log of the broken power-law PDF 
+    """    
     
     # Compute log normalization constant
     norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
     norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
     log_N = at.log(norm1 + norm2)
+
 
     # log(pdf) in each regime
     log_val1 = -alpha1 * at.log(m1 / mb)
@@ -831,21 +892,20 @@ def log_broken_power_law_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl
 
   
     # Smooth weight function (sigmoid transition)
-    w = sigmoid( -m1, -mb, epsilon)
-    #1.0 / (1.0 + at.exp((m1 - mb) / epsilon))
+    w = safe_sigmoid( -m1, -mb, epsilon)
 
-
-    # Use log-sum-exp trick to compute:
+    # Use log-sum-exp to compute:
     # log(w * exp(log_val1) + (1-w) * exp(log_val2))
     log_mix_val = logsumexp(
         at.log(w) + log_val1,
         at.log1p(-w) + log_val2
     )
 
-    # Outside bounds, set log-prob to -inf
-    #valid_mask = (m1 >= m1_low) & (m1 < m_high)
-    #return at.where(valid_mask, log_mix_val - log_N, MIN)
-    return log_mix_val - log_N + at.log(1-sigmoid(m1, m_high, sh)) + log_sigmoid(m1, m1_low, sl)
+    
+    s1 = at.log1p(-sigmoid(m1, m_high, sh))
+    s2 = log_sigmoid(m1, m1_low, sl)
+    
+    return log_mix_val - log_N + s1 + s2
 
 
 def logpdfm1_DPLDP(
@@ -853,6 +913,7 @@ def logpdfm1_DPLDP(
     mu1, sigma1, mu2, sigma2,
     m1_low, m_high, delta_m1,
     lambda0, lambda1,
+    epsilon
     ):
     """
     Log of the mixture model. Assumes other components return log-probabilities.
@@ -861,9 +922,9 @@ def logpdfm1_DPLDP(
     log_lambda1 = at.log(lambda1)
     log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
 
-    log_ppl = log_broken_power_law_pdf(m1, alpha1, alpha2, mb, m1_low, m_high)
-    log_pnorm1 = truncGausslowerupper_at_lpdf_nonly(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) 
-    log_pnorm2 = truncGausslowerupper_at_lpdf_nonly(m1, mu2, sigma2, xmin=m1_low, xmax=m_high) 
+    log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
+    log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) 
+    log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high) 
     log_S = logS_PLP(m1, delta_m1, m1_low,)
 
     # logsumexp of the weighted logs
@@ -875,26 +936,31 @@ def logpdfm1_DPLDP(
     return log_mix + log_S
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False):
     
         m1, m2 = theta
-        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2 = lambdaBBHmass
+        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon = lambdaBBHmass
                 
 
-        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1,)
+        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon)
     
         lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low)
         
         lC = logC_DPLDP(m1, beta, delta_m2,  m2_low) 
-        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1)
+    
+        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon)
 
-        lpdf = lpdfm1+lpdfm2-lC-ln
+        lpdf = lpdfm1 + lpdfm2 -lC -ln
 
-        return  lpdf
+        if force_m2_less_than_m1:
+            eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
+            return at.where(eval, lpdf, MIN)
+        else:
+            return lpdf
         
      
 
-def logC_DPLDP( m, beta, deltam, ml, res=500):
+def logC_DPLDP( m, beta, deltam, m2_low, res=1000):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
@@ -903,14 +969,14 @@ def logC_DPLDP( m, beta, deltam, ml, res=500):
   
    
     # lower edge
-    ms1 = at.linspace(ml, 100, res)
+    ms1 = at.linspace(m2_low, 100, res)
 
     # upper edge
     ms5 = at.linspace(100.1, max_m, 100 )
     
     xx=at.concatenate([ms1, ms5] )
     
-    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml))
+    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, m2_low))
     
     cdf = atcumtrapz(p2, xx, )
     itr = atinterp( m, xx[1:], at.log(cdf))
@@ -918,21 +984,198 @@ def logC_DPLDP( m, beta, deltam, ml, res=500):
     return itr
 
 
-def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, res=1000):
+def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=1000):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
 
     '''
     # lower edge
-    ms1 = at.linspace(ml, 100, res)
+    ms1 = at.linspace(m1_low, 100, res)
 
     # after max
     ms5 = at.linspace(100.1, m_high, 100 )
     
-    ms=at.concatenate([ms1, ms5] )
+    ms = at.sort( at.unique( at.concatenate([ms1, ms5] ) ))
             
-    #ms = at.linspace(m1_low, m_high, res)
+    lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon  )
+    ps = at.exp( lpdf)
     
-    ps = at.exp( logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1  ))
-    return at.log(attrapzvec(ps,ms))
+    return at.log( attrapzvec(ps, ms) )
+
+
+
+####### FullPop-4.0 ########
+
+
+def log1mexp(x):
+    """
+    Numerically stable log(1 - exp(x)) for x < 0
+    """
+    log2 = at.log(2.0)
+    return at.switch(
+        x <= -log2,
+        at.log1p(-at.exp(x)),
+        at.log(-at.expm1(x))
+    )
+
+# --- Broken power law ---
+def log_broken_power_law_FP_pdf(m, λ_p, norm=False, maxm=100, epsilon=0.1):
+    m_NSmax, m_BHmin, α1, α2, α_dip = λ_p
+
+    log_region1 = α1 * at.log(m)
+    log_region2 = (α1 - α_dip) * at.log(m_NSmax) + α_dip * at.log(m)
+    log_region3 = (α1 - α_dip) * at.log(m_NSmax) + (α_dip - α2) * at.log(m_BHmin) + α2 * at.log(m)
+
+    s1 = safe_sigmoid(m, m_NSmax, epsilon)
+    s2 = safe_sigmoid(m, m_BHmin, epsilon)
+
+    log_part1 = log_region1 + at.log1p(-s1)
+    log_part2 = log_region2 + at.log(s1) + at.log1p(-s2)
+    log_part3 = log_region3 + at.log(s2)
+
+    result = logsumexp(
+        logsumexp(log_part1, log_part2),
+        log_part3
+    )
+
+    if norm:
+        mgrid = at.logspace(at.log10(1.0), at.log10(maxm), 2000)
+        log_vals = log_broken_power_law_FP_pdf(mgrid, λ_p, norm=False, maxm=maxm)
+        vals = at.exp(log_vals)
+        norm_factor = attrapzvec(vals, mgrid)
+        return result - at.log(norm_factor)
+    else:
+        return result
+
+
+def log_l_filter_at(m, m0, η):
+    log_x = η * (at.log(m0) - at.log(m))
+    return -logsumexp(0.0, log_x)
+
+def log_h_filter_at(m, m0, η):
+    log_x = η * (at.log(m0) - at.log(m))
+    return log_x - logsumexp(0.0, log_x)
+
+
+def log_notch_filter_at(m, γlow, γhigh, ηlow, ηhigh, A):
+    log_l = log_l_filter_at(m, γlow, ηlow)
+    log_h = log_h_filter_at(m, γhigh, ηhigh)
+    log_prod = log_l + log_h + at.log(A)
+    return log1mexp(log_prod)  # safe: log(1 - A * l * h)
+
+def log_f_q_FP(q, m2, Λ_q, epsilon=0.1):
+    beta_low, beta_high, m_break = Λ_q
+    s = safe_sigmoid(m2, m_break, epsilon)
+
+    log_s = at.log(s)
+    log1m_s = at.log1p(-s)
+    log_q = at.log(q)
+
+    log_term1 = log1m_s + beta_low * log_q
+    log_term2 = log_s + beta_high * log_q
+
+    return logsumexp(log_term1, log_term2)
+
+
+def log_B_notches(m, λ_b):
+    γlow_1, γhigh_1, ηlow_1, ηhigh_1, A1 = λ_b[0:5]
+    γlow_2, γhigh_2, ηlow_2, ηhigh_2, A2 = λ_b[5:10]
+    η_NSmin, m_NSmin = λ_b[10:12]
+    η_BHmax, m_BHmax = λ_b[12:14]
+
+    log_n1 = log_notch_filter_at(m, γlow_1, γhigh_1, ηlow_1, ηhigh_1, A1)
+    log_n2 = log_notch_filter_at(m, γlow_2, γhigh_2, ηlow_2, ηhigh_2, A2)
+    log_l = log_l_filter_at(m, m_NSmin, η_NSmin)
+    log_h = log_h_filter_at(m, m_BHmax, η_BHmax)
+
+    return log_l + log_h + log_n1 + log_n2
+
+
+def logpdfm1_FP(m, λ_m, norm=False):
+    m_BHmax = λ_m[11:][-1]
+
+    def my_logp(m, λ_m):
+        c1, c2, μ1, σ1, μ2, σ2 = λ_m[0:6]
+        λ_p = λ_m[6:11]
+        λ_b = λ_m[11:]
+        _, m_NSmin = λ_b[10:12]
+        _, m_BHmax = λ_b[12:14]
+
+        log_G1 = truncGausslowerupper_at_lpdf(m, μ1, σ1, xmin=m_NSmin, xmax=m_BHmax)
+        log_G2 = truncGausslowerupper_at_lpdf(m, μ2, σ2, xmin=m_NSmin, xmax=m_BHmax)
+
+        logP = log_broken_power_law_FP_pdf(m, λ_p, norm=False, maxm=m_BHmax * 1.1)
+        logB = log_B_notches(m, λ_b)
+
+        log_terms1 = 0.0  # log(1)
+        log_terms2 = at.log(c1) + log_G1
+        log_terms3 = at.log(c2) + log_G2
+            
+        logsum = logsumexp(
+                logsumexp(log_terms1, log_terms2),
+                log_terms3
+            )
+
+        return logsum + logP + logB
+
+    log_unnorm = my_logp(m, λ_m)
+
+    if norm:
+        mgrid = at.logspace(at.log10(1.0), at.log10(m_BHmax * 1.1), 2000)
+        log_vals = my_logp(mgrid, λ_m)
+        vals = at.exp(log_vals)
+        norm_factor = attrapzvec(vals, mgrid)
+        return log_unnorm - at.log(norm_factor)
+    else:
+        return log_unnorm
+
+
+def logpdf_FP(theta, λ_m, Λ_q, norm=True, norm_p1=False, res=1000, force_m2_less_than_m1=False):
+    m1, m2 = theta
+    logp1 = logpdfm1_FP(m1, λ_m, norm=norm_p1)
+    logp2 = logpdfm1_FP(m2, λ_m, norm=norm_p1)
+    q = m2 / m1
+    logf = log_f_q_FP(q, m2, Λ_q)
+    lpdfval = logp1 + logp2 + logf
+
+    if force_m2_less_than_m1:
+        eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
+        joint = at.where(eval, lpdfval, MIN)
+    else:
+        joint = lpdfval
+
+    if norm:
+        #m_min = 1e-05
+        λ_b = λ_m[11:]
+        _, m_NSmin = λ_b[10:12]
+        m_max = λ_m[11:][-1] * 1.5
+        m_min = m_NSmin * 0.5
+
+        m1_grid_ = at.geomspace(m_min, m_max, res)
+        m2_grid_ = at.geomspace(m_min, m_max, res)
+        m1_vals_, m2_vals_ = meshgrid_at(m1_grid_, m2_grid_)
+
+        m1_stack = at.flatten(m1_vals_)
+        logp1_grid = logpdfm1_FP(m1_stack, λ_m, norm=norm_p1)
+
+        m2_stack = at.flatten(m2_vals_)
+        logp2_grid = logpdfm1_FP(m2_stack, λ_m, norm=norm_p1)
+
+        q_grid = m2_stack / m1_stack
+        logf_grid = log_f_q_FP(q_grid, m2_stack, Λ_q)
+
+        joint_grid = logp1_grid + logp2_grid + logf_grid
+
+        joint_grid = at.where(m2_stack <= m1_stack, at.exp(joint_grid), 0.0)
+
+        trapz = TrapzOp(axis=1)
+        inner = trapz(at.reshape(joint_grid, m2_vals_.shape), m2_grid_[None, :])
+
+        trapz0 = TrapzOp(axis=0)
+        norm_factor = trapz0(inner.dimshuffle(0, 'x'), m1_grid_[:, None])
+
+        return joint - at.log(norm_factor)
+    else:
+        return joint
+
