@@ -53,6 +53,8 @@ parser.add_argument("--spin_model", default='none', type=str, required=False)
 parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
 parser.add_argument("--marginal_R0", default=1, type=int, required=False)
 parser.add_argument("--pairing", default=1, type=int, required=False)
+parser.add_argument("--has_m2_break", default=0, type=int, required=False)
+
 
 
 parser.add_argument("--dLprior", default='none', type=str, required=False)
@@ -476,8 +478,18 @@ if __name__=='__main__':
             except:
                 pass
         if FLAGS.fix_Xi0n:
-            _ = ivals.pop('Xi0')
-            _ = ivals.pop('n')
+            try:
+                _ = ivals.pop('Xi0')
+                _ = ivals.pop('n')
+            except:
+                pass
+
+        if not FLAGS.has_m2_break:
+            try:
+                _ = ivals.pop('w_g')
+                _ = ivals.pop('m_g')
+            except:
+                pass
         
         
         print("Parameters names: %s" %str(list(ivals.keys())))
@@ -493,11 +505,16 @@ if __name__=='__main__':
                 iter = 0
                 while not good:
                     ivals[k] += onp.random.randn()*sig_init
-                    if (ivals[k] < priors[k][0]) | (ivals[k] > priors[k][1]) :
-                        good=False
-                        sig_init/=2
-                        iter += 1
-                    else:
+                    try:
+                        if (ivals[k] < priors[k][0]) | (ivals[k] > priors[k][1]) :
+                            good=False
+                            sig_init/=2
+                            iter += 1
+                        else:
+                            good=True
+                    except Exception as e:
+                        print(e)
+                        print('Prior check not available for %s. Ensure all is ok'%k)
                         good=True
                         
                     if iter==100:
@@ -542,28 +559,42 @@ if __name__=='__main__':
                         zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
                         m1src = m1det/(1+zs)
                         m2src = m2det/(1+zs)
-                 
-                        c1 = np.any(m1src.eval()>priors['mh'][1])
-                        c2 = np.any(m2src.eval()<priors['ml'][0])
-                     
+
+                        try:
+                            c1 = np.any(m1src.eval()>priors['mh'][1])
+                            c2 = np.any(m2src.eval()<priors['ml'][0])
+                        except Exception as e:
+                            print(e)
+                            print('No check on masses inside prior range')
+                            c1 = False
+                            c2 = False
+                            
                         
                         if c1 | c2:
                             idx_init -=1
                             it+=1
                             if c1:
-                                where_out_1 = np.argwhere(m1src.eval()>priors['mh'][1])
-                                irep = list(where_out_1[0])
-                                #raise ValueError('Initial m1 is larger than max mass at positions %s '%str(where_out))
-                                print('Initial m1 is larger than max mass at positions %s '%str(where_out_1))
-                                print("Prior value for m_max is %s"%priors['mh'][1])
-                                print("Got mass values :")
-                                print( str(m1src.eval()[where_out_1]))
+                                try:
+                                    where_out_1 = np.argwhere(m1src.eval()>priors['mh'][1])
+                                    irep = list(where_out_1[0])
+                                    #raise ValueError('Initial m1 is larger than max mass at positions %s '%str(where_out))
+                                    print('Initial m1 is larger than max mass at positions %s '%str(where_out_1))
+                                    print("Prior value for m_max is %s"%priors['mh'][1])
+                                    print("Got mass values :")
+                                    print( str(m1src.eval()[where_out_1]))
+                                except Exception as e:
+                                    print(e)
+                                    print('Check on m1<m_high not done.')
                                
                             if c2:
-                                where_out_2 = np.argwhere(m2src.eval()<priors['ml'][0])
-                                irep += list(where_out_2[0])
-                                #raise ValueError('Initial m2 is lower than min mass at positions %s '%str(where_out))
-                                print(('Initial m2 is lower than min mass at positions %s . Min mass: %s'%(str(where_out_2),priors['ml'][0])))
+                                try:
+                                    where_out_2 = np.argwhere(m2src.eval()<priors['ml'][0])
+                                    irep += list(where_out_2[0])
+                                    #raise ValueError('Initial m2 is lower than min mass at positions %s '%str(where_out))
+                                    print(('Initial m2 is lower than min mass at positions %s . Min mass: %s'%(str(where_out_2),priors['ml'][0])))
+                                except Exception as e:
+                                    print(e)
+                                    print('Check on m2>m_low not done.')
                               
                         else:
                             is_init_good = True

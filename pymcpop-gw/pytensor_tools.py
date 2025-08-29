@@ -802,13 +802,33 @@ def logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass):
  
     return result
 
-def logpdfm2_PLP_reg(m, beta, deltam, ml, sig_l=0.05):
-    return logpdfm2_PLP_noreg(m, beta, deltam, ml,)+log_sigmoid(m, ml, sig_l) 
+def logpdfm2_PLP_reg(m, beta, deltam, ml, sig_l=0.05, m_g=45, w_g = 80, sig_g_low = 5., sig_g_high = 5. , has_m2_break=False):
+
+    return logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=m_g, w_g = w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break)+log_sigmoid(m, ml, sig_l) 
+    
+    
 
 
-def logpdfm2_PLP_noreg(m, beta, deltam, ml,):
-    return beta*at.log(m)+logS_PLP(m, deltam, ml)
-           
+def logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=45, w_g = 80, sig_g_low = 5., sig_g_high = 5. ,  has_m2_break=False):
+    
+    lpdfval = beta*at.log(m)+logS_PLP(m, deltam, ml)
+    
+    if not has_m2_break:
+        return lpdfval
+    else:
+        #eval = at.and_(m2 <= m_g, m2 >=  m_g+w_g )
+        #return at.where(eval, lpdfval, MIN)
+        
+        # Define two sigmoid edges: one increasing at m_g, one decreasing at m_g + w_g
+        left_edge  = 1 - safe_sigmoid(m, m_g, sig_g_low )
+        right_edge = safe_sigmoid(m, m_g + w_g, sig_g_high )
+        
+        # Smooth mask transitions from 1 to 0 over the window [m_g, m_g + w_g]
+        mask = at.log( left_edge + right_edge )
+        
+        # Smoothly blend between lpdfval and MIN
+        return mask + lpdfval
+        
         
 
 def logC_PLP_reg( m, beta, deltam, ml, res=1000):
@@ -902,9 +922,11 @@ def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.
     )
 
     
-    s1 = at.log1p(-sigmoid(m1, m_high, sh))
-    s2 = log_sigmoid(m1, m1_low, sl)
-    
+    s1 = at.log1p(-safe_sigmoid(m1, m_high, sh))
+    s2 = at.log(safe_sigmoid(m1, m1_low, sl))
+
+    #print('BPL m1')
+    #print((log_mix_val - log_N + s1 + s2).eval())
     return log_mix_val - log_N + s1 + s2
 
 
@@ -923,8 +945,8 @@ def logpdfm1_DPLDP(
     log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
 
     log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
-    log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) 
-    log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high) 
+    log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) # low-mass peak
+    log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)   # mid-mass peak
     log_S = logS_PLP(m1, delta_m1, m1_low,)
 
     # logsumexp of the weighted logs
@@ -933,24 +955,47 @@ def logpdfm1_DPLDP(
         log_lambda2 + log_pnorm2
     )
 
+    #print('log_mix')
+    #print(log_mix.eval())
     return log_mix + log_S
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False):
     
         m1, m2 = theta
-        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon = lambdaBBHmass
+        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
                 
 
         lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon)
-    
-        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low)
+
+        #print('pdfm1')
+        #print(lpdfm1.eval())
+        #print('m1')
+        #print(m1.eval())
         
-        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low) 
+        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break)
+
+        #print('pdfm2')
+        #print(lpdfm2.eval())
+        
+        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break) 
+
+        #print('lC')
+        #print(lC.eval())
     
         ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon)
 
+        #print('ln')
+        #print(ln.eval())
+    
         lpdf = lpdfm1 + lpdfm2 -lC -ln
+    
+        #lpdf = at.switch(
+        #                    (at.isinf(lpdfm1) & (lpdfm1 < 0)) | (at.isinf(lpdfm2) & (lpdfm2 < 0)),
+        #                    MIN,
+        #                    lpdfm1 + lpdfm2 - lC - ln
+        #                )
+        #print(lpdf.eval())
 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
@@ -960,43 +1005,54 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False):
         
      
 
-def logC_DPLDP( m, beta, deltam, m2_low, res=1000):
+def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high = 5, has_m2_break=False, res=5000):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
 
     max_m = at.as_tensor_variable(500)
   
-   
+
     # lower edge
-    ms1 = at.linspace(m2_low, 100, res)
+    #ms1 = at.linspace(m2_low, 150, res)
 
     # upper edge
-    ms5 = at.linspace(100.1, max_m, 100 )
+    #ms5 = at.linspace(150.1, max_m, 100 )
     
-    xx=at.concatenate([ms1, ms5] )
+    #xx = at.linspace(m2_low, max_m, res)
+
+    t = at.linspace(0.0, 1.0, res)               # endpoints are constants
+    xx = m2_low + (max_m - m2_low) * t 
     
-    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, m2_low))
+    #at.concatenate([ms1, ms5] )
     
-    cdf = atcumtrapz(p2, xx, )
-    itr = atinterp( m, xx[1:], at.log(cdf))
+    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break))
+    
+    cdf = atcumtrapz( p2, xx, )
+
+    itr = atinterp( m, xx[1:], at.log(cdf) )
     
     return itr
+    #itr_reg = at.where( at.isinf(itr) & (itr < 0), -1e30, itr)
+    #return itr_reg
+    
 
-
-def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=1000):
+def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=2000):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
 
     '''
     # lower edge
-    ms1 = at.linspace(m1_low, 100, res)
+    #ms1 = at.linspace(m1_low, 100, res)
 
     # after max
-    ms5 = at.linspace(100.1, m_high, 100 )
+    #ms5 = at.linspace(100.1, m_high, 100 )
     
-    ms = at.sort( at.unique( at.concatenate([ms1, ms5] ) ))
+    #ms = at.sort( at.unique( at.concatenate([ms1, ms5] ) ))
+
+    t = at.linspace(0.0, 1.0, res)               # endpoints are constants
+    ms = m1_low + (m_high - m1_low) * t 
             
     lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon  )
     ps = at.exp( lpdf)
@@ -1064,8 +1120,10 @@ def log_notch_filter_at(m, γlow, γhigh, ηlow, ηhigh, A):
     log_prod = log_l + log_h + at.log(A)
     return log1mexp(log_prod)  # safe: log(1 - A * l * h)
 
-def log_f_q_FP(q, m2, Λ_q, epsilon=0.1):
-    beta_low, beta_high, m_break = Λ_q
+def log_f_q_FP(q, m2, Λ_q, has_m2_break=False, epsilon=0.1):
+    
+    beta_low, beta_high, m_break, m_g, w_g, sig_g_low, sig_g_high = Λ_q
+    
     s = safe_sigmoid(m2, m_break, epsilon)
 
     log_s = at.log(s)
@@ -1075,7 +1133,23 @@ def log_f_q_FP(q, m2, Λ_q, epsilon=0.1):
     log_term1 = log1m_s + beta_low * log_q
     log_term2 = log_s + beta_high * log_q
 
-    return logsumexp(log_term1, log_term2)
+    lpdfval = logsumexp(log_term1, log_term2)
+
+    if not has_m2_break:
+        return lpdfval
+    else:
+        #eval = at.and_(m2 <= m_g, m2 >=  m_g+w_g )
+        #return at.where(eval, lpdfval, MIN)
+        
+        # Define two sigmoid edges: one increasing at m_g, one decreasing at m_g + w_g
+        left_edge  = 1 - safe_sigmoid(m2, m_g, sig_g_low )
+        right_edge = safe_sigmoid(m2, m_g + w_g, sig_g_high )
+        
+        # Smooth mask transitions from 1 to 0 over the window [m_g, m_g + w_g]
+        mask = at.log( left_edge + right_edge )
+        
+        # Smoothly blend between lpdfval and MIN
+        return mask + lpdfval
 
 
 def log_B_notches(m, λ_b):
@@ -1131,12 +1205,15 @@ def logpdfm1_FP(m, λ_m, norm=False):
         return log_unnorm
 
 
-def logpdf_FP(theta, λ_m, Λ_q, norm=True, norm_p1=False, res=1000, force_m2_less_than_m1=False):
+def logpdf_FP(theta, lambdaBBHmass, norm=True, norm_p1=False, res=1000, force_m2_less_than_m1=False, has_m2_break=False):
+    
     m1, m2 = theta
+    λ_m, Λ_q = lambdaBBHmass
+    
     logp1 = logpdfm1_FP(m1, λ_m, norm=norm_p1)
     logp2 = logpdfm1_FP(m2, λ_m, norm=norm_p1)
     q = m2 / m1
-    logf = log_f_q_FP(q, m2, Λ_q)
+    logf = log_f_q_FP(q, m2, Λ_q, has_m2_break=has_m2_break)
     lpdfval = logp1 + logp2 + logf
 
     if force_m2_less_than_m1:
@@ -1163,7 +1240,7 @@ def logpdf_FP(theta, λ_m, Λ_q, norm=True, norm_p1=False, res=1000, force_m2_le
         logp2_grid = logpdfm1_FP(m2_stack, λ_m, norm=norm_p1)
 
         q_grid = m2_stack / m1_stack
-        logf_grid = log_f_q_FP(q_grid, m2_stack, Λ_q)
+        logf_grid = log_f_q_FP(q_grid, m2_stack, Λ_q, has_m2_break=has_m2_break)
 
         joint_grid = logp1_grid + logp2_grid + logf_grid
 

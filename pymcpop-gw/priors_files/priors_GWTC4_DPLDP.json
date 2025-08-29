@@ -1,0 +1,1 @@
+{"gamma": [-6, 6], "kappa": [0, 12], "zp": [0, 6], "alpha1": [-4, 12], "alpha2": [-4, 12], "mb": [20, 50], "mu1": [5, 20], "sigma1": [0, 10], "mu2": [25, 60], "sigma2": [0, 10], "delta_m1": [0, 10], "lambda_vec": "Dirichlet(1,1,1)", "lambda0": "lambda_vec[0]", "lambda1": "lambda_vec[1]", "lambda2": "lambda_vec[2]", "m_high": [300.0], "beta": [-2, 7], "delta_m2": [0, 10]}
