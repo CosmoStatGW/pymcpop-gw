@@ -324,10 +324,19 @@ if __name__=='__main__':
         N_successes_l = np.ones(N.eval())
     else:   
         N_successes_l = None
+
+    if FLAGS.ivals!='':
+        with open(FLAGS.ivals) as json_file:
+                ivals = json.load(json_file)
+        print('Initial values:')
+        print(ivals)
+    else:
+        print('No initial values passed.')
     
     model = models.make_model(  priors,
                                     GWData,
                                     InjData,
+                                  ivals=ivals,
                                     sampling_GW = FLAGS.sampling_gw,
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
@@ -378,373 +387,6 @@ if __name__=='__main__':
         ch_client = clickhouse_driver.Client("localhost")
         backend = mcbackend.ClickHouseBackend(ch_client)
 
-    
-    ################################################
-    # Find initial point
-    ################################################
-    
-    ivals = None
-    if FLAGS.ivals!='':
-
-
-        with open(FLAGS.ivals) as json_file:
-            ivals = json.load(json_file) 
-        
-        if FLAGS.marginal_R0:
-            try:
-                _ =  ivals.pop("R0")
-            except:
-                pass
-        
-        if FLAGS.rate_model=='PL':
-            _ = ivals.pop('kappa')
-            _ = ivals.pop('zp')
-            
-
-        if FLAGS.mass_model=='PLP' or FLAGS.mass_model=='PLPreg':
-            try:
-                _ = ivals.pop('sl')
-                _ = ivals.pop('sh')
-            except:
-                pass
-
-            
-        if FLAGS.spin_model=='none':
-            try:
-                _ = ivals.pop('muEff')
-                _ = ivals.pop('sigEff')
-                _ = ivals.pop('muP')
-                _ = ivals.pop('sigP')
-                _ = ivals.pop('rho')
-            except:
-                pass
-            try:
-                _ = ivals.pop('muChi')
-                _ = ivals.pop('varChi')
-                _ = ivals.pop('zeta')
-                _ = ivals.pop('sigmat')
-                _ = ivals.pop('sigmaChi')
-            except:
-                pass
-        elif FLAGS.spin_model=='chieffchip_uc':
-            _ = ivals.pop('rho')
-            try:
-                _ = ivals.pop('muChi')
-                _ = ivals.pop('varChi')
-                _ = ivals.pop('zeta')
-                _ = ivals.pop('sigmat')
-                _ = ivals.pop('sigmaChi')
-            except:
-                pass
-        elif FLAGS.spin_model=='default':
-            try:
-                _ = ivals.pop('sigmaChi')
-                _ = ivals.pop('muEff')
-                _ = ivals.pop('sigEff')
-                _ = ivals.pop('muP')
-                _ = ivals.pop('sigP')
-                _ = ivals.pop('rho')
-            except:
-                pass
-            if FLAGS.use_log_alpha_beta:
-                # need to pass good initial values here 
-                muChi_ = ivals.pop('muChi')
-                varChi_ = ivals.pop('varChi')
-                kappa_ = muChi_*(1-muChi_)/varChi_-1
-    
-                alphaChi_ =  muChi_*kappa_ 
-                betaChi_ =  (1-muChi_)*kappa_ 
-                
-                ivals["logAlphaMinusOne"] = np.log(alphaChi_-1)
-                ivals["logBetaMinusOne"] = np.log(betaChi_-1)
-        elif FLAGS.spin_model=='default_gauss':
-            try:
-                _ = ivals.pop('varChi')
-                _ = ivals.pop('muEff')
-                _ = ivals.pop('sigEff')
-                _ = ivals.pop('muP')
-                _ = ivals.pop('sigP')
-                _ = ivals.pop('rho')
-            except:
-                pass
-            
-        if FLAGS.fix_H0:
-            _ = ivals.pop('H0')
-        if FLAGS.fix_Om:
-            _ = ivals.pop('Om')
-        if FLAGS.fix_w0:
-            try:
-                _ = ivals.pop('w0')
-            except:
-                pass
-        if FLAGS.fix_Xi0n:
-            try:
-                _ = ivals.pop('Xi0')
-                _ = ivals.pop('n')
-            except:
-                pass
-
-        if not FLAGS.has_m2_break:
-            try:
-                _ = ivals.pop('w_g')
-                _ = ivals.pop('m_g')
-            except:
-                pass
-        
-        
-        print("Parameters names: %s" %str(list(ivals.keys())))
-        vplot = list(ivals.keys())
-        
-        if FLAGS.ivals!='':
-
-            print("Setting user-provided intial values...")
-        
-            for k in ivals.keys():
-                good = False
-                iter = 0
-                
-                try:
-                    sig_init = ivals[k]*FLAGS.eps_init
-                except:
-                    sig_init = ivals[k]
-                    good=True
-                
-                while not good:
-                    ivals[k] += onp.random.randn()*sig_init
-                    try:
-                        if (ivals[k] < priors[k][0]) | (ivals[k] > priors[k][1]) :
-                            good=False
-                            sig_init/=2
-                            iter += 1
-                        else:
-                            good=True
-                    except Exception as e:
-                        print(e)
-                        print('Prior check not available for %s. Ensure all is ok'%k)
-                        good=True
-                        
-                    if iter==100:
-                        print("not able to initialize %s. Value: %s. Prior range: %s, %s"%(k,ivals[k] , priors[k][0], priors[k][1]))
-                        raise ValueError('Initialization failed! Check your prior ranges and initial values.')
-                        
-                        
-                
-            
-            print(ivals)
-            print()
-            
-            
-            if not FLAGS.pop_only:
-                N = gmm_log_wts.shape[0].eval()
-                nd = gmm_means.shape[2].eval()
-                    
-                ivals['x'] = onp.random.randn(len(data['gmm_means']), nd)*FLAGS.eps_init
-    
-                if FLAGS.sampling_gw=='gmm': # this is ok with spins
-    
-                    is_init_good = False
-
-                    # Initialize each event around the highest weight gaussian component
-                    ivals['idx'] = at.exp(gmm_log_wts).eval().argmax(axis=1)
-                    
-                    ncomp = gmm_log_wts.shape[1].eval()
-    
-                    idx_init = -1
-                    it = 1
-                    while not is_init_good:
-                    
-                        # check that m1, m2, d are inside prior range
-                        samples = gmm_means[ at.arange(N), ivals['idx'], :] + at.batched_dot(gmm_cho_covs[at.arange(N), ivals['idx'], :, :], ivals['x']  )
-                        
-                        Mc = at.exp(samples[:,0]/FLAGS.dil_factor)            
-                        q = atools.inv_logitat(samples[:,1])
-                        m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-                        logd = samples[:,2]
-                        d = at.exp(logd)
-                        
-                        zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
-                        m1src = m1det/(1+zs)
-                        m2src = m2det/(1+zs)
-
-                        try:
-                            c1 = np.any(m1src.eval()>priors['mh'][1])
-                            c2 = np.any(m2src.eval()<priors['ml'][0])
-                        except Exception as e:
-                            print(e)
-                            print('No check on masses inside prior range')
-                            c1 = False
-                            c2 = False
-                            
-                        
-                        if c1 | c2:
-                            idx_init -=1
-                            it+=1
-                            if c1:
-                                try:
-                                    where_out_1 = np.argwhere(m1src.eval()>priors['mh'][1])
-                                    irep = list(where_out_1[0])
-                                    #raise ValueError('Initial m1 is larger than max mass at positions %s '%str(where_out))
-                                    print('Initial m1 is larger than max mass at positions %s '%str(where_out_1))
-                                    print("Prior value for m_max is %s"%priors['mh'][1])
-                                    print("Got mass values :")
-                                    print( str(m1src.eval()[where_out_1]))
-                                except Exception as e:
-                                    print(e)
-                                    print('Check on m1<m_high not done.')
-                               
-                            if c2:
-                                try:
-                                    where_out_2 = np.argwhere(m2src.eval()<priors['ml'][0])
-                                    irep += list(where_out_2[0])
-                                    #raise ValueError('Initial m2 is lower than min mass at positions %s '%str(where_out))
-                                    print(('Initial m2 is lower than min mass at positions %s . Min mass: %s'%(str(where_out_2),priors['ml'][0])))
-                                except Exception as e:
-                                    print(e)
-                                    print('Check on m2>m_low not done.')
-                              
-                        else:
-                            is_init_good = True
-                        
-                        if not is_init_good:
-                            
-                            irep = np.squeeze(np.asarray(irep))
-                            if np.ndim(irep)==0:
-                                irep = np.asarray([irep])
-                            print('Replacing init masses at positions %s'%str(irep))
-                            for idx in irep:
-                        
-                                if m1src.eval()[idx]>priors['mh'][1] :
-                                    # Find GMM component that gives minimum m1 and continue resampling from that one
-                                    
-                                    s = gmm_means.eval()[idx, :][~np.isinf(gmm_log_wts.eval()[idx]), :]
-                                    Mc_ = at.exp(s[:,0])            
-                                    q_ = atools.inv_logitat(s[:,1])
-                                    m1det_, m2det_ = models.m1m2_from_Mcq_at(Mc_, q_)
-                                    logd_ = s[:,2]
-                                    d_ = at.exp(logd_)
-                    
-                                    
-                                    zs_ = atools.z_from_dL_at(d_, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'] )
-                                    m1src_ = m1det_/(1+zs_)
-                                    m2src_ = m2det_/(1+zs_)
-                       
-                    
-                                    idx_init_tmp = m1src_.eval().argmin() 
-                                    idx_init = np.squeeze(np.argwhere( gmm_means.eval()[idx][:, 0]== s[idx_init_tmp,0] ))
-    
-                                    ivals['idx'][idx] = idx_init
-                        
-                                    ivals['x'][idx] = onp.random.randn(1,nd)*0.1
-                        
-                        if idx_init<=-ncomp:
-                            raise ValueError('Initialization of masses failed. Check prior range.')
-                
-                elif FLAGS.sampling_gw=='gauss': # this might not work with spins
-
-
-                    
-                    N = gmm_means.shape[0] # number of events in total
-                    ngmm = gmm_means.shape[1]
-                    nd = gmm_means.shape[2]
-
-
-                    res, _ = pytensor.scan( lambda iev, X, M, L: models.get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev]),
-                                        sequences = [at.arange(N)],
-                                        non_sequences = [ ivals['x'], samples_means_at, samples_cho_covs_at]
-                        ) 
-
-                    
-                    log_Mc_det = res[0][:,0]
-                    logit_q = res[0][:,1]
-                    logd = res[0][:,2]
-                    pilik = res[1]
-
-                    #print('Initial sample ok.')
-
-                    if FLAGS.spin_model == 'default' :
-
-                        chi1 = atools.inv_logitat(res[0][:,3])
-                        chi2 = atools.inv_logitat(res[0][:,4])
-            
-                        cost1 = atools.inv_flogitat(res[0][:,5])
-                        cost2 = atools.inv_flogitat(res[0][:,6])
-                    
-                    Mc = at.exp(log_Mc_det)            
-                    q = atools.inv_logitat(logit_q)
-                    m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-                    d = at.exp(logd)
-
-                    #print('Mc')
-                    #print(Mc.eval())
-                
-                
-                
-                    zs = atools.z_from_dL_at(d, models.PLPeakO3params['H0'], models.PLPeakO3params['Om'], models.PLPeakO3params['w0'], models.PLPeakO3params['Xi0'], models.PLPeakO3params['nXi0'] )
-                    m1src = m1det/(1+zs)
-                    m2src = m2det/(1+zs)
-
-                    #print('zs')
-                    #print(zs.eval())
-    
-                    c1 = np.any(m1src.eval()>priors['mh'][1])
-                    c2 = np.any(m2src.eval()<priors['ml'][0])
-    
-                    if c1 | c2:
-                        #idx_init -=1
-                        #it+=1
-                        print("Initial conditions not good ")
-                        if c1:
-                            print("m1 source outside mh prior range for:")
-                            print( np.where(m1src.eval()>priors['mh'][1]) )
-                            print(m1src.eval()[m1src.eval()>priors['mh'][1]])
-                        if c2:
-                            print("m2 source outside ml prior range for:")
-                            print( np.where(m2src.eval()<priors['ml'][0]) )
-                            print(m2src.eval()[m2src.eval()>priors['ml'][0]])
-                            
-    
-                    if FLAGS.spin_model == 'default' :
-                        vals = at.zeros( (7, N) )
-                
-                        vals = at.set_subtensor( vals[0], log_Mc_det )
-                        vals = at.set_subtensor( vals[1], logit_q )
-                        vals = at.set_subtensor( vals[2], logd )
-                        vals = at.set_subtensor( vals[3], res[0][:,3] )
-                        vals = at.set_subtensor( vals[4], res[0][:,4] )
-                        vals = at.set_subtensor( vals[5], res[0][:,5] )
-                        vals = at.set_subtensor( vals[6], res[0][:,6] )
-
-                    else:
-                        vals = at.zeros( (3, N) )
-                
-                        vals = at.set_subtensor( vals[0], log_Mc_det )
-                        vals = at.set_subtensor( vals[1], logit_q )
-                        vals = at.set_subtensor( vals[2], logd )
-                    
-                       
-                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
-                                           pytensor.scan( lambda ig, X, M, F, logD, logW  :
-                                           -0.5*( (X[: , iobs]-M[iobs, ig]).dot( F[iobs, ig].dot( (X[ :, iobs]-M[iobs, ig]).T )) )-0.5*nd*at.log(2*atools.PI)-0.5*logD[iobs, ig]+logW[iobs, ig],  
-                                                   sequences = [ at.arange( ngmm ) ],
-                                             non_sequences =  [vals,  gmm_means, gmm_icovs, gmm_log_dets, gmm_log_wts ],     
-                                                          )   ,                      
-                                 sequences = [ at.arange(N)  ],
-                                 non_sequences =  [vals,  gmm_means, gmm_icovs, gmm_log_dets, gmm_log_wts
-                                                  ]
-                                )
-                    gwl = at.logsumexp(logps, axis=1)
-
-                    
-                    
-
-                else:
-                    raise ValueError()    
-            
-            else:
-                # sampling only pop hyperparamters
-                pass
-            
-            print('Initial point obtained. ')
          
 
 
@@ -830,24 +472,24 @@ if __name__=='__main__':
                 print('Initial point names:')
                 print(ip.keys())
                 print('Check init vals')
-                for s in initvals if isinstance(ivals, list) else [ivals]:
-                    model.check_start_vals(s)
+                #for s in initvals if isinstance(ivals, list) else [ivals]:
+                #    model.check_start_vals(s)
                 
                 try:
-                    model.check_start_vals(ivals)
+                    model.check_start_vals(ip)
                     print("Start is finite ✅")
                 except Exception as e:
                     print("Start invalid ❌:", e)
                     # Inspect per-term logp
                     f = model.compile_logp(sum=False)
-                    parts = f(ivals)
+                    parts = f(ip)
                     print("Per-term logps:", parts)
                 
                 trace = pm.sample(  draws=FLAGS.nsteps, 
                                     tune=FLAGS.ntune, 
                                     chains=FLAGS.nchains,
                                     cores=FLAGS.ncores, 
-                                    initvals=ivals,
+                                    #initvals=ivals,
                                   #init='jitter+adapt_diag_grad',
                                     step = pm.NUTS( target_accept=FLAGS.target_accept),
                                     trace=backend,

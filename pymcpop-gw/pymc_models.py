@@ -86,11 +86,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     elif mass_model=='DPLDP':
         #alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon = Lambda[-16:]
         lambdaBBHmass = Lambda[-20:]
-        print('alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon')
-        for i in range(20):
-            print(lambdaBBHmass[i].eval())
-        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=True, has_m2_break=has_m2_break )
-        print(lpmass.eval())
+        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break )
         
         
     ### BNS
@@ -255,6 +251,7 @@ def get_sample_from_cho_lMclqld(x, mu, L):
 def make_model(  priors,
                  GWData,
                  InjData,
+                 ivals={},
                  sampling_GW = 'gmm',
                  rate_model = 'MD',
                  mass_model = 'PLP',
@@ -439,15 +436,15 @@ def make_model(  priors,
         
         if rate_model=='MD':
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1])    
-            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1])
-            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1])
+            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
             Lambda_ += [gamma_, kappa_, zp_]
 
         elif rate_model=='PL':
             print('Modeling evolution of merger rate with a power law')
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1])
+            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))
 
             Lambda_ += [gamma_]
 
@@ -551,14 +548,14 @@ def make_model(  priors,
             if not pairing:
                 print('No pairing function C(m1)')
             
-            lamP_ = pm.Uniform('lambdaPeak', lower=priors['lambdaPeak'][0], upper=priors['lambdaPeak'][1])
-            alpha_ = pm.Uniform('alpha', lower=priors['alpha'][0], upper=priors['alpha'][1])
-            beta_ = pm.Uniform('beta', lower=priors['beta'][0], upper=priors['beta'][1])
-            ml_ = pm.Uniform('ml', lower=priors['ml'][0], upper=priors['ml'][1])
-            mh_ = pm.Uniform('mh', lower=priors['mh'][0], upper=priors['mh'][1])
-            deltam_ = pm.Uniform('deltam', lower=priors['deltam'][0], upper=priors['deltam'][1])
-            muM_ = pm.Uniform('muMass', lower=priors['muMass'][0], upper=priors['muMass'][1])
-            sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
+            lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))
+            alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
+            beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
+            ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
+            mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
+            deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
+            muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
+            sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
@@ -567,60 +564,37 @@ def make_model(  priors,
 
             print('Modeling mass distribution with Double Power Law + Double Peak ')
 
-            alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1])
-            alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1])
-            mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1])
-            mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1])
-            sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1])
-            mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1])
-            sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1])
-            
-            #m1_low_   = pm.Uniform("m1_low",   lower=priors["m1_low"][0],   upper=priors["m1_low"][1])
-            #m2_low_   = pm.Uniform("m2_low",   lower=priors["m2_low"][0],   upper=priors["m2_low"][1])
-
-            u = pm.Uniform("u", 0, 1)
-            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
-            
-            # 2. Sample m2_low conditional on m1_low
-            v = pm.Uniform("v", 0, 1)
-            m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-                    
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0) )
-            
-            delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1])
-            
-            lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]))
-            lambda0_ = pm.Deterministic("lambda0", lambda_vec[0])
-            lambda1_ = pm.Deterministic("lambda1", lambda_vec[1])
-            lambda2_ = pm.Deterministic("lambda2", lambda_vec[2])
-            
-            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1])
-            
-            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1])
-            
-            epsilon_  = pm.Deterministic( "epsilon", at.as_tensor_variable(0.01) ) # smoothing for transition points in power-law
-
+            alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+            alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
+            mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+            mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+            sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
+            mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
+            sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+            m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+            delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+            lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
+            lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+            lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+            lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
             if has_m2_break:
-
-                print('Including gap for secondary mass ')
-
-                m_g_ =  at.as_tensor_variable(45)
-
-                w_g_ =  at.as_tensor_variable(70)
-                
-                sig_g_l_ =  at.as_tensor_variable( 1e-04 )
-                
-                sig_g_h_ =  at.as_tensor_variable(1e-04)
-                            
+                print("Including gap for secondary mass")
+                m_g_     = at.as_tensor_variable(45)
+                w_g_     = at.as_tensor_variable(70)
+                sig_g_l_ = at.as_tensor_variable(1e-04)
+                sig_g_h_ = at.as_tensor_variable(1e-04)
             else:
-
-                m_g_ =  at.as_tensor_variable(45)
-
-                w_g_ =  at.as_tensor_variable(70)
-                
-                sig_g_l_ =  at.as_tensor_variable( 1e-04 )
-                
-                sig_g_h_ =  at.as_tensor_variable(1e-04)
+                m_g_     = at.as_tensor_variable(45)
+                w_g_     = at.as_tensor_variable(70)
+                sig_g_l_ = at.as_tensor_variable(1e-04)
+                sig_g_h_ = at.as_tensor_variable(1e-04)
             
             Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
