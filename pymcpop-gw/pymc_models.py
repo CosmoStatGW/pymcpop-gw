@@ -86,7 +86,11 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     elif mass_model=='DPLDP':
         #alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon = Lambda[-16:]
         lambdaBBHmass = Lambda[-20:]
-        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break )
+        print('alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon')
+        for i in range(20):
+            print(lambdaBBHmass[i].eval())
+        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=True, has_m2_break=has_m2_break )
+        print(lpmass.eval())
         
         
     ### BNS

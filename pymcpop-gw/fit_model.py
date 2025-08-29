@@ -500,9 +500,15 @@ if __name__=='__main__':
             print("Setting user-provided intial values...")
         
             for k in ivals.keys():
-                sig_init = ivals[k]*FLAGS.eps_init
                 good = False
                 iter = 0
+                
+                try:
+                    sig_init = ivals[k]*FLAGS.eps_init
+                except:
+                    sig_init = ivals[k]
+                    good=True
+                
                 while not good:
                     ivals[k] += onp.random.randn()*sig_init
                     try:
@@ -816,7 +822,27 @@ if __name__=='__main__':
     else:  # works with older versions (but also with newer)
 
         if FLAGS.sampler=='pymc' :
-            with model:          
+
+            
+            with model:   
+                
+                ip = model.initial_point()
+                print('Initial point names:')
+                print(ip.keys())
+                print('Check init vals')
+                for s in initvals if isinstance(ivals, list) else [ivals]:
+                    model.check_start_vals(s)
+                
+                try:
+                    model.check_start_vals(ivals)
+                    print("Start is finite ✅")
+                except Exception as e:
+                    print("Start invalid ❌:", e)
+                    # Inspect per-term logp
+                    f = model.compile_logp(sum=False)
+                    parts = f(ivals)
+                    print("Per-term logps:", parts)
+                
                 trace = pm.sample(  draws=FLAGS.nsteps, 
                                     tune=FLAGS.ntune, 
                                     chains=FLAGS.nchains,
@@ -825,7 +851,8 @@ if __name__=='__main__':
                                   #init='jitter+adapt_diag_grad',
                                     step = pm.NUTS( target_accept=FLAGS.target_accept),
                                     trace=backend,
-                                    progressbar=True
+                                    progressbar=True,
+                                    #jitter_max_retries=1000, 
                                  )
         
             
