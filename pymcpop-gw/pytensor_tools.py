@@ -18,11 +18,15 @@ from jax.numpy import zeros
 
 c_light = 299792458*1e-03
 c_light_at = at.as_tensor_variable(c_light)
-MIN = at.as_tensor_variable(-np.inf)  # your "effectively -inf" #at.as_tensor_variable(-np.inf)
+NINF = at.as_tensor_variable(-np.inf)  
 INF = at.as_tensor_variable(np.inf)
 
-EPS = 1e-30  # for float64; use 1e-30 for float32
 
+EPS32 = at.as_tensor_variable(1e-30)  #  use 1e-30 for float32
+BIG32 = at.as_tensor_variable(1e20) 
+
+MIN = NINF # your "effectively -inf" : NINF or EPS
+MAX = INF
 
 
  
@@ -47,6 +51,14 @@ zGridGlobals = np.array(zGridGlobals_at.eval())
 ##########################
 ####### Auxiliary functions ########
 ##########################
+
+
+safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   # >0, finite
+safe_div = lambda a,b: a / safe_pos(b)
+safe_log = lambda x: at.log(safe_pos(x))
+safe_sqrt= lambda x: at.sqrt(safe_pos(x))
+clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
+
 
 
 def uniform_unconstrained(name, low, high, init=None):
@@ -81,6 +93,12 @@ def logdiffexp(x, y, neg_inf=-np.inf):
     logabs = m + at.log1p(-at.exp(-d))
     return at.where(x >= y, logabs, at.as_tensor_variable(neg_inf).astype(m.dtype))
 
+
+def logdiffexp32(x,y):
+    m = at.maximum(x,y); d = at.maximum(at.abs(x-y), EPS32)
+    out = m + at.log1p(-at.exp(-d))
+    return at.where(x>y, out, NINF)   # or your MIN
+
 def logsumexp(x, y):
     """`log(exp(x)+exp(y))` """
     #return x + at.log1p(at.exp(y-x))
@@ -113,19 +131,106 @@ def Mcq_from_m1m2_at(m1, m2):
     
     return Mc, q
 
-def log_sigmoid(x, m, sig):
-    return at.log(safe_sigmoid(x, m, sig)) #-at.log1p(at.exp(-(x-m)/sig))
 
-def sigmoid(x, m, sig):
-    return 1/(1+at.exp((-(x-m)/sig)))
-
-def safe_sigmoid(x, x0, eps):
-    s = 1.0 / (1.0 + at.exp(-(x - x0) / eps))
-    return at.clip(s, 1e-15, 1 - 1e-15)
 
 def stick_breaking(beta):
     portion_remaining = at.concatenate([[1], at.extra_ops.cumprod(1 - beta)[:-1]])
     return beta * portion_remaining
+
+
+
+#######################
+# sigmoids
+########################
+
+#######################
+# working 
+
+def sigmoid(x, x0, s, eps=1e-12, clip=1e-15):
+    # ensure positive scale
+    s = at.maximum(s, at.as_tensor_variable(eps).astype(x.dtype))
+    t = (x - x0) / s
+    y = 0.5 * (at.tanh(0.5 * t) + 1.0)   # stable sigmoid
+    if clip is not None:
+        lo = at.as_tensor_variable(clip).astype(x.dtype)
+        hi = at.as_tensor_variable(1.0 - clip).astype(x.dtype)
+        y = at.clip(y, lo, hi)            # only if you really need interior (0,1)
+    return y
+
+
+# def sigmoid(x, m, sig):
+#     return 1/(1+at.exp((-(x-m)/sig)))
+
+def log_sigmoid(x, m, sig):
+    return at.log(sigmoid(x, m, sig)) 
+
+
+def safe_sigmoid(x, x0, eps):
+
+    # works, older
+    #s = 1.0 / (1.0 + at.exp(-(x - x0) / eps))
+    #return at.clip(s, 1e-15, 1 - 1e-15)
+    
+    return sigmoid(x, x0, eps, clip=1e-15)
+
+
+#######################
+
+
+# def _softplus_stable(z):
+#     zero = at.as_tensor_variable(0.0).astype(z.dtype)
+#     return at.log1p(at.exp(-at.abs(z))) + at.maximum(z, zero)
+
+# def log_sigmoid(x, m, s, eps=EPS32):
+#     epsv = at.as_tensor_variable(eps).astype(x.dtype)
+#     s = at.maximum(s, epsv)                  # ensure positive scale
+#     t = (x - m) / s
+#     return -_softplus_stable(-t)             # = log(sigmoid(t))
+
+# def log1m_sigmoid_stable(x, m, s, eps=EPS32):
+#     epsv = at.as_tensor_variable(eps).astype(x.dtype)
+#     s = at.maximum(s, epsv)
+#     t = (x - m) / s
+#     return -_softplus_stable(t)              # = log(1 - sigmoid(t))
+
+# def sigmoid(x, m, s, eps=EPS32):     # (in case you also need the sigmoid itself)
+#     epsv = at.as_tensor_variable(eps).astype(x.dtype)
+#     s = at.maximum(s, epsv)
+#     t = (x - m) / s
+#     return 0.5 * (at.tanh(0.5 * t) + 1.0)
+
+#######################
+
+
+# def _softplus_stable(z):
+#     # log(1 + exp(z)) computed without overflow/underflow
+#     zero = at.as_tensor_variable(0.0).astype(z.dtype)
+#     z = at.clip(z, -1e20 if str(z.dtype).endswith("32") else -1e300,
+#                    1e20  if str(z.dtype).endswith("32") else  1e300)
+#     return at.log1p(at.exp(-at.abs(z))) + at.maximum(z, zero)
+
+
+# def _guard_scale(s, x, eps_f32=1e-12, eps_f64=1e-300):
+#     eps = eps_f32 if str(x.dtype).endswith("32") else eps_f64
+#     epsv = at.as_tensor_variable(eps).astype(x.dtype)
+#     # replace NaN with eps, then ensure >= eps
+#     s = at.where(at.isnan(s), epsv, s)
+#     return at.maximum(s, epsv)
+
+# def log_sigmoid(x, m, s):
+#      #s = _guard_scale(s, x)
+#      t = (x - m) / s
+#      return -at.logaddexp(0.0, -t)          # == log(sigmoid(t))
+
+# def log1m_sigmoid_stable(x, m, s):
+#     #s = _guard_scale(s, x)
+#     t = (x - m) / s
+#     return -at.logaddexp(0.0, t)           # == log(1 - sigmoid(t))
+
+#######################
+
+
+
 
 ##########################
 ####### Interpolators and integrators ########
@@ -345,13 +450,13 @@ def Efun_at(z,Om,w0 ):
     return at.sqrt( Om*(1+z)**3+(1-Om)  )
 
 
-def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
+def z_from_dL_np( r, H0, Om, w0, Xi0, n ):
     dLGrid = np.array(dLfun_np( zGridGlobals, H0, Om=Om ))
     z2dL = jnptinterp( r, dLGrid, zGridGlobals ) 
     return np.array(z2dL)
 
 
-def z_from_dL_at(r, H0, Om, w0, Xi0, n ):
+def z_from_dL_at( r, H0, Om, w0, Xi0, n ):
     dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
     z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
     return z2dL 
@@ -801,7 +906,30 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
     return 1/(1-alpha)*(mmax**(1-alpha)-mmin**(1-alpha))
 
 
+def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
+    """
+    log ∫_{mmin}^{mmax} m^{-alpha} dm
+    = log( (mmax^(1-α) - mmin^(1-α)) / (1-α) ), with a stable α≈1 branch.
+    """
+    # tensors + guards
+    epsv  = at.as_tensor_variable(eps).astype(mmin.dtype)
 
+    mmin_c = at.clip(mmin, epsv, INF)
+    mmax_c = at.maximum(at.clip(mmax, epsv,INF), mmin_c * (1.0 + 1e-12))
+
+    t = at.as_tensor_variable(1.0).astype(alpha.dtype) - alpha  # t = 1 - α
+    close = at.abs(t) < 1e-6
+
+    # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
+    num = at.pow(mmax_c, t) - at.pow(mmin_c, t)
+    log_not1 = at.log(at.abs(num)) - at.log(at.abs(t))
+
+    # α = 1: log( log(mmax/mmin) )
+    log_ratio = at.log(mmax_c / mmin_c)
+    log_eq1   = at.log(at.clip(log_ratio, epsv, np.inf))
+
+    return at.switch(close, log_eq1, log_not1)
+    
 
 ####### Power Law + Peak smooth edges , LVK low-end ########
 
@@ -819,28 +947,33 @@ def logpdf_PLP_reg(theta, lambdaBBHmass,  smoothing='LVK'):
         
         ln = logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing )
         
-        return lpdfm1+lpdfm2-ln-logC_PLP_reg(m1, beta, deltam,  ml, smoothing=smoothing) 
+        return lpdfm1 +lpdfm2-ln-logC_PLP_reg(m1, beta, deltam,  ml, smoothing=smoothing) 
         
 
 
  
 def logpdfm1_PLP_reg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, sl=0.05, sh=0.05, smoothing='LVK'):
 
-    return logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing) + at.log(1-safe_sigmoid(m, mh, sh)) + log_sigmoid(m, ml, sl)
-
+    return logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing)  + log_sigmoid(m, ml, sl) + at.log(1-safe_sigmoid(m, mh, sh)) 
+    
+    # at.log(1-sigmoid(m, mh, sh))  #log1m_sigmoid_stable(m, mh, sh)
+    #at.log(1-safe_sigmoid(m, mh, sh)) 
+    #+ log1m_sigmoid_stable(m, mh, sh)
 
 def logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK'):
 
-    norm = norm_truncated_pl_num(alpha, ml, mh)
-    trunc_component =  1./(m**alpha)/norm
-    gauss_component = at.exp(-(m-muMass)**2/(2*sigmaMass**2))/(at.sqrt(2*PI)*sigmaMass)
+    log_norm = log_norm_truncated_pl_num(alpha, ml, mh) #norm_truncated_pl_num(alpha, ml, mh)
+    log_trunc_component =  -alpha*at.log(m) - log_norm #1./(m**alpha)/norm
+    log_gauss_component = -0.5 * at.square((m - muMass) / sigmaMass) - at.log(sigmaMass) - 0.5 * at.log(2*PI)
 
     if smoothing=='LVK':
         lS = logS_PLP_LVK(m, deltam, ml)
     else:
         lS = logS_PLP(m, deltam, ml)
         
-    result =  at.log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component) + lS
+    #result =  at.log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component) + lS
+
+    result = logsumexp( at.log1p(-lambdaPeak) + log_trunc_component, at.log(lambdaPeak) + log_gauss_component ) + lS
  
     return result
 

@@ -9,7 +9,7 @@
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
-os.environ.setdefault("JAX_ENABLE_X64", "true")   # enables float64 in all processes
+os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
 
 import argparse
 import json
@@ -49,6 +49,7 @@ def main():
     print(f"Running on PyMC v{pm.__version__}")
 
     print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype) 
 
     
     parser = argparse.ArgumentParser()
