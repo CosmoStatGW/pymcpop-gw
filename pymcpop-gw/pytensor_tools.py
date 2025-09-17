@@ -38,6 +38,30 @@ except:
 zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
+# try:
+#     zGridGlobals_at = at.sort(at.unique(at.concatenate([
+#         at.logspace(start=-100, stop=-15, base=10, steps=50),
+#         at.logspace(start=-30, stop=-4, base=10, steps=100),
+#         at.logspace(start=-4, stop=1, base=10, steps=1000),
+#         at.logspace(start=1, stop=2, base=10, steps=100),
+#         at.logspace(start=2, stop=5, base=10, steps=50),
+#         at.logspace(start=5, stop=6, base=10, steps=20),   # aggiunta: redshift molto alto
+#         at.logspace(start=6, stop=7, base=10, steps=10)    # aggiunta: bordo massimo sicuro
+#     ])))
+# except:
+#     zGridGlobals_at = at.sort(at.unique(at.concatenate([
+#         at.logspace(start=-100, end=-15, base=10, steps=50),
+#         at.logspace(start=-30, end=-4, base=10, steps=100),
+#         at.logspace(start=-4, end=1, base=10, steps=1000),
+#         at.logspace(start=1, end=2, base=10, steps=100),
+#         at.logspace(start=2, end=5, base=10, steps=50),
+#         at.logspace(start=5, end=6, base=10, steps=20),   # aggiunta
+#         at.logspace(start=6, end=7, base=10, steps=10)    # aggiunta
+#     ])))
+
+# zGridGlobals = np.array(zGridGlobals_at.eval())
+
+
 
 ##########################
 ####### Auxiliary functions ########
@@ -328,6 +352,8 @@ def z_from_dL_np(r, H0, Om, w0, Xi0, n ):
 
 def z_from_dL_at(r, H0, Om, w0, Xi0, n ):
     dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
+    print('dLGrid_at',dLGrid_at.shape.eval())
+    print('dL max',r.max().eval())
     z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
     return z2dL 
 
