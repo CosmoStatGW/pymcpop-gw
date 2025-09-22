@@ -664,7 +664,7 @@ def make_model(  priors,
             gp = pm.gp.Latent(cov_func=cov)
 
             # for imposing monotonicity
-            eps = at.as_tensor_variable(1e-12).astype(g.dtype)          # avoid div-by-zero
+            eps = at.as_tensor_variable(1e-12)          # avoid div-by-zero
             
             Lambda_MG_ = [ gp  ] 
             iastro = 4
@@ -1099,6 +1099,8 @@ def make_model(  priors,
                     dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
+
+                    dc = pm.Deterministic('dc', atools.dcfun_at(zs, H0_, Om_,  w0_, interp=False) , dims= "event_index" )
                     
 
                     # now derivative d(dL)/dz and comoving distance
@@ -1119,7 +1121,7 @@ def make_model(  priors,
 
                         d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
 
-                        dc = pm.Deterministic('dc', atools.dcfun_at(zs, H0_, Om_,  w0_, interp=False) , dims= "event_index" )
+                        
 
                         ddLem_dz = at.exp( atools.log_ddL_dz( zs, H0_, Om_, w0_, 1., 0., dc=None ) )
                         dLem = (1+zs)*dc
@@ -1156,6 +1158,8 @@ def make_model(  priors,
 
                                             
                         d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
+
+                        d_log_distance_ratio_d_z_grid = grad_log_distance_ratio_grid
                         
                         d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
     
@@ -1173,7 +1177,7 @@ def make_model(  priors,
         
                         log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
                         
-                        dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
+                        #dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
                              
                     
                     
@@ -1195,7 +1199,7 @@ def make_model(  priors,
                         ν = 0.05 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2)))
                         #0.01  # softness in the same units as g=d log dist. ratio/dz ; tune as needed
                         
-                        monotonicity = pm.Potential("monotonicity", -at.sum(pm.math.softplus(-(d_log_distance_ratio_d_z - lb)/ν)))
+                        monotonicity = pm.Potential("monotonicity", -at.sum(at.logaddexp( 0.0, -(d_log_distance_ratio_d_z_grid - lb)/ν)) )
                     
                 
                 
