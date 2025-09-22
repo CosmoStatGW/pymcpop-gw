@@ -744,40 +744,10 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp(X_list, gp, data_range, name="f", res=100,):
-    """
-    Evaluate GP on fixed grid, and interpolate function + gradient at input points.
-
-    Args:
-        X_list: list of two tensors (e.g., [X_data, X_inj])
-        ℓ: lengthscale (symbolic)
-        η: amplitude (symbolic)
-        name: name of the GP random variable
-        res: number of grid points
-
-    Returns:
-        zs_list: interpolated GP values at X_list
-        grads_list: interpolated gradients at X_list
-    """
-    
-        
-    X_test = at.linspace(0, 1, res)[:, None]
-    dx = X_test[1] - X_test[0]
-    f_test =  at.cumsum(at.softplus( gp.prior( name, X_test, reparameterize=True) ))*dx
-
-         
-    # Interpolate values and gradients at requested points
-    z_data, grad_data_scaled = atinterp( min_max_scaler( X_list[0], data_range=data_range), X_test, f_test, return_grad=True)
-    z_inj, grad_inj_scaled   = atinterp( min_max_scaler( X_list[1], data_range=data_range), X_test, f_test, return_grad=True)
-    grad_data = grad_data_scaled/ (dmax - dmin)
-    grad_inj = grad_inj_scaled/ (dmax - dmin)
-                
-    
-    return [z_data, z_inj], [grad_data, grad_inj], [X_test, f_test]
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , S_shared=None, dense_grad = False ):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , S_shared=None, dense_grad = False , eta=None, ell=None ):
 
     if data_range is not None:
         zmin, zmax = data_range
@@ -802,29 +772,60 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         f_pseudo = log_distance_ratio_grid[0]
         pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
            
-    # Interpolate values and gradients at requested points
-    log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
-    if data_range is not None:
-        grad_log_distance_ratio /= (zmax - zmin)
-
+    
     if dense_grad:
-        grad_log_distance_ratio = at.dot( S_shared, log_distance_ratio ) 
+
+        grad_log_distance_ratio = make_gp_mapper(gp, X_eval, eta, ell)
+        log_distance_ratio = log_distance_ratio_grid
+
+    else:
+        # Interpolate values and get gradients 
+    log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
+
+
+        if data_range is not None:
+            grad_log_distance_ratio /= (zmax - zmin)
                 
     
     return log_distance_ratio, grad_log_distance_ratio
 
-def diff_matrix_5pt(X_dense, Xc):
-    h = Xc[1]-Xc[0]  # assume uniform; otherwise do local nonuniform weights
-    M, P = len(Xc), len(X_dense)
-    S = np.zeros((P, M))
-    for p, x in enumerate(X_dense):
-        i = np.searchsorted(Xc, x)  # nearest coarse index
-        i = np.clip(i, 2, M-3)
-        # [-2,-1, +1, +2] weights / (12 h)
-        w = np.array([-1, 8, 0, -8, 1])/(12*h)
-        idx = np.array([i-2, i-1, i, i+1, i+2])
-        S[p, idx] = w
-    return S 
+
+# derivative cross-cov for Matérn-5/2 (1D), stable (no 1/r)
+def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
+    xd   = at.as_tensor_variable(Xd).ravel()[:, None]
+    xc   = at.as_tensor_variable(Xc).ravel()[None, :]
+    diff = xd - xc
+    r    = at.abs(diff)
+    a    = np.sqrt(5.0) / ell
+    expm = at.exp(-a * r)
+    coef = -(5.0 * (eta**2) / 3.0) * expm
+    return coef * ( diff / (ell**2) + np.sqrt(5.0) * r * diff / (ell**3) )
+
+def make_gp_mapper(gp, Xc, eta, ell):
+    """
+    Prepare a callable that, given any X_new, returns linear maps
+    T_new, A_new so that:
+      f(X_new)  = T_new @ f_c
+      f'(X_new) = A_new @ f_c
+    Reuses the same Kcc factorization from the coarse grid Xc.
+    """
+    Xc = at.as_tensor_variable(Xc)
+    Kcc = gp.cov_func(Xc[:, None])                  # includes WhiteNoise on the diagonal
+    Lcc = at.linalg.cholesky(Kcc)                   # cached factor
+
+    def maps(X_new):
+        X_new = at.as_tensor_variable(X_new)
+        # Values map: T = K(X_new, Xc) Kcc^{-1}
+        Kvc = gp.cov_func(X_new[:, None], Xc[:, None])   # no white-noise cross terms
+        Yv  = at.linalg.solve(Lcc,  Kvc.T)
+        Tv  = at.linalg.solve(Lcc.T, Yv).T
+        # Derivative map: A = K'(X_new, Xc) Kcc^{-1}
+        Kdc = matern52_dcov_dx_1d(X_new, Xc, eta, ell)
+        Yd  = at.linalg.solve(Lcc,  Kdc.T)
+        Ad  = at.linalg.solve(Lcc.T, Yd).T
+        return Tv, Ad
+
+    return maps
 
 #####################################################
 #####################################################

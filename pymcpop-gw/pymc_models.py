@@ -365,7 +365,7 @@ def make_model(  priors,
                GP_zero_point = False,
                rescale_GP=False,
                invert_dL_GP = True,
-               dense_grad = True,
+               dense_grad = False,
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -587,12 +587,6 @@ def make_model(  priors,
         plt.savefig( os.path.join(fout, 'ell_prior.pdf'), bbox_inches='tight')
         plt.close()
 
-        if dense_grad:
-            print("Building matrix to map coarse grid to finer resolution derivatives...")
-            S = atools.diff_matrix_5pt(atools.zGridGlobals_at_dense.eval(), atools.zGridGlobals_at.eval()).astype(floatX)
-            S_shared =  at.as_tensor_variable( S ) #pm.MutableData("S", S)
-        else:
-            S_shared=None
         
     ################################################
     # Build model
@@ -1099,40 +1093,73 @@ def make_model(  priors,
                     # we sampled distance from the posterior. need to invert the dL-z relation
                           
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad  )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad,  eta=η , ell=ℓ  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
-                     
-                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
                     
 
                     # now derivative d(dL)/dz and comoving distance
                     if dense_grad:
-                        zgrid_grad = atools.zGridGlobals_at_dense
 
-                        # go back to lower resloution
-                        grad_log_distance_ratio_grid = atinterp( atools.zGridGlobals_at, atools.zGridGlobals_at_dense, grad_log_distance_ratio_grid )
-                    else:
-                        zgrid_grad = atools.zGridGlobals_at
+                        # log_distance_ratio_grid is on zGridGlobals_at
+
+
+                        maps = grad_log_distance_ratio_grid
+
+                        T_like, A_like = maps(zs)                 # both (len(X_like), M)
                         
-                    d_log_distance_ratio_d_z = atools.atinterp( zs, zgrid_grad, grad_log_distance_ratio_grid )  
-                    
-                    d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
+                        log_distance_ratio   = pm.Deterministic("log_d_ratio",   T_like @ log_distance_ratio_grid, dims= "event_index")
+                        distance_ratio = pm.Deterministic( "d_ratio", at.exp(log_distance_ratio), dims= "event_index")
+                        
+                        d_log_distance_ratio_d_z  =   A_like @ log_distance_ratio_grid
 
-                    dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
-                    dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
+                        d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
 
-                    ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
-    
-                    distance_ratio_grid = at.exp(log_distance_ratio_grid)
-    
-                    log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                        dc = pm.Deterministic('dc', atools.dcfun_at(zs, H0_, Om_,  w0_, interp=False) , dims= "event_index" )
+
+                        ddLem_dz = at.exp( atools.log_ddL_dz( zs, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        dLem = (1+zs)*dc
+
+                        log_ddL_dz = at.log( at.abs( dLem*d_log_distance_ratio_d_z*distance_ratio + distance_ratio*ddLem_dz ) )
+
+
+
+                        # derivative on full grid, for monotonicity and injections
+                        dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
+                        dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
+                        distance_ratio_grid = at.exp(log_distance_ratio_grid)
+                        ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        
+                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+
                     
+                    else:
+
+                            
+                         
+                        distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
+
+                                            
+                        d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
+                        
+                        d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
     
-                    log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
-                    
-                    dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
+                        dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
+                        dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
+    
+                        ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
+        
+                        distance_ratio_grid = at.exp(log_distance_ratio_grid)
+        
+                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                        
+        
+                        log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
+                        
+                        dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
                              
+                    
+                    
                     if monotonicity:
 
                         print('Imposing d(dL)/dz >0 on all the domain')
@@ -1461,10 +1488,27 @@ def make_model(  priors,
                     #distance_ratio_inj = at.exp(atools.atinterp( zinj, atools.zGridGlobals_at, log_distance_ratio ))
                     #d_distance_ratio_d_z_inj = d_log_distance_ratio_d_z_inj*distance_ratio_inj
                     
+                    dc_inj = atools.dcfun_at(zinj, H0_, Om_,  w0_, interp=False)
                     
-                    log_ddL_dz_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, log_ddL_dz_grid )
+                    if not dense_grad:
+                        log_ddL_dz_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, log_ddL_dz_grid )
+                        #dc_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, dc_grid )
+                        
+                    else:
+
+
+                        T_inj, A_inj = maps(zinj) 
+                        
+                        log_distance_ratio_inj    =  T_inj @ log_distance_ratio_grid 
+                        distance_ratio_inj = at.exp(log_distance_ratio_inj)
+                        d_log_distance_ratio_d_z_inj  =   A_inj @ log_distance_ratio_grid
+
+                        ddLem_dz_inj = at.exp( atools.log_ddL_dz( zinj, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        dLem_inj = (1+zinj)*dc_inj
+
+                        log_ddL_dz_inj = at.log( at.abs( dLem_inj*d_log_distance_ratio_d_z_inj*distance_ratio_inj + distance_ratio_inj*ddLem_dz_inj ) )
                     
-                    dc_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, dc_grid )
+                
                 else:
                     zinj, log_ddL_dz_inj, dc_inj = None, None, None
                     
