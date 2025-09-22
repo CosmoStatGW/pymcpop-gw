@@ -44,6 +44,39 @@ pytensor.config.floatX = "float64"
 
 def main():
 
+    print(jax.default_backend())
+    print(jax.devices())
+    print(f"Running on PyMC v{pm.__version__}")
+    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype) 
+
+    
+    parser = argparse.ArgumentParser()
+    
+    
+    parser.add_argument("--fin_data", nargs='+', type=str, required=True)
+    parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
+    parser.add_argument("--fin_priors", default='', type=str, required=True)
+    parser.add_argument("--backend", default='disk', type=str, required=False)
+    
+    parser.add_argument("--pop_only", default=0, type=int, required=False)
+    
+    
+    parser.add_argument("--rate_model", default='MD', type=str, required=False)
+    parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
+    parser.add_argument("--spin_model", default='none', type=str, required=False)
+    parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
+    parser.add_argument("--marginal_R0", default=1, type=int, required=False)
+    parser.add_argument("--smoothing", default='LVK', type=str, required=False)
+    parser.add_argument("--has_m2_break", default=0, type=int, required=False)
+    
+    
+    
+    parser.add_argument("--dLprior", default='none', type=str, required=False)
+    parser.add_argument("--spinprior", default=0, type=int, required=False)
+    parser.add_argument("--massprior", default=0, type=int, required=False)
+    parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
+
 
     parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
@@ -97,80 +130,6 @@ def main():
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
 
-    print(jax.default_backend())
-    print(jax.devices())
-    print(f"Running on PyMC v{pm.__version__}")
-    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-    print("dtype test:", np.array(0., dtype=np.float64).dtype) 
-
-    
-    parser = argparse.ArgumentParser()
-    
-    
-    parser.add_argument("--fin_data", nargs='+', type=str, required=True)
-    parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
-    parser.add_argument("--fin_priors", default='', type=str, required=True)
-    parser.add_argument("--backend", default='disk', type=str, required=False)
-    
-    parser.add_argument("--pop_only", default=0, type=int, required=False)
-    
-    
-    parser.add_argument("--rate_model", default='MD', type=str, required=False)
-    parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
-    parser.add_argument("--spin_model", default='none', type=str, required=False)
-    parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
-    parser.add_argument("--marginal_R0", default=1, type=int, required=False)
-    parser.add_argument("--smoothing", default='LVK', type=str, required=False)
-    parser.add_argument("--has_m2_break", default=0, type=int, required=False)
-    
-    
-    
-    parser.add_argument("--dLprior", default='none', type=str, required=False)
-    parser.add_argument("--spinprior", default=0, type=int, required=False)
-    parser.add_argument("--massprior", default=0, type=int, required=False)
-    parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
-    
-    
-    parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
-    parser.add_argument("--cho_dil", default=1., type=float, required=False)
-    parser.add_argument("--sel", default='Tobs', type=str, required=False)
-    parser.add_argument("--ivals", default='', type=str, required=False)
-    parser.add_argument("--eps_init", default=0.01, type=float, required=False)
-    parser.add_argument("--params_fix", default='', type=str, required=False)
-    parser.add_argument("--check_init", default=1, type=int, required=False)
-    parser.add_argument("--debug", default=1, type=int, required=False)
-    
-    
-    parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
-    parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
-    parser.add_argument("--min_Neff", default=0, type=int, required=False)
-    parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
-    parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
-    
-    parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
-    parser.add_argument("--spin_inj", default='none', type=str, required=False)
-    parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
-    parser.add_argument("--transform_samples", default=1, type=int, required=False)
-    parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
-    parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
-    parser.add_argument("--dil_factor", default=1, type=int, required=False)
-    parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
-    
-    parser.add_argument("--fout", default='results/', type=str, required=True)
-    
-    parser.add_argument("--sampler", default='pymc', type=str, required=False)
-    parser.add_argument("--nsteps", default=100, type=int, required=True)
-    parser.add_argument("--ntune", default=100, type=int, required=True)
-    parser.add_argument("--nchains", default=1, type=int, required=False)
-    parser.add_argument("--ncores", default=1, type=int, required=False)
-    parser.add_argument("--target_accept", default=0.8, type=float, required=False)
-    parser.add_argument("--fix_H0", default=1, type=int, required=False)
-    parser.add_argument("--fix_Om", default=1, type=int, required=False)
-    parser.add_argument("--fix_w0", default=1, type=int, required=False)
-    parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
-    
-    parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
 
     FLAGS = parser.parse_args()
