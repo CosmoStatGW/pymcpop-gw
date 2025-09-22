@@ -112,14 +112,18 @@ def main():
     parser.add_argument("--nchains", default=1, type=int, required=False)
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
+    parser.add_argument("--chain_method", default='parallel', type=str, required=False)
+    
     
     
     parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default=0, type=int, required=False)
-    parser.add_argument("--GP_prior", default='gammainv', type=str, required=False)
+    parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
     parser.add_argument("--GP_zero_point", default=1, type=int, required=False)
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
+    parser.add_argument("--dense_grad", default=0, type=int, required=False)
+    
     
     
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -401,6 +405,7 @@ def main():
                                     GP_prior=FLAGS.GP_prior,
                                     GP_zero_point=FLAGS.GP_zero_point,
                                     invert_dL_GP=FLAGS.invert_dL_GP,
+                                    dense_grad = FLAGS.dense_grad,
                                     fout=FLAGS.fout,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
@@ -620,7 +625,7 @@ def main():
            
             sampler_kwargs = {
                     "draws": FLAGS.nsteps,
-                    "tune":FLAGS.ntune,
+                    "tune": FLAGS.ntune,
                     "target_accept": FLAGS.target_accept,
                     "chains": FLAGS.nchains,
                     #"random_seed": 42,
@@ -632,10 +637,10 @@ def main():
             if FLAGS.sampler == "numpyro":
                 sampler = "numpyro"
                 sampler_kwargs.update({
-                                "cores": 1,                         # JAX: single OS process
+                                "cores": FLAGS.ncores,                         # JAX: single OS process
                                 "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
-                                    "chain_method": "vectorized",   # fast on single device
+                                    "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
@@ -651,10 +656,10 @@ def main():
             elif FLAGS.sampler == "blackjax":
                 sampler = "blackjax"
                 sampler_kwargs.update({
-                    "cores": 1,                        # avoid fork
+                    "cores": FLAGS.ncores,                        # avoid fork
                     "target_accept": FLAGS.target_accept,
                     "nuts_sampler_kwargs": {
-                        "chain_method": "vectorized" #"vectorized",  # BlackJAX has no 'nuts_kwargs' block
+                        "chain_method": FLAGS.chain_method #"vectorized",  # BlackJAX has no 'nuts_kwargs' block
                     },
                 })
             else:
@@ -662,7 +667,7 @@ def main():
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
     
-            print('Sampling with %s...' %FLAGS.sampler)
+            print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
             trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
 
             

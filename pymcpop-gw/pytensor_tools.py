@@ -34,6 +34,13 @@ MAX = INF
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
         zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+        at.logspace(start=-10, stop=-4, base=10, steps=5), 
+                     at.logspace(start=-4, stop=1, base=10, steps=100), 
+                     at.logspace(start=1, stop=2, base=10, steps=5), 
+        
+    ])))
+
+        zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ 
         at.logspace(start=-10, stop=-4, base=10, steps=10), 
                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
                      at.logspace(start=1, stop=2, base=10, steps=10), 
@@ -43,6 +50,13 @@ try:
 except:
     
     zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+        at.logspace(start=-10, end=-4, base=10, steps=5 ), 
+                     at.logspace(start=-4, end=1, base=10, steps=100), 
+                     at.logspace(start=1, end=2, base=10, steps=5 ), 
+        
+    ])))
+
+    zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ 
         at.logspace(start=-10, end=-4, base=10, steps=10 ), 
                      at.logspace(start=-4, end=1, base=10, steps=1000), 
                      at.logspace(start=1, end=2, base=10, steps=10 ), 
@@ -493,7 +507,7 @@ def z_from_dL_np( r, H0, Om, w0, Xi0, n ):
 
 
 
-def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, GP_zero_point=False):
+def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=None, res=1000, GP_zero_point=False):
     
     if not is_GP_dL:
         Xi0, n = Lambda_MG
@@ -505,7 +519,7 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, data_range=None, res=1000, 
         
         dLGrid_EM_at = dLfun_at( zGridGlobals_at, H0, Om, w0, 1., 0 )
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -763,7 +777,7 @@ def compute_gp_interp(X_list, gp, data_range, name="f", res=100,):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False ):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , S_shared=None, dense_grad = False ):
 
     if data_range is not None:
         zmin, zmax = data_range
@@ -792,11 +806,25 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
     log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
     if data_range is not None:
         grad_log_distance_ratio /= (zmax - zmin)
+
+    if dense_grad:
+        grad_log_distance_ratio = at.dot( S_shared, log_distance_ratio ) 
                 
     
     return log_distance_ratio, grad_log_distance_ratio
 
-    
+def diff_matrix_5pt(X_dense, Xc):
+    h = Xc[1]-Xc[0]  # assume uniform; otherwise do local nonuniform weights
+    M, P = len(Xc), len(X_dense)
+    S = np.zeros((P, M))
+    for p, x in enumerate(X_dense):
+        i = np.searchsorted(Xc, x)  # nearest coarse index
+        i = np.clip(i, 2, M-3)
+        # [-2,-1, +1, +2] weights / (12 h)
+        w = np.array([-1, 8, 0, -8, 1])/(12*h)
+        idx = np.array([i-2, i-1, i, i+1, i+2])
+        S[p, idx] = w
+    return S 
 
 #####################################################
 #####################################################

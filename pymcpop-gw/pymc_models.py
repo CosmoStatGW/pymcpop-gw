@@ -365,6 +365,7 @@ def make_model(  priors,
                GP_zero_point = False,
                rescale_GP=False,
                invert_dL_GP = True,
+               dense_grad = True,
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -585,6 +586,13 @@ def make_model(  priors,
         #plt.show()
         plt.savefig( os.path.join(fout, 'ell_prior.pdf'), bbox_inches='tight')
         plt.close()
+
+        if dense_grad:
+            print("Building matrix to map coarse grid to finer resolution derivatives...")
+            S = atools.diff_matrix_5pt(atools.zGridGlobals_at_dense.eval(), atools.zGridGlobals_at.eval()).astype(floatX)
+            S_shared =  at.as_tensor_variable( S ) #pm.MutableData("S", S)
+        else:
+            S_shared=None
         
     ################################################
     # Build model
@@ -658,7 +666,7 @@ def make_model(  priors,
             η = pm.Exponential("η", lam=atools.lambda_)
             print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
 
-            cov = η**2 * pm.gp.cov.Matern52(1, ℓ) + pm.gp.cov.WhiteNoise(1e-5)
+            cov = η**2 * pm.gp.cov.Matern52(1, ℓ) + pm.gp.cov.WhiteNoise(1e-4)
             gp = pm.gp.Latent(cov_func=cov)
             
             Lambda_MG_ = [ gp  ] 
@@ -998,24 +1006,14 @@ def make_model(  priors,
                 pilik = res[1]
 
 
-                nv = icovs_l.shape[-1]
-                vals = at.zeros( (nv, N) )
-
-                print('Vals shape: %s'%str(vals.shape.eval()))
-                
-
                 if spin_model == 'none' :
                     
-                    #vals = at.zeros( (3, N) )
+                    vals = at.zeros( (3, N) )
                 
                     vals = at.set_subtensor( vals[0], log_Mc_det )
                     vals = at.set_subtensor( vals[1], logit_q )
                     vals = at.set_subtensor( vals[2], logd )
 
-                    if nd.eval()==5:
-                        print('%s dimensions in gaussian mean, but no spin and sky position: setting the remaining to zero %s'%str(nd.eval()))
-                        mus_l = at.set_subtensor( mus_l[:, :, nd-1], at.zeros( (N, ngmm) ) )
-                        mus_l = at.set_subtensor( mus_l[:, :, nd-2], at.zeros( (N, ngmm) ) )
 
                 elif spin_model == 'default' :
 
@@ -1026,7 +1024,7 @@ def make_model(  priors,
                     cost2 = atools.inv_flogitat(res[0][:,6])
             
 
-                    #vals = at.zeros( (7, N) )
+                    vals = at.zeros( (7, N) )
                 
                     vals = at.set_subtensor( vals[0], log_Mc_det )
                     vals = at.set_subtensor( vals[1], logit_q )
@@ -1036,8 +1034,7 @@ def make_model(  priors,
                     vals = at.set_subtensor( vals[5], res[0][:,5] )
                     vals = at.set_subtensor( vals[6], res[0][:,6] )
                     
-
-                print('mus_l shape: %s'%str(mus_l.shape.eval()))
+                
                 
                 # gw likelihood
                 if False:
@@ -1085,10 +1082,10 @@ def make_model(  priors,
                 
                 zs = pm.Deterministic('z', atools.z_from_dL_at(dval, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL ), dims= "event_index" )
 
-                dc = pm.Deterministic('dc', atools.dcfun_at(zs , H0_, Om0_,  w0_, ), dims= "event_index" )
+                dc = pm.Deterministic('dc', atools.dcfun_at( zs , H0_, Om_,  w0_, ), dims= "event_index" )
                  
                 #distance_ratio , d_distance_ratio_d_z = None, None
-                log_ddL_dz = atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc )
+                log_ddL_dz = atools.log_ddL_dz( zs, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc )
             
             else:
 
@@ -1102,7 +1099,7 @@ def make_model(  priors,
                     # we sampled distance from the posterior. need to invert the dL-z relation
                           
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
                      
@@ -1110,7 +1107,16 @@ def make_model(  priors,
                     
 
                     # now derivative d(dL)/dz and comoving distance
-                    d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
+                    if dense_grad:
+                        zgrid_grad = atools.zGridGlobals_at_dense
+
+                        # go back to lower resloution
+                        grad_log_distance_ratio_grid = atinterp( atools.zGridGlobals_at, atools.zGridGlobals_at_dense, grad_log_distance_ratio_grid )
+                    else:
+                        zgrid_grad = atools.zGridGlobals_at
+                        
+                    d_log_distance_ratio_d_z = atools.atinterp( zs, zgrid_grad, grad_log_distance_ratio_grid )  
+                    
                     d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
 
                     dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
@@ -1124,6 +1130,7 @@ def make_model(  priors,
                     
     
                     log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
+                    
                     dc = pm.Deterministic('dc', atools.atinterp( zs, atools.zGridGlobals_at, dc_grid ) , dims= "event_index" )
                              
                     if monotonicity:
@@ -1158,7 +1165,7 @@ def make_model(  priors,
 
                     # this is log(distance ratio) and its derivative computed on the grid
                     # zGridGlobals_at
-                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point )
+                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad )
                     
                     # now compute distance ratio at the actual events redshifts
                     distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))
@@ -1453,7 +1460,10 @@ def make_model(  priors,
                     #d_log_distance_ratio_d_z_inj = atools.atinterp( zinj, atools.zGridGlobals_at, grad_log_distance_ratio )        
                     #distance_ratio_inj = at.exp(atools.atinterp( zinj, atools.zGridGlobals_at, log_distance_ratio ))
                     #d_distance_ratio_d_z_inj = d_log_distance_ratio_d_z_inj*distance_ratio_inj
+                    
+                    
                     log_ddL_dz_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, log_ddL_dz_grid )
+                    
                     dc_inj = atools.atinterp( zinj,  atools.zGridGlobals_at, dc_grid )
                 else:
                     zinj, log_ddL_dz_inj, dc_inj = None, None, None
