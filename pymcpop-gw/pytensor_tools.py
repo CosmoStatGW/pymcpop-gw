@@ -796,10 +796,10 @@ def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
     xc   = at.as_tensor_variable(Xc).ravel()[None, :]
     diff = xd - xc
     r    = at.abs(diff)
-    a    = np.sqrt(5.0) / ell
+    a    = at.sqrt(5.0) / ell
     expm = at.exp(-a * r)
     coef = -(5.0 * (eta**2) / 3.0) * expm
-    return coef * ( diff / (ell**2) + np.sqrt(5.0) * r * diff / (ell**3) )
+    return coef * ( diff / (ell**2) + at.sqrt(5.0) * r * diff / (ell**3) )
 
 def make_gp_mapper(gp, Xc, eta, ell):
     """

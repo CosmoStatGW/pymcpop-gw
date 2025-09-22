@@ -1102,6 +1102,7 @@ def make_model(  priors,
                     if dense_grad:
 
                         # log_distance_ratio_grid is on zGridGlobals_at
+                        # grad_log_distance_ratio_grid is maps
 
 
                         maps = grad_log_distance_ratio_grid
@@ -1125,12 +1126,19 @@ def make_model(  priors,
 
 
                         # derivative on full grid, for monotonicity and injections
+
+                        
+                        T_grid, A_grid = maps( atools.zGridGlobals_at)            # both (len(X_like), M)
+
+                        d_log_distance_ratio_d_z_grid  =  A_grid @ log_distance_ratio_grid
+                        
                         dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
                         dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
+                        
                         distance_ratio_grid = at.exp(log_distance_ratio_grid)
                         ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
                         
-                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*d_log_distance_ratio_d_z_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
 
                     
                     else:
