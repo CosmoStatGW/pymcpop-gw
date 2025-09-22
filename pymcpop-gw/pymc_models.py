@@ -988,7 +988,7 @@ def make_model(  priors,
 
                 
                 res, _ = pytensor.scan( lambda iev, X, M, L: get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev] )  ,
-                                        sequences = [ at.arange(N)],
+                                        sequences = [ at.arange(N) ],
                                         non_sequences = [ x, mus_s, cho_s]
                     ) 
 
@@ -996,15 +996,25 @@ def make_model(  priors,
                 logit_q = res[0][:,1]
                 logd = res[0][:,2]
                 pilik = res[1]
+
+
+                nv = icovs_l.shape[-1]
+                vals = at.zeros( (nv, N) )
+
+                print('Vals shape: %s'%str(vals.shape.eval()))
                 
 
                 if spin_model == 'none' :
                     
-                    vals = at.zeros( (3, N) )
+                    #vals = at.zeros( (3, N) )
                 
                     vals = at.set_subtensor( vals[0], log_Mc_det )
                     vals = at.set_subtensor( vals[1], logit_q )
                     vals = at.set_subtensor( vals[2], logd )
+
+                    if nd.eval()==5:
+                        mus_l = at.set_subtensor( mus_l[:, :, nd-1], at.zeros( (N, ngmm) ) )
+                        mus_l = at.set_subtensor( mus_l[:, :, nd-2], at.zeros( (N, ngmm) ) )
 
                 elif spin_model == 'default' :
 
@@ -1015,7 +1025,7 @@ def make_model(  priors,
                     cost2 = atools.inv_flogitat(res[0][:,6])
             
 
-                    vals = at.zeros( (7, N) )
+                    #vals = at.zeros( (7, N) )
                 
                     vals = at.set_subtensor( vals[0], log_Mc_det )
                     vals = at.set_subtensor( vals[1], logit_q )
@@ -1025,7 +1035,8 @@ def make_model(  priors,
                     vals = at.set_subtensor( vals[5], res[0][:,5] )
                     vals = at.set_subtensor( vals[6], res[0][:,6] )
                     
-                
+
+                print('mus_l shape: %s'%str(mus_l.shape.eval()))
                 
                 # gw likelihood
                 if False:
