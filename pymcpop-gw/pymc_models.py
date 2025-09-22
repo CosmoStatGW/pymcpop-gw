@@ -1093,7 +1093,7 @@ def make_model(  priors,
                     # we sampled distance from the posterior. need to invert the dL-z relation
                           
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad,  eta=η , ell=ℓ  )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
                     
@@ -1192,7 +1192,7 @@ def make_model(  priors,
 
                     # this is log(distance ratio) and its derivative computed on the grid
                     # zGridGlobals_at
-                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, S_shared=S_shared, dense_grad = dense_grad )
+                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, dense_grad = dense_grad )
                     
                     # now compute distance ratio at the actual events redshifts
                     distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))

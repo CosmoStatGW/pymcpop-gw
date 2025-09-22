@@ -747,7 +747,7 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , S_shared=None, dense_grad = False , eta=None, ell=None ):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , dense_grad = False , eta=None, ell=None ):
 
     if data_range is not None:
         zmin, zmax = data_range
@@ -780,7 +780,7 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
 
     else:
         # Interpolate values and get gradients 
-    log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
+        log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
 
 
         if data_range is not None:
