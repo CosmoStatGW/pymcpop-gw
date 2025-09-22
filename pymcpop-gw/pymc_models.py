@@ -19,7 +19,8 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, 
                  is_GP_dL, 
-                 pairing=True, 
+                 smoothing='LVK', 
+                 has_m2_break=False,
                  log_ddL_dz=None,
                  dc=None, 
                  #ddr_dz=None, 
@@ -27,6 +28,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
                  #monotonicity=False, 
                  invert_dL_GP=True
                 ):
+
 
     ###################################
     # get parameters and compute log p_pop
@@ -129,8 +131,13 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     if mass_model=='PLPreg':
         
         lp, al, bb, dm, ml, mh, muM, sM = Lambda[-8:]
-        lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], pairing=pairing)
+        lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], smoothing=smoothing)
 
+    elif mass_model=='DPLDP':
+        lambdaBBHmass = Lambda[-20:]
+        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing )
+        
+        
     ### BNS
     elif mass_model=='BNSgauss':
         muM, sM = Lambda[-2:]
@@ -195,13 +202,12 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     return lp
 
 
-
 def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
                                  Lambda,  
                                  Ndraw, 
                                  rate_model, mass_model, spin_model, 
                                  is_GP_dL, 
-                                 pairing, 
+                                 smoothing, has_m2_break, 
                                  #distance_ratio=None, 
                                  #d_distance_ratio_d_z=None, 
                                  log_ddL_dz_inj = None,
@@ -245,13 +251,14 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                              Lambda, 
                              rate_model, mass_model, spin_model, 
                              is_GP_dL, 
-                             pairing=pairing, 
+                             smoothing=smoothing, has_m2_break=has_m2_break,
                              #dr_val=distance_ratio, 
                              #ddr_dz=d_distance_ratio_d_z, 
                              dc = dcinj,
                              log_ddL_dz = log_ddL_dz_inj,
                              is_inj=True
                             )
+
 
     if mass_model=='DPUC':
         # remove jacobian m1, m2 --> log(Mc), logit(q)
@@ -337,10 +344,12 @@ def get_sample_from_cho_lMclqld(x, mu, L):
 def make_model(  priors,
                  GWData,
                  InjData,
+                 ivals={},
                  sampling_GW = 'gmm',
                  rate_model = 'MD',
                  mass_model = 'PLP',
-                 pairing=True,
+                 smoothing='LVK',
+                 has_m2_break = False,
                  spin_model = 'none',
                  spin_inj = 'none',
                  marginal_R0 = True,
@@ -591,12 +600,12 @@ def make_model(  priors,
         if fix_H0:
             H0_ =  at.as_tensor_variable(params_fix['H0'])
         else:
-            H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1])
+            H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1], initval=ivals.get('H0'))
         
         if fix_Om:
             Om_ = at.as_tensor_variable(params_fix['Om'])
         else:
-            Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1]) 
+            Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1], initval=ivals.get('Om')) 
 
         if fix_w0:
             w0_ = at.as_tensor_variable(-1.)
@@ -624,6 +633,7 @@ def make_model(  priors,
             #ℓ = pm.HalfNormal("ℓ", sigma=1.0)
             #η = pm.HalfNormal("η", sigma=1.0)
             # mu = pm.Normal("mu", 0, 1)
+
 
             
             # Actual length scale
@@ -660,15 +670,19 @@ def make_model(  priors,
         
         if rate_model=='MD':
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1])    
-            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1])
-            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1])
+            #gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+            #kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+            #zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
+            gamma_ = atools.uniform_unconstrained("gamma",  priors['gamma'][0], priors['gamma'][1], init=ivals.get("gamma"))
+            kappa_ = atools.uniform_unconstrained("kappa",  priors['kappa'][0], priors['kappa'][1], init=ivals.get("kappa"))
+            zp_ = atools.uniform_unconstrained("zp",  priors['zp'][0], priors['zp'][1], init=ivals.get("zp"))
+            
             Lambda_ += [gamma_, kappa_, zp_]
 
         elif rate_model=='PL':
             print('Modeling evolution of merger rate with a power law')
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1])
+            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))
 
             Lambda_ += [gamma_]
 
@@ -769,19 +783,70 @@ def make_model(  priors,
             
             # Power law + peak
             print('Modeling mass distribution with LVK Power Law + Peak with regularized edge')
-            if not pairing:
-                print('No pairing function C(m1)')
+            if smoothing=='LVK':
+                print('Using LVK smoothing')
+            elif smoothing=='poly':
+                print('using differentiable polynomial smoothing')
             
-            lamP_ = pm.Uniform('lambdaPeak', lower=priors['lambdaPeak'][0], upper=priors['lambdaPeak'][1])
-            alpha_ = pm.Uniform('alpha', lower=priors['alpha'][0], upper=priors['alpha'][1])
-            beta_ = pm.Uniform('beta', lower=priors['beta'][0], upper=priors['beta'][1])
-            ml_ = pm.Uniform('ml', lower=priors['ml'][0], upper=priors['ml'][1])
-            mh_ = pm.Uniform('mh', lower=priors['mh'][0], upper=priors['mh'][1])
-            deltam_ = pm.Uniform('deltam', lower=priors['deltam'][0], upper=priors['deltam'][1])
-            muM_ = pm.Uniform('muMass', lower=priors['muMass'][0], upper=priors['muMass'][1])
-            sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
+            #lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))
+            lamP_ = atools.uniform_unconstrained("lambdaPeak",  priors['lambdaPeak'][0], priors['lambdaPeak'][1], init=ivals.get("lambdaPeak"))
+            
+            #alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
+            #beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
+            #ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
+            #mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
+            #deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
+            #muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
+            #sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
+
+            alpha_  = atools.uniform_unconstrained("alpha",     priors["alpha"][0],     priors["alpha"][1],     init=ivals.get("alpha"))
+            beta_   = atools.uniform_unconstrained("beta",      priors["beta"][0],      priors["beta"][1],      init=ivals.get("beta"))
+            ml_     = atools.uniform_unconstrained("ml",        priors["ml"][0],        priors["ml"][1],        init=ivals.get("ml"))
+            mh_     = atools.uniform_unconstrained("mh",        priors["mh"][0],        priors["mh"][1],        init=ivals.get("mh"))
+            deltam_ = atools.uniform_unconstrained("deltam",    priors["deltam"][0],    priors["deltam"][1],    init=ivals.get("deltam"))
+            muM_    = atools.uniform_unconstrained("muMass",    priors["muMass"][0],    priors["muMass"][1],    init=ivals.get("muMass"))
+            sM_     = atools.uniform_unconstrained("sigmaMass", priors["sigmaMass"][0], priors["sigmaMass"][1], init=ivals.get("sigmaMass"))
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
+
+
+        elif mass_model=='DPLDP':
+
+            print('Modeling mass distribution with Double Power Law + Double Peak ')
+
+            alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+            alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
+            mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+            mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+            sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
+            mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
+            sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+            m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+            delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+            lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
+            lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+            lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+            lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
+            if has_m2_break:
+                print("Including gap for secondary mass")
+                m_g_     = at.as_tensor_variable(45)
+                w_g_     = at.as_tensor_variable(70)
+                sig_g_l_ = at.as_tensor_variable(1e-04)
+                sig_g_h_ = at.as_tensor_variable(1e-04)
+            else:
+                m_g_     = at.as_tensor_variable(45)
+                w_g_     = at.as_tensor_variable(70)
+                sig_g_l_ = at.as_tensor_variable(1e-04)
+                sig_g_h_ = at.as_tensor_variable(1e-04)
+            
+            Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
         ### BNS
         elif 'BNSgauss' in mass_model:
@@ -1226,11 +1291,12 @@ def make_model(  priors,
             
         else:    
         
+
             log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, 
                                      Lambda_, 
                                      rate_model, mass_model, spin_model, 
                                      is_GP_dL, 
-                                     pairing=pairing, 
+                                     smoothing=smoothing, has_m2_break=has_m2_break,
                                      #dr_val=distance_ratio, 
                                      #ddr_dz=d_distance_ratio_d_z, 
                                      #monotonicity=monotonicity, 
@@ -1239,6 +1305,7 @@ def make_model(  priors,
                                      invert_dL_GP=invert_dL_GP
                                     )
              
+
         
         if dLprior=='dLsq':
             # Remove \pi(d)~dL^2 prior on distance 
@@ -1392,7 +1459,7 @@ def make_model(  priors,
                                                                          mass_model, 
                                                                          spin_model_name, 
                                                                          is_GP_dL, 
-                                                                         pairing, 
+                                                                         smoothing, has_m2_break,
                                                                          #distance_ratio=distance_ratio_inj,
                                                                          #d_distance_ratio_d_z=d_distance_ratio_d_z_inj,
                                                                          log_ddL_dz_inj = log_ddL_dz_inj,
@@ -1447,7 +1514,8 @@ def make_model(  priors,
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]], spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata],                                                                                                                                   rate_model, mass_model, spin_model_name, is_GP_dL, pairing, ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]], spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata],                                                                                                                                   rate_model, mass_model, spin_model_name, is_GP_dL, smoothing, has_m2_break ), 
+
                                           sequences = [ at.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
                     log_mu_vec = res_i[0]
@@ -1458,7 +1526,8 @@ def make_model(  priors,
                     print("Loop over injections sets, no slicing")
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, is_GP_dL, pairing, zinj=zinj ), 
+
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, is_GP_dL, smoothing, has_m2_break, zinj=zinj ), 
                                       sequences = [ at.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
 

@@ -38,27 +38,44 @@ To run with varying Hubble constant and matter density parameter, use ```--fix_H
 
 ### Sampling with jax and numpyro (needed for GPU)
 
+#### Working version
 
-This works only with the option 
-
-```
---sampling_gw='gauss'
-```
-
-Use
+First, make sure you have a recent version of pymc installed. This suffices:
 
 ```
---sampler='jax'
+conda create -n pymc_env_v25 pymc=5.25.1 jax numpyro blackjax pytensor pandas seaborn corner
+
 ```
 
-or 
+Then, use
 
 ```
 --sampler='numpyro'
 ```
 
 
-pymc 5.10.4 (i.e. the lates stable version on which the code is tested) with pytensor 2.18.6 does not support jax conversion of all operations used in the code. We need to use a modified version located at ```https://github.com/Mik3M4n/pymc```
+There are two mandatory options to make this work:
+
+1- 
+```
+--sampling_gw='gauss'
+```
+
+2- 
+```
+--smoothing='poly'
+```
+
+
+Note that, for the moment, when using numpyro the sampler overwrites the --ncores option , setting by default a single core and using vectorization on that. It seems to be faster. 
+
+
+
+
+
+#### Older versions of pymc (obsolete)
+
+pymc 5.10.4 (i.e. the lates stable version on which the code is tested for v1 ) with pytensor 2.18.6 does not support jax conversion of all operations used in the code. We need to use a modified version located at ```https://github.com/Mik3M4n/pymc```
 
 First create a conda environment and activate it. We directly require git and pip to be installed.
 
