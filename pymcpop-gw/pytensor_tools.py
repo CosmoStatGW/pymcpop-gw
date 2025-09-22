@@ -756,10 +756,11 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         X_eval = min_max_scaler(z_grid, data_range=data_range)
     else:
         # this is just a trick, since we need the gradient.
-        if GP_zero_point:
-            X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
-        else:
-            X_test = z_grid[:, None]
+        #if GP_zero_point:
+        #    X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
+        #else:
+        
+        X_test = z_grid[:, None]
         
         X_eval = z_grid
 

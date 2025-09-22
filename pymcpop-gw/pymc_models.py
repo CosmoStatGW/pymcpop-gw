@@ -179,7 +179,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     # return log pdf
     ####################################
 
-    lp = lpmass + lpspin - log_ddL_dz - 2*at.log1p(z) 
+    lp = lpmass + lpspin - at.abs(log_ddL_dz) - 2*at.log1p(z) 
 
     if (invert_dL_GP or (not is_GP_dL) or is_inj ):
 
@@ -662,6 +662,9 @@ def make_model(  priors,
 
             cov = η**2 * pm.gp.cov.Matern52(1, ℓ) + pm.gp.cov.WhiteNoise(1e-4)
             gp = pm.gp.Latent(cov_func=cov)
+
+            # for imposing monotonicity
+            eps = at.as_tensor_variable(1e-12).astype(g.dtype)          # avoid div-by-zero
             
             Lambda_MG_ = [ gp  ] 
             iastro = 4
@@ -1121,11 +1124,12 @@ def make_model(  priors,
                         ddLem_dz = at.exp( atools.log_ddL_dz( zs, H0_, Om_, w0_, 1., 0., dc=None ) )
                         dLem = (1+zs)*dc
 
-                        log_ddL_dz = at.log( at.abs( dLem*d_log_distance_ratio_d_z*distance_ratio + distance_ratio*ddLem_dz ) )
+                        #log_ddL_dz = at.log( dLem*d_log_distance_ratio_d_z*distance_ratio + distance_ratio*ddLem_dz ) 
+                        s = dLem * d_log_distance_ratio_d_z + ddLem_dz
+                        log_ddL_dz = log_distance_ratio + at.log(at.maximum(s, eps))
 
 
-
-                        # derivative on full grid, for monotonicity and injections
+                        # derivative on full grid, for monotonicity
 
                         
                         T_grid, A_grid = maps( atools.zGridGlobals_at)            # both (len(X_like), M)
@@ -1138,7 +1142,10 @@ def make_model(  priors,
                         distance_ratio_grid = at.exp(log_distance_ratio_grid)
                         ddLem_dz_grid = at.exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
                         
-                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*d_log_distance_ratio_d_z_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                        #log_ddL_dz_grid = at.log(  dLem_grid*d_log_distance_ratio_d_z_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) 
+
+                        s_grid = dLem_grid * d_log_distance_ratio_d_z_grid + ddLem_dz_grid
+                        log_ddL_dz_grid = log_distance_ratio_grid + at.log(at.maximum(s_grid, eps))
 
                     
                     else:
@@ -1159,7 +1166,9 @@ def make_model(  priors,
         
                         distance_ratio_grid = at.exp(log_distance_ratio_grid)
         
-                        log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
+                        #log_ddL_dz_grid = at.log(  dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) 
+                        s_grid = dLem_grid * grad_log_distance_ratio_grid + ddLem_dz_grid
+                        log_ddL_dz_grid = log_distance_ratio_grid + at.log(at.maximum(s_grid, eps))
                         
         
                         log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
@@ -1174,10 +1183,19 @@ def make_model(  priors,
                
                         # Probit model: P(f′ > 0) = Φ(f′ / ν)
                         # scale of transition to zero
-                        ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
-                        Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz_grid) / ν, -10, 10)))
+                        #ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
+                        #Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz_grid) / ν, -10, 10)))
                         # Binary likelihood: all 1s (indicating positive slope)
-                        monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
+                        #monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
+
+                       # Lower bound on g(z)
+                        lb  = -(ddLem_dz_grid / at.maximum(dLem_grid, eps)) 
+                        
+                        # eta=η , ell=ℓ 
+                        ν = 0.05 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2)))
+                        #0.01  # softness in the same units as g=d log dist. ratio/dz ; tune as needed
+                        
+                        monotonicity = pm.Potential("monotonicity", -at.sum(pm.math.softplus(-(d_log_distance_ratio_d_z - lb)/ν)))
                     
                 
                 
@@ -1514,7 +1532,7 @@ def make_model(  priors,
                         ddLem_dz_inj = at.exp( atools.log_ddL_dz( zinj, H0_, Om_, w0_, 1., 0., dc=None ) )
                         dLem_inj = (1+zinj)*dc_inj
 
-                        log_ddL_dz_inj = at.log( at.abs( dLem_inj*d_log_distance_ratio_d_z_inj*distance_ratio_inj + distance_ratio_inj*ddLem_dz_inj ) )
+                        log_ddL_dz_inj = at.log(  dLem_inj*d_log_distance_ratio_d_z_inj*distance_ratio_inj + distance_ratio_inj*ddLem_dz_inj ) 
                     
                 
                 else:
