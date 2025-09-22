@@ -1013,6 +1013,7 @@ def make_model(  priors,
                     vals = at.set_subtensor( vals[2], logd )
 
                     if nd.eval()==5:
+                        print('%s dimensions in gaussian mean, but no spin and sky position: setting the remaining to zero %s'%str(nd.eval()))
                         mus_l = at.set_subtensor( mus_l[:, :, nd-1], at.zeros( (N, ngmm) ) )
                         mus_l = at.set_subtensor( mus_l[:, :, nd-2], at.zeros( (N, ngmm) ) )
 
