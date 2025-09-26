@@ -582,6 +582,13 @@ def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
     return log_psiz+log_dVdz
 
 
+def N_per_year( gamma, kappa, zp, H0, Om, w0, R0=1., dc=None, z_max = 100, res=1000):
+
+    zgrid = at.linspace(0, z_max, steps=res) 
+    pz = R0*at.exp( log_p_z_MD_unnorm(zgrid, gamma, kappa, zp, H0, Om, w0, dc=dc))
+    norm = attrapzvec(pz, zgrid)
+    return norm
+
 def log_psi_z_MD(z, gamma, kappa, zp):
     lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
     log_psiz = lC0+gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))

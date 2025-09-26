@@ -105,24 +105,73 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
         # This is the pdf of two independent gaussians - one for log(Mc), one for logit(q)
         # (there must be a smarter way of writing it instead of the loop. Do it for performance please)
+        # logpmass_1, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
+        #                                         -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
+        #                                     sequences = [  at.arange(Nmax) ],
+        #                                      non_sequences =  [m1s, mu[0], sd[0], at.log(sd[0]), ],
+        #                                  )
 
 
-        logpmass_1, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
-                                                -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
-                                            sequences = [  at.arange(Nmax) ],
-                                             non_sequences =  [m1s, mu[0], sd[0], at.log(sd[0]), ],
-                                         )
+        # logpmass_2, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
+        #                                         -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
+        #                                     sequences = [  at.arange(Nmax) ],
+        #                                      non_sequences =  [m2s, mu[1], sd[1], at.log(sd[1]), ],
+        #                                  )
 
+        # lpmass = at.logsumexp(logpmass_1+logpmass_2+logw[:, None], axis=0) # sum on gmm components
 
-        logpmass_2, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
-                                                -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
-                                            sequences = [  at.arange(Nmax) ],
-                                             non_sequences =  [m2s, mu[1], sd[1], at.log(sd[1]), ],
-                                         )
-
-        lpmass = at.logsumexp(logpmass_1+logpmass_2+logw[:, None], axis=0) # sum on gmm components
+        # Shapes assumed:
+        # m1s, m2s:     (n_obs,)
+        # mu:           (2, n_comp)         # mu[0] for log(Mc), mu[1] for logit(q)
+        # sd:           (2, n_comp)         # sd[0], sd[1] > 0
+        # logw:         (n_comp,)           # log mixture weights
+        # Nmax == n_comp
+        
+        # Broadcast to (n_comp, n_obs)
+        diff1 = m1s[None, :] - mu[0][:, None]
+        diff2 = m2s[None, :] - mu[1][:, None]
+        
+        sd1 = sd[0][:, None]
+        sd2 = sd[1][:, None]
+        
+        # Per-dimension log-Normal pdfs, broadcasted
+        logp1 = -0.5 * (diff1**2 / (sd1**2)) - 0.5 * at.log(2 * atools.PI) - at.log(sd1)
+        logp2 = -0.5 * (diff2**2 / (sd2**2)) - 0.5 * at.log(2 * atools.PI) - at.log(sd2)
+        
+        # Sum the two independent dimensions → (n_comp, n_obs)
+        logp_components = logp1 + logp2
+        
+        # Mixture over components → (n_obs,)
+        lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
     
-        #lpmass = at.zeros(m1s.shape)
+    elif mass_model=='DP':
+
+        alpha, beta, w, mu, fishers, ldets_inv, logw  = Lambda[-8:-1]
+        Nmax=Lambda[-1]
+
+        # 1) Pack observations into (N, 2)
+        X = at.stack([m1s, m2s], axis=1)          # (N, 2)
+        
+        # 2) Differences to component means -> (K, N, 2)
+        mu_k2 = mu.T                               # (K, 2)
+        diff  = X[None, :, :] - mu_k2[:, None, :]  # (K, N, 2)
+        
+        # 3) Quadratic form (x-μ)^T Σ^{-1} (x-μ) for all (k, n)
+        #    Using batched matmul; result tmp is (K, N, 2), then rowwise dot with diff
+        tmp  = at.matmul(diff, fishers)            # (K, N, 2)
+        quad = at.sum(diff * tmp, axis=2)          # (K, N)
+        
+        # 4) Component log-densities (MvN with precision)
+        nd = 2
+        logp_components = (
+            -0.5 * quad
+            - 0.5 * nd * at.log(2.0 * np.pi)
+            + 0.5 * ldets_inv[:, None]
+            + logw[:, None]
+        )                                           # (K, N)
+        
+        # 5) Mixture over components -> per-observation log-lik
+        lpmass = at.logsumexp(logp_components, axis=0)  # (N,)
 
     ###################################
     # jacobian
@@ -154,7 +203,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
-    if mass_model=='DPUC':
+    if 'DP' in mass_model:
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
         log_Mc_src_inj = at.log(Mc_src_inj)
         logit_q_inj = atools.logitat(q_inj)      
@@ -166,7 +215,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
 
     log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
 
-    if mass_model=='DPUC':
+    if 'DP' in mass_model:
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
 
@@ -225,12 +274,6 @@ def get_sample_from_cho_lMclqld(x, mu, L):
     # x, mu have shape 3
     # L has shape 3x3
     # nd = mu.shape[0]
-
-    #mvals = mu+at.dot(L,x)  
-    
-    #mlik = -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
-    
-    #return  mu+at.dot(L,x) , -0.5*at.dot( x.T, x )-0.5*mu.shape[0]*at.log(2*atools.PI)-at.sum( at.log(at.diagonal(L)) )
 
     sample = mu + (L @ x[:, None])[:, 0]   # instead of at.dot(L, x)
 
@@ -382,6 +425,11 @@ def make_model(  priors,
     if 'DP' in mass_model:
         coords['component'] = at.arange(N_DP_comp_max).eval()
         coords['GMMdimension'] = at.arange(2.).eval()
+        coords['GMMdimension_1'] = at.arange(2.).eval()
+        coords['GMMdimension_2'] = at.arange(2.).eval()
+        p = 2*(2+1)//2  # packed length = 3 for n=2
+        
+        coords["packed_cholesky"] = np.arange(p)
 
     if pop_only:
         coords['nsamples'] = at.arange( Nsamples ).eval()
@@ -643,28 +691,53 @@ def make_model(  priors,
 
             # Option 1: Fixes std from (\tau * \lambda ) parametrization
             # Here check how to choose the parameters of the Gamma priors!
-            tau1 = pm.Gamma("tau1", 10.0, 1.0, dims="component")
-            lambda1_ = pm.Gamma("lambda1_", 15.0, 1.0, dims="component" )
 
-            tau2 = pm.Gamma("tau2", 1.0, 1.0, dims="component")
-            lambda2_ = pm.Gamma("lambda2_", 0.8, 1.0, dims="component" )
+            #---- global–local prior on SDs (uncorrelated) ----
+            # controls local variability
+            # a_lam1, b_lam1 = 0.6, 0.6
+            # a_lam2, b_lam2 =   0.5, 0.5
             
-            sig1 = pm.Deterministic("sig1", 1./at.sqrt(lambda1_*tau1), dims= "component" )
-            sig2 = pm.Deterministic("sig2", 1./at.sqrt(lambda2_*tau2), dims= "component" )
+            # # One global precision per dimension (shared across components)
+            # a_tau1, b_tau1 =   24, 4  # for z1 = log(Mc)
+            # a_tau2, b_tau2 =  4, 2 # for z2 = logit(q)
+            # tau1 = pm.Gamma("tau1", a_tau1, b_tau1)
+            # tau2 = pm.Gamma("tau2", a_tau2, b_tau2)
+            
+            # # Local precisions per component, per dimension
+            # lam1 = pm.Gamma("lam1", a_lam1, b_lam1, dims="component")
+            # lam2 = pm.Gamma("lam2", a_lam2, b_lam2, dims="component")
+            
+            # # Per-component, per-dimension standard deviations (independent axes)
+            # sig1 = pm.Deterministic("sig1", 1.0 / at.sqrt(tau1 * lam1), dims="component")
+            # sig2 = pm.Deterministic("sig2", 1.0 / at.sqrt(tau2 * lam2), dims="component")
 
-            # Option 2: Fixes std from std on m1, m2
-            #sd_ = pm.Uniform( 'sigm1m2', lower=priors['sig'][0], upper=priors['sig'][1], dims=("GMMdimension",  "component") )
-            #sig1 = at.sqrt(sd_[0]**2 * (3/(5*mu_[0]) - 1/(5*(mu_[0]-mu_[1])))**2 + sd_[1]**2 * (3/(5*mu_[1]) - 1/(5*(mu_[1]-mu_[0])))**2)
-            #sig2 = at.sqrt(sd_[0]**2 * (1/(mu_[0]-mu_[1]))**2 + sd_[1]**2 * (mu_[0]/(mu_[1]*(mu_[0]-mu_[1])))**2)
-        
-            # Option 3: Fixes std from given prior
-            #sig1 = pm.Uniform('siglMc', lower=priors['siglMc'][0], upper=priors['siglMc'][1], dims=("component" ))
-            #sig2 = pm.Uniform('siglq', lower=priors['siglq'][0], upper=priors['siglq'][1], dims= ("component")) 
 
-            sigval = at.zeros( (2, N_DP_comp_max) )
-            sigval = at.set_subtensor( sigval[0], sig1 )
-            sigval = at.set_subtensor(  sigval[1], sig2 )
-            sd = pm.Deterministic("sig", sigval, dims=("GMMdimension" , "component" ))
+
+            # mu_ln1, s_ln1 = -1.163789654413117, 0.36380796502993723
+            # mu_ln2, s_ln2 = -1.1074484102105713, 0.48718303162186627
+            # sig1_max, sig2_max = 0.7971738948530454, 2.0086525885321533
+
+            # # In your PyMC model (uncorrelated shown; for correlated use as marginals):
+            # sig1 = pm.Truncated("sig1", pm.LogNormal.dist(mu=mu_ln1, sigma=s_ln1),
+            #                     lower=0.0, upper=sig1_max, dims="component")
+            # sig2 = pm.Truncated("sig2", pm.LogNormal.dist(mu=mu_ln2, sigma=s_ln2),
+            #                     lower=0.0, upper=sig2_max, dims="component")
+
+
+            # sig1 = pm.Uniform("sig1", lower=0.01, upper=5, dims="component")
+            # sig2 = pm.Uniform("sig2", lower=0.01, upper=10, dims="component")
+
+
+            sig1 = pm.InverseGamma("sig1", alpha=4.72, beta=1.39, dims="component")
+            sig2 = pm.InverseGamma("sig2", alpha=0.5, beta=0.4, dims="component")
+            
+            
+            # sigval = at.zeros( (2, N_DP_comp_max) )
+            # sigval = at.set_subtensor( sigval[0], sig1 )
+            # sigval = at.set_subtensor(  sigval[1], sig2 )
+            # sd = pm.Deterministic("sig", sigval, dims=("GMMdimension" , "component" ))
+            sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
+                      dims=("GMMdimension", "component"))
 
 
             #### Mean prior limits:  remember that mu is log(Mc), logit(q).
@@ -672,20 +745,144 @@ def make_model(  priors,
             # Option 1 : sample mean of the gaussians from given prior
             # with this choice, the prior on the mean will be flat in log(Mc), logit(q).
         
-            mu1 = pm.Uniform('mulMc', lower=priors['mulMc'][0], upper=priors['mulMc'][1], dims= ("component" ))
-            mu2 = pm.Uniform('mulq', lower=priors['mulq'][0], upper=priors['mulq'][1], dims= ("component" ))
+            mu1 = pm.Uniform('mulMc', lower=1.13, upper=4.38, dims= ("component" ))
+            mu2 = pm.Uniform('mulq', lower=-2.75, upper=9.37, dims= ("component" ))
+            
 
-            muval = at.zeros( (2, N_DP_comp_max) )
-            muval = at.set_subtensor( muval[0], mu1 )
-            muval = at.set_subtensor( muval[1], mu2 )
-            mu = pm.Deterministic("mu", muval, dims=("GMMdimension" , "component" ))
+            # z1_lo = 1.13
+            # z1_hi = 4.38
+            # mu1_mid = (z1_lo+z1_hi)/2
+            # mu1_sd = (-z1_lo+z1_hi)/2
+            # span1 = -z1_lo+z1_hi
+
+            # z2_lo = -2.75
+            # z2_hi = 9.37
+            # mu2_mid = (z2_lo+z2_hi)/2
+            # mu2_sd = (-z2_lo+z2_hi)/2
+            # span2 = -z2_lo+z2_hi
+
+            # mu1 = pm.TruncatedNormal("mu1", mu=mu1_mid, sigma=mu1_sd,
+            #              lower=z1_lo-0.5*span1, upper=z1_hi+0.5*span1,
+            #              dims="component")
+            # mu2 = pm.TruncatedNormal("mu2", mu=mu2_mid, sigma=mu2_sd,
+            #              lower=z2_lo-0.5*span2, upper=z2_hi+0.5*span2,
+            #              dims="component")
+
+            #muval = at.zeros( (2, N_DP_comp_max) )
+            #muval = at.set_subtensor( muval[0], mu1 )
+            #muval = at.set_subtensor( muval[1], mu2 )
+            #mu = pm.Deterministic("mu", muval, dims=("GMMdimension" , "component" ))
+            mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
+                      dims=("GMMdimension", "component"))
 
             # Option 2: check ...
 
             Lambda_ += [ w, mu, sd, logw ]
 
             Lambda_ += [N_DP_comp_max]
-        
+
+        elif mass_model=='DP':
+
+            alpha = pm.Gamma("alpha", 1.0, 1.0)
+            beta = pm.Beta("beta", 1.0, alpha, dims="component" )
+            w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
+            logw = at.log(w)
+
+
+            mu1 = pm.Uniform('mulMc', lower=1.13, upper=4.38, dims= ("component" ))
+            mu2 = pm.Uniform('mulq', lower=-2.75, upper=9.37, dims= ("component" ))
+
+            mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
+                      dims=("GMMdimension", "component"))
+
+
+            ################################################
+            # cholesky option 1 (slower)
+
+            # ---- Per-component LKJ Cholesky (NO batching) ----
+            # packed_list = []
+            # L_list = []
+            # for k in range(N_DP_comp_max):
+            #     pk = pm.LKJCholeskyCov(f"chol_packed_{k}",
+            #                            n=2, eta=2.0, sd_dist=pm.HalfNormal.dist(2.5),
+            #                            compute_corr=False)     # returns length-3 vector
+            #     Lk = pm.expand_packed_triangular(2, pk, lower=True)  # (2,2)
+            #     packed_list.append(pk)
+            #     L_list.append(Lk)
+    
+            # # Stack to tensors
+            # chol_packed = at.stack(packed_list, axis=0)   # (K, 3)
+            # L = at.stack(L_list, axis=0)                  # (K, 2, 2)
+    
+            # # Optional: save deterministics with coords
+            # #pm.Deterministic("chol_packed_all", chol_packed, dims=("component",))
+            # #pm.Deterministic("Sigma_chol", L, dims=("component","dim","dim"))
+    
+            # # Precompute Σ^{-1} and log|Σ|
+            # invL = pm.math.matrix_inverse(L)                  # (K,2,2)
+            # Fisher = at.matmul(at.swapaxes(invL, -1, -2), invL)
+            # ldets_inv = 2.0 * (pm.math.log(L[:,0,0]) + pm.math.log(L[:,1,1]))  # (K,)
+
+
+
+            ################################################
+            # cholesky option 2
+
+            # # ---- prior on SDs (uncorrelated) ----
+            # # Per-component, per-dimension standard deviations (independent axes)
+
+            sig1 = pm.InverseGamma("sig1", alpha=4.72, beta=1.39, dims="component")
+            sig2 = pm.InverseGamma("sig2", alpha=0.5, beta=0.4, dims="component")
+
+            #sig1 = pm.Uniform("sig1", lower=0.01, upper=3, dims="component")
+            #sig2 = pm.Uniform("sig2", lower=0.01, upper=5, dims="component")
+
+            # # ----- Correlation prior equivalent to LKJ(eta) in 2D -----
+            eta = 1.0  # uninformative on correlations
+            rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims="component")   # (0,1)
+            rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims="component")  # (-1,1)
+
+
+            # # Useful terms
+            one_minus_r2 = 1.0 - rho**2
+            sqrt1mr2     = at.sqrt(one_minus_r2)
+            
+            # ----- Cholesky of Σ (for reference / if you need solves) -----
+            # Σ = [[s1^2, ρ s1 s2], [ρ s1 s2, s2^2]]
+            # Cholesky L = diag([s1, s2]) @ [[1, 0], [ρ, sqrt(1-ρ^2)]]
+            row0 = at.stack([sig1,               at.zeros_like(sig1)], axis=1)          # (K,2)
+            row1 = at.stack([rho * sig2,         sig2 * sqrt1mr2     ], axis=1)          # (K,2)
+            L    = at.stack([row0, row1], axis=1)     
+            Cho_cov = pm.Deterministic("Cho_cov", L, dims=("component","GMMdimension","GMMdimension_1"))
+            
+            # ----- log |Σ^{-1}| (no inverses) -----
+            # det Σ = s1^2 * s2^2 * (1 - ρ^2)
+            # log |Σ^{-1}| = - log det Σ
+            ldets_inv = pm.Deterministic(
+                "ldets_inv",
+                -2.0 * at.log(sig1) - 2.0 * at.log(sig2) - at.log(one_minus_r2),
+                dims="component",
+            )
+            
+            # ----- Precision Σ^{-1} in closed form (Fisher) -----
+            # Σ^{-1} = 1 / [ (1-ρ^2) s1^2 s2^2 ] * [[ s2^2, -ρ s1 s2 ], [ -ρ s1 s2, s1^2 ]]
+            den = one_minus_r2 * (sig1**2) * (sig2**2)
+            F11 =  (sig2**2)            / den
+            F22 =  (sig1**2)            / den
+            F12 = -(rho * sig2 * sig1)    / den
+            
+            Fisher = pm.Deterministic( "Fisher", at.stack([
+                at.stack([F11, F12], axis=1),
+                at.stack([F12, F22], axis=1)
+            ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
+
+            
+            ################################################
+
+            Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
+
+            Lambda_+=[N_DP_comp_max]
+            
         ################################################
         # If including total normalization of the rate, add it here
         ################################################
@@ -751,15 +948,34 @@ def make_model(  priors,
                 print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
 
                 
-                res, _ = pytensor.scan( lambda iev, X, M, L: get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev] )  ,
-                                        sequences = [ at.arange(N)],
-                                        non_sequences = [ x, mus_s, cho_s]
-                    ) 
+                # res, _ = pytensor.scan( lambda iev, X, M, L: get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev] )  ,
+                #                         sequences = [ at.arange(N)],
+                #                         non_sequences = [ x, mus_s, cho_s]
+                #     ) 
 
-                log_Mc_det = res[0][:,0]
-                logit_q = res[0][:,1]
-                logd = res[0][:,2]
-                pilik = res[1]
+                # log_Mc_det = res[0][:,0]
+                # logit_q = res[0][:,1]
+                # logd = res[0][:,2]
+                # pilik = res[1]
+
+                # X      : (N, d)          standard-normal draws per event (d=3 here)
+                # mus_s  : (N, d)          event-specific means
+                # cho_s  : (N, d, d)       event-specific lower Cholesky factors
+                # N = X.shape[0], d = X.shape[1]
+                
+                # sample = mu + L @ x   (batched)
+                samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+                
+                # logp = log p(x) - log|L|
+                # d = x.shape[1]
+                log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * at.log(2.0 * np.pi)    # (N,)
+                log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
+                pilik = log_px - log_det_L                                               # (N,)
+                
+                # unpack coordinates if you like:
+                log_Mc_det = samples[:, 0]
+                logit_q    = samples[:, 1]
+                logd       = samples[:, 2]
                 
 
                 if spin_model == 'none' :
@@ -792,34 +1008,51 @@ def make_model(  priors,
                 
                 
                 # gw likelihood
-                if False:
-                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
-                                       pytensor.scan( lambda ig, X, M, F, logD, logW  :
-                                       -0.5*( (X[: , iobs]-M[iobs, ig]).dot( F[iobs, ig].dot( (X[ :, iobs]-M[iobs, ig]).T )) )-0.5*nd*at.log(2*atools.PI)-0.5*logD[iobs, ig]+logW[iobs, ig],  
-                                               sequences = [ at.arange( ngmm ) ],
-                                         non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
-                                                      )   ,                      
-                             sequences = [ at.arange(N)  ],
-                             non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
-                                              ]
-                            )
 
-                else:
-
-                    logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
-                                       pytensor.scan( lambda ig, X, M, F, logD, logW  :
-                                       -0.5 * at.sum((X[: , iobs]-M[iobs, ig]) * (F[iobs, ig] @ (X[: , iobs]-M[iobs, ig])[:, None])[:, 0])- 0.5 * nd * at.log(2 * atools.PI)- 0.5 * logD[iobs, ig]+ logW[iobs, ig],  
-                                               sequences = [ at.arange( ngmm ) ],
-                                         non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
-                                                      )   ,                      
-                             sequences = [ at.arange(N)  ],
-                             non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
-                                              ]
-                            )
+                # logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
+                #                    pytensor.scan( lambda ig, X, M, F, logD, logW  :
+                #                    -0.5 * at.sum((X[: , iobs]-M[iobs, ig]) * (F[iobs, ig] @ (X[: , iobs]-M[iobs, ig])[:, None])[:, 0])- 0.5 * nd * at.log(2 * atools.PI)- 0.5 * logD[iobs, ig]+ logW[iobs, ig],  
+                #                            sequences = [ at.arange( ngmm ) ],
+                #                      non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
+                #                                   )   ,                      
+                #          sequences = [ at.arange(N)  ],
+                #          non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
+                #                           ]
+                #         )
 
 
 
-                gwl = at.logsumexp(logps, axis=1) # sum on gmm components
+                # gwl = at.logsumexp(logps, axis=1) # sum on gmm components
+
+
+                
+
+                # X as (N, d)
+                X = vals.T                                   # (N, d)
+                #d = vals.shape[0]
+                
+                # Broadcast X against component-wise parameters
+                # diff: (N, ngmm, d)
+                diff = X[:, None, :] - mus_l                  # (N, 1, d) - (N, ngmm, d)
+                
+                # Quadratic form using precision F = Σ^{-1}
+                # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
+                tmp = at.matmul(icovs_l, diff[..., None])[..., 0]   # (N, ngmm, d)
+                
+                # r^T F r for each (obs, comp)
+                quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
+                
+                # Component logpdfs (Multivariate Normal)
+                log_norm = -0.5 * vals.shape[0] * at.log(2.0 * np.pi)     # scalar
+                logp_components = (
+                    -0.5 * quad
+                    + log_norm
+                    - 0.5 * log_dets_l
+                    + log_wts_l
+                )                                             # (N, ngmm)
+                
+                # Mixture log-likelihood per observation: logsumexp over components
+                gwl = at.logsumexp(logp_components, axis=1)   # (N,)
         
             
             else:
@@ -874,7 +1107,7 @@ def make_model(  priors,
 
         
         # Population prior of all events, without the term T_obs*R0
-        if mass_model=='DPUC':
+        if 'DP' in mass_model:
 
             # dirichelet processs will be for log(Mc_src), logit(q) ...
             logMc_src =  log_Mc_det - at.log1p(zs)
