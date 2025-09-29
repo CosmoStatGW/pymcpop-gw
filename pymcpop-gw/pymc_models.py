@@ -980,30 +980,28 @@ def make_model(  priors,
 
                 if spin_model == 'none' :
                     
-                    vals = at.zeros( (3, N) )
-                
-                    vals = at.set_subtensor( vals[0], log_Mc_det )
-                    vals = at.set_subtensor( vals[1], logit_q )
-                    vals = at.set_subtensor( vals[2], logd )
+                    vals = at.stack([log_Mc_det, logit_q, logd], axis=0)
 
                 elif spin_model == 'default' :
 
-                    chi1 = atools.inv_logitat(res[0][:,3])
-                    chi2 = atools.inv_logitat(res[0][:,4])
+                    chi1 = atools.inv_logitat(samples[:,3])
+                    chi2 = atools.inv_logitat(samples[:,4])
         
-                    cost1 = atools.inv_flogitat(res[0][:,5])
-                    cost2 = atools.inv_flogitat(res[0][:,6])
+                    cost1 = atools.inv_flogitat(samples[:,5])
+                    cost2 = atools.inv_flogitat(samples[:,6])
+
+                    vals = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=0)
             
 
-                    vals = at.zeros( (7, N) )
+                    # vals = at.zeros( (7, N) )
                 
-                    vals = at.set_subtensor( vals[0], log_Mc_det )
-                    vals = at.set_subtensor( vals[1], logit_q )
-                    vals = at.set_subtensor( vals[2], logd )
-                    vals = at.set_subtensor( vals[3], res[0][:,3] )
-                    vals = at.set_subtensor( vals[4], res[0][:,4] )
-                    vals = at.set_subtensor( vals[5], res[0][:,5] )
-                    vals = at.set_subtensor( vals[6], res[0][:,6] )
+                    # vals = at.set_subtensor( vals[0], log_Mc_det )
+                    # vals = at.set_subtensor( vals[1], logit_q )
+                    # vals = at.set_subtensor( vals[2], logd )
+                    # vals = at.set_subtensor( vals[3], samples[:,3] )
+                    # vals = at.set_subtensor( vals[4], samples[:,4] )
+                    # vals = at.set_subtensor( vals[5], samples[:,5] )
+                    # vals = at.set_subtensor( vals[6], samples[:,6] )
                     
                 
                 
@@ -1133,13 +1131,11 @@ def make_model(  priors,
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
             # So I remove the dL^2 prior by hand on those
             if not pop_only:
-                lpi = at.zeros( N )    
-                lpi = at.set_subtensor( lpi[:10], 2*logd[:10] )
-                lpi = at.set_subtensor( lpi[10:], lpi_[10:] )
+                # 1D case: shape (N,)
+                lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
             else:
-                lpi = at.zeros( (N, Nsamples) )    
-                lpi = at.set_subtensor( lpi[:10, :], 2*logd[:10, :] )
-                lpi = at.set_subtensor( lpi[10:, :], lpi_[10:, :] )
+                # 2D case: shape (N, Nsamples)
+                lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
             
             log_p_pop -= lpi
 
@@ -1253,20 +1249,15 @@ def make_model(  priors,
                 spin_model_name = spin_model
                 if use_sel_spin:
 
-                    if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
-    
-                        spinsInj = at.zeros( (ndata, 2, ninj) )
-                        spinsInj = at.set_subtensor( spinsInj[:, 0, :], chi1Inj )
-                        spinsInj = at.set_subtensor( spinsInj[:, 1, :], chi2Inj )
-                    
+                    if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc':
+                        # shapes: chi1Inj, chi2Inj -> (ndata, ninj)
+                        # result: spinsInj -> (ndata, 2, ninj)
+                        spinsInj = at.stack([chi1Inj, chi2Inj], axis=1)
                     
                     elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                    
-                        spinsInj = at.zeros( (ndata, 4, ninj) )
-                        spinsInj = at.set_subtensor( spinsInj[:, 0, :], chi1Inj )
-                        spinsInj = at.set_subtensor( spinsInj[:, 1, :], chi2Inj )
-                        spinsInj = at.set_subtensor( spinsInj[:, 2, :], cost1Inj )
-                        spinsInj = at.set_subtensor( spinsInj[:, 3, :], cost2Inj )
+                        # shapes: chi1Inj, chi2Inj, cost1Inj, cost2Inj -> (ndata, ninj)
+                        # result: spinsInj -> (ndata, 4, ninj)
+                        spinsInj = at.stack([chi1Inj, chi2Inj, cost1Inj, cost2Inj], axis=1)
 
                 else:
                     spinsInj = at.ones( (ndata, 2, ninj) )

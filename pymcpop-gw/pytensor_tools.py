@@ -622,28 +622,60 @@ def log_p_z_PL_norm(z, gamma, H0, Om, w0, dc=None):
 ##########################
 
 
-def logpdf_multivariate_trunc_2D( x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2 ):
+# def logpdf_multivariate_trunc_2D( x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2 ):
 
     
-    where_inf =  ( x1 < l1 ) | ( x1 > u1 ) | ( x2 < l2 ) | ( x2 > u2 )
+#     where_inf =  ( x1 < l1 ) | ( x1 > u1 ) | ( x2 < l2 ) | ( x2 > u2 )
 
-    mean = at.as_tensor_variable([m1, m2])
-    x = at.as_tensor_variable([x1, x2]).T
+#     mean = at.as_tensor_variable([m1, m2])
+#     x = at.as_tensor_variable([x1, x2]).T
 
-    sEsP = rho*s1*s2 
+#     sEsP = rho*s1*s2 
 
     
-    detC = s1**2* s2**2 - sEsP**2
+#     detC = s1**2* s2**2 - sEsP**2
+#     logdetC = at.log(detC)
+
+#     Cinv = at.zeros( (2, 2) )
+#     Cinv = at.set_subtensor( Cinv[0,0], s2**2/detC )
+#     Cinv = at.set_subtensor( Cinv[1,1], s1**2/detC )
+#     Cinv = at.set_subtensor( Cinv[0,1], -sEsP/detC )
+#     Cinv = at.set_subtensor( Cinv[1,0], -sEsP/detC )
+
+
+#     return at.where( where_inf, MIN, pm.logp( pm.MvNormal.dist( mu=mean, tau=Cinv, shape=(x.shape[0], 3)), x ))
+
+
+def logpdf_multivariate_trunc_2D(x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2):
+    # mask outside the box (no renormalization; just -inf outside)
+    where_inf = (x1 < l1) | (x1 > u1) | (x2 < l2) | (x2 > u2)
+
+    # mean and data as 2-vectors
+    mean = at.stack([m1, m2], axis=0)                  # (2,)
+    x    = at.stack([x1, x2], axis=0).T                # (n,2)
+
+    # covariance pieces
+    sEsP   = rho * s1 * s2
+    detC   = at.clip(s1**2 * s2**2 - sEsP**2, 1e-300, np.inf)  # det Σ = s1^2 s2^2 (1-ρ^2)
     logdetC = at.log(detC)
 
-    Cinv = at.zeros( (2, 2) )
-    Cinv = at.set_subtensor( Cinv[0,0], s2**2/detC )
-    Cinv = at.set_subtensor( Cinv[1,1], s1**2/detC )
-    Cinv = at.set_subtensor( Cinv[0,1], -sEsP/detC )
-    Cinv = at.set_subtensor( Cinv[1,0], -sEsP/detC )
+    # precision Σ^{-1} via stacks (no set_subtensor)
+    Cinv00 = (s2**2) / detC
+    Cinv11 = (s1**2) / detC
+    Cinv01 = -sEsP    / detC
+    Cinv = at.stack([
+        at.stack([Cinv00, Cinv01], axis=0),
+        at.stack([Cinv01, Cinv11], axis=0)
+    ], axis=0)                                         # (2,2)
 
+    # quadratic form (x-μ)^T Σ^{-1} (x-μ), vectorized over rows of x
+    delta = x - mean                                   # (n,2)
+    Fd    = at.dot(Cinv, delta.T)                      # (2,n)
+    quad  = at.sum(delta * Fd.T, axis=1)               # (n,)
 
-    return at.where( where_inf, MIN, pm.logp( pm.MvNormal.dist( mu=mean, tau=Cinv, shape=(x.shape[0], 3)), x ))
+    logpdf = -0.5 * (2.0 * at.log(2.0 * atools.PI) + logdetC + quad)  # (n,)
+
+    return at.where(where_inf, MIN, logpdf)
 
 
 
