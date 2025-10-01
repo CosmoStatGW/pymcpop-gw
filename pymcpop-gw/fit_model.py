@@ -24,6 +24,7 @@ import jax
 import jax.numpy as np
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+#jax.config.update("jax_disable_jit", True)         # slower but great for debugging
 os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off") # show full frames
 
 
@@ -39,6 +40,10 @@ import data_tools as dt
 import pytensor_tools as atools
 
 pytensor.config.floatX = "float64"
+
+
+from pytensor.tensor.sharedvar import SharedVariable, TensorSharedVariable
+
 
 
 
@@ -120,7 +125,7 @@ def main():
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default=0, type=int, required=False)
     parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
-    parser.add_argument("--GP_zero_point", default=1, type=int, required=False)
+    parser.add_argument("--GP_zero_point", default='y', type=str, required=False)
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
     parser.add_argument("--dense_grad", default=0, type=int, required=False)
     
@@ -468,8 +473,16 @@ def main():
                     #"chain_method":'parallel'
                 }
 
-        
+
+
+
         with model:
+
+            ip = model.initial_point()
+
+            # Overwrite the f_rotated_ entry in the start dict
+            ip["f_rotated_"] = onp.random.normal(0.0, 0.1, size=atools.zGridGlobals_at.shape[0].eval()).astype(np.float64)
+            ip["x"] = onp.random.normal(0.0, 0.1 , size=samples_means_at.shape.eval()  ).astype(np.float64)
 
             if FLAGS.debug:
                 print()
@@ -488,7 +501,7 @@ def main():
                 print('Check initial point...')
                 print('*'*80)
                 print()
-                ip = model.initial_point()
+                #ip = model.initial_point()
                 print('Initial values:')
                 print(ip)
                 model.check_start_vals(ip)                      # raises if logp is -inf/NaN
@@ -617,9 +630,117 @@ def main():
                 vals = f_parts(trial)
                 bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
                 print("bad term indices:", bad)
-                
-                print('\nDone. ')
 
+
+
+                def scan_for_int_bool_with_nan(model):
+                        import numpy as np
+                        print("---- scan model value vars ----")
+                        for v in model.value_vars:
+                            tv = getattr(v.tag, "test_value", None)
+                            if tv is None:
+                                continue
+                            arr = np.asarray(tv)
+                            kind = arr.dtype.kind  # 'f' float, 'i' int, 'b' bool
+                            has_nan = np.isnan(arr).any() if kind == "f" else False
+                            print(f"{v.name:30s} kind={kind} shape={arr.shape} has_nan={has_nan}")
+                            if kind in "ib":
+                                # ints/bools MUST NOT carry NaN; flag if any came through as float full of NaNs but typed int
+                                try:
+                                    _ = np.isnan(arr)
+                                except TypeError:
+                                    pass
+                                    
+                                    print('\nDone. ')
+
+                scan_for_int_bool_with_nan(model)
+
+
+                def scan_shared_data(model):
+                    print("---- scanning shared pm.Data ----")
+                    for name, var in model.named_vars.items():
+                        if isinstance(var, TensorSharedVariable):
+                            tgt = var.type.dtype                 # dtype baked into the graph
+                            val = var.get_value(borrow=True)
+                            src = str(val.dtype)
+                            finite = np.isfinite(np.asarray(val, dtype=np.float64)).all()
+                            has_nan = np.isnan(np.asarray(val, dtype=np.float64)).any()
+                            print(f"{name:25s} var.dtype={tgt:>6s} val.dtype={src:>6s} "
+                                  f"finite={finite} nan={has_nan}")
+                            # smoking gun: int/bool var with float value that has NaN
+                            if tgt in ("int32","int64","bool") and has_nan:
+                                print(f"  -> PROBLEM: {name} is {tgt} but its value has NaN.")
+                    print("---- done ----")
+
+                scan_shared_data(model)
+
+
+                def find_offending_input(model):
+                    print("---- trying JAX conversion on model inputs ----")
+                    offenders = []
+                    # PyMC jaxifies a FunctionGraph with inputs = model.value_vars
+                    for v in model.value_vars:
+                        name = v.name or "<unnamed>"
+                        tv = getattr(v.tag, "test_value", None)
+                        if tv is None:
+                            continue
+                        val = np.asarray(tv)
+                        tgt = v.type.dtype  # dtype JAX will try to enforce
+                        try:
+                            # This mirrors the failing jax_typify_ndarray -> jnp.array(..., dtype=tgt)
+                            _ = jnp.array(val, dtype=tgt)
+                        except Exception as e:
+                            offenders.append((name, tgt, val.dtype, np.isnan(val.astype(float, copy=False)).any(), e))
+                            print(f"[OFFENDER] {name}: var.dtype={tgt}, val.dtype={val.dtype}, "
+                                  f"has_nan={np.isnan(val.astype(float, copy=False)).any()} -> {type(e).__name__}: {e}")
+                        else:
+                            # Optional: uncomment to see all clean vars
+                            # print(f"[ok] {name}: var.dtype={tgt}, val.dtype={val.dtype}")
+                            pass
+                    print("---- done ----")
+                    return offenders
+
+                offenders = find_offending_input(model)
+
+
+                from pytensor.graph.fg import FunctionGraph
+                from pytensor.graph.basic import Constant
+                
+                def find_offending_fgraph_inputs(model):
+                    print("---- scanning FunctionGraph inputs used for jaxify ----")
+                    offenders = []
+                    with model:
+                        logp = model.logp()
+                        fgraph = FunctionGraph(model.value_vars, [logp])
+                        for i, var in enumerate(fgraph.inputs):
+                            name  = (var.name or f"in{i}")
+                            dtype = var.type.dtype
+                            # get a concrete value to mimic jax_typify_ndarray
+                            if isinstance(var, Constant):
+                                val = np.asarray(var.data)
+                                origin = "Constant"
+                            else:
+                                tv  = getattr(var.tag, "test_value", None)
+                                if tv is None:
+                                    print(f"[skip] {origin if 'origin' in locals() else 'Var'} {name}: no test_value")
+                                    continue
+                                val = np.asarray(tv)
+                                origin = "Var"
+                            has_nan = np.isnan(val.astype(np.float64, copy=False)).any()
+                            try:
+                                _ = jnp.array(val, dtype=dtype)  # mirrors the failing cast
+                            except Exception as e:
+                                print(f"[OFFENDER] {origin} {name}: var.dtype={dtype}, val.dtype={val.dtype}, has_nan={has_nan} -> {type(e).__name__}: {e}")
+                                offenders.append((origin, name, dtype, val))
+                            # else: it's fine
+                    print("---- done ----")
+                    return offenders
+
+
+                offenders = find_offending_fgraph_inputs(model)
+
+
+    
 
             # ----- sampler-specific kwargs -----
            
@@ -632,6 +753,7 @@ def main():
                     "cores": FLAGS.ncores,
                     "progressbar": True,
                     "trace": backend,
+                    "initvals":ip
                 }
     
             if FLAGS.sampler == "numpyro":
@@ -646,10 +768,11 @@ def main():
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
-                                        "regularize_mass_matrix": 1e-3,
-                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
+                                        "regularize_mass_matrix": 1e-2 , #5e-4,
+                                        "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
                                         "max_tree_depth": 10,
                                         "forward_mode_differentiation": False,
+                                        "step_size":5e-4,
                                     },
                                 },
                             })
@@ -666,7 +789,10 @@ def main():
                 sampler = "pymc"
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
-    
+
+
+
+
             print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
             trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
 

@@ -6,6 +6,7 @@
 
 import pytensor.tensor as at
 import jax.numpy as np
+import numpy as onp
 import pymc as pm
 import jax
 from pytensor.graph import Apply, Op
@@ -23,8 +24,8 @@ NINF = at.as_tensor_variable(-np.inf)
 INF = at.as_tensor_variable(np.inf)
 
 
-EPS32 = at.as_tensor_variable(1e-30)  #  use 1e-30 for float32
-BIG32 = at.as_tensor_variable(1e20) 
+EPS32 = at.as_tensor_variable(1e-50)  #  use 1e-30 for float32
+BIG32 = at.as_tensor_variable(1e50) 
 
 MIN = NINF # your "effectively -inf" : NINF or EPS
 MAX = INF
@@ -33,14 +34,14 @@ MAX = INF
  
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
-        zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+        zGridGlobals_at = at.sort(at.unique(at.concatenate([ #[0.0], 
         at.logspace(start=-10, stop=-4, base=10, steps=5), 
                      at.logspace(start=-4, stop=1, base=10, steps=100), 
                      at.logspace(start=1, stop=2, base=10, steps=5), 
         
     ])))
 
-        zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ 
+        zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ #[0.0], 
         at.logspace(start=-10, stop=-4, base=10, steps=10), 
                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
                      at.logspace(start=1, stop=2, base=10, steps=10), 
@@ -49,14 +50,14 @@ try:
 
 except:
     
-    zGridGlobals_at = at.sort(at.unique(at.concatenate([ 
+    zGridGlobals_at = at.sort(at.unique(at.concatenate([ #[0.0], 
         at.logspace(start=-10, end=-4, base=10, steps=5 ), 
                      at.logspace(start=-4, end=1, base=10, steps=100), 
                      at.logspace(start=1, end=2, base=10, steps=5 ), 
         
     ])))
 
-    zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ 
+    zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ #[0.0], 
         at.logspace(start=-10, end=-4, base=10, steps=10 ), 
                      at.logspace(start=-4, end=1, base=10, steps=1000), 
                      at.logspace(start=1, end=2, base=10, steps=10 ), 
@@ -82,6 +83,17 @@ safe_log = lambda x: at.log(safe_pos(x))
 safe_sqrt= lambda x: at.sqrt(safe_pos(x))
 clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
 
+def safe_exp0(x, lo=-60.0, hi=60.0):        # avoid exp(±inf)->{inf,0} and NaN backprop
+    return at.exp(at.clip(x, lo, hi))
+
+def safe_exp(x, margin=5.0):
+    #x = at.as_tensor_variable(x)
+    # pick finfo from the tensor's dtype
+    dt = onp.float64 if x.dtype == "float64" else onp.float32
+    finfo = onp.finfo(dt)
+    hi = onp.log(finfo.max)  - margin    # avoid overflow
+    lo = onp.log(finfo.tiny) + margin    # avoid underflow to 0
+    return at.exp(at.clip(x, at.as_tensor_variable(lo), at.as_tensor_variable(hi)))
 
 
 def uniform_unconstrained(name, low, high, init=None):
@@ -259,6 +271,10 @@ def safe_sigmoid(x, x0, eps):
 ####### Interpolators and integrators ########
 ##########################
 
+def at_isfinite(x):
+    x = at.as_tensor_variable(x)
+    return ~(at.isnan(x) | at.isinf(x))
+
 def meshgrid_at(x, y):
     x = at.as_tensor_variable(x)
     y = at.as_tensor_variable(y)
@@ -269,6 +285,55 @@ def meshgrid_at(x, y):
     Y = at.alloc(y, nx, ny).T    # Broadcast y along rows, then transpose
 
     return X.T, Y.T
+
+from pytensor.gradient import disconnected_grad  # <- correct import
+
+def atinterp1(x, xs, ys, return_grad=False):
+    x  = at.as_tensor_variable(x).astype("float64").ravel()
+    xs = at.as_tensor_variable(xs).astype("float64").ravel()
+    ys = at.as_tensor_variable(ys).astype("float64").ravel()
+
+    # Detach indexing path from autodiff
+    x_det  = disconnected_grad(x)
+    xs_det = disconnected_grad(xs)
+
+    # Sort by detached xs
+    order  = at.argsort(xs_det)
+    xs     = xs[order]
+    ys     = ys[order]
+    xs_det = xs_det[order]
+
+    # Clamp x to grid range
+    x     = at.clip(x,     xs[0],     xs[-1])
+    x_det = at.clip(x_det, xs_det[0], xs_det[-1])
+
+    # Build strictly-increasing surrogate grid for indexing
+    eps      = at.as_tensor_variable(1e-12).astype("float64")
+    dx       = xs_det[1:] - xs_det[:-1]
+    dx_safe  = at.maximum(dx, eps)
+
+    xs0    = xs_det[0]                         # <-- scalar offset fixes broadcasting
+    xs_idx = at.concatenate([xs_det[:1], xs0 + at.cumsum(dx_safe)])
+
+    # Indices on detached path
+    idxs = at.searchsorted(xs_idx, x_det, side="left")
+    idxs = at.clip(idxs, 1, xs.shape[0] - 1)
+
+    xl = xs[idxs - 1];  xh = xs[idxs]
+    yl = ys[idxs - 1];  yh = ys[idxs]
+
+    denom      = xh - xl
+    safe_denom = at.maximum(denom, eps)
+    r          = at.clip((x - xl) / safe_denom, 0.0, 1.0)
+
+    y_interp = r * yh + (1.0 - r) * yl
+
+    if return_grad:
+        dy_dx = (yh - yl) / safe_denom
+        dy_dx = at.switch(at.le(denom, eps), 0.0, dy_dx)
+        return y_interp, dy_dx
+    else:
+        return y_interp
 
 def atinterp(x, xs, ys, return_grad=False):
     """
@@ -466,21 +531,9 @@ def dcfun_at(z, H0, Om, w0, interp=False):
     if interp:
       return c_light_at/H0 * _int_dC_hyperbolic(z, Om)*1e-03
     else:
-      zz = at.linspace(0, z, steps=100).T
+      zz = at.linspace(1e-10, z, steps=500).T
       E = Efun_at(zz,Om,w0 )
       return c_light_at/H0 * attrapzvec(1/E, zz)*1e-03
-
-
-def dcfun_np(z, H0, Om, interp=False):
-    """Comoving distance at redshift ``z``, in Gpc, H0 in km/s/Mpc"""
-    if interp:
-      return c_light/H0 * _int_dC_hyperbolic(z, Om)*1e-03
-    else:
-      zz = np.linspace(0, z, 100).T
-      #print(zz ok)
-      #E = np.sqrt( Om*(1+zz)**3+(1-Om)  )
-      E = Efun_at(zz, Om, w0 )
-      return np.array(c_light/H0 * np.trapz(1/E, zz)*1e-03)
 
 
 def Xifun_at(z, Xi0, n):
@@ -495,9 +548,12 @@ def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False):
     """Luminosity distance at redshift ``z``."""
     return Xifun_at(z, Xi0, n)*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
 
+def safe_sqrt_pos(x, tiny=1e-12):
+    return at.sqrt(at.maximum(x, tiny))
+    
 
 def Efun_at(z,Om,w0 ):
-    return at.sqrt( Om*(1+z)**3+(1-Om)  )
+    return safe_sqrt_pos(Om*(1+z)**3+(1-Om))   #at.sqrt( Om*(1+z)**3+(1-Om)  )
 
 
 def z_from_dL_np( r, H0, Om, w0, Xi0, n ):
@@ -521,7 +577,7 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
 
         log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
-        dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
+        dLGrid_at = safe_exp(log_distance_ratio)*dLGrid_EM_at
 
         return dLGrid_at, log_distance_ratio, grad_log_distance_ratio
 
@@ -747,7 +803,7 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point=False , dense_grad = False , eta=None, ell=None ):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None ):
 
     if data_range is not None:
         zmin, zmax = data_range
@@ -764,15 +820,35 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         
         X_eval = z_grid
 
-    log_distance_ratio_grid = gp.prior( name, X=X_test, reparameterize=True) 
+    #X_test =  pm.Data("X_test", X_test, mutable=False)   # float from creation
+    #print(X_test.eval())
+    #X_test_np = X_test.eval()
+    #print("X_test dtype, shape:", np.asarray(X_test_np).dtype, np.asarray(X_test_np).shape)
+    #print("X_test finite:", np.isfinite(np.asarray(X_test_np)).all())
+    
+    log_distance_ratio_grid_raw = gp.prior( name, X=X_test, reparameterize=True,) # jitter=1e-6 )
 
 
-    if GP_zero_point:
+    if GP_zero_point!='n':
         print('Enforcing distance ratio at redshift 0 is 1.')
         # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
-        f_pseudo = log_distance_ratio_grid[0]
-        pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
-           
+
+        if GP_zero_point=='y':
+            print('Using HalfNormal likelihood with sigma=1e-5')
+            log_distance_ratio_grid = log_distance_ratio_grid_raw
+            f_pseudo = log_distance_ratio_grid_raw[0]
+            print("Constraint is on log(distance_ratio)=%s"%f_pseudo.eval())
+            
+            #pseudo_obs = pm.HalfNormal("dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, lower=0.0, upper=1., observed=0.0 ) #pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
+            
+            pseudo_obs = pm.Potential(  "dr_of_zero_constr", pm.logp(pm.HalfNormal.dist(sigma=1e-5), f_pseudo))
+            print("Constraint is %s"%pseudo_obs.eval())
+        elif GP_zero_point=='a':
+            # anchor at z=0 exactly: f(0) == 0
+            print('anchor at z=0 exactly: f(0) == 0 by subtraction')
+            log_distance_ratio_grid = pm.Deterministic("log_distance_ratio_grid_zero", log_distance_ratio_grid_raw - log_distance_ratio_grid_raw[0])
+    else:
+        log_distance_ratio_grid  = log_distance_ratio_grid_raw
     
     if dense_grad:
 
@@ -791,6 +867,8 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
     return log_distance_ratio, grad_log_distance_ratio
 
 
+
+
 # derivative cross-cov for Matérn-5/2 (1D), stable (no 1/r)
 def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
     xd   = at.as_tensor_variable(Xd).ravel()[:, None]
@@ -802,6 +880,7 @@ def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
     coef = -(5.0 * (eta**2) / 3.0) * expm
     return coef * ( diff / (ell**2) + at.sqrt(5.0) * r * diff / (ell**3) )
 
+
 def make_gp_mapper(gp, Xc, eta, ell):
     """
     Prepare a callable that, given any X_new, returns linear maps
@@ -812,7 +891,15 @@ def make_gp_mapper(gp, Xc, eta, ell):
     """
     Xc = at.as_tensor_variable(Xc)
     Kcc = gp.cov_func(Xc[:, None])                  # includes WhiteNoise on the diagonal
-    Lcc = at.linalg.cholesky(Kcc)                   # cached factor
+    #Lcc = at.linalg.cholesky(Kcc)                   # cached factor
+
+    n = Kcc.shape[0]
+    #diag = at.diag(Kcc)
+    # scale-aware jitter: tie it to the average variance
+    #base = at.switch(at.all(at.isfinite(diag)), at.mean(diag), 1.0)
+    jitter = 1e-6   # tweak 1e-10 ↔ 1e-6 if needed
+    
+    Lcc = at.linalg.cholesky(Kcc + jitter * at.eye(n) )
 
     def maps(X_new):
         X_new = at.as_tensor_variable(X_new)
@@ -827,6 +914,7 @@ def make_gp_mapper(gp, Xc, eta, ell):
         return Tv, Ad
 
     return maps
+
 
 #####################################################
 #####################################################
