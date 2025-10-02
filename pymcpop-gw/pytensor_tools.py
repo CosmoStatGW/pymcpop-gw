@@ -79,14 +79,31 @@ zGridGlobals = np.array(zGridGlobals_at.eval())
 
 safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   # >0, finite
 safe_div = lambda a,b: a / safe_pos(b)
-safe_log = lambda x: at.log(safe_pos(x))
+#safe_log = lambda x: at.log(safe_pos(x))
+
+#def safe_log(x):
+#    tiny = at.constant(1e-300, dtype="float64") # 1e-38 for float32
+#    return at.log(at.maximum(x, tiny))
+
+def safe_log(x):
+    x = at.as_tensor_variable(x)
+    # ensure float
+    if not x.dtype.startswith("float"):
+        x = at.cast(x, "float64")
+    # dtype-aware tiny without NumPy: exp of a safe log-tiny
+    log_tiny = at.constant(-700.0, dtype="float64") if x.dtype == "float64" \
+               else at.constant(-80.0,  dtype="float32")
+    tiny = at.exp(log_tiny)               # ~ 5e-305 (64-bit) or ~ 1e-35 (32-bit)
+    return at.log(at.maximum(x, tiny))
+
+
 safe_sqrt= lambda x: at.sqrt(safe_pos(x))
 clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
 
-def safe_exp0(x, lo=-60.0, hi=60.0):        # avoid exp(±inf)->{inf,0} and NaN backprop
+def safe_exp(x, lo=-60.0, hi=60.0):        # avoid exp(±inf)->{inf,0} and NaN backprop
     return at.exp(at.clip(x, lo, hi))
 
-def safe_exp(x, margin=5.0):
+def safe_exp1(x, margin=5.0):
     #x = at.as_tensor_variable(x)
     # pick finfo from the tensor's dtype
     dt = onp.float64 if x.dtype == "float64" else onp.float32
@@ -553,7 +570,7 @@ def safe_sqrt_pos(x, tiny=1e-12):
     
 
 def Efun_at(z,Om,w0 ):
-    return safe_sqrt_pos(Om*(1+z)**3+(1-Om))   #at.sqrt( Om*(1+z)**3+(1-Om)  )
+    return at.sqrt( Om*(1+z)**3+(1-Om))  #safe_sqrt_pos(Om*(1+z)**3+(1-Om))   #at.sqrt( Om*(1+z)**3+(1-Om)  )
 
 
 def z_from_dL_np( r, H0, Om, w0, Xi0, n ):
@@ -577,7 +594,7 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
 
         log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
-        dLGrid_at = safe_exp(log_distance_ratio)*dLGrid_EM_at
+        dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
         return dLGrid_at, log_distance_ratio, grad_log_distance_ratio
 
@@ -611,6 +628,19 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None):
     
     Xi = Xifun_at(z, Xi0, n)
     res = at.log( ( Xi -n*(1-Xi0)/(1+z)**(n) )* dc + Xi*c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+        
+    return res
+
+
+def ddL_dz_EM(z, H0, Om0,  w0, dc=None):
+    
+    # H0 in Mpc, ds in Gpc
+    
+    if dc is None:
+        dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
+    
+    
+    res =  dc + c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) 
         
     return res
 
@@ -891,15 +921,15 @@ def make_gp_mapper(gp, Xc, eta, ell):
     """
     Xc = at.as_tensor_variable(Xc)
     Kcc = gp.cov_func(Xc[:, None])                  # includes WhiteNoise on the diagonal
-    #Lcc = at.linalg.cholesky(Kcc)                   # cached factor
+    Lcc = at.linalg.cholesky(Kcc)                   # cached factor
 
-    n = Kcc.shape[0]
-    #diag = at.diag(Kcc)
-    # scale-aware jitter: tie it to the average variance
-    #base = at.switch(at.all(at.isfinite(diag)), at.mean(diag), 1.0)
-    jitter = 1e-6   # tweak 1e-10 ↔ 1e-6 if needed
+    # n = Kcc.shape[0]
+    # #diag = at.diag(Kcc)
+    # # scale-aware jitter: tie it to the average variance
+    # #base = at.switch(at.all(at.isfinite(diag)), at.mean(diag), 1.0)
+    # jitter = 1e-6   # tweak 1e-10 ↔ 1e-6 if needed
     
-    Lcc = at.linalg.cholesky(Kcc + jitter * at.eye(n) )
+    # Lcc = at.linalg.cholesky(Kcc + jitter * at.eye(n) )
 
     def maps(X_new):
         X_new = at.as_tensor_variable(X_new)

@@ -670,7 +670,7 @@ def make_model(  priors,
             η = pm.Exponential("η", lam=atools.lambda_)
             print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
 
-            cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-4)
+            cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-6)
             gp = pm.gp.Latent(cov_func=cov)
 
             # for imposing monotonicity
@@ -1109,7 +1109,7 @@ def make_model(  priors,
                     # we sampled distance from the posterior. need to invert the dL-z relation
                           
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ  )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
 
@@ -1128,7 +1128,7 @@ def make_model(  priors,
                         T_like, A_like = maps(zs)                 # both (len(X_like), M)
                         
                         log_distance_ratio   = pm.Deterministic("log_d_ratio",   T_like @ log_distance_ratio_grid, dims= "event_index")
-                        distance_ratio = pm.Deterministic( "d_ratio", atools.safe_exp(log_distance_ratio), dims= "event_index")
+                        distance_ratio = pm.Deterministic( "d_ratio", at.exp(log_distance_ratio), dims= "event_index")
                         
                         d_log_distance_ratio_d_z  =   A_like @ log_distance_ratio_grid
 
@@ -1136,12 +1136,14 @@ def make_model(  priors,
 
                         
 
-                        ddLem_dz = atools.safe_exp( atools.log_ddL_dz( zs, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        #ddLem_dz = atools.safe_exp( atools.log_ddL_dz( zs, H0_, Om_, w0_, 1., 0., dc=None ) )
+
+                        ddLem_dz = atools.ddL_dz_EM( zs, H0_, Om_, w0_, dc=None ) 
                         dLem = (1+zs)*dc
 
                         #log_ddL_dz = at.log( dLem*d_log_distance_ratio_d_z*distance_ratio + distance_ratio*ddLem_dz ) 
                         s = dLem * d_log_distance_ratio_d_z + ddLem_dz
-                        log_ddL_dz = log_distance_ratio + atools.safe_log(s) #at.maximum(s, eps))
+                        log_ddL_dz = log_distance_ratio + atools.safe_log(s) #at.log(at.maximum(s, eps))  #at.maximum(s, eps))
 
 
                         # derivative on full grid, for monotonicity
@@ -1154,20 +1156,22 @@ def make_model(  priors,
                         dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
                         dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
                         
-                        distance_ratio_grid = atools.safe_exp(log_distance_ratio_grid)
-                        ddLem_dz_grid = atools.safe_exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        distance_ratio_grid = at.exp(log_distance_ratio_grid)
+                        ddLem_dz_grid = atools.ddL_dz_EM( atools.zGridGlobals_at, H0_, Om_, w0_, dc=None ) 
+                        
+                        #ddLem_dz_grid = atools.safe_exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
                         
                         #log_ddL_dz_grid = at.log(  dLem_grid*d_log_distance_ratio_d_z_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) 
 
                         s_grid = dLem_grid * d_log_distance_ratio_d_z_grid + ddLem_dz_grid
-                        log_ddL_dz_grid = log_distance_ratio_grid + atools.safe_log( s_grid) #at.maximum(s_grid, eps))
+                        log_ddL_dz_grid = log_distance_ratio_grid + atools.safe_log(s_grid) #at.maximum(s_grid, eps))
 
                     
                     else:
 
                         print("Computing derivatives by interpolation")
                          
-                        distance_ratio = pm.Deterministic( "d_ratio", atools.safe_exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
+                        distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
 
                                             
                         d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
@@ -1179,9 +1183,9 @@ def make_model(  priors,
                         dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
                         dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
     
-                        ddLem_dz_grid = atools.safe_exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        ddLem_dz_grid =  atools.ddL_dz_EM( atools.zGridGlobals_at, H0_, Om_, w0_,  dc=None )  #atools.safe_exp( atools.log_ddL_dz( atools.zGridGlobals_at, H0_, Om_, w0_, 1., 0., dc=None ) )
         
-                        distance_ratio_grid = atools.safe_exp(log_distance_ratio_grid)
+                        distance_ratio_grid = at.exp(log_distance_ratio_grid)
         
                         #log_ddL_dz_grid = at.log(  dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) 
                         s_grid = dLem_grid * grad_log_distance_ratio_grid + ddLem_dz_grid
@@ -1216,8 +1220,8 @@ def make_model(  priors,
                         lb  = -(ddLem_dz_grid / at.maximum(dLem_grid, eps)) 
                         
                         # eta=η , ell=ℓ 
-                        ν = 0.05 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2)))
-                        # print(" ν is %s"%ν.eval())
+                        ν = pm.HalfNormal("ν", sigma=0.001) #pm.Deterministic("ν", 0.01 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2))) )
+                        print(" ν is %s"%ν.eval())
                         # #0.01  # softness in the same units as g=d log dist. ratio/dz ; tune as needed
                         
                         # monotonicity = pm.Potential("monotonicity", -at.sum(at.logaddexp( 0.0, -(d_log_distance_ratio_d_z_grid - lb)/ν)) )
@@ -1233,7 +1237,10 @@ def make_model(  priors,
                         
                         # Stable “soft hinge”: -sum log(1 + exp(-(Δ/ν)))
                         # Use softplus/logsigmoid which are numerically stable
-                        x = at.clip(Δ / ν , -30.0, 30.0)
+                        tiny = at.constant(1e-12, dtype="float64")   # pick your floor
+
+                        r = Δ / at.maximum(ν, tiny)  
+                        x = at.clip(r , -30.0, 30.0)
                         
                         monotonicity = pm.Potential(
                             "monotonicity",
@@ -1567,13 +1574,16 @@ def make_model(  priors,
                         T_inj, A_inj = maps(zinj) 
                         
                         log_distance_ratio_inj    =  T_inj @ log_distance_ratio_grid 
-                        distance_ratio_inj = atools.safe_exp(log_distance_ratio_inj)
+                        distance_ratio_inj = at.exp(log_distance_ratio_inj)
                         d_log_distance_ratio_d_z_inj  =   A_inj @ log_distance_ratio_grid
 
-                        ddLem_dz_inj = atools.safe_exp( atools.log_ddL_dz( zinj, H0_, Om_, w0_, 1., 0., dc=None ) )
+                        ddLem_dz_inj =  atools.ddL_dz_EM( zinj, H0_, Om_, w0_, dc=None )  #atools.safe_exp( atools.log_ddL_dz( zinj, H0_, Om_, w0_, 1., 0., dc=None ) )
                         dLem_inj = (1+zinj)*dc_inj
 
-                        log_ddL_dz_inj = atools.safe_log(  dLem_inj*d_log_distance_ratio_d_z_inj*distance_ratio_inj + distance_ratio_inj*ddLem_dz_inj ) 
+                        #log_ddL_dz_inj = atools.safe_log(  dLem_inj*d_log_distance_ratio_d_z_inj*distance_ratio_inj + distance_ratio_inj*ddLem_dz_inj ) 
+                        
+                        s_grid_inj = dLem_inj * d_log_distance_ratio_d_z_inj + ddLem_dz_inj
+                        log_ddL_dz_inj = log_distance_ratio_inj + atools.safe_log(s_grid_inj)
                     
                 
                 else:

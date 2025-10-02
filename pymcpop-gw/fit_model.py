@@ -768,11 +768,11 @@ def main():
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
-                                        "regularize_mass_matrix": 1e-2 , #5e-4,
-                                        "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
+                                        "regularize_mass_matrix": 1e-3 , #5e-4,
+                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
                                         "max_tree_depth": 10,
                                         "forward_mode_differentiation": False,
-                                        "step_size":5e-4,
+                                        #"step_size":5e-4,
                                     },
                                 },
                             })
