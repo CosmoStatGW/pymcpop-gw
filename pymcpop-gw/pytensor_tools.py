@@ -834,14 +834,14 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
         # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
 
         if GP_zero_point=='y':
-            print('Using HalfNormal likelihood with sigma=1e-5')
+            print('Using Normal likelihood with sigma=1e-6')
             log_distance_ratio_grid = log_distance_ratio_grid_raw
             f_pseudo = log_distance_ratio_grid_raw[0]
             print("Constraint is on log(distance_ratio)=%s"%f_pseudo.eval())
             
             #pseudo_obs = pm.HalfNormal("dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, lower=0.0, upper=1., observed=0.0 ) #pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
-            
-            pseudo_obs = pm.Potential(  "dr_of_zero_constr", pm.logp(pm.HalfNormal.dist(sigma=1e-5), f_pseudo))
+            pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
+            #pseudo_obs = pm.Potential(  "dr_of_zero_constr", pm.logp(pm.HalfNormal.dist(sigma=1e-5), f_pseudo))
             print("Constraint is %s"%pseudo_obs.eval())
         elif GP_zero_point=='a':
             # anchor at z=0 exactly: f(0) == 0
