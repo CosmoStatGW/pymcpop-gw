@@ -480,10 +480,51 @@ def main():
 
             ip = model.initial_point()
 
+            print("Initializing f_rotated_ ....")
+
+            z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
+            z_grid = z_grid_at.eval()
+            N = z_grid.size
+
+            # --- 2) build a tiny increasing target f(z) ---
+            # anchor at z0 so f(z0)=0, then add a very small positive slope
+            z0 = z_grid[0]
+            s0 = 5e-5     # ~0.5% per unit z; tune 1e-3..1e-2 as you like
+            f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
+            
+            # (optional) keep it even smaller:
+            f_init *= 0.5               # shrink if you want it closer to zero
+
+            try:
+                ell0 = ivals['ℓ']
+                eta0 = ivals['η']
+                print("Found ell, eta in prior")
+            except:
+                eta0 = 0.2          # reasonable starting amplitude
+                ell0 = 0.3          # reasonable starting lengthscale (smooth)
+                print("ell, eta not found, using eta=0.2 , ell=0.3")
+            jitter = 1e-6
+            
+            def matern52_1d(X, Y, eta, ell):
+                X = np.atleast_2d(X).astype(np.float64)
+                Y = np.atleast_2d(Y).astype(np.float64)
+                d = np.abs(X - Y.T)
+                a = np.sqrt(5.0) / ell
+                return (eta**2) * (1.0 + a*d + 5.0*(d**2)/(3.0*ell**2)) * np.exp(-a*d)
+            
+            X = z_grid.reshape(-1, 1)
+            K = matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
+            L = np.linalg.cholesky(K)
+            f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
+
             # Overwrite the f_rotated_ entry in the start dict
-            ip["f_rotated_"] = onp.random.normal(0.0, 0.1, size=atools.zGridGlobals_at.shape[0].eval()).astype(np.float64)
+            ip["f_rotated_"] = onp.asarray(f_rot_init)
+            #onp.random.normal(0.0, 0.1, size=atools.zGridGlobals_at.shape[0].eval()).astype(np.float64)
             ip["x"] = onp.random.normal(0.0, 0.1 , size=samples_means_at.shape.eval()  ).astype(np.float64)
 
+            print("f_rotated is")
+            print(ip["f_rotated_"])
+            
             if FLAGS.debug:
                 print()
                 print('*'*80)
@@ -768,11 +809,11 @@ def main():
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
-                                        "regularize_mass_matrix": 1e-3 , #5e-4,
-                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
+                                        "regularize_mass_matrix": 1e-2 , #5e-4,
+                                        "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
                                         "max_tree_depth": 10,
                                         "forward_mode_differentiation": False,
-                                        #"step_size":5e-4,
+                                        "step_size":1e-3,
                                     },
                                 },
                             })

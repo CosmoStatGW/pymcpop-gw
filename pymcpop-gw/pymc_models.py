@@ -671,7 +671,7 @@ def make_model(  priors,
             η = pm.Exponential("η", lam=atools.lambda_)
             print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
 
-            cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-6)
+            cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-4)
             gp = pm.gp.Latent(cov_func=cov)
 
             # for imposing monotonicity
@@ -1188,7 +1188,7 @@ def make_model(  priors,
 
                         s_grid = dLem_grid * grad_log_distance_ratio_grid + ddLem_dz_grid
                         log_ddL_dz_grid = at.log( at.abs( s_grid * distance_ratio_grid ) )
-                        
+                        # log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
                                                 
         
                         log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
@@ -1200,8 +1200,8 @@ def make_model(  priors,
                     print("dLem_grid finite?", np.all(np.isfinite(dLem_grid.eval())))
                     print("ddLem_dz_grid finite?", np.all(np.isfinite(ddLem_dz_grid.eval())))
 
-                    p1 = pm.Potential("guard_dlem", at.switch(at.all(atools.at_isfinite(dLem_grid)), 0.0, -1e12))
-                    p2 = pm.Potential("guard_ddlem", at.switch(at.all(atools.at_isfinite(ddLem_dz_grid)), 0.0, -1e12))
+                    #p1 = pm.Potential("guard_dlem", at.switch(at.all(atools.at_isfinite(dLem_grid)), 0.0, -1e12))
+                    #p2 = pm.Potential("guard_ddlem", at.switch(at.all(atools.at_isfinite(ddLem_dz_grid)), 0.0, -1e12))
 
                     if monotonicity:
 
@@ -1210,65 +1210,37 @@ def make_model(  priors,
                         # Probit model: P(f′ > 0) = Φ(f′ / ν)
                         # scale of transition to zero
                         #ν = 1e-06 #pm.HalfNormal("ν", sigma=0.001)
-                        #Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( at.exp(log_ddL_dz_grid) / ν, -10, 10)))
+
+                        ν = pm.Deterministic("ν", 0.1 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2))) )
+                        
+
+                        ddL_dz_mon = distance_ratio_grid * s_grid
+                        
+                        Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( ddL_dz_mon / ν, -10, 10)))
                         # Binary likelihood: all 1s (indicating positive slope)
-                        #monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
+                        monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
 
-                        # Lower bound on g(z)
+
+                        if False:
+                            lb  = - atools.d_log_dLEM_dz( atools.zGridGlobals_at, H0_, Om_, w0_,  dc=dc_grid ) 
+    
+                            
+    
+                            # # Residual in the monotonicity term
+                            Δ = d_log_distance_ratio_d_z_grid - lb #).astype("float64")
+                                                   
+                            
                         
-                        #eps = at.constant(1e-12, dtype="float64")
-                        
-                        lb  = - atools.d_log_dLEM_dz( atools.zGridGlobals_at, H0_, Om_, w0_,  dc=dc_grid ) 
-                        
-                        # eta=η , ell=ℓ 
-                        #ν = pm.Deterministic( "ν", at.as_tensor_variable(1e-03) )
-                        #pm.HalfNormal("ν", sigma=0.001) #pm.Deterministic("ν", 0.01 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2))) )
+    
+                            r = Δ / ν #at.maximum(ν, eps)  
+                            x = at.clip(r , -30, 30)
+                            
+    
+                            # ---- Smooth one-sided barrier: enforces Δ >= 0 (i.e., d_log_ratio ≥ -lb) ----
+                            monotonicity = pm.Potential("monotonicity", -at.sum(atools.softplus_stable(-x)))
 
-                        ν = pm.Deterministic("ν", 0.05 * at.sqrt(5.0 * (η**2) / (3.0 * (ℓ**2))) )
-
-                        # # Residual in the monotonicity term
-                        Δ = d_log_distance_ratio_d_z_grid - lb #).astype("float64")
-                        #print("Δ for monotonicity is ")
-                        #print(Δ.eval())
-
-
-                        # ---- Stable, data-scaled softness ----
-                        # scale ~ typical magnitude of Δ, but don't backprop through it
-                        # absΔ_med = at.median(at.abs(disconnected_grad(Δ)))
-                        # absΔ_med = at.maximum(absΔ_med, at.constant(1e-6, dtype="float64"))  # floor
-                        # tau = at.constant(0.1, dtype="float64")   # softness as a fraction of typical Δ (0.05–0.2 works well)
-                        # ν = pm.Deterministic("ν", tau * absΔ_med)
                         
                         print(" ν is %s"%ν.eval())
-                        # #0.01  # softness in the same units as g=d log dist. ratio/dz ; tune as needed
-
-                        #print("d_log_distance_ratio_d_z_grid for monotonicity is ")
-                        #print(d_log_distance_ratio_d_z_grid.eval())
-
-                        #print("lb for monotonicity is ")
-                        #print(lb.eval())
-                        
-                        
-
-                        r = Δ / ν #at.maximum(ν, eps)  
-                        x = at.clip(r , -30, 30)
-                        #print("r for monotonicity is ")
-                        #print(r.eval())
-
-                        #print("x for monotonicity is ")
-                        #print(x.eval())
-                        
-                        # monotonicity = pm.Potential(
-                        #     "monotonicity",
-                        #     -at.sum(at.logaddexp( 0., -x) )
-                        # )
-
-                        #print("sigmoid for monotonicity is ")
-                        #print(atools.softplus_stable(-x).eval())
-
-                        # ---- Smooth one-sided barrier: enforces Δ >= 0 (i.e., d_log_ratio ≥ -lb) ----
-                        monotonicity = pm.Potential("monotonicity", -at.sum(atools.softplus_stable(-x)))
-
                         print("monotonicity is ")
                         print(monotonicity.eval())
                 
