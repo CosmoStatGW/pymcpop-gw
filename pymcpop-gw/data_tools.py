@@ -179,7 +179,7 @@ def load_data_interp(fin):
 
         print('gmm_log_dets shape:')
         print(gmm_log_dets_dict[fid].shape)
-        print(gmm_log_dets_dict[fid][:10])
+        #print(gmm_log_dets_dict[fid][:10])
 
         print('Computing reduced determinants...')
         gmm_log_dets_dict_sub[fid] = onp.zeros(gmm_log_dets_dict[fid].shape)
@@ -202,7 +202,7 @@ def load_data_interp(fin):
                 gmm_log_dets_dict_sub[fid][m,l] = log_det_
         print('gmm_log_dets_dict_sub shape:')
         print(gmm_log_dets_dict_sub[fid].shape)
-        print(gmm_log_dets_dict_sub[fid][:10])
+        #print(gmm_log_dets_dict_sub[fid][:10])
             
 
         

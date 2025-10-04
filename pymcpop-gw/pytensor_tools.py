@@ -30,37 +30,38 @@ BIG32 = at.as_tensor_variable(1e50)
 MIN = NINF # your "effectively -inf" : NINF or EPS
 MAX = INF
 
+LOG_10_ZMIN = -7
 
  
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
 try:
         zGridGlobals_at = at.sort(at.unique(at.concatenate([ #[0.0], 
-        at.logspace(start=-10, stop=-4, base=10, steps=5), 
+        at.logspace(start=LOG_10_ZMIN, stop=-4, base=10, steps=5), 
                      at.logspace(start=-4, stop=1, base=10, steps=100), 
-                     at.logspace(start=1, stop=2, base=10, steps=5), 
+                     #at.logspace(start=1, stop=2, base=10, steps=5), 
         
     ])))
 
         zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ #[0.0], 
-        at.logspace(start=-10, stop=-4, base=10, steps=10), 
+        at.logspace(start=LOG_10_ZMIN, stop=-4, base=10, steps=10), 
                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
-                     at.logspace(start=1, stop=2, base=10, steps=10), 
+                     #at.logspace(start=1, stop=2, base=10, steps=10), 
         
     ])))
 
 except:
     
     zGridGlobals_at = at.sort(at.unique(at.concatenate([ #[0.0], 
-        at.logspace(start=-10, end=-4, base=10, steps=5 ), 
+        at.logspace(start=LOG_10_ZMIN, end=-4, base=10, steps=5 ), 
                      at.logspace(start=-4, end=1, base=10, steps=100), 
-                     at.logspace(start=1, end=2, base=10, steps=5 ), 
+                     #at.logspace(start=1, end=2, base=10, steps=5 ), 
         
     ])))
 
     zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ #[0.0], 
-        at.logspace(start=-10, end=-4, base=10, steps=10 ), 
+        at.logspace(start=LOG_10_ZMIN, end=-4, base=10, steps=10 ), 
                      at.logspace(start=-4, end=1, base=10, steps=1000), 
-                     at.logspace(start=1, end=2, base=10, steps=10 ), 
+                     #at.logspace(start=1, end=2, base=10, steps=10 ), 
         
     ])))
 
@@ -81,19 +82,8 @@ safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   
 safe_div = lambda a,b: a / safe_pos(b)
 #safe_log = lambda x: at.log(safe_pos(x))
 
-#def safe_log(x):
-#    tiny = at.constant(1e-300, dtype="float64") # 1e-38 for float32
-#    return at.log(at.maximum(x, tiny))
-
 def safe_log(x):
-    x = at.as_tensor_variable(x)
-    # ensure float
-    if not x.dtype.startswith("float"):
-        x = at.cast(x, "float64")
-    # dtype-aware tiny without NumPy: exp of a safe log-tiny
-    log_tiny = at.constant(-700.0, dtype="float64") if x.dtype == "float64" \
-               else at.constant(-80.0,  dtype="float32")
-    tiny = at.exp(log_tiny)               # ~ 5e-305 (64-bit) or ~ 1e-35 (32-bit)
+    tiny = at.constant(1e-300, dtype="float64") # 1e-38 for float32
     return at.log(at.maximum(x, tiny))
 
 
@@ -281,7 +271,9 @@ def safe_sigmoid(x, x0, eps):
 
 #######################
 
-
+def softplus_stable(x):
+    # log(1 + exp(x)) computed stably for any x
+    return at.log1p(at.exp(-at.abs(x))) + at.maximum(x, 0.0)
 
 
 ##########################
@@ -640,9 +632,36 @@ def ddL_dz_EM(z, H0, Om0,  w0, dc=None):
         dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
     
     
-    res =  dc + c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) 
-        
+    res =  dc + c_light*(1+z)/(1e03*H0*Efun_at(z, Om0,  w0)) 
+
+
     return res
+
+
+def d_log_dLEM_dz(z, H0, Om0,  w0, dc=None):
+
+    if dc is None:
+        dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
+
+    #print("In d_log_dLEM_dz")
+
+    #print("z is ")
+    #print(z.eval())
+
+    
+    #print("dc is")
+    #print(dc.eval())
+
+    E_ = Efun_at(z ,Om0,  w0)
+
+    #print("Efun is ")
+    #print(E_.eval())
+
+    second_term = c_light/dc/(1e03*H0*E_) 
+    #print("1/(E*dc is)")
+    #print(second_term.eval())
+
+    return 1/(1+z) + second_term
 
 
 # no dependence on H0 (as in Finke et.al.)
