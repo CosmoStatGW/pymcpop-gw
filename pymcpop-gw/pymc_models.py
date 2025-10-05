@@ -570,7 +570,11 @@ def make_model(  priors,
             
                 for _ in tqdm(range(trials)):
                     Xwhite = rng.standard_normal((N, nd))
-                    samples = sample_from_per_event_gmm(wts_l_np, mus_l_np, cho_covs_l_np, Xwhite)
+
+                    if sampling_GW=='gmm':
+                        samples = sample_from_per_event_gmm(wts_l_np, mus_l_np, cho_covs_l_np, Xwhite)
+                    elif sampling_GW=='gauss':
+                        samples = mus_l_np + (cho_covs_l_np @ Xwhite[..., None]).squeeze(-1)
             
                     d_nodes = np.exp(samples[:, 2])             # your distance column
                     if rescale_GP:
@@ -628,9 +632,15 @@ def make_model(  priors,
 
 
             # ---- call it (convert your shareds to NumPy once) ----
-            wts_np = np.asarray(wts_l.eval(), dtype=np.float64)
-            mus_np = np.asarray(mus_l.eval(), dtype=np.float64)
-            chol_np = np.asarray(cho_covs_l.eval(), dtype=np.float64)
+            if sampling_GW=='gmm':
+                wts_np = np.asarray(wts_l.eval(), dtype=np.float64)
+                mus_np = np.asarray(mus_l.eval(), dtype=np.float64)
+                chol_np = np.asarray(cho_covs_l.eval(), dtype=np.float64)
+            else:
+                wts_np = None
+                mus_np = np.asarray(mus_s.eval(), dtype=np.float64)
+                chol_np = np.asarray(cho_s.eval(), dtype=np.float64)
+                
             
             stats = find_init_hyperparams(wts_np, mus_np, chol_np,
                                           H0_range=priors['H0'], Om_range=priors['Om'], 
@@ -654,52 +664,6 @@ def make_model(  priors,
             M = stats["M"]
             ell_min = stats["ell_min"]
 
-
-            # for i in tqdm(range(50)):
-            #     # wts_l, mus_l, cho_covs_l, Tobs, Nevs
-            #     x_ = np.random.randn(N.eval(), nd.eval())
-
-            #     if sampling_GW=='gmm':
-            #         u = np.random.rand(N.eval(), 1)  # one uniform sample per event
-            #         cdf = np.cumsum(wts_l.eval(), axis=1)  # shape (n_events, n_components)            
-            #         idx_ = (u < cdf).argmax(axis=1)  
-                    
-            #         #idx_ = wts_l.eval().argmax(axis=1)
-                    
-            #         #print(idx_)
-                    
-            #         # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
-            #         samples_ = mus_l[ at.arange(N), idx_, :] + at.batched_dot(cho_covs_l[at.arange(N), idx_, :, :], x_ )    
-            #     elif sampling_GW=='gauss':
-            #         raise NotImplementedError()
-                
-                
-            #     #print(samples_.eval().shape)
-            #     d_ = at.exp(samples_[:,2])
-            #     #print(d_.eval().shape)
-            #     if rescale_GP:
-            #         d_ = min_max_scaler(d_, data_range=(dmin, dmax)) 
-
-            #     H0 = np.random.uniform(low=priors['H0'][0], high=priors['H0'][1], size=1)
-            #     Om = np.random.uniform(low=priors['Om'][0], high=priors['Om'][1], size=1)
-            #     z_ = atools.z_from_dL_at(d_, H0, Om, -1, [1, 0.], False, data_range=None )
-                
-            #     L_ = at.mean(at.diff(at.sort( z_ )))
-
-            #     # Compute midpoint EM bound (stable way you adopted)
-            #     lb_mid_np = - atools.d_log_dLEM_dz(z_, H0, Om, -1)  # shape (N-1,), >0
-                
-            #     m = at.mean(at.abs(lb_mid_np))  # typical magnitude
-            #     allM.append(m.eval())
-            #     #print(L_.eval())
-            #     allL.append(L_.eval())
-            # allL = at.as_tensor_variable(np.asarray(allL))
-            # allM = at.as_tensor_variable(np.asarray(allM))
-            # #print(allL.shape.eval())
-            # L = at.max(allL, axis=0)
-            # M = at.max(allM, axis=0)
-
-            # nu0  = at.clip(0.05 * M / 0.1, 1e-3, 0.2).eval()
             
             beta = atools.find_beta(stats["M"], 2., p0=0.01)
 
@@ -1276,9 +1240,10 @@ def make_model(  priors,
                 if invert_dL_GP:
 
                     # we sampled distance from the posterior. need to invert the dL-z relation
-                          
+                    dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
+                    b_full = atools.d_log_dLEM_dz(atools.zGridGlobals_at, H0_, Om_,  w0_ , dc=dc_grid, safe=False)
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ, nu=nu, sgn=sgn  )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ, nu=nu, sgn=sgn, b_full=b_full  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
 
@@ -1294,7 +1259,7 @@ def make_model(  priors,
                     
                     d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
 
-                    dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
+                    
                     dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
 
                     ddLem_dz_grid =  atools.ddL_dz_EM( atools.zGridGlobals_at, H0_, Om_, w0_,  dc=dc_grid )
@@ -1312,7 +1277,19 @@ def make_model(  priors,
                     
                     log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
                 
-       
+
+                    if monotonicity:
+
+                        # Bound explicitly, just in case a few points escape 
+                        
+                        print('Imposing d(dL)/dz >0 on all the domain')
+                        ν = pm.Deterministic("ν", at.as_tensor_variable(1e-05) )       
+                    
+                        ddL_dz_mon = distance_ratio_grid * ( b_full + grad_log_distance_ratio_grid )
+                                            
+                        Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( ddL_dz_mon / ν, -10, 10)))
+                        # Binary likelihood: all 1s (indicating positive slope)
+                        monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
                 
                 else:
 

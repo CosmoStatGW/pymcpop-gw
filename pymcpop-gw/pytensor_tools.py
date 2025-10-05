@@ -588,10 +588,9 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
         dCGrid_at  = dcfun_at( zGridGlobals_at, H0, Om, w0 )
         
         dLGrid_EM_at = dCGrid_at*(1+zGridGlobals_at)
-        
-        lb_full = -d_log_dLEM_dz(zGridGlobals_at, H0, Om, w0, dc=dCGrid_at, safe=False)
+    
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", lb_full=lb_full, **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -818,7 +817,7 @@ def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
 
 
 
-U = at.as_tensor_variable(2.5 ) #2.5)         # upper bound for σ with high probability
+U = at.as_tensor_variable( 5. ) #2.5)         # upper bound for σ with high probability
 alpha = at.as_tensor_variable(0.01)    # small tail probability
 lambda_ = at.log(1 / alpha) / U
 
@@ -900,7 +899,7 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, lb_full=None):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, b_full=None):
 
     
         
@@ -930,34 +929,60 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
 
 
     
+    # X_test = z_grid[:, None]
+
+    # g  = gp.prior(name, X=X_test, reparameterize=True)  # (N,)
+    # s_floor = at.as_tensor_variable(1e-4).astype(g.dtype)
+    # s = s_floor + softplus_stable(g)                    # (N,), strictly > 0
+    
+    # dz = z_grid[1:] - z_grid[:-1]                       # (N-1,)
+    
+    # # --- NEW PART: allow h' to be ± while keeping d log dL^GW/dz > 0 ---
+    
+    # # EM slope b_full = d/dz log dL_EM  (all > 0)
+    
+    # # Midpoint versions (more accurate & matches dz)
+    # b_mid  = 0.5 * (b_full[:-1] + b_full[1:])           # (N-1,)
+    # s_mid  = 0.5 * (s[:-1] + s[1:])                     # (N-1,)
+    
+    # # Total slope of log dL^GW at midpoints; sgn∈(-1,+1) lets h go up or down.
+    # # softplus keeps total slope strictly positive ⇒ d_L^GW monotone increasing.
+    # q_mid = softplus_stable(b_mid + sgn * nu * s_mid)   # (N-1,)
+    
+    # # delta = sgn * nu * s_mid  (same as before)
+    # delta_mid = sgn * nu * s_mid                    # (N-1,)
+    
+    # # Stable exact formula: h'(z) = softplus(b+delta) - b = logaddexp(-b, delta)
+    # hprime_mid = at.logaddexp(-b_mid, delta_mid)    # (N-1,)
+    
+    
+    # # Integrate with midpoint rule
+    # inc = hprime_mid * dz                                  # (N-1,)
+    # h0  = at.constant(0.0)
+    # log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])  # (N,)
+    
+    # # Optional: node-aligned derivative from midpoint values (length-weighted avg)
+    # grad_log_distance_ratio = at.concatenate([
+    #     hprime_mid[:1],
+    #     (dz[:-1]*hprime_mid[:-1] + dz[1:]*hprime_mid[1:]) / (dz[:-1] + dz[1:]),
+    #     hprime_mid[-1:]
+    # ])
+
+
     X_test = z_grid[:, None]
 
     g  = gp.prior(name, X=X_test, reparameterize=True)  # (N,)
-    s_floor = at.as_tensor_variable(1e-4).astype(g.dtype)
-    s = s_floor + softplus_stable(g)                    # (N,), strictly > 0
-    
+   
     dz = z_grid[1:] - z_grid[:-1]                       # (N-1,)
-    
-    # --- NEW PART: allow h' to be ± while keeping d log dL^GW/dz > 0 ---
-    
-    # EM slope b = d/dz log dL_EM  (all > 0)
-    # If you already have lb_full = -b_full, do:
-    b_full = -lb_full                                  # (N,)
-    # Otherwise compute b_full with your stable routine and skip the line above.
-    
+        
+    # EM slope is b_full = d/dz log dL_EM  (all > 0)
+       
     # Midpoint versions (more accurate & matches dz)
     b_mid  = 0.5 * (b_full[:-1] + b_full[1:])           # (N-1,)
-    s_mid  = 0.5 * (s[:-1] + s[1:])                     # (N-1,)
+    g_mid  = 0.5 * (g[:-1] + g[1:])                     # (N-1,)
     
-    # Total slope of log dL^GW at midpoints; sgn∈(-1,+1) lets h go up or down.
-    # softplus keeps total slope strictly positive ⇒ d_L^GW monotone increasing.
-    q_mid = softplus_stable(b_mid + sgn * nu * s_mid)   # (N-1,)
-    
-    # delta = sgn * nu * s_mid  (same as before)
-    delta_mid = sgn * nu * s_mid                    # (N-1,)
-    
-    # Stable exact formula: h'(z) = softplus(b+delta) - b = logaddexp(-b, delta)
-    hprime_mid = at.logaddexp(-b_mid, delta_mid)    # (N-1,)
+    # Stable exact formula: h'(z) = g 
+    hprime_mid =  g_mid #*b_mid
     
     
     # Integrate with midpoint rule
@@ -966,12 +991,8 @@ def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=100
     log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])  # (N,)
     
     # Optional: node-aligned derivative from midpoint values (length-weighted avg)
-    grad_log_distance_ratio = at.concatenate([
-        hprime_mid[:1],
-        (dz[:-1]*hprime_mid[:-1] + dz[1:]*hprime_mid[1:]) / (dz[:-1] + dz[1:]),
-        hprime_mid[-1:]
-    ])
-  
+    grad_log_distance_ratio = g #at.concatenate([hprime_mid[:1], (dz[:-1]*hprime_mid[:-1] + dz[1:]*hprime_mid[1:]) / (dz[:-1] + dz[1:]),hprime_mid[-1:]])
+    
     
     return log_distance_ratio, grad_log_distance_ratio
 
@@ -988,6 +1009,14 @@ def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
     expm = at.exp(-a * r)
     coef = -(5.0 * (eta**2) / 3.0) * expm
     return coef * ( diff / (ell**2) + at.sqrt(5.0) * r * diff / (ell**3) )
+
+
+def matern52_1d(X, Y, eta, ell):
+    X = np.atleast_2d(X).astype(np.float64)
+    Y = np.atleast_2d(Y).astype(np.float64)
+    d = np.abs(X - Y.T)
+    a = np.sqrt(5.0) / ell
+    return (eta**2) * (1.0 + a*d + 5.0*(d**2)/(3.0*ell**2)) * np.exp(-a*d)
 
 
 def make_gp_mapper(gp, Xc, eta, ell):

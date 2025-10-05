@@ -490,7 +490,7 @@ def main():
             # --- 2) build a tiny increasing target f(z) ---
             # anchor at z0 so f(z0)=0, then add a very small positive slope
             z0 = z_grid[0]
-            s0 = 0.1   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
+            s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
             f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
             
             # (optional) keep it even smaller:
@@ -507,17 +507,12 @@ def main():
             
             jitter = 1e-4
             
-            def matern52_1d(X, Y, eta, ell):
-                X = np.atleast_2d(X).astype(np.float64)
-                Y = np.atleast_2d(Y).astype(np.float64)
-                d = np.abs(X - Y.T)
-                a = np.sqrt(5.0) / ell
-                return (eta**2) * (1.0 + a*d + 5.0*(d**2)/(3.0*ell**2)) * np.exp(-a*d)
+            
 
 
             
             X = z_grid.reshape(-1, 1)
-            K = matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
+            K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
             L = np.linalg.cholesky(K)
             f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
 
