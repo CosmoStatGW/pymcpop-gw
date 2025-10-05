@@ -273,6 +273,7 @@ def safe_sigmoid(x, x0, eps):
 
 #######################
 
+
 def softplus_stable(x):
     # log(1 + exp(x)) computed stably for any x
     return at.log1p(at.exp(-at.abs(x))) + at.maximum(x, 0.0)
@@ -588,9 +589,9 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
         
         dLGrid_EM_at = dCGrid_at*(1+zGridGlobals_at)
         
-        #lb_full = -d_log_dLEM_dz(zGridGlobals_at, H0, Om, w0, dc=dCGrid_at)
+        lb_full = -d_log_dLEM_dz(zGridGlobals_at, H0, Om, w0, dc=dCGrid_at, safe=False)
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f",  **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", lb_full=lb_full, **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -644,7 +645,7 @@ def ddL_dz_EM(z, H0, Om0,  w0, dc=None):
     return res
 
 
-def d_log_dLEM_dz(z, H0, Om0,  w0, dc=None):
+def d_log_dLEM_dz(z, H0, Om0,  w0, dc=None, safe=False):
 
     if dc is None:
         dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
@@ -660,12 +661,19 @@ def d_log_dLEM_dz(z, H0, Om0,  w0, dc=None):
     # print("Efun is ")
     # print(E_.eval())
 
-    second_term = c_light/dc/(1e03*H0*E_) 
+    if not safe:
+        first_term = 1/(1+z)
+        second_term = c_light/dc/(1e03*H0*E_) 
+    else:
+
+        chi_prime = (c_light/1e03/H0) * safe_div(1.0, E_)
+        second_term = safe_div(chi_prime , dc )
+        first_term = safe_div(1.0, 1.0 + z) 
     
     # print("1/(E*dc is)")
     # print(second_term.eval())
 
-    return 1/(1+z) + second_term
+    return first_term + second_term
 
 
 # no dependence on H0 (as in Finke et.al.)
@@ -892,39 +900,78 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, lb_full=None):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, lb_full=None):
 
     
-    #lb_full = at.clip(lb_full, -1e3, 1e3)
         
-    X_test = z_grid[:, None]
+    # X_test = z_grid[:, None]
     
+    # g  = gp.prior(name, X=X_test, reparameterize=True)  # (N,)
+    # s_floor = at.as_tensor_variable(1e-4).astype(g.dtype)
+    # s = s_floor + softplus_stable(g)                    # (N,), strictly > 0
+    
+    # dz = z_grid[1:] - z_grid[:-1]                       # (N-1,)
+    
+    # # NEW: h'(z) = nu * s(z)  (no lb involved)
+    # hprime_L = nu * s[:-1]                              # (N-1,)
+    # hprime_R = nu * s[1:]                               # (N-1,)
+    # inc = 0.5 * (hprime_L + hprime_R) * dz             # trapezoid increments
+    
+    # # Integrate with h(z0)=0 ⇒ Xi(z0)=1
+    # h0 = at.constant(0.0)
+    # log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])   # (N,)
+    
+    # # Node-aligned derivative (length-weighted average on irregular grid)
+    # grad_log_distance_ratio = at.concatenate([
+    #     hprime_L[:1],
+    #     (dz[:-1]*hprime_R[:-1] + dz[1:]*hprime_L[1:]) / (dz[:-1] + dz[1:]),
+    #     hprime_R[-1:]
+    # ])
+
+
+    
+    X_test = z_grid[:, None]
+
     g  = gp.prior(name, X=X_test, reparameterize=True)  # (N,)
     s_floor = at.as_tensor_variable(1e-4).astype(g.dtype)
     s = s_floor + softplus_stable(g)                    # (N,), strictly > 0
     
     dz = z_grid[1:] - z_grid[:-1]                       # (N-1,)
     
-    # NEW: h'(z) = nu * s(z)  (no lb involved)
-    hprime_L = nu * s[:-1]                              # (N-1,)
-    hprime_R = nu * s[1:]                               # (N-1,)
-    inc = 0.5 * (hprime_L + hprime_R) * dz             # trapezoid increments
+    # --- NEW PART: allow h' to be ± while keeping d log dL^GW/dz > 0 ---
     
-    # Integrate with h(z0)=0 ⇒ Xi(z0)=1
-    h0 = at.constant(0.0)
-    log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])   # (N,)
+    # EM slope b = d/dz log dL_EM  (all > 0)
+    # If you already have lb_full = -b_full, do:
+    b_full = -lb_full                                  # (N,)
+    # Otherwise compute b_full with your stable routine and skip the line above.
     
-    # Node-aligned derivative (length-weighted average on irregular grid)
+    # Midpoint versions (more accurate & matches dz)
+    b_mid  = 0.5 * (b_full[:-1] + b_full[1:])           # (N-1,)
+    s_mid  = 0.5 * (s[:-1] + s[1:])                     # (N-1,)
+    
+    # Total slope of log dL^GW at midpoints; sgn∈(-1,+1) lets h go up or down.
+    # softplus keeps total slope strictly positive ⇒ d_L^GW monotone increasing.
+    q_mid = softplus_stable(b_mid + sgn * nu * s_mid)   # (N-1,)
+    
+    # delta = sgn * nu * s_mid  (same as before)
+    delta_mid = sgn * nu * s_mid                    # (N-1,)
+    
+    # Stable exact formula: h'(z) = softplus(b+delta) - b = logaddexp(-b, delta)
+    hprime_mid = at.logaddexp(-b_mid, delta_mid)    # (N-1,)
+    
+    
+    # Integrate with midpoint rule
+    inc = hprime_mid * dz                                  # (N-1,)
+    h0  = at.constant(0.0)
+    log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])  # (N,)
+    
+    # Optional: node-aligned derivative from midpoint values (length-weighted avg)
     grad_log_distance_ratio = at.concatenate([
-        hprime_L[:1],
-        (dz[:-1]*hprime_R[:-1] + dz[1:]*hprime_L[1:]) / (dz[:-1] + dz[1:]),
-        hprime_R[-1:]
+        hprime_mid[:1],
+        (dz[:-1]*hprime_mid[:-1] + dz[1:]*hprime_mid[1:]) / (dz[:-1] + dz[1:]),
+        hprime_mid[-1:]
     ])
-    #at.concatenate([ hprime_L[:1], 0.5 * (hprime_R[:-1] + hprime_L[1:]), hprime_R[-1:]  ])
-
-    #print("grad_log_distance_ratio")
-    #print(grad_log_distance_ratio.eval())
-                
+  
     
     return log_distance_ratio, grad_log_distance_ratio
 

@@ -839,6 +839,8 @@ def make_model(  priors,
             nu = pm.HalfNormal("nu", sigma=0.2 )
                               # (N,) ≥ 0
 
+            κ = pm.Normal("kappa_dir", 0.0, 1.0)               # unconstrained
+            sgn = pm.Deterministic("sign_dir", at.tanh(5.0*κ)) # ~±1; pushes toward {-1,+1}
 
             # for imposing monotonicity
             #eps = at.as_tensor_variable(1e-12)          # avoid div-by-zero
@@ -1276,7 +1278,7 @@ def make_model(  priors,
                     # we sampled distance from the posterior. need to invert the dL-z relation
                           
                     
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ, nu=nu  )
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ, nu=nu, sgn=sgn  )
     
                     zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
 
