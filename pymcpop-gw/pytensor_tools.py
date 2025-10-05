@@ -12,6 +12,8 @@ import jax
 from pytensor.graph import Apply, Op
 import pytensor
 from pytensor.gradient import grad
+from pymc.distributions.dist_math import check_parameters
+
 
 from jax.numpy import array
 from jax.numpy import concatenate
@@ -30,7 +32,7 @@ BIG32 = at.as_tensor_variable(1e50)
 MIN = NINF # your "effectively -inf" : NINF or EPS
 MAX = INF
 
-LOG_10_ZMIN = -7
+LOG_10_ZMIN = -5
 
  
 #if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
@@ -581,10 +583,14 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
     
     else:
         gp = Lambda_MG[0]
-        
-        dLGrid_EM_at = dLfun_at( zGridGlobals_at, H0, Om, w0, 1., 0 )
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        dCGrid_at  = dcfun_at( zGridGlobals_at, H0, Om, w0 )
+        
+        dLGrid_EM_at = dCGrid_at*(1+zGridGlobals_at)
+        
+        #lb_full = -d_log_dLEM_dz(zGridGlobals_at, H0, Om, w0, dc=dCGrid_at)
+
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f",  **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -643,23 +649,21 @@ def d_log_dLEM_dz(z, H0, Om0,  w0, dc=None):
     if dc is None:
         dc = dcfun_at(z, H0, Om0,  w0, interp=False) # in Gpc
 
-    #print("In d_log_dLEM_dz")
-
-    #print("z is ")
-    #print(z.eval())
-
-    
-    #print("dc is")
-    #print(dc.eval())
+    # print("In d_log_dLEM_dz")
+    # print("z is ")
+    # print(z.eval())
+    # print("dc is")
+    # print(dc.eval())
 
     E_ = Efun_at(z ,Om0,  w0)
 
-    #print("Efun is ")
-    #print(E_.eval())
+    # print("Efun is ")
+    # print(E_.eval())
 
     second_term = c_light/dc/(1e03*H0*E_) 
-    #print("1/(E*dc is)")
-    #print(second_term.eval())
+    
+    # print("1/(E*dc is)")
+    # print(second_term.eval())
 
     return 1/(1+z) + second_term
 
@@ -806,7 +810,7 @@ def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
 
 
 
-U = at.as_tensor_variable(2.5)         # upper bound for σ with high probability
+U = at.as_tensor_variable(2.5 ) #2.5)         # upper bound for σ with high probability
 alpha = at.as_tensor_variable(0.01)    # small tail probability
 lambda_ = at.log(1 / alpha) / U
 
@@ -816,7 +820,43 @@ alpha_ell = at.as_tensor_variable(0.01)
 d_GP = at.as_tensor_variable(1)
 
 
-def frechet_logp_full(l, lambda_ell, d):
+
+def frechet_logp_full(value, lambda_ell, d):
+    """
+    Fréchet-like kernel:
+      log f(x) = log(alpha*lambda) - (alpha+1) log x - lambda * x^{-alpha},  x>0
+    with alpha = d/2 > 0, lambda>0.
+    """
+    x   = at.as_tensor_variable(value)
+    lam = at.as_tensor_variable(lambda_ell)
+    d_  = at.as_tensor_variable(d)
+    alpha = d_ / 2.0
+
+    # core logp
+    logp = (
+        at.log(alpha * lam)
+        - (alpha + 1.0) * at.log(x)
+        - lam * at.power(x, -alpha)   # use at.power for JAX friendliness
+    )
+
+    # single boolean condition (no 'alltrue' needed)
+    ok = (x > 0) & (lam > 0) & (d_ > 0)
+
+    # return -inf outside support; keeps graph differentiable
+    return check_parameters(logp, ok, msg="Frechet requires x>0, lambda>0, d>0")
+
+
+def frechet_random(lambda_ell, d, size=None, rng=None):
+    # Sample via the same reparam: U ~ Exp(lambda), ℓ = U^{-2/d}
+    rng = onp.random.default_rng() if rng is None else rng
+    lam = onp.asarray(lambda_ell, dtype=onp.float64)
+    d_  = onp.asarray(d, dtype=onp.float64)
+    alpha = d_ / 2.0
+    u = rng.exponential(scale=1.0/lam, size=size)
+    return u ** (-1.0 / alpha)
+
+
+def frechet_logp_full_0(l, lambda_ell, d):
     return at.log(d * lambda_ell / 2) \
          - (d / 2 + 1) * at.log(l) \
          - lambda_ell * l ** (-d / 2)
@@ -852,65 +892,38 @@ def find_al(L, beta, p0=0.01):
 
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None ):
+def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, lb_full=None):
 
-    if data_range is not None:
-        zmin, zmax = data_range
     
-        X_test = at.linspace(0, 1, res)[:, None]
-        X_eval = min_max_scaler(z_grid, data_range=data_range)
-    else:
-        # this is just a trick, since we need the gradient.
-        #if GP_zero_point:
-        #    X_test = at.concatenate( [ at.constant([0.0]), z_grid])[:, None] #at.linspace(0, z_grid.max(), res)[:, None]
-        #else:
+    #lb_full = at.clip(lb_full, -1e3, 1e3)
         
-        X_test = z_grid[:, None]
-        
-        X_eval = z_grid
-
-    #X_test =  pm.Data("X_test", X_test, mutable=False)   # float from creation
-    #print(X_test.eval())
-    #X_test_np = X_test.eval()
-    #print("X_test dtype, shape:", np.asarray(X_test_np).dtype, np.asarray(X_test_np).shape)
-    #print("X_test finite:", np.isfinite(np.asarray(X_test_np)).all())
+    X_test = z_grid[:, None]
     
-    log_distance_ratio_grid_raw = gp.prior( name, X=X_test, reparameterize=True,) # jitter=1e-6 )
-
-
-    if GP_zero_point!='n':
-        print('Enforcing distance ratio at redshift 0 is 1.')
-        # enforce distance ratio(z=0) = 1, i.e. log(distance_ratio)(z=0) = 0
-
-        if GP_zero_point=='y':
-            print('Using Normal likelihood with sigma=1e-6')
-            log_distance_ratio_grid = log_distance_ratio_grid_raw
-            f_pseudo = log_distance_ratio_grid_raw[0]
-            print("Constraint is on log(distance_ratio)=%s"%f_pseudo.eval())
-            
-            #pseudo_obs = pm.HalfNormal("dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, lower=0.0, upper=1., observed=0.0 ) #pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
-            pseudo_obs = pm.Normal( "dr_of_zero_constr", mu=f_pseudo, sigma=1e-6, observed=0.0 )
-            #pseudo_obs = pm.Potential(  "dr_of_zero_constr", pm.logp(pm.HalfNormal.dist(sigma=1e-5), f_pseudo))
-            print("Constraint is %s"%pseudo_obs.eval())
-        elif GP_zero_point=='a':
-            # anchor at z=0 exactly: f(0) == 0
-            print('anchor at z=0 exactly: f(0) == 0 by subtraction')
-            log_distance_ratio_grid = pm.Deterministic("log_distance_ratio_grid_zero", log_distance_ratio_grid_raw - log_distance_ratio_grid_raw[0])
-    else:
-        log_distance_ratio_grid  = log_distance_ratio_grid_raw
+    g  = gp.prior(name, X=X_test, reparameterize=True)  # (N,)
+    s_floor = at.as_tensor_variable(1e-4).astype(g.dtype)
+    s = s_floor + softplus_stable(g)                    # (N,), strictly > 0
     
-    if dense_grad:
+    dz = z_grid[1:] - z_grid[:-1]                       # (N-1,)
+    
+    # NEW: h'(z) = nu * s(z)  (no lb involved)
+    hprime_L = nu * s[:-1]                              # (N-1,)
+    hprime_R = nu * s[1:]                               # (N-1,)
+    inc = 0.5 * (hprime_L + hprime_R) * dz             # trapezoid increments
+    
+    # Integrate with h(z0)=0 ⇒ Xi(z0)=1
+    h0 = at.constant(0.0)
+    log_distance_ratio = at.concatenate([h0[None], h0 + at.cumsum(inc)])   # (N,)
+    
+    # Node-aligned derivative (length-weighted average on irregular grid)
+    grad_log_distance_ratio = at.concatenate([
+        hprime_L[:1],
+        (dz[:-1]*hprime_R[:-1] + dz[1:]*hprime_L[1:]) / (dz[:-1] + dz[1:]),
+        hprime_R[-1:]
+    ])
+    #at.concatenate([ hprime_L[:1], 0.5 * (hprime_R[:-1] + hprime_L[1:]), hprime_R[-1:]  ])
 
-        grad_log_distance_ratio = make_gp_mapper(gp, X_eval, eta, ell)
-        log_distance_ratio = log_distance_ratio_grid
-
-    else:
-        # Interpolate values and get gradients 
-        log_distance_ratio, grad_log_distance_ratio = atinterp( X_eval, X_test, log_distance_ratio_grid, return_grad=True)
-
-
-        if data_range is not None:
-            grad_log_distance_ratio /= (zmax - zmin)
+    #print("grad_log_distance_ratio")
+    #print(grad_log_distance_ratio.eval())
                 
     
     return log_distance_ratio, grad_log_distance_ratio
