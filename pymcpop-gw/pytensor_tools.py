@@ -817,7 +817,7 @@ def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
 
 
 
-U = at.as_tensor_variable( 5. ) #2.5)         # upper bound for σ with high probability
+U = at.as_tensor_variable( 20. ) #2.5)         # upper bound for σ with high probability
 alpha = at.as_tensor_variable(0.01)    # small tail probability
 lambda_ = at.log(1 / alpha) / U
 

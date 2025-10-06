@@ -480,81 +480,50 @@ def main():
 
             ip = model.initial_point()
 
-            print("Initializing f_rotated_ ....")
-            import scipy.linalg as la
+            if 'f_rotated_' not in ivals.keys():
 
-            z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
-            z_grid = z_grid_at.eval()
-            N = z_grid.size
+                print("Initializing f_rotated_ to linear function....")
+                import scipy.linalg as la
+    
+                z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
+                z_grid = z_grid_at.eval()
+                N = z_grid.size
+    
+                # --- 2) build a tiny increasing target f(z) ---
+                # anchor at z0 so f(z0)=0, then add a very small positive slope
+                z0 = z_grid[0]
+                s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
+                f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
+                
+                # (optional) keep it even smaller:
+                f_init *= 0.5               # shrink if you want it closer to zero
+    
+                try:
+                    ell0 = ivals['ℓ']
+                    eta0 = ivals['η']
+                    print("Found ell, eta in prior")
+                except:
+                    eta0 = 0.2          # reasonable starting amplitude
+                    ell0 = 0.3          # reasonable starting lengthscale (smooth)
+                    print("ell, eta not found, using eta=0.2 , ell=0.3")
+                
+                jitter = 1e-4
+                
+                
+    
+    
+                
+                X = z_grid.reshape(-1, 1)
+                K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
+                L = np.linalg.cholesky(K)
+                f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
+    
+                ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
 
-            # --- 2) build a tiny increasing target f(z) ---
-            # anchor at z0 so f(z0)=0, then add a very small positive slope
-            z0 = z_grid[0]
-            s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
-            f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
-            
-            # (optional) keep it even smaller:
-            f_init *= 0.5               # shrink if you want it closer to zero
+            else:
+                print("Initializing f_rotated_ from file....")
+                ip["f_rotated_"] = ivals["f_rotated_"]
 
-            try:
-                ell0 = ivals['ℓ']
-                eta0 = ivals['η']
-                print("Found ell, eta in prior")
-            except:
-                eta0 = 0.2          # reasonable starting amplitude
-                ell0 = 0.3          # reasonable starting lengthscale (smooth)
-                print("ell, eta not found, using eta=0.2 , ell=0.3")
-            
-            jitter = 1e-4
-            
-            
-
-
-            
-            X = z_grid.reshape(-1, 1)
-            K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
-            L = np.linalg.cholesky(K)
-            f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
-
-            ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
-
-           
-
-
-            # Overwrite the f_rotated_ entry in the start dict
-        #     ip["f_rotated_"] = onp.asarray([ 7.02469911e-07,  4.52571071e-03,  6.80426574e-03, -2.33168633e-03,
-        #  2.33890566e-03,  4.65246639e-04, -1.16577629e-02, -1.32020204e-02,
-        #  1.51840340e-03, -8.52091742e-03, -8.99299569e-03, -1.69779621e-03,
-        #  1.03156306e-02,  5.52202587e-03, -5.59226001e-03, -1.37263596e-02,
-        #  7.09862094e-03,  9.09167190e-03, -9.65757264e-03,  1.60543518e-02,
-        # -1.56055680e-03, -6.82122103e-03, -1.14058582e-02, -4.75538403e-03,
-        #  1.71630519e-03, -1.43736482e-02, -2.79911719e-03,  4.89715684e-04,
-        #  9.21868173e-03,  1.57716713e-03, -7.47515210e-03,  2.28026706e-03,
-        # -5.91538473e-03,  5.45546982e-03,  8.71618629e-03,  4.74130634e-03,
-        #  1.96832445e-03, -3.65811797e-03,  9.83219335e-03,  9.19101680e-03,
-        # -4.24250944e-03, -6.24320698e-03,  1.79607082e-02,  3.75017452e-03,
-        # -7.58335518e-03, -1.40744820e-02,  6.14548269e-03,  3.25971675e-03,
-        #  6.59424983e-03, -4.18808133e-03,  2.24525353e-03,  8.21137464e-03,
-        # -1.03904549e-02, -6.33960362e-03, -6.17891203e-03,  1.60635667e-03,
-        # -1.18952036e-02,  2.50832293e-02, -3.00198512e-03, -8.16819167e-03,
-        # -5.57333666e-03,  8.75678507e-03,  5.27763358e-03,  8.18905459e-03,
-        # -9.40984055e-03,  3.20419449e-03,  4.42764153e-03, -1.18515955e-02,
-        # -7.76988539e-03,  1.22713190e-02,  3.35638942e-03, -3.57912651e-03,
-        # -3.17482588e-03, -1.34793787e-02,  1.28573482e-02,  1.49766304e-03,
-        # -8.08231389e-03,  1.08895331e-02,  1.53030089e-03,  1.97301384e-02,
-        # -3.47291024e-03,  1.89265476e-02, -1.52099805e-02,  1.56053238e-02,
-        # -2.11126662e-03,  6.75494895e-03,  5.11030325e-04,  1.62390824e-02,
-        #  4.99705834e-03,  5.79614116e-03,  2.35197895e-03, -1.84979241e-02,
-        # -1.66145880e-03, -8.06788820e-03, -6.24390810e-03, -1.72940662e-02,
-        # -5.86798743e-03, -1.87702616e-02,  4.57817454e-03, -4.32766938e-04,
-        #  1.49748590e-02,  3.77060349e-03,  2.74482266e-03,  6.14564494e-03])
-            #np.asarray(f_rot_init)
-            
-            #ip["f_rotated_"] = onp.random.normal(0.0, 0.1, size=atools.zGridGlobals_at.shape[0].eval()).astype(np.float64)
-            #ip["x"] = onp.random.normal(0.0, 0.1 , size=samples_means_at.shape.eval()  ).astype(np.float64)
-
-            #print("f_rotated is")
-            #print(ip["f_rotated_"])
             
             if FLAGS.debug:
                 print()
@@ -840,11 +809,11 @@ def main():
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
-                                        "regularize_mass_matrix": 1e-2 , #5e-4,
-                                        "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
+                                        "regularize_mass_matrix": 1e-3 , #5e-4,
+                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
                                         "max_tree_depth": 10,
                                         "forward_mode_differentiation": False,
-                                        "step_size":1e-2,
+                                        #"step_size":1e-2,
                                     },
                                 },
                             })
