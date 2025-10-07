@@ -404,7 +404,7 @@ def make_model(  priors,
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
         
-        elif sampling_GW=='gmm':
+        elif 'gmm' in sampling_GW :
 
             wts_l, mus_l, cho_covs_l, icovs_l, log_dets_l, mus_l_sub, icovs_l_sub, log_dets_l_sub, Tobs, Nevs = GWData
             nsub = mus_l_sub.shape[2]
@@ -571,7 +571,7 @@ def make_model(  priors,
                 for _ in tqdm(range(trials)):
                     Xwhite = rng.standard_normal((N, nd))
 
-                    if sampling_GW=='gmm':
+                    if 'gmm' in sampling_GW:
                         samples = sample_from_per_event_gmm(wts_l_np, mus_l_np, cho_covs_l_np, Xwhite)
                     elif sampling_GW=='gauss':
                         samples = mus_l_np + (cho_covs_l_np @ Xwhite[..., None]).squeeze(-1)
@@ -632,7 +632,7 @@ def make_model(  priors,
 
 
             # ---- call it (convert your shareds to NumPy once) ----
-            if sampling_GW=='gmm':
+            if 'gmm' in sampling_GW:
                 wts_np = np.asarray(wts_l.eval(), dtype=np.float64)
                 mus_np = np.asarray(mus_l.eval(), dtype=np.float64)
                 chol_np = np.asarray(cho_covs_l.eval(), dtype=np.float64)
@@ -1087,23 +1087,45 @@ def make_model(  priors,
     
             x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ) )
                 
-            if sampling_GW=='gmm':
+            if 'gmm' in sampling_GW:
     
                 print('Sampling m1d, m2d, dL from GMM')
-                ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
 
-                # old way. leave it here  please
-                # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
+                if sampling_GW=='gmm_cat':
+                    ###################################
+                    # categorical
+                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
+
+                else:
+                    ###################################
+                    # new continuous way
+    
+                    # ---------- 1) shared selector: hom vs cat AND galaxy index ----------
+                    u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
+                    v_gmm = at.clip(atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
+    
+                    
+                    # inverse-CDF over weights
+                    cdf_w = at.cumsum(wts_l, axis=1)                                          
+                    ig = (v_gmm[:, None] < cdf_w).argmax(axis=1)                         
+
+
                 
-                # Select means and Cholesky factors per batch
+                ######## old way discrete. leave it here  please
+                # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
+
+                ####### new way discrete
+                # # Select means and Cholesky factors per batch
                 mu_selected = mus_l[at.arange(N), ig, :]         # shape (N, D)
                 L_selected = cho_covs_l[at.arange(N), ig, :, :]  # shape (N, D, D)
                  
-                # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                # # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
                 Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
                 
-                # Final transformed sample
+                # # Final transformed sample
                 samples = mu_selected + Lx                # shape (N, D)
+
+                
 
                 
                 log_Mc_det = samples[:,0]/dil_factor

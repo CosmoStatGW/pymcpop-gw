@@ -321,7 +321,7 @@ def main():
             
     if not FLAGS.pop_only:  
     
-        if FLAGS.sampling_gw=='gmm':
+        if 'gmm' in FLAGS.sampling_gw:
             #GWData =  [
             #           at.exp(gmm_log_wts), 
             #           gmm_means, 
@@ -480,49 +480,50 @@ def main():
 
             ip = model.initial_point()
 
-            if 'f_rotated_' not in ivals.keys():
-
-                print("Initializing f_rotated_ to linear function....")
-                import scipy.linalg as la
+            if FLAGS.is_GP_dL:
+                if 'f_rotated_' not in ivals.keys():
     
-                z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
-                z_grid = z_grid_at.eval()
-                N = z_grid.size
+                    print("Initializing f_rotated_ to linear function....")
+                    import scipy.linalg as la
+        
+                    z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
+                    z_grid = z_grid_at.eval()
+                    N = z_grid.size
+        
+                    # --- 2) build a tiny increasing target f(z) ---
+                    # anchor at z0 so f(z0)=0, then add a very small positive slope
+                    z0 = z_grid[0]
+                    s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
+                    f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
+                    
+                    # (optional) keep it even smaller:
+                    f_init *= 0.5               # shrink if you want it closer to zero
+        
+                    try:
+                        ell0 = ivals['ℓ']
+                        eta0 = ivals['η']
+                        print("Found ell, eta in prior")
+                    except:
+                        eta0 = 0.2          # reasonable starting amplitude
+                        ell0 = 0.3          # reasonable starting lengthscale (smooth)
+                        print("ell, eta not found, using eta=0.2 , ell=0.3")
+                    
+                    jitter = 1e-4
+                    
+                    
+        
+        
+                    
+                    X = z_grid.reshape(-1, 1)
+                    K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
+                    L = np.linalg.cholesky(K)
+                    f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
+        
+                    ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
     
-                # --- 2) build a tiny increasing target f(z) ---
-                # anchor at z0 so f(z0)=0, then add a very small positive slope
-                z0 = z_grid[0]
-                s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
-                f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
-                
-                # (optional) keep it even smaller:
-                f_init *= 0.5               # shrink if you want it closer to zero
-    
-                try:
-                    ell0 = ivals['ℓ']
-                    eta0 = ivals['η']
-                    print("Found ell, eta in prior")
-                except:
-                    eta0 = 0.2          # reasonable starting amplitude
-                    ell0 = 0.3          # reasonable starting lengthscale (smooth)
-                    print("ell, eta not found, using eta=0.2 , ell=0.3")
-                
-                jitter = 1e-4
-                
-                
-    
-    
-                
-                X = z_grid.reshape(-1, 1)
-                K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
-                L = np.linalg.cholesky(K)
-                f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
-    
-                ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
-
-            else:
-                print("Initializing f_rotated_ from file....")
-                ip["f_rotated_"] = ivals["f_rotated_"]
+                else:
+                    print("Initializing f_rotated_ from file....")
+                    ip["f_rotated_"] = ivals["f_rotated_"]
 
             
             if FLAGS.debug:

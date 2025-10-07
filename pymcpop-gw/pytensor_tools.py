@@ -161,6 +161,13 @@ def inv_flogitat(p):
 def flogitat(p):
     return at.log(1 + p) - at.log(1 - p)
 
+
+def normal_cdf(x):
+    # Phi(x) = 0.5 * (1 + erf(x/sqrt(2)))
+    return 0.5 * (1.0 + at.erf(x / at.sqrt(2.0)))
+
+
+
 def m1m2_from_Mcq_at(Mc, q):
     
     m1 = Mc*(1+q)**(1./5.)/q**(3./5.)
