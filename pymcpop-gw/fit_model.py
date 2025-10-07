@@ -12,31 +12,11 @@ import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
 
 
-import numpyro
-numpyro.set_host_device_count(4)
-
-import jax
-import jax.numpy as np
-# Optional: sanity check
-print("Available devices:", jax.local_device_count())
-
-
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off") # show full frames
-
-
 import argparse
 import json
 import sys
 
 import numpy as onp
-import pytensor
-import pytensor.tensor as at
-
-import pymc as pm
-
-
 
 import arviz as az
 import matplotlib.pyplot as plt
@@ -44,23 +24,7 @@ import corner
 
 
 
-# my modules
-import pymc_models as models
-import data_tools as dt
-import pytensor_tools as atools
-
-pytensor.config.floatX = "float64"
-
-
-
 def main():
-
-    print(jax.default_backend())
-    print(jax.devices())
-    print(f"Running on PyMC v{pm.__version__}")
-
-    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-    print("dtype test:", np.array(0., dtype=np.float64).dtype) 
 
     
     parser = argparse.ArgumentParser()
@@ -136,6 +100,90 @@ def main():
 
 
     FLAGS = parser.parse_args()
+
+    if FLAGS.chain_method == "vectorized" and FLAGS.ncores > 1:
+        raise ValueError(
+            "For chain_method='vectorized', set ncores=1. "
+            "Vectorized mode runs all chains in one JAX process and "
+            "does not use multiprocessing."
+        )
+
+    if FLAGS.chain_method == "parallel" and FLAGS.ncores < FLAGS.nchains:
+        print(
+            f"⚠️ Warning: ncores ({FLAGS.ncores}) < nchains ({FLAGS.nchains}). "
+            "This may limit parallel performance."
+        )
+
+    device_count = FLAGS.ncores if hasattr(FLAGS, "ncores") else 1
+
+    # ----------------------------------------------------
+    # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
+    # ----------------------------------------------------
+    if FLAGS.chain_method == "parallel":
+        # Must set before importing numpyro/jax/pymc
+        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+    
+    # Optional but recommended: enable float64 early
+    os.environ.setdefault("JAX_ENABLE_X64", "True")
+    os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+
+
+    # ----------------------------------------------------
+    # 2️⃣ Import libraries (now they see the environment)
+    # ----------------------------------------------------
+    import numpyro
+    
+    import jax
+    import jax.numpy as np
+
+    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+
+
+    # Ensure correct device setup
+    device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
+    if FLAGS.chain_method == "parallel":
+        numpyro.set_host_device_count(device_count)
+    
+    print("Available devices:", jax.devices())
+    print("Local device count:", jax.local_device_count())
+    print("Backend:", jax.default_backend())
+    
+    # ----------------------------------------------------
+    # 3️⃣ Now safe to import PyMC and others
+    # ----------------------------------------------------
+    import pymc as pm
+    import pytensor
+    import pytensor.tensor as at
+    import arviz as az
+    import numpy as onp
+    import matplotlib.pyplot as plt
+    import corner
+    
+    # Custom modules
+    import pymc_models as models
+    import data_tools as dt
+    import pytensor_tools as atools
+    
+    pytensor.config.floatX = "float64"
+    
+    print(f"Running on PyMC v{pm.__version__}")
+    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype)
+    
+
+    # ----------------------------------------------------
+    # 4️⃣ Multiprocessing setup (only for parallel chains)
+    # ----------------------------------------------------
+    if FLAGS.chain_method == "parallel":
+        import multiprocessing as mp
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+
+
+    
 
     logfile = os.path.join(FLAGS.fout, 'logfile.txt')
     myLog = dt.Logger(logfile)
@@ -845,12 +893,6 @@ def main():
 
 if __name__=='__main__':
         
-    # Only set 'spawn' if you plan to use multiple OS processes (cores > 1)
-    import multiprocessing as mp
-    try:
-        mp.set_start_method("spawn", force=True)   # safe on Linux; default on macOS/Windows
-    except RuntimeError:
-        pass  # start method may already be set (e.g., in notebooks)
 
     main()
     
