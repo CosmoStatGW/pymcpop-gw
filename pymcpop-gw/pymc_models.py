@@ -596,7 +596,7 @@ def make_model(  priors,
                         continue
             
                     # characteristic spacing (robust)
-                    L_list.append(robust_stat(np.diff(z_nodes)))
+                    L_list.append( np.mean(np.diff(z_nodes)))  #robust_stat(np.diff(z_nodes)))
             
                     # midpoint derivative magnitude
                     lb_mid_pos = lb_mid_fn(z_nodes, float(H0), float(Om), )  # (N-1,)
@@ -665,7 +665,7 @@ def make_model(  priors,
             ell_min = stats["ell_min"]
 
             
-            beta = atools.find_beta(stats["M"], 2., p0=0.01)
+            beta = atools.find_beta(stats["L"], 2., p0=0.01)
 
             al = atools.find_al(stats["L"], 10., p0=0.01)
 
@@ -700,9 +700,9 @@ def make_model(  priors,
         pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=1/10 )
         pdf_l = halfnorm(scale=1).pdf(ℓ_vals.eval())
         plt.plot(ℓ_vals.eval(), at.exp(logp_vals).eval(), label='frechet')
-        #plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
-        #plt.plot(ℓ_vals.eval(), pdf_l, label='halfnorm')
-        #plt.plot(ℓ_vals.eval(), pdf_gamma_inv, label='inv gamma')
+        plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
+        plt.plot(ℓ_vals.eval(), pdf_l, label='halfnorm')
+        plt.plot(ℓ_vals.eval(), pdf_gamma_inv, label='inv gamma')
         plt.xlabel("ℓ")
         plt.ylabel("Prior density")
         plt.title("PC prior on ℓ")
@@ -1477,7 +1477,7 @@ def make_model(  priors,
             print('Removing dL^2 prior')
         elif dLprior == 'dVdz':
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=d/(1+zs) )-at.log1p(zs)
+            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=dc )-at.log1p(zs)
 
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2

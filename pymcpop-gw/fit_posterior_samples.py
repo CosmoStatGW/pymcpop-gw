@@ -965,7 +965,7 @@ if __name__=='__main__':
         #print('N. of components to fit:')
         #print( [ ( data.events[i], n_comp_all[i] ) for i in range(len(n_comp_all)) ]  )
 
-        
+ 
         allsamples_ = [ data.m1z, data.m2z, data.dL, ]
         print('data m1z shape: %s'%str(data.m1z.shape))
         
