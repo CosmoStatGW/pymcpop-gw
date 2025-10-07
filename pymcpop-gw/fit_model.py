@@ -11,6 +11,21 @@
 import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
 
+
+import numpyro
+numpyro.set_host_device_count(4)
+
+import jax
+import jax.numpy as np
+# Optional: sanity check
+print("Available devices:", jax.local_device_count())
+
+
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off") # show full frames
+
+
 import argparse
 import json
 import sys
@@ -18,20 +33,16 @@ import sys
 import numpy as onp
 import pytensor
 import pytensor.tensor as at
+
 import pymc as pm
 
-import jax
-import jax.numpy as np
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off") # show full frames
 
 
 import arviz as az
 import matplotlib.pyplot as plt
 import corner
 
-import numpyro
+
 
 # my modules
 import pymc_models as models
@@ -132,11 +143,7 @@ def main():
     sys.stderr = myLog
 
     
-    numpyro.set_host_device_count(FLAGS.ncores)
-
-    # Optional: sanity check
-    print("Available devices:", jax.local_device_count())
-
+    
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
