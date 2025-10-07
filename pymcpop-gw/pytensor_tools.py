@@ -1191,8 +1191,7 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
                 
 
         lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
-
-        
+    
         lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
         
         lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing) 
@@ -1206,7 +1205,7 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
         #                    MIN,
         #                    lpdfm1 + lpdfm2 - lC - ln
         #                )
-        #print(lpdf.eval())
+        
 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
@@ -1226,7 +1225,7 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     t = at.linspace(0.0, 1.0, res)               # endpoints are constants
     xx = m2_low + (max_m - m2_low) * t 
         
-    p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
+    p2 = at.exp( logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
     
     cdf = atcumtrapz( p2, xx, )
 

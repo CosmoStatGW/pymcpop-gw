@@ -19,6 +19,7 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, smoothing='LVK', has_m2_break=False, dc=None):
 
+
     ###################################
     # get parameters and compute log p_pop
     ####################################
@@ -26,7 +27,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     H0, Om, w0, Xi0, n = Lambda[:5] 
 
     if dc is None:
-        dc =atools.dcfun_at(z, H0, Om, w0, interp=False)
+        dc = atools.dcfun_at(z, H0, Om, w0, interp=False)
 
     ##################################
     # redshift 
@@ -89,6 +90,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], smoothing=smoothing)
 
     elif mass_model=='DPLDP':
+        
         lambdaBBHmass = Lambda[-20:]
         lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing )
         
@@ -186,7 +188,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
-    if 'DP' in mass_model:
+    if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
         log_Mc_src_inj = at.log(Mc_src_inj)
         logit_q_inj = atools.logitat(q_inj)      
@@ -386,7 +388,7 @@ def make_model(  priors,
 
     coords = {'event_index': event_index}
 
-    if 'DP' in mass_model:
+    if mass_model in ('DP', 'DPUC'):
         coords['component'] = at.arange(N_DP_comp_max).eval()
         coords['GMMdimension'] = at.arange(2.).eval()
         coords['GMMdimension_1'] = at.arange(2.).eval()
@@ -603,7 +605,7 @@ def make_model(  priors,
             m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
             v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
             m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype('float64')  )
             delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
             lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
@@ -614,13 +616,13 @@ def make_model(  priors,
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
             if has_m2_break:
                 print("Including gap for secondary mass")
-                m_g_     = at.as_tensor_variable(45)
-                w_g_     = at.as_tensor_variable(70)
+                m_g_     = at.as_tensor_variable(45.).astype('float64')
+                w_g_     = at.as_tensor_variable(70.).astype('float64')
                 sig_g_l_ = at.as_tensor_variable(1e-04)
                 sig_g_h_ = at.as_tensor_variable(1e-04)
             else:
-                m_g_     = at.as_tensor_variable(45)
-                w_g_     = at.as_tensor_variable(70)
+                m_g_     = at.as_tensor_variable(45.).astype('float64')
+                w_g_     = at.as_tensor_variable(70.).astype('float64')
                 sig_g_l_ = at.as_tensor_variable(1e-04)
                 sig_g_h_ = at.as_tensor_variable(1e-04)
             
@@ -995,6 +997,7 @@ def make_model(  priors,
             zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
+            
                 
         else:
             # we are sampling the usual marginalise likelihood, with "only" pop parameters
@@ -1037,7 +1040,7 @@ def make_model(  priors,
 
         
         # Population prior of all events, without the term T_obs*R0
-        if 'DP' in mass_model:
+        if mass_model in ('DP', 'DPUC'):
 
             # dirichelet processs will be for log(Mc_src), logit(q) ...
             logMc_src =  log_Mc_det - at.log1p(zs)
@@ -1048,7 +1051,7 @@ def make_model(  priors,
             
         else:    
         
-            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
+            log_p_pop = log_p_pop_at( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
 
         
         if dLprior=='dLsq':
