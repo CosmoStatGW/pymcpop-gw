@@ -358,8 +358,6 @@ def main():
                 ivals = json.load(json_file)
         print('Initial values:')
         print(ivals)
-        vplot = list(ivals.keys())
-        print(vplot)
     else:
         print('No initial values passed.')
         ivals={}
@@ -460,137 +458,147 @@ def main():
                 print('Check initial point...')
                 print('*'*80)
                 print()
+
                 ip = model.initial_point()
-                print('Initial values:')
-                print(ip)
-                model.check_start_vals(ip)                      # raises if logp is -inf/NaN
-                f  = model.compile_logp(sum=True)
-                g  = model.compile_dlogp()                      # gradient
-                assert np.isfinite(f(ip))
-                for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
-                total_logp = float(f(ip))
-                grad_norms = [float((gi**2).sum()**0.5) for gi in g(ip)]
-                print("logp(ip) =", total_logp)
-                #print("||grad|| per block:", grad_norms)
-
-                blocks = g(ip)  # list of gradient blocks matching PyMC's internal parameter blocks
-
-                def try_step(ip, block_i, eps=1e-4):
-                    ip2 = {k: (v.copy() if hasattr(v, "copy") else onp.array(v)) for k, v in ip.items()}
-                    # nudge along block_i in gradient direction
-                    bkeys = list(ip2.keys())[block_i:block_i+1]
-                    # If you know which keys map to block_i use those; this heuristic just tries each key separately:
-                    for k in bkeys:
-                        v = ip2[k]
-                        ip2[k] = v + eps * onp.sign(1.0)  # small +epsilon
-                        val = f(ip2)
-                        return float(val)
-                    return onp.nan
                 
-                bad = []
-                for i in range(len(blocks)):
-                    try:
-                        val = try_step(ip, i, eps=1e-4)
-                        if not onp.isfinite(val):
+                try:
+                    model.check_start_vals(ip)
+                    f  = model.compile_logp(sum=True)
+                    g  = model.compile_dlogp()                      # gradient
+                    assert np.isfinite(f(ip))
+                    for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
+                    print("Start is finite ✅")
+                except Exception as e:
+                    print("Start invalid ❌:", e)
+                    
+                
+                
+                    print('Initial values:')
+                    print(ip)
+                    
+                    total_logp = float(f(ip))
+                    grad_norms = [float((gi**2).sum()**0.5) for gi in g(ip)]
+                    print("logp(ip) =", total_logp)
+                    #print("||grad|| per block:", grad_norms)
+    
+                    blocks = g(ip)  # list of gradient blocks matching PyMC's internal parameter blocks
+    
+                    def try_step(ip, block_i, eps=1e-4):
+                        ip2 = {k: (v.copy() if hasattr(v, "copy") else onp.array(v)) for k, v in ip.items()}
+                        # nudge along block_i in gradient direction
+                        bkeys = list(ip2.keys())[block_i:block_i+1]
+                        # If you know which keys map to block_i use those; this heuristic just tries each key separately:
+                        for k in bkeys:
+                            v = ip2[k]
+                            ip2[k] = v + eps * onp.sign(1.0)  # small +epsilon
+                            val = f(ip2)
+                            return float(val)
+                        return onp.nan
+                    
+                    bad = []
+                    for i in range(len(blocks)):
+                        try:
+                            val = try_step(ip, i, eps=1e-4)
+                            if not onp.isfinite(val):
+                                bad.append(i)
+                        except Exception:
                             bad.append(i)
-                    except Exception:
-                        bad.append(i)
-
-                #print("tiny-step bad blocks:", bad)
-
-
-                # Map value var -> RV
-                v2r = {vv: rv for rv, vv in model.rvs_to_values.items()}
-                
-                # Only check free parameters (the ones HMC moves)
-                free_vvs = [model.rvs_to_values[rv] for rv in model.free_RVs]
-                
-                bad = []
-                eps = 1e-6
-                
-                for i, vv in enumerate(free_vvs):
-                    key = vv.name  # e.g. "alpha_interval__", "sigma_log__", etc.
-                
-                    # make a fresh copy of the transformed start dict
-                    test = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v))
-                            for k, v in ip.items()}
-                    try:
-                        step = eps if onp.ndim(test[key]) == 0 else eps * onp.ones_like(test[key])
-                        test[key] = test[key] + step
-                        val = f(test)
-                        if not onp.isfinite(val):
+    
+                    #print("tiny-step bad blocks:", bad)
+    
+    
+                    # Map value var -> RV
+                    v2r = {vv: rv for rv, vv in model.rvs_to_values.items()}
+                    
+                    # Only check free parameters (the ones HMC moves)
+                    free_vvs = [model.rvs_to_values[rv] for rv in model.free_RVs]
+                    
+                    bad = []
+                    eps = 1e-6
+                    
+                    for i, vv in enumerate(free_vvs):
+                        key = vv.name  # e.g. "alpha_interval__", "sigma_log__", etc.
+                    
+                        # make a fresh copy of the transformed start dict
+                        test = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v))
+                                for k, v in ip.items()}
+                        try:
+                            step = eps if onp.ndim(test[key]) == 0 else eps * onp.ones_like(test[key])
+                            test[key] = test[key] + step
+                            val = f(test)
+                            if not onp.isfinite(val):
+                                rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
+                                bad.append((i, key, rvname))
+                        except Exception as e:
                             rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
-                            bad.append((i, key, rvname))
-                    except Exception as e:
-                        rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
-                        bad.append((i, key, rvname, str(e)))
-                
-                print("Problematic value_vars on tiny step:")
-                for row in bad[:50]:
-                    if len(row) == 3:
-                        i, key, rvname = row
-                        print(f"{i:4d} {key:>25}   (RV: {rvname})")
-                    else:
-                        i, key, rvname, msg = row
-                        print(f"{i:4d} {key:>25}   (RV: {rvname}) -> {msg}")
-                print(f"... total bad: {len(bad)}")
-
-
-
-                # build a dict of tiny step along gradient for each value var
-                gblocks = g(ip)
-                eps = 1e-4
-                ip_plus = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
-                for vv, grad in zip([model.rvs_to_values[rv] for rv in model.free_RVs], gblocks):
-                    key = vv.name
-                    step = eps * (grad / (onp.linalg.norm(grad.ravel()) + 1e-12))
-                    ip_plus[key] = ip_plus[key] + step
-                
-                print("f(ip)      =", float(f(ip)))
-                print("f(ip_plus) =", float(f(ip_plus)))
-
-
-                import random
-                rng = onp.random.default_rng(0)
-                for trial in range(5):
-                    ip_rand = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
-                    for key, val in ip_rand.items():
-                        noise = rng.standard_normal(size=onp.shape(val)) * 1e-4
-                        ip_rand[key] = val + noise
-                    val = f(ip_rand)
-                    print(f"random step {trial}: finite? {onp.isfinite(val)}")
-
-                f_parts = model.compile_logp(sum=False)
-                vals = f_parts(ip_rand)  # or ip_plus
-                # 1) Indices of terms that contain ANY non-finite entries
-                bad_idxs = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
-                print("bad term indices:", bad_idxs)
-
-
-                rng = onp.random.default_rng(0)
-                keys = list(ip.keys())
-                
-                def try_noise(std):
+                            bad.append((i, key, rvname, str(e)))
+                    
+                    print("Problematic value_vars on tiny step:")
+                    for row in bad[:50]:
+                        if len(row) == 3:
+                            i, key, rvname = row
+                            print(f"{i:4d} {key:>25}   (RV: {rvname})")
+                        else:
+                            i, key, rvname, msg = row
+                            print(f"{i:4d} {key:>25}   (RV: {rvname}) -> {msg}")
+                    print(f"... total bad: {len(bad)}")
+    
+    
+    
+                    # build a dict of tiny step along gradient for each value var
+                    gblocks = g(ip)
+                    eps = 1e-4
+                    ip_plus = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
+                    for vv, grad in zip([model.rvs_to_values[rv] for rv in model.free_RVs], gblocks):
+                        key = vv.name
+                        step = eps * (grad / (onp.linalg.norm(grad.ravel()) + 1e-12))
+                        ip_plus[key] = ip_plus[key] + step
+                    
+                    print("f(ip)      =", float(f(ip)))
+                    print("f(ip_plus) =", float(f(ip_plus)))
+    
+    
+                    import random
+                    rng = onp.random.default_rng(0)
+                    for trial in range(5):
+                        ip_rand = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
+                        for key, val in ip_rand.items():
+                            noise = rng.standard_normal(size=onp.shape(val)) * 1e-4
+                            ip_rand[key] = val + noise
+                        val = f(ip_rand)
+                        print(f"random step {trial}: finite? {onp.isfinite(val)}")
+    
+                    f_parts = model.compile_logp(sum=False)
+                    vals = f_parts(ip_rand)  # or ip_plus
+                    # 1) Indices of terms that contain ANY non-finite entries
+                    bad_idxs = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
+                    print("bad term indices:", bad_idxs)
+    
+    
+                    rng = onp.random.default_rng(0)
+                    keys = list(ip.keys())
+                    
+                    def try_noise(std):
+                        trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
+                        for k in keys:
+                            trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * std
+                        val = f(trial)
+                        return float(val), onp.isfinite(val)
+                    
+                    for std in [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]:
+                        v, ok = try_noise(std)
+                        print(f"std={std:g}  finite? {ok}  f={v}")
+    
+                    f_parts = model.compile_logp(sum=False)
+                    trial_val, _ = try_noise(1e-3)  # use the smallest std that failed above
                     trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
                     for k in keys:
-                        trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * std
-                    val = f(trial)
-                    return float(val), onp.isfinite(val)
+                        trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * 1e-3
+                    vals = f_parts(trial)
+                    bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
+                    print("bad term indices:", bad)
                 
-                for std in [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]:
-                    v, ok = try_noise(std)
-                    print(f"std={std:g}  finite? {ok}  f={v}")
-
-                f_parts = model.compile_logp(sum=False)
-                trial_val, _ = try_noise(1e-3)  # use the smallest std that failed above
-                trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
-                for k in keys:
-                    trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * 1e-3
-                vals = f_parts(trial)
-                bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
-                print("bad term indices:", bad)
-                
-                print('\nDone. ')
+                print('Done. ')
 
 
             # ----- sampler-specific kwargs -----
@@ -638,8 +646,12 @@ def main():
                 sampler = "pymc"
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
-    
-            print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
+
+            print("\nModel variables:")
+            # Print only the names of variables that are sampled
+            print([v.name for v in model.free_RVs])
+            
+            print('\nSampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
             trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
 
             
