@@ -113,6 +113,9 @@ def main():
     parser.add_argument("--nchains", default=1, type=int, required=False)
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
+    parser.add_argument("--chain_method", default='parallel', type=str, required=False)
+    
+    
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
@@ -293,7 +296,7 @@ def main():
             
     if not FLAGS.pop_only:  
     
-        if FLAGS.sampling_gw=='gmm':
+        if 'gmm' in FLAGS.sampling_gw:
             GWData =  [
                        at.exp(gmm_log_wts), 
                        gmm_means, 
@@ -593,10 +596,10 @@ def main():
             if FLAGS.sampler == "numpyro":
                 sampler = "numpyro"
                 sampler_kwargs.update({
-                                "cores": 1,                         # JAX: single OS process
+                                # "cores": 1,                         # JAX: single OS process
                                 "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
-                                    "chain_method": "vectorized",   # fast on single device
+                                    "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
                                         "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
@@ -612,10 +615,10 @@ def main():
             elif FLAGS.sampler == "blackjax":
                 sampler = "blackjax"
                 sampler_kwargs.update({
-                    "cores": 1,                        # avoid fork
+                    #"cores": 1,                        # avoid fork
                     "target_accept": FLAGS.target_accept,
                     "nuts_sampler_kwargs": {
-                        "chain_method": "vectorized" #"vectorized",  # BlackJAX has no 'nuts_kwargs' block
+                        "chain_method": FLAGS.chain_method   # BlackJAX has no 'nuts_kwargs' block
                     },
                 })
             else:

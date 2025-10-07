@@ -117,6 +117,12 @@ def inv_flogitat(p):
 def flogitat(p):
     return at.log(1 + p) - at.log(1 - p)
 
+
+def normal_cdf(x):
+    # Phi(x) = 0.5 * (1 + erf(x/sqrt(2)))
+    return 0.5 * (1.0 + at.erf(x / at.sqrt(2.0)))
+
+
 def m1m2_from_Mcq_at(Mc, q):
     
     m1 = Mc*(1+q)**(1./5.)/q**(3./5.)
@@ -131,6 +137,26 @@ def Mcq_from_m1m2_at(m1, m2):
     
     return Mc, q
 
+
+def get_sample_from_cho_lMclqld(x, mu, L):
+    
+    
+    # for cholesky rules see 
+    # https://www.cs.helsinki.fi/u/ahonkela/teaching/compstats1/book/multivariate-normal-distributions-and-numerical-linear-algebra.html
+    
+    # x, mu have shape 3
+    # L has shape 3x3
+    # nd = mu.shape[0]
+
+    sample = mu + (L @ x[:, None])[:, 0]   # instead of at.dot(L, x)
+
+    # Log probability of standard normal x
+    logp = (
+    -0.5 * at.sum(x**2)   # instead of at.dot(x.T, x)
+    - 0.5 * mu.shape[0] * at.log(2 * atools.PI)
+    - at.sum(at.log(at.diagonal(L)))  # log determinant of L
+    )
+    return sample, logp
 
 
 def stick_breaking(beta):
@@ -421,24 +447,9 @@ def dcfun_at(z, H0, Om, w0, interp=False):
       return c_light_at/H0 * attrapzvec(1/E, zz)*1e-03
 
 
-def dcfun_np(z, H0, Om, interp=False):
-    """Comoving distance at redshift ``z``, in Gpc, H0 in km/s/Mpc"""
-    if interp:
-      return c_light/H0 * _int_dC_hyperbolic(z, Om)*1e-03
-    else:
-      zz = np.linspace(0, z, 100).T
-      #print(zz ok)
-      #E = np.sqrt( Om*(1+zz)**3+(1-Om)  )
-      E = Efun_at(zz, Om, w0 )
-      return np.array(c_light/H0 * np.trapz(1/E, zz)*1e-03)
-
-
 def Xifun_at(z, Xi0, n):
     return Xi0+(1-Xi0)/(1+z)**n
 
-def dLfun_np(z, H0, Om, interp=False):
-    """Luminosity distance at redshift ``z``."""
-    return np.array((z+1.0)*dcfun_np(z, H0, Om, interp=interp))
 
 
 def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False):
@@ -450,11 +461,6 @@ def Efun_at(z,Om,w0 ):
     return at.sqrt( Om*(1+z)**3+(1-Om)  )
 
 
-def z_from_dL_np( r, H0, Om, w0, Xi0, n ):
-    dLGrid = np.array(dLfun_np( zGridGlobals, H0, Om=Om ))
-    z2dL = jnptinterp( r, dLGrid, zGridGlobals ) 
-    return np.array(z2dL)
-
 
 def z_from_dL_at( r, H0, Om, w0, Xi0, n ):
     dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
@@ -463,30 +469,28 @@ def z_from_dL_at( r, H0, Om, w0, Xi0, n ):
 
 
     
-    
 def log_j_at(z, Om, H0=70, dc=None, ):
     if dc is None:
         dc = dcfun_at(z, H0, Om)
-    dc*=H0/c_light*1e03
+    dc*=H0/c_light_at*1e03
     return at.log(4*PI)+2*at.log(dc)-at.log(Efun_at(z, Om=Om))
+
 
 def log_dV_dz_at(z, H0, Om0, w0, dc=None):
     if dc is None:
         dc = dcfun_at(z, H0, Om0, w0)    
-    res =  at.log(4*PI)+at.log(c_light)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
+    res =  at.log(4*PI)+at.log(c_light_at)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
     return res
-    
-def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dL=None):
+
+
+def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None):
     
     # H0 in Mpc, dLs in Gpc
-    
-    if dL is None:
-        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=False)*H0/c_light
-    else:
-        dc = dL/(1+z)
+    if dc is None:
+        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=False) # Gpc
     
     Xi = Xifun_at(z, Xi0, n)
-    res = at.log( ( Xi -n*(1-Xi0)/(1+z)**n )* dc + Xi*c_light*(1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+    res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
         
     return res
 

@@ -12,10 +12,12 @@ import numpy as np
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
+
+#####################################################
 #####################################################
 
 
-def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, smoothing='LVK', has_m2_break=False):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, smoothing='LVK', has_m2_break=False, dc=None):
 
     ###################################
     # get parameters and compute log p_pop
@@ -23,19 +25,22 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     
     H0, Om, w0, Xi0, n = Lambda[:5] 
 
+    if dc is None:
+        dc =atools.dcfun_at(z, H0, Om, w0, interp=False)
+
     ##################################
     # redshift 
     
     if rate_model=='MD':
         
         gamma, kappa, zp = Lambda[5:8]
-        lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=dL/(1+z))
+        lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=dc )
         istart = 8
         
     elif rate_model=='PL':
         
         gamma = Lambda[5]
-        lpz = atools.log_p_z_PL_unnorm(z, gamma, H0, Om, w0, dc=dL/(1+z))
+        lpz = atools.log_p_z_PL_unnorm(z, gamma, H0, Om, w0, dc=dc )
         istart = 6
 
     # ##################################
@@ -103,29 +108,6 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         w, mu, sd, logw  = Lambda[-5:-1]
         Nmax=Lambda[-1]
 
-        # This is the pdf of two independent gaussians - one for log(Mc), one for logit(q)
-        # (there must be a smarter way of writing it instead of the loop. Do it for performance please)
-        # logpmass_1, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
-        #                                         -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
-        #                                     sequences = [  at.arange(Nmax) ],
-        #                                      non_sequences =  [m1s, mu[0], sd[0], at.log(sd[0]), ],
-        #                                  )
-
-
-        # logpmass_2, _ = pytensor.scan( lambda ig, X, M, S, logD,   : 
-        #                                         -0.5*( X-M[ig] )**2/(S[ig]**2)-0.5*at.log(2*atools.PI)-logD[ig],
-        #                                     sequences = [  at.arange(Nmax) ],
-        #                                      non_sequences =  [m2s, mu[1], sd[1], at.log(sd[1]), ],
-        #                                  )
-
-        # lpmass = at.logsumexp(logpmass_1+logpmass_2+logw[:, None], axis=0) # sum on gmm components
-
-        # Shapes assumed:
-        # m1s, m2s:     (n_obs,)
-        # mu:           (2, n_comp)         # mu[0] for log(Mc), mu[1] for logit(q)
-        # sd:           (2, n_comp)         # sd[0], sd[1] > 0
-        # logw:         (n_comp,)           # log mixture weights
-        # Nmax == n_comp
         
         # Broadcast to (n_comp, n_obs)
         diff1 = m1s[None, :] - mu[0][:, None]
@@ -176,7 +158,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     ###################################
     # jacobian
     
-    log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dL=dL)
+    log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
 
     
     ###################################
@@ -188,6 +170,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     return lp
 
 
+#####################################################
 
 def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break):
 
@@ -265,28 +248,9 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
 
 #####################################################
 
-def get_sample_from_cho_lMclqld(x, mu, L):
-    
-    
-    # for cholesky rules see 
-    # https://www.cs.helsinki.fi/u/ahonkela/teaching/compstats1/book/multivariate-normal-distributions-and-numerical-linear-algebra.html
-    
-    # x, mu have shape 3
-    # L has shape 3x3
-    # nd = mu.shape[0]
-
-    sample = mu + (L @ x[:, None])[:, 0]   # instead of at.dot(L, x)
-
-    # Log probability of standard normal x
-    logp = (
-    -0.5 * at.sum(x**2)   # instead of at.dot(x.T, x)
-    - 0.5 * mu.shape[0] * at.log(2 * atools.PI)
-    - at.sum(at.log(at.diagonal(L)))  # log determinant of L
-    )
-    return sample, logp
 
 
-
+#####################################################
 #####################################################
 
 
@@ -337,7 +301,7 @@ def make_model(  priors,
         if sampling_GW=='gauss' :
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
-        elif sampling_GW=='gmm':
+        elif 'gmm' in sampling_GW:
             # we sample single-event parameters from the actual single-event posteriors
             wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
         else:
@@ -482,14 +446,16 @@ def make_model(  priors,
         ################################################
         
         if rate_model=='MD':
+            
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            #gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-            #kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-            #zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+            
+            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
-            gamma_ = atools.uniform_unconstrained("gamma",  priors['gamma'][0], priors['gamma'][1], init=ivals.get("gamma"))
-            kappa_ = atools.uniform_unconstrained("kappa",  priors['kappa'][0], priors['kappa'][1], init=ivals.get("kappa"))
-            zp_ = atools.uniform_unconstrained("zp",  priors['zp'][0], priors['zp'][1], init=ivals.get("zp"))
+            # gamma_ = atools.uniform_unconstrained("gamma",  priors['gamma'][0], priors['gamma'][1], init=ivals.get("gamma"))
+            # kappa_ = atools.uniform_unconstrained("kappa",  priors['kappa'][0], priors['kappa'][1], init=ivals.get("kappa"))
+            # zp_ = atools.uniform_unconstrained("zp",  priors['zp'][0], priors['zp'][1], init=ivals.get("zp"))
             
             Lambda_ += [gamma_, kappa_, zp_]
 
@@ -601,24 +567,23 @@ def make_model(  priors,
             elif smoothing=='poly':
                 print('using differentiable polynomial smoothing')
             
-            #lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))
-            lamP_ = atools.uniform_unconstrained("lambdaPeak",  priors['lambdaPeak'][0], priors['lambdaPeak'][1], init=ivals.get("lambdaPeak"))
-            
-            #alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
-            #beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
-            #ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
-            #mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
-            #deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
-            #muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
-            #sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
+            lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))        
+            alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
+            beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
+            ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
+            mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
+            deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
+            muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
+            sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
 
-            alpha_  = atools.uniform_unconstrained("alpha",     priors["alpha"][0],     priors["alpha"][1],     init=ivals.get("alpha"))
-            beta_   = atools.uniform_unconstrained("beta",      priors["beta"][0],      priors["beta"][1],      init=ivals.get("beta"))
-            ml_     = atools.uniform_unconstrained("ml",        priors["ml"][0],        priors["ml"][1],        init=ivals.get("ml"))
-            mh_     = atools.uniform_unconstrained("mh",        priors["mh"][0],        priors["mh"][1],        init=ivals.get("mh"))
-            deltam_ = atools.uniform_unconstrained("deltam",    priors["deltam"][0],    priors["deltam"][1],    init=ivals.get("deltam"))
-            muM_    = atools.uniform_unconstrained("muMass",    priors["muMass"][0],    priors["muMass"][1],    init=ivals.get("muMass"))
-            sM_     = atools.uniform_unconstrained("sigmaMass", priors["sigmaMass"][0], priors["sigmaMass"][1], init=ivals.get("sigmaMass"))
+             #lamP_ = atools.uniform_unconstrained("lambdaPeak",  priors['lambdaPeak'][0], priors['lambdaPeak'][1], init=ivals.get("lambdaPeak"))
+            # alpha_  = atools.uniform_unconstrained("alpha",     priors["alpha"][0],     priors["alpha"][1],     init=ivals.get("alpha"))
+            # beta_   = atools.uniform_unconstrained("beta",      priors["beta"][0],      priors["beta"][1],      init=ivals.get("beta"))
+            # ml_     = atools.uniform_unconstrained("ml",        priors["ml"][0],        priors["ml"][1],        init=ivals.get("ml"))
+            # mh_     = atools.uniform_unconstrained("mh",        priors["mh"][0],        priors["mh"][1],        init=ivals.get("mh"))
+            # deltam_ = atools.uniform_unconstrained("deltam",    priors["deltam"][0],    priors["deltam"][1],    init=ivals.get("deltam"))
+            # muM_    = atools.uniform_unconstrained("muMass",    priors["muMass"][0],    priors["muMass"][1],    init=ivals.get("muMass"))
+            # sM_     = atools.uniform_unconstrained("sigmaMass", priors["sigmaMass"][0], priors["sigmaMass"][1], init=ivals.get("sigmaMass"))
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
@@ -732,10 +697,7 @@ def make_model(  priors,
             sig2 = pm.InverseGamma("sig2", alpha=0.5, beta=0.4, dims="component")
             
             
-            # sigval = at.zeros( (2, N_DP_comp_max) )
-            # sigval = at.set_subtensor( sigval[0], sig1 )
-            # sigval = at.set_subtensor(  sigval[1], sig2 )
-            # sd = pm.Deterministic("sig", sigval, dims=("GMMdimension" , "component" ))
+
             sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
                       dims=("GMMdimension", "component"))
 
@@ -768,10 +730,6 @@ def make_model(  priors,
             #              lower=z2_lo-0.5*span2, upper=z2_hi+0.5*span2,
             #              dims="component")
 
-            #muval = at.zeros( (2, N_DP_comp_max) )
-            #muval = at.set_subtensor( muval[0], mu1 )
-            #muval = at.set_subtensor( muval[1], mu2 )
-            #mu = pm.Deterministic("mu", muval, dims=("GMMdimension" , "component" ))
             mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
                       dims=("GMMdimension", "component"))
 
@@ -901,11 +859,29 @@ def make_model(  priors,
     
             x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ) )
                 
-            if sampling_GW=='gmm':
+            if 'gmm' in sampling_GW:
     
                 print('Sampling m1d, m2d, dL from GMM')
-                ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
 
+                if sampling_GW=='gmm_cat':
+                    ###################################
+                    # categorical way
+                    
+                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
+
+                else:
+                    ###################################
+                    # continuous way
+    
+                    # ---------- 1) shared selector: hom vs cat AND galaxy index ----------
+                    u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
+                    v_gmm = at.clip(atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
+
+                    # inverse-CDF over weights
+                    cdf_w = at.cumsum(wts_l, axis=1)                                          
+                    ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
+
+                
                 # old way. leave it here  please
                 # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
                 
@@ -947,22 +923,6 @@ def make_model(  priors,
                 
                 print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
 
-                
-                # res, _ = pytensor.scan( lambda iev, X, M, L: get_sample_from_cho_lMclqld( X[iev], M[iev], L[iev] )  ,
-                #                         sequences = [ at.arange(N)],
-                #                         non_sequences = [ x, mus_s, cho_s]
-                #     ) 
-
-                # log_Mc_det = res[0][:,0]
-                # logit_q = res[0][:,1]
-                # logd = res[0][:,2]
-                # pilik = res[1]
-
-                # X      : (N, d)          standard-normal draws per event (d=3 here)
-                # mus_s  : (N, d)          event-specific means
-                # cho_s  : (N, d, d)       event-specific lower Cholesky factors
-                # N = X.shape[0], d = X.shape[1]
-                
                 # sample = mu + L @ x   (batched)
                 samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
                 
@@ -972,7 +932,7 @@ def make_model(  priors,
                 log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
                 pilik = log_px - log_det_L                                               # (N,)
                 
-                # unpack coordinates if you like:
+                # unpack coordinates:
                 log_Mc_det = samples[:, 0]
                 logit_q    = samples[:, 1]
                 logd       = samples[:, 2]
@@ -992,38 +952,6 @@ def make_model(  priors,
 
                     vals = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=0)
             
-
-                    # vals = at.zeros( (7, N) )
-                
-                    # vals = at.set_subtensor( vals[0], log_Mc_det )
-                    # vals = at.set_subtensor( vals[1], logit_q )
-                    # vals = at.set_subtensor( vals[2], logd )
-                    # vals = at.set_subtensor( vals[3], samples[:,3] )
-                    # vals = at.set_subtensor( vals[4], samples[:,4] )
-                    # vals = at.set_subtensor( vals[5], samples[:,5] )
-                    # vals = at.set_subtensor( vals[6], samples[:,6] )
-                    
-                
-                
-                # gw likelihood
-
-                # logps, _ = pytensor.scan( lambda iobs, X, M, F, logD, logW   : 
-                #                    pytensor.scan( lambda ig, X, M, F, logD, logW  :
-                #                    -0.5 * at.sum((X[: , iobs]-M[iobs, ig]) * (F[iobs, ig] @ (X[: , iobs]-M[iobs, ig])[:, None])[:, 0])- 0.5 * nd * at.log(2 * atools.PI)- 0.5 * logD[iobs, ig]+ logW[iobs, ig],  
-                #                            sequences = [ at.arange( ngmm ) ],
-                #                      non_sequences =  [vals, mus_l, icovs_l, log_dets_l, log_wts_l,  ],     
-                #                                   )   ,                      
-                #          sequences = [ at.arange(N)  ],
-                #          non_sequences =  [vals,  mus_l, icovs_l, log_dets_l, log_wts_l
-                #                           ]
-                #         )
-
-
-
-                # gwl = at.logsumexp(logps, axis=1) # sum on gmm components
-
-
-                
 
                 # X as (N, d)
                 X = vals.T                                   # (N, d)
@@ -1103,6 +1031,10 @@ def make_model(  priors,
             
             spins = []
 
+
+        # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 
+        dc = pm.Deterministic( "d_c", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims= "event_index" )
+
         
         # Population prior of all events, without the term T_obs*R0
         if 'DP' in mass_model:
@@ -1110,13 +1042,13 @@ def make_model(  priors,
             # dirichelet processs will be for log(Mc_src), logit(q) ...
             logMc_src =  log_Mc_det - at.log1p(zs)
             
-            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model)
+            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc)
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
             log_p_pop -=  at.log(m2src) + at.log(m1src-m2src) + at.log1p(zs) 
             
         else:    
         
-            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
+            log_p_pop = log_p_pop_at(m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
 
         
         if dLprior=='dLsq':
@@ -1125,7 +1057,7 @@ def make_model(  priors,
             print('Removing dL^2 prior')
         elif dLprior == 'dVdz':
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=d/(1+zs) )-at.log1p(zs)
+            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=dc )-at.log1p(zs)
 
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
