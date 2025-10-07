@@ -131,6 +131,12 @@ def main():
     sys.stdout = myLog
     sys.stderr = myLog
 
+    
+    numpyro.set_host_device_count(FLAGS.ncores)
+
+    # Optional: sanity check
+    print("Available devices:", jax.local_device_count())
+
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
@@ -626,7 +632,7 @@ def main():
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
     
-            print('Sampling with %s...' %FLAGS.sampler)
+            print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
             trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
 
             
