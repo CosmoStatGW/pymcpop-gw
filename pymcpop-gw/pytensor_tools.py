@@ -10,11 +10,19 @@ import pymc as pm
 import jax
 from pytensor.graph import Apply, Op
 import pytensor
+import numpy as onp
 
 from jax.numpy import array
 from jax.numpy import concatenate
 from jax.numpy import ones
 from jax.numpy import zeros
+
+
+import pade_cosmo as pc
+
+p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0)  # arrays of floats
+
+
 
 c_light = 299792458*1e-03
 c_light_at = at.as_tensor_variable(c_light)
@@ -22,30 +30,63 @@ NINF = at.as_tensor_variable(-np.inf)
 INF = at.as_tensor_variable(np.inf)
 
 
-EPS32 = at.as_tensor_variable(1e-30)  #  use 1e-30 for float32
-BIG32 = at.as_tensor_variable(1e20) 
 
-MIN = NINF # your "effectively -inf" : NINF or EPS
-MAX = INF
+# EPS32 = at.as_tensor_variable(1e-30)  #  use 1e-30 for float32
+# BIG32 = at.as_tensor_variable(1e20) 
+
+MIN = -np.inf #NINF # your "effectively -inf" : NINF or EPS
+MAX = np.inf #INF
 
 
  
-#if int(pytensor.__version__.split('.')[1])>25: #=='2.30.3':
-try:
-        zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
-                     #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
-                     at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
+# try:
+#         zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
+#                      #at.linspace(start=1.1e-03, end=10, steps=50),
+#                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
+#                      at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
 
-except:
+# except:
     
-    zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
+#     zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
+#                      #at.linspace(start=1.1e-03, end=10, steps=50),
+#                      at.logspace(start=-4, end=1, base=10, steps=1000), 
+#                      at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
+
+# zGridGlobals = np.array(zGridGlobals_at.eval())
+
+
+zGridGlobals = onp.sort(onp.unique(onp.concatenate([ onp.logspace(start=-100, stop=-15, base=10, num=50), np.logspace(start=-30, stop=-4, base=10, num=100), 
                      #at.linspace(start=1.1e-03, end=10, steps=50),
-                     at.logspace(start=-4, end=1, base=10, steps=1000), 
-                     at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
+                     onp.logspace(start=-4, stop=1, base=10, num=1000), 
+                     onp.logspace(start=1, stop=2, base=10, num=100), onp.logspace(start=2, stop=5, base=10, num=50) ])))
 
-zGridGlobals = np.array(zGridGlobals_at.eval())
+zGridGlobals_at = at.as_tensor_variable(zGridGlobals)
 
+
+max_m = 500.
+
+
+_mass_grid_np = onp.unique(
+    onp.concatenate([
+        onp.linspace(1.0e-3, 15.0, 500, ),
+        onp.linspace(15.01, 100.0, 1000, ),
+        onp.linspace(101.1, max_m, 500, ),
+    ])
+)
+_mass_grid_np.sort()
+_mass_grid_at = at.as_tensor_variable(_mass_grid_np)
+
+def _get_mass_grid():
+    return _mass_grid_at
+
+
+
+_tgrid  = onp.linspace(0.0, 1.0, 2000)
+_tgrid_at = at.as_tensor_variable(_tgrid)
+
+def _get_t_grid():
+    return _tgrid_at
+    
 
 
 ##########################
@@ -53,11 +94,11 @@ zGridGlobals = np.array(zGridGlobals_at.eval())
 ##########################
 
 
-safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   # >0, finite
-safe_div = lambda a,b: a / safe_pos(b)
-safe_log = lambda x: at.log(safe_pos(x))
-safe_sqrt= lambda x: at.sqrt(safe_pos(x))
-clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
+# safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   # >0, finite
+# safe_div = lambda a,b: a / safe_pos(b)
+# safe_log = lambda x: at.log(safe_pos(x))
+# safe_sqrt= lambda x: at.sqrt(safe_pos(x))
+# clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
 
 
 
@@ -116,6 +157,20 @@ def inv_flogitat(p):
  
 def flogitat(p):
     return at.log(1 + p) - at.log(1 - p)
+
+
+def logit(p):
+    return np.log(p) - np.log(1. - p)
+
+def inv_logit(p):
+    return 1. / (1 + np.exp(-p))
+
+def inv_flogit(p):
+    return (np.exp(p) - 1. ) / (1. + np.exp(p))
+
+ 
+def flogit(p):
+    return np.log(1 + p) - np.log(1 - p)
 
 
 def normal_cdf(x):
@@ -256,6 +311,9 @@ def safe_sigmoid(x, x0, eps):
 #######################
 
 
+def softplus(x):
+    # log(1 + exp(x)) with good numerical stability
+    return at.maximum(x, 0) + at.log1p(at.exp(-at.abs_(x)))
 
 
 ##########################
@@ -435,21 +493,40 @@ class TrapzOp(Op):
 ##########################
 
 
-PI = at.as_tensor_variable(np.pi)
+PI = np.pi #at.as_tensor_variable(np.pi)
+
+
+# Precompute n-point Gauss–Legendre nodes/weights on [0,1]
+def gauss_legendre_01(n=32, dtype="float64"):
+    from numpy.polynomial.legendre import leggauss
+    x, w = leggauss(n)                 # on [-1, 1]
+    x01 = (x + 1.0) * 0.5              # map to [0, 1]
+    w01 = w * 0.5
+    return x01.astype(dtype), w01.astype(dtype)
+
+_x01_np, _w01_np = gauss_legendre_01(n=32)  # 16–64 usually plenty
+x01_at = at.as_tensor_variable(_x01_np)     # shape (n,)
+w01_at = at.as_tensor_variable(_w01_np)     # shape (n,)
+
 
 def dcfun_at(z, H0, Om, w0, interp=False):
     """Comoving distance at redshift ``z``, in Gpc, H0 in km/s/Mpc"""
     if interp:
-      return c_light_at/H0 * _int_dC_hyperbolic(z, Om)*1e-03
+        return pc.comoving_distance_pade_at(z, H0, Om, w0=-1.0, p=p, q=q) 
     else:
-      zz = at.linspace(0, z, steps=100).T
-      E = Efun_at(zz,Om,w0 )
-      return c_light_at/H0 * attrapzvec(1/E, zz)*1e-03
-
+        
+        # zz = at.linspace(0, z, steps=100).T
+        # E = Efun_at(zz,Om,w0 )
+        # return c_light/H0 * attrapzvec(1/E, zz)*1e-03
+        
+        z = at.as_tensor_variable(z)
+        z_nodes = z[..., None] * x01_at  # shape (..., n)
+        integrand = 1.0 / Efun_at(z_nodes, Om, w0)  # shape (..., n)
+        I = at.sum(w01_at * integrand, axis=-1)     # shape (...)
+        return (c_light / H0) * z * I * 1e-03
 
 def Xifun_at(z, Xi0, n):
     return Xi0+(1-Xi0)/(1+z)**n
-
 
 
 def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False):
@@ -457,37 +534,40 @@ def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False):
     return Xifun_at(z, Xi0, n)*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
 
 
-def Efun_at(z,Om,w0 ):
-    return at.sqrt( Om*(1+z)**3+(1-Om)  )
+def Efun_at(z, Om, w0):
+    # E(z) = sqrt( Om (1+z)^3 + (1-Om) (1+z)^{3(1+w0)} )
+    a = 1.0 + z
+    return at.sqrt(Om * a**3 + (1.0 - Om) * a**(3.0 * (1.0 + w0)))
 
 
 
-def z_from_dL_at( r, H0, Om, w0, Xi0, n ):
-    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
+
+def z_from_dL_at( r, H0, Om, w0, Xi0, n , interp=False):
+    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n , interp=interp)
     z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
     return z2dL 
 
 
     
-def log_j_at(z, Om, H0=70, dc=None, ):
+def log_j_at(z, Om, H0=70, dc=None,  interp=False):
     if dc is None:
-        dc = dcfun_at(z, H0, Om)
-    dc*=H0/c_light_at*1e03
+        dc = dcfun_at(z, H0, Om, interp=interp)
+    dc*=H0/c_light*1e03
     return at.log(4*PI)+2*at.log(dc)-at.log(Efun_at(z, Om=Om))
 
 
-def log_dV_dz_at(z, H0, Om0, w0, dc=None):
+def log_dV_dz_at(z, H0, Om0, w0, dc=None, interp=False):
     if dc is None:
-        dc = dcfun_at(z, H0, Om0, w0)    
-    res =  at.log(4*PI)+at.log(c_light_at)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
+        dc = dcfun_at(z, H0, Om0, w0, interp=interp)    
+    res =  at.log(4*PI)+at.log(c_light)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
     return res
 
 
-def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None):
+def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False):
     
     # H0 in Mpc, dLs in Gpc
     if dc is None:
-        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=False) # Gpc
+        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=interp) # Gpc
     
     Xi = Xifun_at(z, Xi0, n)
     res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
@@ -911,36 +991,66 @@ def logC_PLP( m, beta, deltam, ml, res=100):
     '''
     
 
-    max_m = at.as_tensor_variable(500)
+    # max_m = at.as_tensor_variable(500)
   
     
-    x2 = at.linspace(ml, 15, res )
-    x3 = at.linspace(15.01, 100, res )
-    x4 = at.linspace(101.1, max_m, int(res/2) )
-    xx = at.concatenate([ x2, x3, x4 ] )
+    # x2 = at.linspace(ml, 15, res )
+    # x3 = at.linspace(15.01, 100, res )
+    # x4 = at.linspace(101.1, max_m, int(res/2) )
+    # xx = at.concatenate([ x2, x3, x4 ] )
+    # p2 = at.exp(logpdfm2_PLP( xx , beta, deltam, ml))
+    # cdf = atcumtrapz(p2, xx, )
+    # itr = atinterp( m, xx[1:], at.log(cdf))
+    # return itr
 
-    p2 = at.exp(logpdfm2_PLP( xx , beta, deltam, ml))
-    cdf = atcumtrapz(p2, xx, )
-    itr = atinterp( m, xx[1:], at.log(cdf))
-    return itr
+    xx = _get_mass_grid()  # (NM,)
 
+    # Evaluate log-pdf on the fixed grid, then zero-out below ml
+    logp2 = logpdfm2_PLP(xx, beta, deltam, ml)          # (NM,)
+    p2    = at.exp(logp2)                                # (NM,)
+    mask  = at.cast(xx >= ml, p2.dtype)                  # (NM,) elementwise
+    p2    = p2 * mask
+
+    # CDF via trapezoid from the fixed grid (below-ml bins contribute 0)
+    cdf = atcumtrapz(p2, xx)                             # (NM-1,)
+
+    # Interpolate log C at m
+    return atinterp(m, xx[1:], at.log(cdf))
 
 
 
     
 
-def logNorm_PLP( lambdaPeak, alpha,  deltam, ml, mh, muMass, sigmaMass  , res=1000 ):
+# def logNorm_PLP( lambdaPeak, alpha,  deltam, ml, mh, muMass, sigmaMass  , res=1000 ):
     
-    '''
-        Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
+#     '''
+#         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
 
-    '''
+#     '''
     
-    ms = at.linspace(ml, mh, res)
-    ps = at.exp( logpdfm1_PLP( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass  ))
-    p1 = at.where( (ms>=ml) & (ms<=mh), ps, 0.)
-    return at.log(attrapzvec(p1,ms))
+#     ms = at.linspace(ml, mh, res)
+#     ps = at.exp( logpdfm1_PLP( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass  ))
+#     p1 = at.where( (ms>=ml) & (ms<=mh), ps, 0.)
+#     return at.log(attrapzvec(p1,ms))
 
+
+def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=1000):
+    """
+    Log integral of p(m1, m2) dm1 dm2 (total normalization of the mass function).
+    Uses a cached global grid; ml and mh can be stochastic.
+    """
+    xx = _get_mass_grid()  # (NM,)
+
+    # Evaluate log-pdf on fixed grid
+    logp = logpdfm1_PLP(xx, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass)  # (NM,)
+    p    = at.exp(logp)
+
+    # Mask to integrate only over [ml, mh]
+    mask = at.cast((xx >= ml) & (xx <= mh), p.dtype)
+    p_in = p * mask
+
+    Z = attrapzvec(p_in, xx)                              # (scalar)
+    return at.log(at.clip(Z, 1e-300, np.inf))
             
     
             
@@ -1085,6 +1195,7 @@ def logC_PLP_reg( m, beta, deltam, ml, res=1000, smoothing='LVK'):
     return itr
 
 
+
 def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=1000):
     
     '''
@@ -1220,10 +1331,9 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
 
-    max_m = at.as_tensor_variable(500)
-
-    t = at.linspace(0.0, 1.0, res)               # endpoints are constants
-    xx = m2_low + (max_m - m2_low) * t 
+    _tgrid = _get_t_grid()
+    
+    xx = m2_low + (max_m - m2_low) * _tgrid 
         
     p2 = at.exp( logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
     
@@ -1234,19 +1344,25 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     return itr
 
 
+
+
+
 def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=2000, smoothing='LVK'):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
     '''
- 
-    t = at.linspace(0.0, 1.0, res)               # endpoints are constants
-    ms = m1_low + (m_high - m1_low) * t 
+    
+    _tgrid = _get_t_grid()
+    
+    ms = m1_low + (m_high - m1_low) * _tgrid 
             
     lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing  )
     ps = at.exp( lpdf)
     
     return at.log( attrapzvec(ps, ms) )
+
+
 
 
 

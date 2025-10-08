@@ -27,7 +27,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     H0, Om, w0, Xi0, n = Lambda[:5] 
 
     if dc is None:
-        dc = atools.dcfun_at(z, H0, Om, w0, interp=False)
+        Xi = atools.Xifun_at(z, Xi0, n)
+        dc = dL/(1+z)/Xi #atools.dcfun_at(z, H0, Om, w0, interp=False)
 
     ##################################
     # redshift 
@@ -174,7 +175,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
 #####################################################
 
-def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break):
+def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp):
 
 
     H0, Om, w0, Xi0, n  = Lambda[:5]
@@ -184,7 +185,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     elif spin_model=='none':
         spinsInj_sel = []
     
-    zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n  )
+    zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp  )
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
@@ -276,6 +277,7 @@ def make_model(  priors,
                 fix_Om = True,
                fix_w0 = True,
                  fix_Xi0n = True,
+               pade=False,
                params_fix=None,
                  Neff_min=4,
                 Neff_min_lik=1,
@@ -284,7 +286,6 @@ def make_model(  priors,
                  pop_only = False,
                N_successes_l=None,
                Nsamplesuse = -1,
-               transform_samples=True,
                include_sel_uncertainty=False,
                sel_smoothing='poly',
                alpha_beta_prior='poly',
@@ -314,33 +315,14 @@ def make_model(  priors,
     else:
         # gw data are single-event posterior samples
         # shape of each has to be n_events, n_samples
-        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute = GWData
-
-        if transform_samples:
-            print('Convert to m1 m2 etc.')
-            lMc = m1det
-            lq = m2det
-            ld = d
-    
-            qs = atools.inv_logitat(lq) 
-    
-            
-            if (spin_model=='default') or (spin_model=='default_gauss'):
-                chi1 = atools.inv_logitat(spin_samples[0])
-                chi2 = atools.inv_logitat(spin_samples[1])
-                cost1 = atools.inv_flogitat(spin_samples[2])
-                cost2 = atools.inv_flogitat(spin_samples[3])
-                spin_samples = [chi1, chi2, cost1, cost2]
-
-            m1det, m2det = atools.m1m2_from_Mcq_at(at.exp(lMc), qs )
-            d = at.exp(ld)
-            
+        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute = GWData            
 
         if Nsamplesuse !=-1 :
             if Nsamplesuse>allNsamples:
                 raise ValueError("Must use less samples than those available.")
             print("allNsamples availabe is %s, but %s will be used"%(allNsamples, Nsamplesuse))
-            allNsamples =  Nsamplesuse        
+            allNsamples =  Nsamplesuse   
+            allNsamples_np = allNsamples #allNsamples.eval()
         
         if (spin_model=='default') or (spin_model=='default_gauss'):
            chi1, chi2, cost1, cost2 = spin_samples
@@ -358,49 +340,68 @@ def make_model(  priors,
         elif spin_model == 'none':
             dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet = InjData
 
-        
+    
+    Ndet_np = Ndet #Ndet.eval()
+    N_DP_comp_max_np = N_DP_comp_max #N_DP_comp_max.eval()
+    Nevs_np = Nevs #Nevs.eval()
+
+    Tobs_np = Tobs #Tobs.eval()
+
         
     if not pop_only:
         N = mus_l.shape[0] # number of events in total
+        N_np = N #N.eval()
         ngmm = mus_l.shape[1]
+        ngmm_np = ngmm #ngmm.eval()
         nd = mus_l.shape[2]
-        print('N:%s, max ngmm: %s, nd: %s '%(N.eval(), ngmm.eval(), nd.eval()))
-        print('N evs is %s'%Nevs.eval())
-        print('Tobs is %s'%Tobs.eval())
+        nd_np = nd #nd.eval()
+        print('N:%s, max ngmm: %s, nd: %s '%(N_np, ngmm_np, nd_np))
+        print('N evs is %s'%Nevs_np)
+        print('Tobs is %s'%Tobs_np)
     else:
         N = m1det.shape[0] # number of events in total
+        N_np = N #N.eval()
         Nsamples = m1det.shape[1]
+        Nsamples_np = Nsamples #Nsamples.eval()
         print("N samples max will be ")
-        print(Nsamples.eval())
-        print('N:%s, n samples: %s '%(N.eval(), allNsamples.eval()))
-    
-    event_index = at.arange(N).eval()
+        print(Nsamples_np)
+        print('N:%s, n samples: %s '%(N_np, allNsamples_np))
 
+
+
+
+    
+    event_index = np.arange(N_np, dtype=int)
     
     ndata = m1inj.shape[0] # number of observing runs to combine
+    ndata_np = ndata #ndata.eval()
     ninj = m1inj.shape[1] # max number of injections
-    Ttot = at.sum(Tobs)
+    ninj_np = ninj #ninj.eval()
+
+    Ttot = np.sum(Tobs)
 
     
-    print('Injections: :%s, '%(ninj.eval()))
+    print('Injections: :%s, '%(ninj_np))
 
-    print('ninj: :%s, %s datasets,'%(Ndet.eval(), ndata.eval()))
+    print('ninj: :%s, %s datasets,'%(Ndet_np, ndata_np))
 
     coords = {'event_index': event_index}
 
+    
+
     if mass_model in ('DP', 'DPUC'):
-        coords['component'] = at.arange(N_DP_comp_max).eval()
-        coords['GMMdimension'] = at.arange(2.).eval()
-        coords['GMMdimension_1'] = at.arange(2.).eval()
-        coords['GMMdimension_2'] = at.arange(2.).eval()
+        coords['component'] = np.arange(N_DP_comp_max_np, dtype=int)
+        coords['GMMdimension'] = np.arange(2, dtype=int)
+        coords['GMMdimension_1'] = np.arange(2, dtype=int)
+        coords['GMMdimension_2'] = np.arange(2, dtype=int)
         p = 2*(2+1)//2  # packed length = 3 for n=2
         
         coords["packed_cholesky"] = np.arange(p)
 
     if pop_only:
-        coords['nsamples'] = at.arange( Nsamples ).eval()
+        coords['nsamples'] = np.arange( Nsamples_np, dtype=int )
     else:
-         coords['GWdimension'] = at.arange(nd).eval()
+         coords['GWdimension'] = np.arange(nd_np, dtype=int)
 
 
     if params_fix is None:
@@ -414,29 +415,40 @@ def make_model(  priors,
     
     with pm.Model(coords=coords) as model:
 
+
+        if sampling_GW=='gauss' :
+            # we sample single-event parameters from broad gaussian approximations of the posteriors
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
+        elif 'gmm' in sampling_GW:
+            # we sample single-event parameters from the actual single-event posteriors
+            wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
+
         ################################################
         # Cosmological parameters
         ################################################
 
         
         if fix_H0:
-            H0_ =  at.as_tensor_variable(params_fix['H0'])
+            H0_ =  params_fix['H0']
         else:
             H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1], initval=ivals.get('H0'))
         
         if fix_Om:
-            Om_ = at.as_tensor_variable(params_fix['Om'])
+            Om_ = params_fix['Om']
         else:
             Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1], initval=ivals.get('Om')) 
 
         if fix_w0:
-            w0_ = at.as_tensor_variable(-1.)
+            w0_ = -1.
         else:
-            raise NotImplementedError()
+            if pade:
+                raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False")
+            w0_ =  pm.Uniform('w0', lower=priors['w0'][0], upper=priors['w0'][1], initval=ivals.get('w0'))
+            
         
         if fix_Xi0n:
-            Xi0_ =  at.as_tensor_variable(1.)
-            nXi0_ = at.as_tensor_variable(0.)
+            Xi0_ =  1.
+            nXi0_ = 0.
         else:
             Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
             nXi0_ = pm.Uniform('n', lower=priors['n'][0], upper=priors['n'][1], initval=ivals.get('nXi0')) 
@@ -522,14 +534,8 @@ def make_model(  priors,
                     _ = pm.Potential('bound_betaChi', atools.log_sigmoid(betaChi_, 1+3e-04, 1e-04)  )
                 else:
                     print("Putting prior on alpha_chi, beta_chi with hard cut")
-                    ind_sw_al = pm.Deterministic('ind_al', 1. * (alphaChi_<=1. ) )
-                    ind_al = pm.Bernoulli('bound_alphaChi', ind_sw_al, observed=0.  )
-                    ind_sw_b = pm.Deterministic('ind_b', 1. * (betaChi_<=1. ) )
-                    ind_b = pm.Bernoulli('bound_betaChi', ind_sw_b, observed=0.  )
-                    
-                    # alternative. 
-                    # _ = pm.Potential('bound_alphaChi', at.switch( at.le(alphaChi_, at.as_tensor_variable(1.) ), -atools.INF, at.as_tensor_variable(0.) ) )
-                # _ = pm.Potential('bound_betaChi', at.switch( at.le(betaChi_, at.as_tensor_variable(1.) ), -atools.INF, at.as_tensor_variable(0.)) )
+                    _ = pm.Potential('bound_alphaChi', at.switch( at.le(alphaChi_, 1. ), -np.inf, at.as_tensor_variable(0.) ) )
+                    _ = pm.Potential('bound_betaChi', at.switch( at.le(betaChi_, 1. ), -np.inf, 0.0 ) )
         
             else:
                 # still to be tested. Might improve sampling/divergences
@@ -888,8 +894,8 @@ def make_model(  priors,
                 # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
                 
                 # Select means and Cholesky factors per batch
-                mu_selected = mus_l[at.arange(N), ig, :]         # shape (N, D)
-                L_selected = cho_covs_l[at.arange(N), ig, :, :]  # shape (N, D, D)
+                mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
                  
                 # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
                 Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
@@ -994,7 +1000,7 @@ def make_model(  priors,
     
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_ ), dims= "event_index" )
+            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade ), dims= "event_index" )
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
             
@@ -1008,7 +1014,7 @@ def make_model(  priors,
             # AND for each sample! 
             
             d_stacked  = at.flatten(d)
-            zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_ )
+            zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade )
             
             zs = at.reshape( zs_stacked, (N, Nsamples) )
             m1src = m1det/(1+zs)
@@ -1036,7 +1042,8 @@ def make_model(  priors,
 
 
         # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 
-        dc = pm.Deterministic( "d_c", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims= "event_index" )
+        Xi_ = atools.Xifun_at(zs, Xi0_, nXi0_)
+        dc = d/(1+zs)/Xi_, 
 
         
         # Population prior of all events, without the term T_obs*R0
@@ -1106,11 +1113,13 @@ def make_model(  priors,
             
             if Neff_min_lik>0:
                 
-                #_ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -atools.INF, at.as_tensor_variable(0.) ) ) )
+                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
                 
                 # see https://discourse.pymc.io/t/conditionally-reject-samples/3107
-                ind_sw_l = pm.Deterministic('ind_l', 1. * (Neff_lik<Neff_min_lik) )
-                ind_l = pm.Bernoulli('Neff_l_bound', ind_sw_l, observed=at.zeros(N).eval(), testval=at.zeros(N) )
+                # ind_sw_l = pm.Deterministic('ind_l', 1. * (Neff_lik<Neff_min_lik) )
+                # ind_l = pm.Bernoulli('Neff_l_bound', ind_sw_l, observed=np.zeros(N_np), testval=np.zeros(N_np) )
+
+            
             else:
                 print("No bound on effective number of samples for individual event MC integrals")
 
@@ -1141,7 +1150,7 @@ def make_model(  priors,
             print('No selection bias!')
         else:
             # add sel effects    
-            if ndata.eval()==1:
+            if ndata_np==1:
                 # we passed a single injection set corresponding to multiple observing runs,
                 # with injections already containing the correct weights
                 print("Using selection effects from a single injection campaign")
@@ -1164,7 +1173,7 @@ def make_model(  priors,
                     spin_model_name = 'none'
 
                     
-                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, smoothing, has_m2_break)
+                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade)
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
@@ -1205,8 +1214,8 @@ def make_model(  priors,
                     print("Loop over injections sets, dynamical slicing")
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break ), 
-                                          sequences = [ at.arange( ndata) ], 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade ), 
+                                          sequences = [ np.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
                     log_mu_vec = res_i[0]
                     Neff_ = at.sum(res_i[1])
@@ -1216,8 +1225,8 @@ def make_model(  priors,
                     print("Loop over injections sets, no slicing")
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break ), 
-                                      sequences = [ at.arange( ndata) ], 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, interp=pade ), 
+                                      sequences = [ np.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
 
             
@@ -1234,7 +1243,7 @@ def make_model(  priors,
                 else:
                     if sel_method=='Tobs':
                         sel_effect = -N*at.logsumexp( at.log(Tobs/Ttot)+log_mu_ )
-                        print('Using sel function with weighted obs time average. Obs times: %s'%str(Tobs.eval()))
+                        print('Using sel function with weighted obs time average. Obs times: %s'%str(Tobs))
                     elif sel_method=='Nevs':
                         # This is technically wrong, but I leave it here
                         # to check how large the error is when using the wrong expression
@@ -1274,9 +1283,12 @@ def make_model(  priors,
                         selection_bias = pm.Deterministic("sel_bias", atools.log_f_smooth_poly(Neff, N/2,  Neff_min*N-N/4)+sel_effect ) 
                     else:
                         # Hard cut
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)
-                        ind_sw_sel = pm.Deterministic('ind_sel', 1. * (Neff<Neff_min*N ) )
-                        ind_sel = pm.Bernoulli('bound_Neff', ind_sw_sel, observed=at.zeros(1).eval()  )
+                        
+                        selection_bias = pm.Deterministic("sel_bias", sel_effect)                   
+                        #ind_sw_sel = pm.Deterministic('ind_sel', 1. * (Neff<Neff_min*N ) )
+                        #ind_sel = pm.Bernoulli('bound_Neff', ind_sw_sel, observed=np.zeros(1)  )
+                        _ = pm.Potential("bound_Neff", at.switch(Neff >= Neff_min * N, 0.0, -np.inf))
+
                 
                 elif Neff_min==0:
 
@@ -1296,8 +1308,10 @@ def make_model(  priors,
                         print("Tapering sel effect with hard cut")
 
                         selection_bias = pm.Deterministic("sel_bias", sel_effect)
-                        ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
-                        ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=at.zeros(1).eval()  )
+                        # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
+                        # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var >= log_lik_var_min, 0.0, -np.inf))
+
             
             _ = pm.Potential('selection_bias', selection_bias)
 
