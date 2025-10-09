@@ -11,35 +11,21 @@
 import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
 
+
 import argparse
 import json
 import sys
+import warnings
 
-import numpy as onp
-import pytensor
-import pytensor.tensor as at
-import pymc as pm
 
-import jax
-import jax.numpy as np
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-#jax.config.update("jax_disable_jit", True)         # slower but great for debugging
-os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off") # show full frames
+from tqdm import tqdm 
+from tqdm.auto import tqdm
+import time
 
 
 import arviz as az
 import matplotlib.pyplot as plt
 import corner
-
-import numpyro
-
-# my modules
-import pymc_models as models
-import data_tools as dt
-import pytensor_tools as atools
-
-pytensor.config.floatX = "float64"
 
 
 from pytensor.tensor.sharedvar import SharedVariable, TensorSharedVariable
@@ -48,12 +34,6 @@ from pytensor.tensor.sharedvar import SharedVariable, TensorSharedVariable
 
 
 def main():
-
-    print(jax.default_backend())
-    print(jax.devices())
-    print(f"Running on PyMC v{pm.__version__}")
-    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-    print("dtype test:", np.array(0., dtype=np.float64).dtype) 
 
     
     parser = argparse.ArgumentParser()
@@ -70,7 +50,7 @@ def main():
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
     parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
-    parser.add_argument("--N_DP_comp_max", default=10, type=int, required=False)
+    parser.add_argument("--N_DP_comp_max", default=50, type=int, required=False)
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
@@ -78,8 +58,6 @@ def main():
     
     
     parser.add_argument("--dLprior", default='none', type=str, required=False)
-    parser.add_argument("--spinprior", default=0, type=int, required=False)
-    parser.add_argument("--massprior", default=0, type=int, required=False)
     parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
 
 
@@ -102,7 +80,6 @@ def main():
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
-    parser.add_argument("--transform_samples", default=1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
     parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
@@ -118,9 +95,7 @@ def main():
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
-    
-    
-    
+     
     parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default=0, type=int, required=False)
@@ -129,12 +104,11 @@ def main():
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
     parser.add_argument("--dense_grad", default=0, type=int, required=False)
     
-    
-    
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
+    parser.add_argument("--pade", default=0, type=int, required=False)
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
@@ -143,8 +117,93 @@ def main():
 
     FLAGS = parser.parse_args()
 
+    if FLAGS.chain_method == "vectorized" and FLAGS.ncores > 1:
+        raise ValueError(
+            "For chain_method='vectorized', set ncores=1. "
+            "Vectorized mode runs all chains in one JAX process and "
+            "does not use multiprocessing."
+        )
+
+    if FLAGS.chain_method == "parallel" and FLAGS.ncores < FLAGS.nchains:
+        print(
+            f"⚠️ Warning: ncores ({FLAGS.ncores}) < nchains ({FLAGS.nchains}). "
+            "This may limit parallel performance."
+        )
+
+    device_count = FLAGS.ncores if hasattr(FLAGS, "ncores") else 1
+
+    # ----------------------------------------------------
+    # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
+    # ----------------------------------------------------
+    if FLAGS.chain_method == "parallel":
+        # Must set before importing numpyro/jax/pymc
+        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+    
+    # Optional but recommended: enable float64 early
+    os.environ.setdefault("JAX_ENABLE_X64", "True")
+    os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+
+
+    # ----------------------------------------------------
+    # 2️⃣ Import libraries (now they see the environment)
+    # ----------------------------------------------------
+    import numpyro
+    
+    import jax
+    import jax.numpy as np
+    import numpy as onp
+    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+
+
+    # Ensure correct device setup
+    device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
+    if FLAGS.chain_method == "parallel":
+        numpyro.set_host_device_count(device_count)
+    
+    print("Available devices:", jax.devices())
+    print("Local device count:", jax.local_device_count())
+    print("Backend:", jax.default_backend())
+    
+    # ----------------------------------------------------
+    # 3️⃣ Now safe to import PyMC and others
+    # ----------------------------------------------------
+    import pymc as pm
+    import pytensor
+    #import pytensor.tensor as at
+    import arviz as az
+    import numpy as onp
+    import matplotlib.pyplot as plt
+    import corner
+    
+    # Custom modules
+    import pymc_models as models
+    import data_tools as dt
+    import pytensor_tools as atools
+    import pytensor_utils as autils
+    
+    pytensor.config.floatX = "float64"
+    
+    print(f"Running on PyMC v{pm.__version__}")
+    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype)
+    
+
+    # ----------------------------------------------------
+    # 4️⃣ Multiprocessing setup (only for parallel chains)
+    # ----------------------------------------------------
+    if FLAGS.chain_method == "parallel":
+        import multiprocessing as mp
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+
+
+    
+
     logfile = os.path.join(FLAGS.fout, 'logfile.txt')
-    myLog = dt.Logger(logfile)
+    myLog = autils.Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
 
@@ -188,39 +247,64 @@ def main():
 
         data = dt.load_data_interp(FLAGS.fin_data)
 
-        samples_means_at = at.as_tensor_variable(data['samples_means'])
-        samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
+        # samples_means_at = at.as_tensor_variable(data['samples_means'])
+        # samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
     
-        gmm_log_wts = at.as_tensor_variable(data['gmm_log_wts'])
-        gmm_means = at.as_tensor_variable(data['gmm_means'])
-        gmm_icovs = at.as_tensor_variable(data['gmm_icovs'])
-        gmm_cho_covs = at.as_tensor_variable(data['gmm_cho_covs'])
-        gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
-        allNgm = at.as_tensor_variable(data['allNgm'])
-        Nevents = at.as_tensor_variable(data['Nevents'])
+        # gmm_log_wts = at.as_tensor_variable(data['gmm_log_wts'])
+        # gmm_means = at.as_tensor_variable(data['gmm_means'])
+        # gmm_icovs = at.as_tensor_variable(data['gmm_icovs'])
+        # gmm_cho_covs = at.as_tensor_variable(data['gmm_cho_covs'])
+        # gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
+        # allNgm = at.as_tensor_variable(data['allNgm'])
+        # Nevents = at.as_tensor_variable(data['Nevents'])
 
-        gmm_means_sub = at.as_tensor_variable(data['gmm_means_sub'])
-        gmm_icovs_sub = at.as_tensor_variable(data['gmm_icovs_sub'])
-        gmm_log_dets_sub = at.as_tensor_variable(data['gmm_log_dets_sub'])
+        samples_means_at = data['samples_means']
+        samples_cho_covs_at = data['samples_cho_covs']*FLAGS.cho_dil
+    
+        gmm_log_wts = data['gmm_log_wts']
+        gmm_means = data['gmm_means']
+        gmm_icovs =  data['gmm_icovs']
+        gmm_cho_covs =  data['gmm_cho_covs']
+        gmm_log_dets =  data['gmm_log_dets']
+        allNgm =  data['allNgm']
+        Nevents =  data['Nevents']
+
+    
+
+        gmm_means_sub = data['gmm_means_sub']
+        gmm_icovs_sub = data['gmm_icovs_sub']
+        gmm_log_dets_sub = data['gmm_log_dets_sub']
 
     else:
         print("Using n max samples = %s"%FLAGS.nsamplesmax)
         data = dt.load_data_samples(FLAGS.fin_data, nmax=FLAGS.nsamplesmax)
 
-        m1d_samples = at.as_tensor_variable(data['m1d_samples'])
-        m2d_samples = at.as_tensor_variable(data['m2d_samples'])
-        dL_samples = at.as_tensor_variable(data['dL_samples'])
+        # m1d_samples = at.as_tensor_variable(data['m1d_samples'])
+        # m2d_samples = at.as_tensor_variable(data['m2d_samples'])
+        # dL_samples = at.as_tensor_variable(data['dL_samples'])
+        # print("dL_samples shape is %s"%(str(dL_samples.shape)))
+
+        # allNsamples = at.as_tensor_variable(data['allNsamples'])
+        # where_compute = at.as_tensor_variable(data['where_compute'])
+
+        m1d_samples = data['m1d_samples']
+        m2d_samples =  data['m2d_samples']
+        dL_samples =  data['dL_samples']
         print("dL_samples shape is %s"%(str(dL_samples.shape)))
 
-        allNsamples = at.as_tensor_variable(data['allNsamples'])
-        where_compute = at.as_tensor_variable(data['where_compute'])
+        allNsamples =  data['allNsamples']
+        where_compute = data['where_compute']
 
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
-            chi1_samples = at.as_tensor_variable(data['chi1_samples'])
-            chi2_samples = at.as_tensor_variable(data['chi2_samples'])
-            cost1_samples = at.as_tensor_variable(data['cost1_samples'])
-            cost2_samples = at.as_tensor_variable(data['cost2_samples'])
+            # chi1_samples = at.as_tensor_variable(data['chi1_samples'])
+            # chi2_samples = at.as_tensor_variable(data['chi2_samples'])
+            # cost1_samples = at.as_tensor_variable(data['cost1_samples'])
+            # cost2_samples = at.as_tensor_variable(data['cost2_samples'])
+            chi1_samples =  data['chi1_samples']
+            chi2_samples =  data['chi2_samples']
+            cost1_samples =  data['cost1_samples']
+            cost2_samples =  data['cost2_samples']
 
             spin_samples = [ chi1_samples, chi2_samples, cost1_samples, cost2_samples ]
 
@@ -248,24 +332,40 @@ def main():
 
 
     if FLAGS.spin_model=='none':
-        InjData = [ at.as_tensor_variable(injections['dL']), 
-                at.as_tensor_variable(injections['m1d']), 
-                at.as_tensor_variable(injections['m2d']), 
-                at.as_tensor_variable(injections['log_wt']), 
-                at.as_tensor_variable(injections['Ngen']), 
-                at.as_tensor_variable(injections['Ndet']), 
+        # InjData = [ at.as_tensor_variable(injections['dL']), 
+        #         at.as_tensor_variable(injections['m1d']), 
+        #         at.as_tensor_variable(injections['m2d']), 
+        #         at.as_tensor_variable(injections['log_wt']), 
+        #         at.as_tensor_variable(injections['Ngen']), 
+        #         at.as_tensor_variable(injections['Ndet']), 
+        #           ]
+        InjData = [ injections['dL'], 
+                injections['m1d'], 
+                injections['m2d'], 
+                 injections['log_wt'], 
+                 injections['Ngen'], 
+                 injections['Ndet'], 
                   ]
     else:
         
         if FLAGS.spin_inj=='chieffchip':
-            InjData = [ at.as_tensor_variable(injections['dL']), 
-                at.as_tensor_variable(injections['m1d']), 
-                at.as_tensor_variable(injections['m2d']), 
-                at.as_tensor_variable(injections['chieff']), 
-                at.as_tensor_variable(injections['chip']), 
-                at.as_tensor_variable(injections['log_wt']), 
-                at.as_tensor_variable(injections['Ngen']), 
-                at.as_tensor_variable(injections['Ndet']), 
+            # InjData = [ at.as_tensor_variable(injections['dL']), 
+            #     at.as_tensor_variable(injections['m1d']), 
+            #     at.as_tensor_variable(injections['m2d']), 
+            #     at.as_tensor_variable(injections['chieff']), 
+            #     at.as_tensor_variable(injections['chip']), 
+            #     at.as_tensor_variable(injections['log_wt']), 
+            #     at.as_tensor_variable(injections['Ngen']), 
+            #     at.as_tensor_variable(injections['Ndet']), 
+            #       ]
+            InjData = [ injections['dL'], 
+                 injections['m1d'], 
+                 injections['m2d'], 
+                 injections['chieff'], 
+                 injections['chip'], 
+                 injections['log_wt'], 
+                 injections['Ngen'], 
+                injections['Ndet'], 
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
 
@@ -279,42 +379,71 @@ def main():
                 cost1Inj = injections['spin1z']/chi1Inj
                 cost2Inj = injections['spin2z']/chi2Inj
                 
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(chi1Inj), 
-                    at.as_tensor_variable(chi2Inj),
-                    at.as_tensor_variable(cost1Inj),
-                    at.as_tensor_variable(cost2Inj),
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(chi1Inj), 
+                #     at.as_tensor_variable(chi2Inj),
+                #     at.as_tensor_variable(cost1Inj),
+                #     at.as_tensor_variable(cost2Inj),
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                     injections['m1d'], 
+                     injections['m2d'], 
+                     chi1Inj, 
+                     chi2Inj,
+                     cost1Inj,
+                     cost2Inj,
+                     injections['log_wt'], 
+                     injections['Ngen'], 
+                     injections['Ndet'], 
                       ]
 
             elif FLAGS.spin_model=='none':
 
                 print("Injections data has spins but those will not be used !")
     
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                    injections['m1d'], 
+                    injections['m2d'], 
+                    injections['log_wt'], 
+                    injections['Ngen'], 
+                    injections['Ndet'], 
                       ]
                 
         elif FLAGS.spin_inj=='default':
 
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(injections['chi1']), 
-                    at.as_tensor_variable(injections['chi2']),
-                    at.as_tensor_variable(injections['cost1']),
-                    at.as_tensor_variable(injections['cost2']),
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(injections['chi1']), 
+                #     at.as_tensor_variable(injections['chi2']),
+                #     at.as_tensor_variable(injections['cost1']),
+                #     at.as_tensor_variable(injections['cost2']),
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                     injections['m1d'], 
+                     injections['m2d'], 
+                     injections['chi1'], 
+                     injections['chi2'],
+                     injections['cost1'],
+                     injections['cost2'],
+                    injections['log_wt'], 
+                     injections['Ngen'], 
+                     injections['Ndet'], 
                       ]
 
     
@@ -322,6 +451,7 @@ def main():
     if not FLAGS.pop_only:  
     
         if 'gmm' in FLAGS.sampling_gw:
+            
             #GWData =  [
             #           at.exp(gmm_log_wts), 
             #           gmm_means, 
@@ -330,7 +460,7 @@ def main():
             #            Nevents
             #          ]
 
-            GWData =  [at.exp(gmm_log_wts), 
+            GWData =  [onp.exp(gmm_log_wts), 
     					   gmm_means, 
     					   gmm_cho_covs,
                            gmm_icovs,
@@ -338,10 +468,10 @@ def main():
                            gmm_means_sub, 
                            gmm_icovs_sub,
                            gmm_log_dets_sub,
-    					   at.as_tensor_variable(injections['Tobs']),
+    					   injections['Tobs'],
                            Nevents
     					  ]
-        
+
         elif FLAGS.sampling_gw=='gauss':
             GWData =  [samples_means_at, 
                        samples_cho_covs_at, 
@@ -349,14 +479,14 @@ def main():
                        gmm_means, 
                        gmm_icovs, 
                        gmm_log_dets, 
-                       at.as_tensor_variable(injections['Tobs']),
+                       injections['Tobs'],
                        Nevents, 
                       ]
             
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
-                       at.as_tensor_variable(injections['Tobs']), allNsamples, where_compute ]
+                     injections['Tobs'], allNsamples, where_compute ]
         
         
     print("Done.")
@@ -383,8 +513,6 @@ def main():
                 ivals = json.load(json_file)
         print('Initial values:')
         print(ivals)
-        vplot = list(ivals.keys())
-        print(vplot)
     else:
         print('No initial values passed.')
         ivals={}
@@ -416,6 +544,7 @@ def main():
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
+                                    pade=FLAGS.pade,
                                     Neff_min=FLAGS.min_Neff,
                                     Neff_min_lik = FLAGS.Neff_min_lik,
                                     log_lik_var_min = FLAGS.log_lik_var_min,
@@ -423,7 +552,6 @@ def main():
                                     pop_only = FLAGS.pop_only,
                                     N_successes_l = N_successes_l,
                                     Nsamplesuse = FLAGS.Nsamplesuse,
-                                    transform_samples = FLAGS.transform_samples,
                                     include_sel_uncertainty = FLAGS.sel_uncertainty,
                                     sel_smoothing = FLAGS.sel_smoothing,
                                     alpha_beta_prior = FLAGS.alpha_beta_prior,
@@ -486,301 +614,250 @@ def main():
                     print("Initializing f_rotated_ to linear function....")
                     import scipy.linalg as la
         
-                    z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
-                    z_grid = z_grid_at.eval()
-                    N = z_grid.size
+                    # z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
+                    # z_grid = z_grid_at.eval()
+                    # N = z_grid.size
         
-                    # --- 2) build a tiny increasing target f(z) ---
-                    # anchor at z0 so f(z0)=0, then add a very small positive slope
-                    z0 = z_grid[0]
-                    s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
-                    f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
+                    # # --- 2) build a tiny increasing target f(z) ---
+                    # # anchor at z0 so f(z0)=0, then add a very small positive slope
+                    # z0 = z_grid[0]
+                    # s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
+                    # f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
                     
-                    # (optional) keep it even smaller:
-                    f_init *= 0.5               # shrink if you want it closer to zero
+                    # # (optional) keep it even smaller:
+                    # f_init *= 0.5               # shrink if you want it closer to zero
         
+                    # try:
+                    #     ell0 = ivals['ℓ']
+                    #     eta0 = ivals['η']
+                    #     print("Found ell, eta in prior")
+                    # except:
+                    #     eta0 = 0.2          # reasonable starting amplitude
+                    #     ell0 = 0.3          # reasonable starting lengthscale (smooth)
+                    #     print("ell, eta not found, using eta=0.2 , ell=0.3")
+                    
+                    # jitter = 1e-4
+                    
+                    
+        
+        
+                    
+                    # X = z_grid.reshape(-1, 1)
+                    # K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
+                    # L = np.linalg.cholesky(K)
+                    # f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
+        
+                    # ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
+
+                    # 1) Pull the same grid you used for the node init
+                    z_grid = atools.zGridGlobals   # (N,)
+                    N = z_grid.size
+                    z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
+                    
+                    Xn = z_grid[:, None]
+                    Xm = z_mid[:,  None]
+                    
+                    # 2) Hyperparams (same you used for the node init)
                     try:
                         ell0 = ivals['ℓ']
                         eta0 = ivals['η']
-                        print("Found ell, eta in prior")
-                    except:
-                        eta0 = 0.2          # reasonable starting amplitude
-                        ell0 = 0.3          # reasonable starting lengthscale (smooth)
-                        print("ell, eta not found, using eta=0.2 , ell=0.3")
+                        print("Found ℓ, η in prior")
+                    except Exception:
+                        eta0 = 0.2
+                        ell0 = 0.3
+                        print("ℓ, η not found, using η=0.2, ℓ=0.3")
                     
                     jitter = 1e-4
                     
+                    # 3) Kernels
+                    Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
+                    Kmm = atools.matern52_1d(Xm, Xm, eta0, ell0) + jitter * np.eye(N - 1)
+                    Kmn = atools.matern52_1d(Xm, Xn, eta0, ell0)              # (N-1, N)
                     
-        
-        
+                    # 4) The node function you used to build f_rotated_ (same as your snippet)
+                    z0 = z_grid[0]
+                    s0 = 0.05
+                    f_nodes_init = 0.5 * s0 * (z_grid - z0)                   # (N,)
                     
-                    X = z_grid.reshape(-1, 1)
-                    K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
-                    L = np.linalg.cholesky(K)
-                    f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
-        
-                    ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
+                    # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
+                    #    Use Cholesky solves for stability; reuse Knn factorization
+                    c_nn = la.cho_factor(Knn, lower=True, check_finite=False)
+                    f_mid_init = Kmn @ la.cho_solve(c_nn, f_nodes_init)       # (N-1,)
+                    
+                    # 6) Whiten both with their own Cholesky factors:
+                    Ln = la.cholesky(Knn, lower=True, check_finite=False)
+                    Lm = la.cholesky(Kmm, lower=True, check_finite=False)
+                    
+                    u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True, check_finite=False)  # (N,)
+                    u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
+                    
+
+                    ip["f_rotated_"]     = u_nodes_init + 1e-3 * onp.random.randn(u_nodes_init.size)
+                    #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
     
                 else:
                     print("Initializing f_rotated_ from file....")
                     ip["f_rotated_"] = ivals["f_rotated_"]
+                    #ip["f_mid_rotated_"] = ivals["f_mid_rotated_"]
 
             
             if FLAGS.debug:
-                print()
-                print('*'*80)
+                #print()
+                #print('*'*40)
                 print('Debugging...')
-                print('*'*80)
-                print()
+                #print('*'*40)
+                #print()
         
                 model.debug()
 
-                print('\nDone. ')
+                print('Done. ')
 
             if FLAGS.check_init:
-                print()
-                print('*'*80)
-                print('Check initial point...')
-                print('*'*80)
-                print()
-                #ip = model.initial_point()
-                print('Initial values:')
-                print(ip)
-                model.check_start_vals(ip)                      # raises if logp is -inf/NaN
-                f  = model.compile_logp(sum=True)
-                g  = model.compile_dlogp()                      # gradient
-                assert np.isfinite(f(ip))
-                for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
-                total_logp = float(f(ip))
-                grad_norms = [float((gi**2).sum()**0.5) for gi in g(ip)]
-                print("logp(ip) =", total_logp)
-                #print("||grad|| per block:", grad_norms)
 
-                blocks = g(ip)  # list of gradient blocks matching PyMC's internal parameter blocks
+                print('Checking initial point...')
+                #print('*'*40)
+                #print()
 
-                def try_step(ip, block_i, eps=1e-4):
-                    ip2 = {k: (v.copy() if hasattr(v, "copy") else onp.array(v)) for k, v in ip.items()}
-                    # nudge along block_i in gradient direction
-                    bkeys = list(ip2.keys())[block_i:block_i+1]
-                    # If you know which keys map to block_i use those; this heuristic just tries each key separately:
-                    for k in bkeys:
-                        v = ip2[k]
-                        ip2[k] = v + eps * onp.sign(1.0)  # small +epsilon
-                        val = f(ip2)
-                        return float(val)
-                    return onp.nan
-                
-                bad = []
-                for i in range(len(blocks)):
-                    try:
-                        val = try_step(ip, i, eps=1e-4)
-                        if not onp.isfinite(val):
+                ip = model.initial_point()
+     
+                try:
+                    model.check_start_vals(ip)
+                    f  = model.compile_logp(sum=True)
+                    g  = model.compile_dlogp()                      # gradient
+                    assert np.isfinite(f(ip))
+                    for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
+                    print("Start is finite ✅")
+                except Exception as e:
+                    print("Start invalid ❌:", e)
+                    
+                    print('Initial values:')
+                    print(ip)
+                    
+                    total_logp = float(f(ip))
+                    grad_norms = [float((gi**2).sum()**0.5) for gi in g(ip)]
+                    print("logp(ip) =", total_logp)
+                    #print("||grad|| per block:", grad_norms)
+    
+                    blocks = g(ip)  # list of gradient blocks matching PyMC's internal parameter blocks
+    
+                    def try_step(ip, block_i, eps=1e-4):
+                        ip2 = {k: (v.copy() if hasattr(v, "copy") else onp.array(v)) for k, v in ip.items()}
+                        # nudge along block_i in gradient direction
+                        bkeys = list(ip2.keys())[block_i:block_i+1]
+                        # If you know which keys map to block_i use those; this heuristic just tries each key separately:
+                        for k in bkeys:
+                            v = ip2[k]
+                            ip2[k] = v + eps * onp.sign(1.0)  # small +epsilon
+                            val = f(ip2)
+                            return float(val)
+                        return onp.nan
+                    
+                    bad = []
+                    for i in range(len(blocks)):
+                        try:
+                            val = try_step(ip, i, eps=1e-4)
+                            if not onp.isfinite(val):
+                                bad.append(i)
+                        except Exception:
                             bad.append(i)
-                    except Exception:
-                        bad.append(i)
-
-                #print("tiny-step bad blocks:", bad)
-
-
-                # Map value var -> RV
-                v2r = {vv: rv for rv, vv in model.rvs_to_values.items()}
-                
-                # Only check free parameters (the ones HMC moves)
-                free_vvs = [model.rvs_to_values[rv] for rv in model.free_RVs]
-                
-                bad = []
-                eps = 1e-6
-                
-                for i, vv in enumerate(free_vvs):
-                    key = vv.name  # e.g. "alpha_interval__", "sigma_log__", etc.
-                
-                    # make a fresh copy of the transformed start dict
-                    test = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v))
-                            for k, v in ip.items()}
-                    try:
-                        step = eps if onp.ndim(test[key]) == 0 else eps * onp.ones_like(test[key])
-                        test[key] = test[key] + step
-                        val = f(test)
-                        if not onp.isfinite(val):
+    
+                    #print("tiny-step bad blocks:", bad)
+    
+    
+                    # Map value var -> RV
+                    v2r = {vv: rv for rv, vv in model.rvs_to_values.items()}
+                    
+                    # Only check free parameters (the ones HMC moves)
+                    free_vvs = [model.rvs_to_values[rv] for rv in model.free_RVs]
+                    
+                    bad = []
+                    eps = 1e-6
+                    
+                    for i, vv in enumerate(free_vvs):
+                        key = vv.name  # e.g. "alpha_interval__", "sigma_log__", etc.
+                    
+                        # make a fresh copy of the transformed start dict
+                        test = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v))
+                                for k, v in ip.items()}
+                        try:
+                            step = eps if onp.ndim(test[key]) == 0 else eps * onp.ones_like(test[key])
+                            test[key] = test[key] + step
+                            val = f(test)
+                            if not onp.isfinite(val):
+                                rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
+                                bad.append((i, key, rvname))
+                        except Exception as e:
                             rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
-                            bad.append((i, key, rvname))
-                    except Exception as e:
-                        rvname = v2r.get(vv, None).name if v2r.get(vv, None) is not None else None
-                        bad.append((i, key, rvname, str(e)))
-                
-                print("Problematic value_vars on tiny step:")
-                for row in bad[:50]:
-                    if len(row) == 3:
-                        i, key, rvname = row
-                        print(f"{i:4d} {key:>25}   (RV: {rvname})")
-                    else:
-                        i, key, rvname, msg = row
-                        print(f"{i:4d} {key:>25}   (RV: {rvname}) -> {msg}")
-                print(f"... total bad: {len(bad)}")
-
-
-
-                # build a dict of tiny step along gradient for each value var
-                gblocks = g(ip)
-                eps = 1e-4
-                ip_plus = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
-                for vv, grad in zip([model.rvs_to_values[rv] for rv in model.free_RVs], gblocks):
-                    key = vv.name
-                    step = eps * (grad / (onp.linalg.norm(grad.ravel()) + 1e-12))
-                    ip_plus[key] = ip_plus[key] + step
-                
-                print("f(ip)      =", float(f(ip)))
-                print("f(ip_plus) =", float(f(ip_plus)))
-
-
-                import random
-                rng = onp.random.default_rng(0)
-                for trial in range(5):
-                    ip_rand = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
-                    for key, val in ip_rand.items():
-                        noise = rng.standard_normal(size=onp.shape(val)) * 1e-4
-                        ip_rand[key] = val + noise
-                    val = f(ip_rand)
-                    print(f"random step {trial}: finite? {onp.isfinite(val)}")
-
-                f_parts = model.compile_logp(sum=False)
-                vals = f_parts(ip_rand)  # or ip_plus
-                # 1) Indices of terms that contain ANY non-finite entries
-                bad_idxs = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
-                print("bad term indices:", bad_idxs)
-
-
-                rng = onp.random.default_rng(0)
-                keys = list(ip.keys())
-                
-                def try_noise(std):
+                            bad.append((i, key, rvname, str(e)))
+                    
+                    print("Problematic value_vars on tiny step:")
+                    for row in bad[:50]:
+                        if len(row) == 3:
+                            i, key, rvname = row
+                            print(f"{i:4d} {key:>25}   (RV: {rvname})")
+                        else:
+                            i, key, rvname, msg = row
+                            print(f"{i:4d} {key:>25}   (RV: {rvname}) -> {msg}")
+                    print(f"... total bad: {len(bad)}")
+    
+    
+    
+                    # build a dict of tiny step along gradient for each value var
+                    gblocks = g(ip)
+                    eps = 1e-4
+                    ip_plus = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
+                    for vv, grad in zip([model.rvs_to_values[rv] for rv in model.free_RVs], gblocks):
+                        key = vv.name
+                        step = eps * (grad / (onp.linalg.norm(grad.ravel()) + 1e-12))
+                        ip_plus[key] = ip_plus[key] + step
+                    
+                    print("f(ip)      =", float(f(ip)))
+                    print("f(ip_plus) =", float(f(ip_plus)))
+    
+    
+                    import random
+                    rng = onp.random.default_rng(0)
+                    for trial in range(5):
+                        ip_rand = {k: (onp.array(v, copy=True) if hasattr(v, "shape") else onp.array(v)) for k, v in ip.items()}
+                        for key, val in ip_rand.items():
+                            noise = rng.standard_normal(size=onp.shape(val)) * 1e-4
+                            ip_rand[key] = val + noise
+                        val = f(ip_rand)
+                        print(f"random step {trial}: finite? {onp.isfinite(val)}")
+    
+                    f_parts = model.compile_logp(sum=False)
+                    vals = f_parts(ip_rand)  # or ip_plus
+                    # 1) Indices of terms that contain ANY non-finite entries
+                    bad_idxs = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
+                    print("bad term indices:", bad_idxs)
+    
+    
+                    rng = onp.random.default_rng(0)
+                    keys = list(ip.keys())
+                    
+                    def try_noise(std):
+                        trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
+                        for k in keys:
+                            trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * std
+                        val = f(trial)
+                        return float(val), onp.isfinite(val)
+                    
+                    for std in [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]:
+                        v, ok = try_noise(std)
+                        print(f"std={std:g}  finite? {ok}  f={v}")
+    
+                    f_parts = model.compile_logp(sum=False)
+                    trial_val, _ = try_noise(1e-3)  # use the smallest std that failed above
                     trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
                     for k in keys:
-                        trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * std
-                    val = f(trial)
-                    return float(val), onp.isfinite(val)
+                        trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * 1e-3
+                    vals = f_parts(trial)
+                    bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
+                    print("bad term indices:", bad)
+                    
+                    raise ValueError()
                 
-                for std in [1e-4, 5e-4, 1e-3, 5e-3, 1e-2]:
-                    v, ok = try_noise(std)
-                    print(f"std={std:g}  finite? {ok}  f={v}")
-
-                f_parts = model.compile_logp(sum=False)
-                trial_val, _ = try_noise(1e-3)  # use the smallest std that failed above
-                trial = {k: onp.array(v, copy=True) for k, v in ip.items()}
-                for k in keys:
-                    trial[k] = trial[k] + rng.standard_normal(size=onp.shape(trial[k])) * 1e-3
-                vals = f_parts(trial)
-                bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
-                print("bad term indices:", bad)
-
-
-
-                def scan_for_int_bool_with_nan(model):
-                        import numpy as np
-                        print("---- scan model value vars ----")
-                        for v in model.value_vars:
-                            tv = getattr(v.tag, "test_value", None)
-                            if tv is None:
-                                continue
-                            arr = np.asarray(tv)
-                            kind = arr.dtype.kind  # 'f' float, 'i' int, 'b' bool
-                            has_nan = np.isnan(arr).any() if kind == "f" else False
-                            print(f"{v.name:30s} kind={kind} shape={arr.shape} has_nan={has_nan}")
-                            if kind in "ib":
-                                # ints/bools MUST NOT carry NaN; flag if any came through as float full of NaNs but typed int
-                                try:
-                                    _ = np.isnan(arr)
-                                except TypeError:
-                                    pass
-                                    
-                                    print('\nDone. ')
-
-                scan_for_int_bool_with_nan(model)
-
-
-                def scan_shared_data(model):
-                    print("---- scanning shared pm.Data ----")
-                    for name, var in model.named_vars.items():
-                        if isinstance(var, TensorSharedVariable):
-                            tgt = var.type.dtype                 # dtype baked into the graph
-                            val = var.get_value(borrow=True)
-                            src = str(val.dtype)
-                            finite = np.isfinite(np.asarray(val, dtype=np.float64)).all()
-                            has_nan = np.isnan(np.asarray(val, dtype=np.float64)).any()
-                            print(f"{name:25s} var.dtype={tgt:>6s} val.dtype={src:>6s} "
-                                  f"finite={finite} nan={has_nan}")
-                            # smoking gun: int/bool var with float value that has NaN
-                            if tgt in ("int32","int64","bool") and has_nan:
-                                print(f"  -> PROBLEM: {name} is {tgt} but its value has NaN.")
-                    print("---- done ----")
-
-                scan_shared_data(model)
-
-
-                def find_offending_input(model):
-                    print("---- trying JAX conversion on model inputs ----")
-                    offenders = []
-                    # PyMC jaxifies a FunctionGraph with inputs = model.value_vars
-                    for v in model.value_vars:
-                        name = v.name or "<unnamed>"
-                        tv = getattr(v.tag, "test_value", None)
-                        if tv is None:
-                            continue
-                        val = np.asarray(tv)
-                        tgt = v.type.dtype  # dtype JAX will try to enforce
-                        try:
-                            # This mirrors the failing jax_typify_ndarray -> jnp.array(..., dtype=tgt)
-                            _ = jnp.array(val, dtype=tgt)
-                        except Exception as e:
-                            offenders.append((name, tgt, val.dtype, np.isnan(val.astype(float, copy=False)).any(), e))
-                            print(f"[OFFENDER] {name}: var.dtype={tgt}, val.dtype={val.dtype}, "
-                                  f"has_nan={np.isnan(val.astype(float, copy=False)).any()} -> {type(e).__name__}: {e}")
-                        else:
-                            # Optional: uncomment to see all clean vars
-                            # print(f"[ok] {name}: var.dtype={tgt}, val.dtype={val.dtype}")
-                            pass
-                    print("---- done ----")
-                    return offenders
-
-                offenders = find_offending_input(model)
-
-
-                from pytensor.graph.fg import FunctionGraph
-                from pytensor.graph.basic import Constant
-                
-                def find_offending_fgraph_inputs(model):
-                    print("---- scanning FunctionGraph inputs used for jaxify ----")
-                    offenders = []
-                    with model:
-                        logp = model.logp()
-                        fgraph = FunctionGraph(model.value_vars, [logp])
-                        for i, var in enumerate(fgraph.inputs):
-                            name  = (var.name or f"in{i}")
-                            dtype = var.type.dtype
-                            # get a concrete value to mimic jax_typify_ndarray
-                            if isinstance(var, Constant):
-                                val = np.asarray(var.data)
-                                origin = "Constant"
-                            else:
-                                tv  = getattr(var.tag, "test_value", None)
-                                if tv is None:
-                                    print(f"[skip] {origin if 'origin' in locals() else 'Var'} {name}: no test_value")
-                                    continue
-                                val = np.asarray(tv)
-                                origin = "Var"
-                            has_nan = np.isnan(val.astype(np.float64, copy=False)).any()
-                            try:
-                                _ = jnp.array(val, dtype=dtype)  # mirrors the failing cast
-                            except Exception as e:
-                                print(f"[OFFENDER] {origin} {name}: var.dtype={dtype}, val.dtype={val.dtype}, has_nan={has_nan} -> {type(e).__name__}: {e}")
-                                offenders.append((origin, name, dtype, val))
-                            # else: it's fine
-                    print("---- done ----")
-                    return offenders
-
-
-                offenders = find_offending_fgraph_inputs(model)
-
+                print('Done. ')
 
     
 
@@ -802,7 +879,7 @@ def main():
                 sampler = "numpyro"
                 sampler_kwargs.update({
                                 "cores": FLAGS.ncores,                         # JAX: single OS process
-                                "target_accept": FLAGS.target_accept,  
+                               "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
@@ -824,21 +901,59 @@ def main():
                     "cores": FLAGS.ncores,                        # avoid fork
                     "target_accept": FLAGS.target_accept,
                     "nuts_sampler_kwargs": {
-                        "chain_method": FLAGS.chain_method #"vectorized",  # BlackJAX has no 'nuts_kwargs' block
+                        "chain_method": FLAGS.chain_method #"vectorized",  # BlackJAX has no 
                     },
                 })
             else:
-                sampler = "pymc"
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
 
 
+            print("\nModel variables:")
+            # Print only the names of variables that are sampled
+            print([v.name for v in model.free_RVs])
 
-
+            print()
+            print('*'*80)
             print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
-            trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+            print('*'*80)
+            print()
 
-            
+            if FLAGS.sampler == 'pymc_bar':
+                pytensor.config.exception_verbosity = 'high'
+
+          
+                
+                # progress bar
+                #with tqdm(total=(FLAGS.nsteps + FLAGS.ntune)* FLAGS.nchains) as pbar:
+                with tqdm(
+                            total=(FLAGS.nsteps + FLAGS.ntune)* FLAGS.nchains,
+                            desc="Sampling",
+                            dynamic_ncols=True,      # auto width like PyMC
+                            smoothing=0.3,           # smoother it/s
+                            mininterval=0.1,         # refresh rate
+                            leave=True,
+                            bar_format=(
+                                "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, "
+                                "{rate_fmt}{postfix}]"
+                            ),
+                        ) as pbar:
+                    
+                    
+                    #def callback(trace, draw):
+                    #    pbar.update(1)
+                                
+                    cb = autils.make_tqdm_callback(pbar)
+                    trace = pm.sample(nuts_sampler='pymc', **sampler_kwargs,
+                                      callback=cb,
+                                      
+                                     )
+
+            else:
+                
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+
+            print('\nDone.')
         
         
     
@@ -1070,12 +1185,6 @@ def main():
 
 if __name__=='__main__':
         
-    # Only set 'spawn' if you plan to use multiple OS processes (cores > 1)
-    import multiprocessing as mp
-    try:
-        mp.set_start_method("spawn", force=True)   # safe on Linux; default on macOS/Windows
-    except RuntimeError:
-        pass  # start method may already be set (e.g., in notebooks)
 
     main()
     
