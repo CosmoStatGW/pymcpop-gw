@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
     
+    
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
@@ -96,6 +97,7 @@ def main():
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
+    parser.add_argument("--zres", default='low', type=str, required=False)
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
@@ -501,6 +503,7 @@ def main():
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
+                                    zres = FLAGS.zres,
                                     pade=FLAGS.pade,
                                     Neff_min=FLAGS.min_Neff,
                                     Neff_min_lik = FLAGS.Neff_min_lik,

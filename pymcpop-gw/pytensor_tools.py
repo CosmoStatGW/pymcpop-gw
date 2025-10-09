@@ -55,12 +55,62 @@ MAX = np.inf #INF
 # zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
-zGridGlobals = onp.sort(onp.unique(onp.concatenate([ onp.logspace(start=-100, stop=-15, base=10, num=50), np.logspace(start=-30, stop=-4, base=10, num=100), 
-                     #at.linspace(start=1.1e-03, end=10, steps=50),
-                     onp.logspace(start=-4, stop=1, base=10, num=1000), 
-                     onp.logspace(start=1, stop=2, base=10, num=100), onp.logspace(start=2, stop=5, base=10, num=50) ])))
 
-zGridGlobals_at = at.as_tensor_variable(zGridGlobals)
+
+# zGridGlobals = onp.sort(onp.unique(onp.concatenate([ onp.logspace(start=-100, stop=-15, base=10, num=50), np.logspace(start=-30, stop=-4, base=10, num=100), 
+#                      #at.linspace(start=1.1e-03, end=10, steps=50),
+#                      onp.logspace(start=-4, stop=1, base=10, num=1000), 
+#                      onp.logspace(start=1, stop=2, base=10, num=100), onp.logspace(start=2, stop=5, base=10, num=50) ])))
+
+def log_cheb(a, b, N):
+    """
+    Chebyshev nodes mapped to log10-space between a and b (a<b).
+    Clusters near both endpoints in *log z*.
+    """
+    la, lb = onp.log10(a), onp.log10(b)
+    k = onp.arange(N)
+    theta = (k + 0.5) * onp.pi / N
+    logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
+    return 10 ** logz
+
+def make_z_grid(total=150, hi_boost=0.20):
+    """
+    Generic grid builder:
+      total   : total number of points (e.g., 150, 500)
+      hi_boost: fraction of points allocated to (3,10]; default 20%
+    Remaining points are split 10% / 45% / 45% across the first three bands.
+    """
+    total = int(total)
+    zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
+
+    # allocate counts
+    N3  = int(round(total * hi_boost))
+    rem = total - N3
+    N1  = int(round(rem * 0.10))
+    N2a = int(round(rem * 0.45))
+    N2b = rem - N1 - N2a  # remainder
+
+    g1  = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), max(N1,1), endpoint=False)
+    g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
+    g2b = log_cheb(1e-1, zmid_b,          max(N2b,1))
+    g3  = onp.logspace(onp.log10(zmid_b), onp.log10(zmax_c), max(N3,1))
+
+    z = onp.unique(onp.concatenate([g1, g2a, g2b, g3]))
+    z.sort()
+    return z
+
+
+
+zGridGlobals_low = make_z_grid()
+
+
+zGridGlobals_at_low = at.as_tensor_variable(zGridGlobals_low)
+
+
+
+zGridGlobals_high = make_z_grid(1000)
+
+zGridGlobals_at_high = at.as_tensor_variable(zGridGlobals_high)
 
 
 max_m = 500.
@@ -343,6 +393,154 @@ def atinterp(x, xs, ys):
   r = (x-xl)/(xh-xl);
 
   return r*yh + (1.0-r)*yl;
+
+def invert_monotone_binary_at(y, y_grid, x_grid, eps=1e-12, mode="clip"):
+    """
+    Invert a strictly increasing tabulation y_grid(x_grid) with binary search.
+    y:      (M,)
+    y_grid: (NZ,)
+    x_grid: (NZ,)
+    mode: "clip" | "error"
+      - "clip": clamp queries to [y_grid[0], y_grid[-1]] (robust default)
+      - "error": add -inf Potential if any query is out of range (you can wrap outside)
+    returns x: (M,)
+    """
+    # Ensure tensors
+    y       = at.as_tensor_variable(y)
+    y_grid  = at.as_tensor_variable(y_grid)
+    x_grid  = at.as_tensor_variable(x_grid)
+
+    # Bounds & optional handling
+    y0, y1 = y_grid[0], y_grid[-1]
+    oob_low  = at.lt(y, y0)
+    oob_high = at.gt(y, y1)
+
+    if mode == "clip":
+        yq = at.clip(y, y0 + eps, y1 - eps)
+    elif mode == "error":
+        # You can uncomment this Potential inside a model context:
+        # pm.Potential("invert_oob", at.switch(at.any(oob_low | oob_high), -np.inf, 0.0))
+        yq = at.clip(y, y0 + eps, y1 - eps)
+    else:
+        raise ValueError("mode must be 'clip' or 'error'.")
+
+    NZ = x_grid.shape[0]
+    # We search for k such that y_grid[k] <= yq < y_grid[k+1]
+    # Initialize integer bounds
+    lo = at.zeros_like(yq, dtype="int64")
+    hi = at.fill(lo, NZ - 2)  # last valid left index
+
+    # Number of bisection steps: ceil(log2(NZ))
+    n_steps = int(np.ceil(np.log2(1 + (np.array(1) if isinstance(NZ, int) else 1024))))  # fallback if NZ not concrete
+    # If NZ is a constant tensor, try to get its value
+    try:
+        nZ_val = int(y_grid.shape[0].eval())  # optional: if in interactive mode
+        n_steps = int(np.ceil(np.log2(nZ_val)))
+    except Exception:
+        pass
+
+    # Fixed-count loop (Python-level, creates ~log2(NZ) graph layers)
+    for _ in range(max(1, n_steps)):
+        mid = (lo + hi) // 2  # (M,) int64
+        # Compare with the right edge of the mid bin: y_grid[mid+1]
+        right = y_grid[mid + 1]
+        go_right = at.le(right, yq)  # if yq >= y_grid[mid+1], move right
+        lo = at.where(go_right, mid + 1, lo)
+        hi = at.where(go_right, hi, mid)
+
+    k = lo  # (M,) left index of bin
+
+    # Linear inverse within the bin
+    ygL = y_grid[k]           # (M,)
+    ygR = y_grid[k + 1]       # (M,)
+    xL  = x_grid[k]           # (M,)
+    xR  = x_grid[k + 1]       # (M,)
+
+    dyg = at.clip(ygR - ygL, eps, np.inf)
+    t   = (yq - ygL) / dyg
+    x   = xL + t * (xR - xL)
+    return x
+
+
+def invert_monotone_linear(y, y_grid, x_grid, eps=1e-12, mode="clip"):
+    """
+    Vectorized inverse for strictly increasing y_grid(x_grid).
+
+    y:      (M,)     query values (e.g., distances)
+    y_grid: (NZ,)    tabulated monotone y(z)
+    x_grid: (NZ,)    corresponding z grid
+    mode: "clip" | "extrapolate" | "error" | "nan"
+    """
+    y0, y1 = y_grid[0], y_grid[-1]
+    x0, x1 = x_grid[0], x_grid[-1]
+
+    # Precompute per-bin slopes dx/dy
+    dyg = y_grid[1:] - y_grid[:-1]              # (NZ-1,)
+    dxg = x_grid[1:] - x_grid[:-1]              # (NZ-1,)
+    dxdy_bins = dxg / at.clip(dyg, eps, np.inf) # (NZ-1,)
+
+    # Masks for out-of-bounds
+    oob_low  = at.lt(y, y0)
+    oob_high = at.gt(y, y1)
+    inside   = at.eq(oob_low + oob_high, 0)
+
+    if mode == "clip":
+        yq = at.clip(y, y0 + eps, y1 - eps)
+
+    elif mode == "extrapolate":
+        # linear extrapolation using edge slopes
+        # left edge slope: use first bin
+        dxdy_left  = dxdy_bins[0]
+        # right edge slope: use last bin
+        dxdy_right = dxdy_bins[-1]
+
+        # Start by clipping to avoid undefined bin-finding; we'll replace OOB later
+        yq = at.clip(y, y0 + eps, y1 - eps)
+
+    elif mode == "error":
+        # Hard fail: add a -inf Potential if any y is OOB
+        pm.Potential(
+            "invert_oob_penalty",
+            at.switch(at.any(oob_low | oob_high), -np.inf, 0.0)
+        )
+        yq = at.clip(y, y0 + eps, y1 - eps)
+
+    elif mode == "nan":
+        # We'll compute inverse for inside points; fill NaN for OOB after
+        yq = at.clip(y, y0 + eps, y1 - eps)
+
+    else:
+        raise ValueError("mode must be one of: clip, extrapolate, error, nan")
+
+    # Find left bin index for the (possibly clipped) queries
+    mask = at.cast(y_grid[None, :] <= yq[:, None], "int64")   # (M, NZ)
+    k = at.sum(mask, axis=1) - 1                              # (M,)
+    k = at.clip(k, 0, x_grid.shape[0] - 2)
+
+    ygL = y_grid[k]             # (M,)
+    xL  = x_grid[k]             # (M,)
+    slope = dxdy_bins[k]        # (M,)
+
+    x_in = xL + (yq - ygL) * slope  # inverse for clamped/inside points
+
+    if mode == "clip":
+        return x_in
+
+    if mode == "extrapolate":
+        # Left extrapolation: x0 + (y - y0) * dx/dy at left edge
+        x_left  = x0 + (y - y0) * dxdy_left
+        # Right extrapolation: x1 + (y - y1) * dx/dy at right edge
+        x_right = x1 + (y - y1) * dxdy_right
+        # Stitch
+        return at.where(oob_low, x_left, at.where(oob_high, x_right, x_in))
+
+    if mode == "error":
+        return x_in  # Potential above will kill OOB cases
+
+    if mode == "nan":
+        nanv = at.as_tensor_variable(np.nan)
+        return at.where(inside, x_in, nanv)
+
 
 
 def jnptinterp(x, xs, ys):

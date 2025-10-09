@@ -175,7 +175,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
 #####################################################
 
-def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp):
+def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None):
 
 
     H0, Om, w0, Xi0, n  = Lambda[:5]
@@ -184,8 +184,14 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
         spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
     elif spin_model=='none':
         spinsInj_sel = []
-    
-    zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp  )
+
+    if dL_grid is None:
+        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp  )
+    else:
+        print('Inverting with batched version for injections')
+        if z_grid is None:
+            raise ValueError('Pass z grid is passing pre-computed dL grid')
+        zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
@@ -278,6 +284,7 @@ def make_model(  priors,
                fix_w0 = True,
                  fix_Xi0n = True,
                pade=False,
+               zres='low',
                params_fix=None,
                  Neff_min=4,
                 Neff_min_lik=1,
@@ -860,6 +867,18 @@ def make_model(  priors,
         lR0 = at.log(R0)
 
 
+        if zres=='low':
+            print('Using z grid with 150 points')
+            zgrid_ = atools.zGridGlobals_at_low
+        elif zres=='high':
+            print('Using z grid with 1000 points')
+            zgrid_ = atools.zGridGlobals_at_high
+        
+        # One grid build to interpolate later
+        dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade)
+
+
+
         if not pop_only:
             ################################################
             # Individual event mass and distance
@@ -1000,7 +1019,8 @@ def make_model(  priors,
     
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            zs = pm.Deterministic('z', atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade ), dims= "event_index" )
+            zs = pm.Deterministic('z', atools.invert_monotone_binary_at(d, dL_grid, zgrid_), dims= "event_index" )               
+            #atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade ), 
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
             
@@ -1014,7 +1034,8 @@ def make_model(  priors,
             # AND for each sample! 
             
             d_stacked  = at.flatten(d)
-            zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade )
+            zs_stacked = atools.invert_monotone_binary_at(d_stacked, dL_grid, zgrid_)
+            #atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade )
             
             zs = at.reshape( zs_stacked, (N, Nsamples) )
             m1src = m1det/(1+zs)
@@ -1173,7 +1194,7 @@ def make_model(  priors,
                     spin_model_name = 'none'
 
                     
-                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade)
+                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_)
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
@@ -1214,7 +1235,7 @@ def make_model(  priors,
                     print("Loop over injections sets, dynamical slicing")
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
                                           sequences = [ np.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
                     log_mu_vec = res_i[0]
@@ -1225,7 +1246,7 @@ def make_model(  priors,
                     print("Loop over injections sets, no slicing")
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, interp=pade ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
                                       sequences = [ np.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
 
@@ -1298,19 +1319,33 @@ def make_model(  priors,
                     if sel_smoothing=='sigmoid':
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 ))
+                        
+                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 ))
                                                           )
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))   
+                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))   
                                                          )      
+                    elif sel_smoothing=='softplus':
+                        print("Tapering sel effect with softplus")
+                        # Slack (how sharp the corner is) and weight (penalty strength)
+                        nu = at.as_tensor_variable(0.01)     # smaller = sharper transition
+                        lam = at.as_tensor_variable(1e3)     # larger = stronger penalty
+                        
+                        excess  = (log_lik_var - log_lik_var_min) / nu
+                        penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
+
+                        selection_bias = pm.Deterministic("sel_bias", sel_effect)
+                        
+                        # If log_lik_var is a vector, sum to get a scalar penalty:
+                        pm.Potential("bound_log_lik_var", -at.sum(penalty))
                     else:
                         print("Tapering sel effect with hard cut")
 
                         selection_bias = pm.Deterministic("sel_bias", sel_effect)
                         # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
                         # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var >= log_lik_var_min, 0.0, -np.inf))
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf))
 
             
             _ = pm.Potential('selection_bias', selection_bias)
