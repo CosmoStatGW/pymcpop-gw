@@ -313,7 +313,7 @@ def safe_sigmoid(x, x0, eps):
 
 def softplus(x):
     # log(1 + exp(x)) with good numerical stability
-    return at.maximum(x, 0) + at.log1p(at.exp(-at.abs_(x)))
+    return at.maximum(x, 0) + at.log1p(at.exp(-at.abs(x)))
 
 
 ##########################
@@ -1003,13 +1003,13 @@ def logC_PLP( m, beta, deltam, ml, res=100):
     # itr = atinterp( m, xx[1:], at.log(cdf))
     # return itr
 
-    xx = _get_mass_grid()  # (NM,)
+    _tgrid = _get_t_grid()
+    
+    xx = ml + (max_m - ml) * _tgrid
 
     # Evaluate log-pdf on the fixed grid, then zero-out below ml
     logp2 = logpdfm2_PLP(xx, beta, deltam, ml)          # (NM,)
     p2    = at.exp(logp2)                                # (NM,)
-    mask  = at.cast(xx >= ml, p2.dtype)                  # (NM,) elementwise
-    p2    = p2 * mask
 
     # CDF via trapezoid from the fixed grid (below-ml bins contribute 0)
     cdf = atcumtrapz(p2, xx)                             # (NM-1,)
@@ -1039,17 +1039,16 @@ def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=1000):
     Log integral of p(m1, m2) dm1 dm2 (total normalization of the mass function).
     Uses a cached global grid; ml and mh can be stochastic.
     """
-    xx = _get_mass_grid()  # (NM,)
+    
+    _tgrid = _get_t_grid()
+    
+    xx = ml + (mh - ml) * _tgrid
 
     # Evaluate log-pdf on fixed grid
     logp = logpdfm1_PLP(xx, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass)  # (NM,)
     p    = at.exp(logp)
 
-    # Mask to integrate only over [ml, mh]
-    mask = at.cast((xx >= ml) & (xx <= mh), p.dtype)
-    p_in = p * mask
-
-    Z = attrapzvec(p_in, xx)                              # (scalar)
+    Z = attrapzvec(p, xx)                              # (scalar)
     return at.log(at.clip(Z, 1e-300, np.inf))
             
     
@@ -1187,7 +1186,11 @@ def logC_PLP_reg( m, beta, deltam, ml, res=1000, smoothing='LVK'):
     
     #xx=at.concatenate([ms1,ms2, ms3, ms4, ms5] )
 
-    xx = at.linspace(ml, 500, res)
+    #xx = at.linspace(ml, 500, res)
+
+    _tgrid = _get_t_grid()
+    
+    xx = ml + (max_m - ml) * _tgrid 
     
     p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml, smoothing=smoothing))
     cdf = atcumtrapz(p2, xx, )
@@ -1217,7 +1220,10 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
     #ms4 = at.linspace(40.1, mh, int(res/2) )
     
     #ms=at.concatenate([ms1,ms2, ms3, ms4] )
-    ms = at.linspace(ml, mh, res)
+    #ms = at.linspace(ml, mh, res)
+
+    _tgrid = _get_t_grid()
+    ms = ml + (mh - ml) * _tgrid 
     
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  ))
     return at.log(attrapzvec(ps,ms))
