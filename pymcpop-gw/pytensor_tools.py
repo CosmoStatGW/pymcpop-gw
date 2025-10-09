@@ -88,28 +88,37 @@ def log_cheb(a, b, N):
     logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
     return 10 ** logz
 
-def make_z_grid_150():
+def make_z_grid(total=150, hi_boost=0.20):
+    """
+    Generic grid builder:
+      total   : total number of points (e.g., 150, 500)
+      hi_boost: fraction of points allocated to (3,10]; default 20%
+    Remaining points are split 10% / 45% / 45% across the first three bands.
+    """
+    total = int(total)
     zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
-    # counts chosen to total 150 and boost density near 1e-2
-    N1, N2a, N2b, N3 = 20, 60, 50, 20  # 20 + 60 + 50 + 20 = 150
 
-    # [1e-5, 1e-3): logspace (exclude endpoint to avoid duplicate at 1e-3)
-    g1 = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), N1, endpoint=False)
+    # allocate counts
+    N3  = int(round(total * hi_boost))
+    rem = total - N3
+    N1  = int(round(rem * 0.10))
+    N2a = int(round(rem * 0.45))
+    N2b = rem - N1 - N2a  # remainder
 
-    # [1e-3, 0.1]: log-Chebyshev → many points around 1e-3–1e-2
-    g2a = log_cheb(1e-3, 1e-1, N2a)
-
-    # [0.1, 3]: log-Chebyshev → finer than plain logspace but relaxed vs low end
-    g2b = log_cheb(1e-1, zmid_b, N2b)
-
-    # (3, 10]: relaxed logspace
-    g3 = onp.logspace(onp.log10(zmid_b), onp.log10(zmax_c), N3)
+    g1  = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), max(N1,1), endpoint=False)
+    g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
+    g2b = log_cheb(1e-1, zmid_b,          max(N2b,1))
+    g3  = onp.logspace(onp.log10(zmid_b), onp.log10(zmax_c), max(N3,1))
 
     z = onp.unique(onp.concatenate([g1, g2a, g2b, g3]))
     z.sort()
     return z
 
-zGridGlobals = make_z_grid_150()
+
+
+zGrid500_at = make_z_grid(total=1000)
+
+zGridGlobals = make_z_grid()
 
 
 zGridGlobals_at = at.as_tensor_variable(zGridGlobals)
@@ -719,9 +728,17 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
         dCGrid_at  = dcfun_at( zGridGlobals_at, H0, Om, w0 )
         
         dLGrid_EM_at = dCGrid_at*(1+zGridGlobals_at)
+
+        Z_nodes      = zGridGlobals_at         # coarse, used for the GP
+        z_grid_fine  = zGrid500_at         # fine, used for integration/inversion
     
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) #res=res, data_range=data_range, GP_zero_point=GP_zero_point)
+        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio(
+    Z_nodes, gp, name="f", z_fine=z_grid_fine, reparameterize=True
+)
+
+        
+        #compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) 
         
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
@@ -1034,9 +1051,62 @@ def find_al(L, beta, p0=0.01):
 
 
 
+def compute_gp_interp_dist_ratio(
+    z_nodes,                 # (N_nodes,)  coarse GP grid (e.g., 150) — outputs will be here
+    gp,                      # pm.gp.Latent already defined
+    name="f",
+    z_fine=None,             # (N_fine,)   optional finer grid (e.g., 500) used only for integration
+    reparameterize=True,
+):
+    """
+    1) Draw GP on coarse nodes z_nodes (cheap Cholesky).
+    2) Interpolate GP to z_fine (if provided) for accurate integration.
+    3) Integrate on z_fine with midpoint rule to get log_distance_ratio(z_fine).
+    4) Interpolate the integrated curve back to z_nodes and RETURN there.
+
+    Returns:
+      log_distance_ratio_nodes : (N_nodes,)
+      grad_log_distance_ratio  : (N_nodes,)  (= GP value at nodes)
+    """
+    z_nodes = at.as_tensor_variable(z_nodes)
+
+    # --- GP on coarse nodes (this is the only GP call) ---
+    X_nodes = z_nodes[:, None]
+    g_nodes = gp.prior(name, X=X_nodes, reparameterize=reparameterize)  # (N_nodes,)
+
+    # If no fine grid provided, integrate on nodes directly (your original behavior)
+    if z_fine is None:
+        dz_raw = z_nodes[1:] - z_nodes[:-1]
+        dz     = at.clip(dz_raw, 1e-18, np.inf)
+        g_mid  = 0.5 * (g_nodes[:-1] + g_nodes[1:])
+        inc    = g_mid * dz
+        h0     = at.as_tensor_variable(0.0)
+        log_dr_nodes = at.concatenate([h0[None], h0 + at.cumsum(inc)])  # (N_nodes,)
+        return log_dr_nodes, g_nodes
+
+    # --- otherwise: integrate on fine grid and map back to nodes ---
+    z_fine = at.as_tensor_variable(z_fine)
+
+    # 1) interpolate GP to fine grid (cheap O(N_fine))
+    #    assumes you already have a monotone atinterp(xq, x, y)
+    g_fine = atinterp(z_fine, z_nodes, g_nodes)  # (N_fine,)
+
+    # 2) midpoint integration on fine grid
+    dz_raw_f = z_fine[1:] - z_fine[:-1]
+    dz_f     = at.clip(dz_raw_f, 1e-18, np.inf)     # (N_fine-1,)
+    g_mid_f  = 0.5 * (g_fine[:-1] + g_fine[1:])     # (N_fine-1,)
+    inc_f    = g_mid_f * dz_f
+    h0       = at.as_tensor_variable(0.0)
+    log_dr_f = at.concatenate([h0[None], h0 + at.cumsum(inc_f)])  # (N_fine,)
+
+    # 3) interpolate the integrated curve back to the coarse nodes
+    log_dr_nodes = atinterp(z_nodes, z_fine, log_dr_f)            # (N_nodes,)
+
+    # Derivative at nodes is exactly the GP at nodes
+    return log_dr_nodes, g_nodes
 
 
-def compute_gp_interp_dist_ratio( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, b_full=None):
+def compute_gp_interp_dist_ratio_0( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, b_full=None):
 
     
         

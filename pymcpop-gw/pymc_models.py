@@ -2023,7 +2023,7 @@ def make_model(  priors,
                         selection_bias = pm.Deterministic("sel_bias", sel_effect)
                         # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
                         # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var >= log_lik_var_min, 0.0, -np.inf))
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf))
 
             
             selection_bias_term = pm.Potential('selection_bias', selection_bias)
