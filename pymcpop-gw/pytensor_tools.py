@@ -39,20 +39,20 @@ MAX = np.inf #INF
 
 
  
-# try:
-#         zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
-#                      #at.linspace(start=1.1e-03, end=10, steps=50),
-#                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
-#                      at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
+try:
+        zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
+                     #at.linspace(start=1.1e-03, end=10, steps=50),
+                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
+                     at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
 
-# except:
+except:
     
-#     zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
-#                      #at.linspace(start=1.1e-03, end=10, steps=50),
-#                      at.logspace(start=-4, end=1, base=10, steps=1000), 
-#                      at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
+    zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
+                     #at.linspace(start=1.1e-03, end=10, steps=50),
+                     at.logspace(start=-4, end=1, base=10, steps=1000), 
+                     at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
 
-# zGridGlobals = np.array(zGridGlobals_at.eval())
+zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
 
@@ -228,6 +228,11 @@ def normal_cdf(x):
     return 0.5 * (1.0 + at.erf(x / at.sqrt(2.0)))
 
 
+
+def normal_ppf(u):
+    return at.sqrt(2.0) * at.erfinv(2.0*u - 1.0)
+
+
 def m1m2_from_Mcq_at(Mc, q):
     
     m1 = Mc*(1+q)**(1./5.)/q**(3./5.)
@@ -381,7 +386,7 @@ def meshgrid_at(x, y):
 
     return X.T, Y.T
 
-def atinterp(x, xs, ys):
+def atinterp_minimal(x, xs, ys):
 
   idxs = at.searchsorted(xs, x,  side='left', sorter=None)
 
@@ -393,6 +398,39 @@ def atinterp(x, xs, ys):
   r = (x-xl)/(xh-xl);
 
   return r*yh + (1.0-r)*yl;
+
+
+def atinterp(x, xs, ys, eps=1e-12, mode="clip"):
+    x  = at.as_tensor_variable(x)
+    xs = at.as_tensor_variable(xs)
+    ys = at.as_tensor_variable(ys)
+
+    x0, x1 = xs[0], xs[-1]
+    if mode == "clip":
+        xq = at.clip(x, x0 + eps, x1 - eps)
+    elif mode == "error":
+        # Optional penalty in a model context:
+        # pm.Potential("interp_oob", at.switch(at.any((x < x0) | (x > x1)), -np.inf, 0.))
+        xq = at.clip(x, x0 + eps, x1 - eps)
+    else:
+        raise ValueError("mode must be 'clip' or 'error'.")
+
+    N = xs.shape[0]
+    # Use 'right' then subtract 1 so exact knots fall to the left interval
+    idxs = at.searchsorted(xs, xq, side="right")
+    # Keep indices in [1, N-1]
+    idxs = at.clip(idxs, 1, N-1)
+
+    xl = xs[idxs - 1]
+    xh = xs[idxs]
+    yl = ys[idxs - 1]
+    yh = ys[idxs]
+
+    denom = at.clip(xh - xl, eps, np.inf)   # protect against ties in xs
+    r = (xq - xl) / denom
+    y = (1.0 - r) * yl + r * yh
+    return y
+
 
 def invert_monotone_binary_at(y, y_grid, x_grid, eps=1e-12, mode="clip"):
     """
@@ -713,7 +751,7 @@ def dcfun_at(z, H0, Om, w0, interp=False):
         return pc.comoving_distance_pade_at(z, H0, Om, w0=-1.0, p=p, q=q) 
     else:
         
-        # zz = at.linspace(0, z, steps=100).T
+        # zz = at.linspace(0, z, steps=500).T
         # E = Efun_at(zz,Om,w0 )
         # return c_light/H0 * attrapzvec(1/E, zz)*1e-03
         

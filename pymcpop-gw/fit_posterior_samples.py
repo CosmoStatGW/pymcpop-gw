@@ -42,6 +42,7 @@ from dataStructures.mockData import GWMockData
 
 
 import data_tools as dt
+import pytensor_utils as ptools
 
 #######################################################################################
 #######################################################################################
@@ -844,7 +845,7 @@ if __name__=='__main__':
             print('Using %s'%FLAGS.fout)
 
     logfile = os.path.join(FLAGS.fout, 'logfile.txt')
-    myLog = dt.Logger(logfile)
+    myLog = ptools.Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
     

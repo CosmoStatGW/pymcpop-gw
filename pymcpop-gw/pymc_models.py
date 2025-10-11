@@ -191,8 +191,9 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     else:
         print('Inverting with batched version for injections')
         if z_grid is None:
-            raise ValueError('Pass z grid is passing pre-computed dL grid')
-        zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
+            raise ValueError('Pass z grid if passing pre-computed dL grid')
+        #zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
+        zinj = atools.atinterp(dLinj, dL_grid, z_grid)
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
 
@@ -904,15 +905,12 @@ def make_model(  priors,
                         ###################################
                         # continuous way
         
-                        # ---------- 1) shared selector: hom vs cat AND galaxy index ----------
                         u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
-                        v_gmm = at.clip(atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
+                        v_gmm = at.clip( atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
     
-                        # inverse-CDF over weights
                         cdf_w = at.cumsum(wts_l, axis=1)                                          
                         ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
-                    # old way. leave it here  please
-                    # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
+
                     
                     # Select means and Cholesky factors per batch
                     mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
@@ -1052,8 +1050,8 @@ def make_model(  priors,
     
             
             # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            zs = pm.Deterministic('z', atools.invert_monotone_binary_at(d, dL_grid, zgrid_), dims= "event_index" )               
-            #atools.z_from_dL_at(d, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade ), 
+            #zs = pm.Deterministic('z', atools.invert_monotone_binary_at(d, dL_grid, zgrid_), dims= "event_index" ) 
+            zs = pm.Deterministic('z', atools.atinterp(d, dL_grid, zgrid_), dims= "event_index" ) 
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
             
@@ -1067,8 +1065,8 @@ def make_model(  priors,
             # AND for each sample! 
             
             d_stacked  = at.flatten(d)
-            zs_stacked = atools.invert_monotone_binary_at(d_stacked, dL_grid, zgrid_)
-            #atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade )
+            #zs_stacked = atools.invert_monotone_binary_at(d_stacked, dL_grid, zgrid_)
+            zs_stacked = atools.atinterp(d_stacked, dL_grid, zgrid_)
             
             zs = at.reshape( zs_stacked, (N, Nsamples) )
             m1src = m1det/(1+zs)
