@@ -616,21 +616,21 @@ def main():
 
 
             wts = onp.exp(gmm_log_wts)
-            idx = np.argmax(wts, axis=1)
+            idx = onp.argmax(wts, axis=1)
             
             if FLAGS.sampling_gw=='gmm_cat':
-                ip['idx'] = idx
+                ip['idx'] = idx.astype(int)
 
             elif FLAGS.sampling_gw=='gmm':
-                cdf = np.cumsum(wts, axis=1)
+                cdf = onp.cumsum(wts, axis=1)
                 
                 # pick v in the open interval [CDF_{i-1}, CDF_i)
-                lo = np.where(idx == 0, 0.0, cdf[np.arange(len(idx)), idx - 1])
-                hi = cdf[np.arange(len(idx)), idx]
-                v  = np.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                hi = cdf[onp.arange(len(idx)), idx]
+                v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
                 
                 # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
-                u_init = np.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
                 ip['u_gmm'] =  u_init
 
                 # print("init gaussian pdf so that idx is argmax(w)")
