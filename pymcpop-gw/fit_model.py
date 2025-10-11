@@ -175,6 +175,7 @@ def main():
     import numpy as onp
     import matplotlib.pyplot as plt
     import corner
+    from scipy.special import erfinv
     
     # Custom modules
     import pymc_models as models
@@ -460,7 +461,7 @@ def main():
             #            Nevents
             #          ]
 
-            GWData =  [onp.exp(gmm_log_wts), 
+            GWData =  [ onp.exp(gmm_log_wts), 
     					   gmm_means, 
     					   gmm_cho_covs,
                            gmm_icovs,
@@ -608,6 +609,41 @@ def main():
 
             ip = model.initial_point()
 
+            N = gmm_means.shape[0]
+            nd = gmm_means.shape[2]
+
+            ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+
+
+            wts = onp.exp(gmm_log_wts)
+            idx = np.argmax(wts, axis=1)
+            
+            if FLAGS.sampling_gw=='gmm_cat':
+                ip['idx'] = idx
+
+            elif FLAGS.sampling_gw=='gmm':
+                cdf = np.cumsum(wts, axis=1)
+                
+                # pick v in the open interval [CDF_{i-1}, CDF_i)
+                lo = np.where(idx == 0, 0.0, cdf[np.arange(len(idx)), idx - 1])
+                hi = cdf[np.arange(len(idx)), idx]
+                v  = np.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                
+                # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                u_init = np.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                ip['u_gmm'] =  u_init
+
+                # print("init gaussian pdf so that idx is argmax(w)")
+                # print("True argmax:")
+                # print(idx)
+                # print("init argmax:")
+                # from scipy.special import ndtr  # standard normal CDF Φ
+                # v = np.clip(ndtr(u_init), 1e-9, 1 - 1e-9)
+
+                # # same logic as (v[:, None] < cdf).argmax(axis=1)
+                # idx_from_u = (v[:, None] < cdf).argmax(axis=1)
+                # print(idx_from_u)
+
             if FLAGS.is_GP_dL:
                 if 'f_rotated_' not in ivals.keys():
     
@@ -676,8 +712,8 @@ def main():
                     
                     # 4) The node function you used to build f_rotated_ (same as your snippet)
                     z0 = z_grid[0]
-                    s0 = 0.05
-                    f_nodes_init = 0.5 * s0 * (z_grid - z0)                   # (N,)
+                    s0 = 0.001
+                    f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
                     
                     # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
                     #    Use Cholesky solves for stability; reuse Knn factorization

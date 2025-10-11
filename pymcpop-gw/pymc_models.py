@@ -826,17 +826,7 @@ def make_model(  priors,
 
             cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-4)
             gp = pm.gp.Latent(cov_func=cov)
-
-            # Positive slack and scale
-            nu = pm.HalfNormal("nu", sigma=0.2 )
-                              # (N,) ≥ 0
-
-            κ = pm.Normal("kappa_dir", 0.0, 1.0)               # unconstrained
-            sgn = pm.Deterministic("sign_dir", at.tanh(5.0*κ)) # ~±1; pushes toward {-1,+1}
-
-            # for imposing monotonicity
-            #eps = at.as_tensor_variable(1e-12)          # avoid div-by-zero
-            
+                
             Lambda_MG_ = [ gp  ] 
             iastro = 4
         Lambda_ += Lambda_MG_   
@@ -1473,8 +1463,8 @@ def make_model(  priors,
                     dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(
                         None, H0_, Om_, w0_, Lambda_MG_,
                         is_GP_dL=True,
-                        data_range=data_range, GP_zero_point=GP_zero_point,
-                        dense_grad=dense_grad, eta=η, ell=ℓ, nu=nu, sgn=sgn, b_full=b_full,
+                        # data_range=data_range, GP_zero_point=GP_zero_point,
+                        # dense_grad=dense_grad, eta=η, ell=ℓ, b_full=b_full,
                     )
                     
                     # Event-level z
@@ -1512,23 +1502,26 @@ def make_model(  priors,
                     if monotonicity:
 
                         print('Imposing d(dL)/dz >0 on all the domain')
-                        # s(z) = d dL / dz evaluated on your fixed grid (shape: (Nz,))
-                        s    = ddL_dz_grid
+                       
                         
                         # Temperature (smaller => harder constraint). Keep as tensor, no Deterministic needed.
-                        nu   = at.as_tensor_variable(1e-5)
+                        nu   = at.as_tensor_variable(1e-15)
+                        k = 1.7/nu
+                        pm.Potential( "monotonicity", -at.sum(atools.softplus(-k * s_grid)) )
                         
-                        # Numerically safe probit argument
-                        x    = pm.math.clip(s / nu, -10.0, 10.0)
+                        # # Numerically safe probit argument
+                        # # s(z) = d dL / dz evaluated on your fixed grid (shape: (Nz,))
+                        # s    = ddL_dz_grid
+                        # x    = pm.math.clip(s / nu, -30.0, 30.0)
                         
-                        # Φ(x) = Normal CDF (a.k.a. probit link). pm.math.invprobit is stable and JAX-friendly.
-                        Phi  = pm.math.invprobit(x)
+                        # # Φ(x) = Normal CDF (a.k.a. probit link). pm.math.invprobit is stable and JAX-friendly.
+                        # Phi  = pm.math.invprobit(x)
                         
-                        # Observations: all 1s (means “s>0” everywhere on the grid”)
-                        obs  = at.ones_like(atools.zGridGlobals_at, dtype="int8") 
+                        # # Observations: all 1s (means “s>0” everywhere on the grid”)
+                        # obs  = at.ones_like(atools.zGridGlobals_at, dtype="int8") 
                         
-                        # Single vectorized Bernoulli RV (no Python loop)
-                        pm.Bernoulli("monotonicity", p=Phi, observed=obs)
+                        # # Single vectorized Bernoulli RV (no Python loop)
+                        # pm.Bernoulli("monotonicity", p=Phi, observed=obs)
 
 
  

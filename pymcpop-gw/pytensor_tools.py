@@ -737,9 +737,7 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=Non
     Z_nodes, gp, name="f", z_fine=z_grid_fine, reparameterize=True
 )
 
-        
-        #compute_gp_interp_dist_ratio( zGridGlobals_at, gp, name="f", **kwargs) 
-        
+                
         dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
 
         return dLGrid_at, log_distance_ratio, grad_log_distance_ratio
