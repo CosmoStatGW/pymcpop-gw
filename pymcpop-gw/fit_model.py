@@ -55,7 +55,7 @@ def main():
     parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
     
     
-    parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
+    parser.add_argument("--sampling_gw", default='gmm_cat', type=str, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='softplus', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
@@ -143,6 +143,8 @@ def main():
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
 
 
+    from scipy.special import ndtr, ndtri, erfinv
+    
     # Ensure correct device setup
     device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
     if FLAGS.chain_method == "parallel":
@@ -564,6 +566,33 @@ def main():
         
         with model:
 
+            ip = model.initial_point()
+            
+            N = gmm_means.shape[0]
+            nd = gmm_means.shape[2]
+
+            ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+
+
+            wts = onp.exp(gmm_log_wts)
+            idx = onp.argmax(wts, axis=1)
+            
+            if FLAGS.sampling_gw=='gmm_cat':
+                ip['idx'] = idx.astype(int)
+
+            elif FLAGS.sampling_gw=='gmm':
+                cdf = onp.cumsum(wts, axis=1)
+                
+                # pick v in the open interval [CDF_{i-1}, CDF_i)
+                lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                hi = cdf[onp.arange(len(idx)), idx]
+                v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                
+                # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                ip['u_gmm'] =  u_init
+
+
             if FLAGS.debug:
                 #print()
                 #print('*'*40)
@@ -582,7 +611,7 @@ def main():
                 #print('*'*40)
                 #print()
 
-                ip = model.initial_point()
+                
                 
                 try:
                     model.check_start_vals(ip)
