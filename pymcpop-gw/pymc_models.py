@@ -9,6 +9,7 @@ import pytensor.tensor as at
 import pytensor
 import pymc as pm
 import numpy as np
+from pytensor.gradient import disconnected_grad as stop_grad
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
@@ -308,14 +309,14 @@ def make_model(  priors,
     ## GW data
     if not pop_only:
         # gw data are interpolants of single-event posteriors
-        if sampling_GW=='gauss' :
+        if sampling_GW=='gauss':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
-        elif 'gmm' in sampling_GW:
+        elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
             # we sample single-event parameters from the actual single-event posteriors
             wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
         else:
-            raise ValueError('sampling_GW can be cho or gauss ')
+            raise ValueError('sampling_GW can be gmm, gmm_cat, gumbel,  gauss ')
             
         
 
@@ -885,43 +886,75 @@ def make_model(  priors,
             ################################################
     
             x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ) )
-                
-            if 'gmm' in sampling_GW:
-    
-                print('Sampling m1d, m2d, dL from GMM')
 
-                if sampling_GW=='gmm_cat':
-                    ###################################
-                    # categorical way
+
+            if 'gauss' not in sampling_GW:
+                
+                if 'gmm' in sampling_GW:
+        
+                    print('Sampling m1d, m2d, dL from GMM')
+    
+                    if sampling_GW=='gmm_cat':
+                        ###################################
+                        # categorical way
+                        
+                        ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
+    
+                    elif sampling_gw=='gmm':
+                        ###################################
+                        # continuous way
+        
+                        # ---------- 1) shared selector: hom vs cat AND galaxy index ----------
+                        u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
+                        v_gmm = at.clip(atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
+    
+                        # inverse-CDF over weights
+                        cdf_w = at.cumsum(wts_l, axis=1)                                          
+                        ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
+                    # old way. leave it here  please
+                    # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
                     
-                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
+                    # Select means and Cholesky factors per batch
+                    mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                    L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
+                     
+                    # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                    Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
 
+            
                 else:
-                    ###################################
-                    # continuous way
-    
-                    # ---------- 1) shared selector: hom vs cat AND galaxy index ----------
-                    u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
-                    v_gmm = at.clip(atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
-
-                    # inverse-CDF over weights
-                    cdf_w = at.cumsum(wts_l, axis=1)                                          
-                    ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
-
+                    print('Sampling m1d, m2d, dL from gumbel soft assignment')
+                    
+                    tau = 1e-05  # (note: if grads feel weak, raise to ~0.3–0.7)
+                    
+                    logits = at.log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
+                    g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
+                    y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
+                    
+                    # hard label for inspection (unchanged)
+                    ig = pm.Deterministic("idx", at.argmax(y_soft, axis=1), dims="event_index")  # (N,)
+                    
+                    # --- Straight-Through gate (hard forward, soft gradient) ---
+                    # get K from your tensors (N, K, D)
+                    K = mus_l.shape[1]
+                    topk = at.argmax((logits + g) / tau, axis=1)                                     # (N,)
+                    one_hot = at.eq(at.arange(K)[None, :], topk[:, None]).astype(y_soft.dtype)       # (N, K)
+                    s_soft_hard = stop_grad(one_hot - y_soft) + y_soft                         # (N, K)
+                    
+                    # --- Soft selection, but with ST gating in forward ---
+                    # mu_selected: (N, D)
+                    mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
+                    
+                    # L_selected: (N, D, D)
+                    L_selected = at.sum(cho_covs_l * s_soft_hard[:, :, None, None], axis=1)
+                    
+                    # Lx: (N, D)  [ (N,D,D) * (N,1,D) → (N,D,D); sum over last axis → (N,D) ]
+                    Lx = at.sum(L_selected * x[:, None, :], axis=2)
                 
-                # old way. leave it here  please
-                # samples = mus_l[ at.arange(N), ig, :] + at.batched_dot( cho_covs_l[at.arange(N), ig, :, :], x )
-                
-                # Select means and Cholesky factors per batch
-                mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-                L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-                 
-                # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
                 
                 # Final transformed sample
                 samples = mu_selected + Lx                # shape (N, D)
-
+    
                 
                 log_Mc_det = samples[:,0]/dil_factor
                 logit_q = samples[:,1]

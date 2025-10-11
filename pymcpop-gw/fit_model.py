@@ -433,7 +433,7 @@ def main():
             
     if not FLAGS.pop_only:  
     
-        if 'gmm' in FLAGS.sampling_gw:
+        if 'gmm' in FLAGS.sampling_gw or 'gumbel' in FLAGS.sampling_gw:
             GWData =  [
                        onp.exp(gmm_log_wts), 
                        gmm_means, 
@@ -592,7 +592,33 @@ def main():
                 u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
                 ip['u_gmm'] =  u_init
 
+            elif FLAGS.sampling_gw=='gumbel':
+                # inputs
+                w = wts                     # (N, K)
+                tau = 1e-05                                 # same tau you use in the model
+                eps = 1e-6                                # desired spillover mass
+                N, K = w.shape
+                
+                # logits and target index per row
+                logits = onp.log(onp.clip(w, 1e-12, 1.0))   # (N, K)
+                idx = onp.argmax(logits, axis=1)           # (N,)
+                
+                # required margin Δ so top prob ≥ 1 - eps:
+                # Δ >= tau * log((K-1)/eps)
+                Delta = tau * (onp.log(max(K-1, 1)) - onp.log(eps))
+                
+                # build g_init so (logits + g) gives the target argmax with margin Δ
+                g_init = onp.zeros_like(logits)
+                for n in range(N):
+                    k = idx[n]
+                    # best competing logit (exclude the winner)
+                    max_other = logits[n, np.arange(K) != k].max() if K > 1 else -onp.inf
+                    # ensure: logits[n,k] + g_init[n,k] >= max_other + Δ
+                    need = (max_other + Delta) - logits[n, k]
+                    g_init[n, k] = max(0.0, need)
 
+                ip['gumbel'] = g_init
+            
             if FLAGS.debug:
                 #print()
                 #print('*'*40)
