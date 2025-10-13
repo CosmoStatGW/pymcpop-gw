@@ -386,6 +386,23 @@ def meshgrid_at(x, y):
 
     return X.T, Y.T
 
+
+def atinterp(x, xs, ys, eps=1e-12, side="right"):
+
+    # was atinterp_safe_fast
+    
+    # Assume xs, ys are tensors; cast if needed outside for speed
+    idxs = at.searchsorted(xs, x, side=side)
+    # Clamp indices to valid interior [1, N-1]
+    idxs = at.clip(idxs, 1, xs.shape[0] - 1)
+
+    xl = xs[idxs - 1]; xh = xs[idxs]
+    yl = ys[idxs - 1]; yh = ys[idxs]
+
+    denom = at.maximum(xh - xl, eps)  # protect against accidental ties
+    r = (x - xl) / denom
+    return (1 - r) * yl + r * yh
+
 def atinterp_minimal(x, xs, ys):
 
   idxs = at.searchsorted(xs, x,  side='left', sorter=None)
@@ -400,10 +417,10 @@ def atinterp_minimal(x, xs, ys):
   return r*yh + (1.0-r)*yl;
 
 
-def atinterp(x, xs, ys, eps=1e-12, mode="clip"):
-    x  = at.as_tensor_variable(x)
-    xs = at.as_tensor_variable(xs)
-    ys = at.as_tensor_variable(ys)
+def atinterp_safe(x, xs, ys, eps=1e-12, mode="clip"):
+    # x  = at.as_tensor_variable(x)
+    # xs = at.as_tensor_variable(xs)
+    # ys = at.as_tensor_variable(ys)
 
     x0, x1 = xs[0], xs[-1]
     if mode == "clip":

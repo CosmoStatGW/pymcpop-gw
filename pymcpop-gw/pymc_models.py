@@ -189,7 +189,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     if dL_grid is None:
         zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp  )
     else:
-        print('Inverting with batched version for injections')
+        print('Inverting with interpolation of pre-computed grid for injections')
         if z_grid is None:
             raise ValueError('Pass z grid if passing pre-computed dL grid')
         #zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
@@ -901,7 +901,7 @@ def make_model(  priors,
                         
                         ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
     
-                    elif sampling_gw=='gmm':
+                    elif sampling_GW=='gmm':
                         ###################################
                         # continuous way
         
@@ -921,10 +921,10 @@ def make_model(  priors,
 
             
                 else:
-                    print('Sampling m1d, m2d, dL from gumbel soft assignment')
+                    print('Sampling m1d, m2d, dL from gumbel soft assignment, tau=0.5')
                     
-                    tau = 1e-05  # (note: if grads feel weak, raise to ~0.3–0.7)
-                    
+                    #tau = pm.MutableData("tau_gmm", 0.5)  # (note: if grads feel weak, raise to ~0.3–0.7)
+                    tau=0.5
                     logits = at.log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
                     g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
                     y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
@@ -938,7 +938,7 @@ def make_model(  priors,
                     topk = at.argmax((logits + g) / tau, axis=1)                                     # (N,)
                     one_hot = at.eq(at.arange(K)[None, :], topk[:, None]).astype(y_soft.dtype)       # (N, K)
                     s_soft_hard = stop_grad(one_hot - y_soft) + y_soft                         # (N, K)
-                    
+
                     # --- Soft selection, but with ST gating in forward ---
                     # mu_selected: (N, D)
                     mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
@@ -1189,7 +1189,7 @@ def make_model(  priors,
             print("Will marginalise over R0 with flat-in-log prior.")
 
         
-        likelihood = pm.Deterministic("lik", likelihood_val )
+        likelihood = likelihood_val #pm.Deterministic("lik", likelihood_val )
         _ = pm.Potential("likelihood", likelihood ) 
 
 
@@ -1318,7 +1318,7 @@ def make_model(  priors,
 
             if ((Neff_min==0) and (log_lik_var_min==0)):
                 print("No condition on number of effective points in MC integral for sel. effect")
-                selection_bias =  pm.Deterministic("sel_bias", sel_effect )
+                selection_bias =  sel_effect #pm.Deterministic("sel_bias", sel_effect )
             else:
                 if log_lik_var_min==0:
 
@@ -1329,14 +1329,14 @@ def make_model(  priors,
                         # smooth with sigmoid between Neff_min and Neff_min+1 x Nobs
                         # over a scale = Neff_min
                         # i.e. at Neff_min * Nobs the likelihood becomes smoothly -inf
-                        selection_bias = pm.Deterministic("sel_bias", atools.log_sigmoid(Neff, Neff_min*(N+1),  Neff_min)+sel_effect )
+                        selection_bias = atools.log_sigmoid(Neff, Neff_min*(N+1),  Neff_min)+sel_effect  #pm.Deterministic("sel_bias", atools.log_sigmoid(Neff, Neff_min*(N+1),  Neff_min)+sel_effect )
                     elif sel_smoothing=='poly':
                         # Polynomial smoothing
-                        selection_bias = pm.Deterministic("sel_bias", atools.log_f_smooth_poly(Neff, N/2,  Neff_min*N-N/4)+sel_effect ) 
+                        selection_bias =  atools.log_f_smooth_poly(Neff, N/2,  Neff_min*N-N/4)+sel_effect #pm.Deterministic("sel_bias", atools.log_f_smooth_poly(Neff, N/2,  Neff_min*N-N/4)+sel_effect ) 
                     else:
                         # Hard cut
                         
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)                   
+                        selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)                   
                         #ind_sw_sel = pm.Deterministic('ind_sel', 1. * (Neff<Neff_min*N ) )
                         #ind_sel = pm.Bernoulli('bound_Neff', ind_sw_sel, observed=np.zeros(1)  )
                         _ = pm.Potential("bound_Neff", at.switch(Neff >= Neff_min * N, 0.0, -np.inf))
@@ -1351,12 +1351,12 @@ def make_model(  priors,
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
                         
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 ))
-                                                          )
+                        selection_bias = sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 )) 
+                        #pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 )))
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))   
-                                                         )      
+                        selection_bias = sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))  
+                        #pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))   )      
                     elif sel_smoothing=='softplus':
                         print("Tapering sel effect with softplus")
                         # Slack (how sharp the corner is) and weight (penalty strength)
@@ -1366,14 +1366,14 @@ def make_model(  priors,
                         excess  = (log_lik_var - log_lik_var_min) / nu
                         penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
 
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)
+                        selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
                         
                         # If log_lik_var is a vector, sum to get a scalar penalty:
                         pm.Potential("bound_log_lik_var", -at.sum(penalty))
                     else:
                         print("Tapering sel effect with hard cut")
 
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)
+                        selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
                         # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
                         # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
                         _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf))

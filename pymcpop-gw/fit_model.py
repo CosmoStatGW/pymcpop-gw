@@ -138,7 +138,6 @@ def main():
     
     import jax
     import jax.numpy as np
-    import numpy as onp
     jax.config.update("jax_enable_x64", True)
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
 
