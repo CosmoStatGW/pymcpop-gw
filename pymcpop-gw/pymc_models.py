@@ -209,7 +209,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
 
     log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
 
-    if 'DP' in mass_model:
+    if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
 
@@ -249,7 +249,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw-1)
 
     Neff = at.exp(logNeff)
     
@@ -1383,9 +1383,15 @@ def make_model(  priors,
 
             if marginal_R0:
                 if include_sel_uncertainty:
-                    print("Including selection function uncertainty as in Farr 2019s")
+                    
+                    
                     # from Farr 2019
-                    sel_uncertainty = (3*N+N**2)/(2*Neff)
+                    # print("Including selection function uncertainty as in Farr 2019")
+                    #sel_uncertainty = (3*N+N**2)/(2*Neff)
+
+                    # from heinzel-Vitale 2025
+                    print("Including selection function uncertainty as in Heinzel-Vitale 2025")
+                    sel_uncertainty = - N*(N+1)/(2) * var_ll_u_
                     
                     _ = pm.Potential('selection_uncertainty', sel_uncertainty)
             

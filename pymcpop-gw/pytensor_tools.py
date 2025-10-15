@@ -1458,29 +1458,17 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
 
     '''
-     
-            
-    # lower edge
-    #ms1 = at.linspace(ml, 15, res)
-    
-    # before gaussian peak
-    #ms2 = at.linspace( 15.1, 25, res )
-    
-    # around gaussian peak
-    #ms3= at.linspace( 25.1, 40, res)
-    
-    # after gaussian peak
-    #ms4 = at.linspace(40.1, mh, int(res/2) )
-    
-    #ms=at.concatenate([ms1,ms2, ms3, ms4] )
-    #ms = at.linspace(ml, mh, res)
+
 
     _tgrid = _get_t_grid()
     ms = ml + (mh - ml) * _tgrid 
     
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  ))
-    return at.log(attrapzvec(ps,ms))
 
+    return  at.log( attrapzvec(ps, ms) )
+
+
+            
 
 
 ####### double Power Law + double Peak  LVK low-end ########
