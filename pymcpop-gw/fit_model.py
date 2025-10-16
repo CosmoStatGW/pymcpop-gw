@@ -15,8 +15,11 @@ os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all proce
 import argparse
 import json
 import sys
+import warnings
 
-import numpy as onp
+from tqdm import tqdm 
+from tqdm.auto import tqdm
+import time
 
 import arviz as az
 import matplotlib.pyplot as plt
@@ -49,12 +52,10 @@ def main():
     
     
     parser.add_argument("--dLprior", default='none', type=str, required=False)
-    parser.add_argument("--spinprior", default=0, type=int, required=False)
-    parser.add_argument("--massprior", default=0, type=int, required=False)
     parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
     
     
-    parser.add_argument("--sampling_gw", default='gmm', type=str, required=False)
+    parser.add_argument("--sampling_gw", default='gmm_cat', type=str, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
@@ -70,12 +71,12 @@ def main():
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
     
+    
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
-    parser.add_argument("--transform_samples", default=1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='softplus', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
@@ -95,6 +96,8 @@ def main():
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
+    parser.add_argument("--pade", default=0, type=int, required=False)
+    parser.add_argument("--zres", default='low', type=str, required=False)
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
@@ -135,11 +138,12 @@ def main():
     
     import jax
     import jax.numpy as np
-
     jax.config.update("jax_enable_x64", True)
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
 
 
+    from scipy.special import ndtr, ndtri, erfinv
+    
     # Ensure correct device setup
     device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
     if FLAGS.chain_method == "parallel":
@@ -154,7 +158,7 @@ def main():
     # ----------------------------------------------------
     import pymc as pm
     import pytensor
-    import pytensor.tensor as at
+    #import pytensor.tensor as at
     import arviz as az
     import numpy as onp
     import matplotlib.pyplot as plt
@@ -164,6 +168,7 @@ def main():
     import pymc_models as models
     import data_tools as dt
     import pytensor_tools as atools
+    import pytensor_utils as autils
     
     pytensor.config.floatX = "float64"
     
@@ -186,7 +191,7 @@ def main():
     
 
     logfile = os.path.join(FLAGS.fout, 'logfile.txt')
-    myLog = dt.Logger(logfile)
+    myLog = autils.Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
 
@@ -228,35 +233,60 @@ def main():
 
         data = dt.load_data_interp(FLAGS.fin_data)
 
-        samples_means_at = at.as_tensor_variable(data['samples_means'])
-        samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
+        # samples_means_at = at.as_tensor_variable(data['samples_means'])
+        # samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
     
-        gmm_log_wts = at.as_tensor_variable(data['gmm_log_wts'])
-        gmm_means = at.as_tensor_variable(data['gmm_means'])
-        gmm_icovs = at.as_tensor_variable(data['gmm_icovs'])
-        gmm_cho_covs = at.as_tensor_variable(data['gmm_cho_covs'])
-        gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
-        allNgm = at.as_tensor_variable(data['allNgm'])
-        Nevents = at.as_tensor_variable(data['Nevents'])
+        # gmm_log_wts = at.as_tensor_variable(data['gmm_log_wts'])
+        # gmm_means = at.as_tensor_variable(data['gmm_means'])
+        # gmm_icovs = at.as_tensor_variable(data['gmm_icovs'])
+        # gmm_cho_covs = at.as_tensor_variable(data['gmm_cho_covs'])
+        # gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
+        # allNgm = at.as_tensor_variable(data['allNgm'])
+        # Nevents = at.as_tensor_variable(data['Nevents'])
+
+        samples_means_at = data['samples_means']
+        samples_cho_covs_at = data['samples_cho_covs']*FLAGS.cho_dil
+    
+        gmm_log_wts = data['gmm_log_wts']
+        gmm_means = data['gmm_means']
+        gmm_icovs =  data['gmm_icovs']
+        gmm_cho_covs =  data['gmm_cho_covs']
+        gmm_log_dets =  data['gmm_log_dets']
+        allNgm =  data['allNgm']
+        Nevents =  data['Nevents']
+
+    
 
     else:
         print("Using n max samples = %s"%FLAGS.nsamplesmax)
         data = dt.load_data_samples(FLAGS.fin_data, nmax=FLAGS.nsamplesmax)
 
-        m1d_samples = at.as_tensor_variable(data['m1d_samples'])
-        m2d_samples = at.as_tensor_variable(data['m2d_samples'])
-        dL_samples = at.as_tensor_variable(data['dL_samples'])
+        # m1d_samples = at.as_tensor_variable(data['m1d_samples'])
+        # m2d_samples = at.as_tensor_variable(data['m2d_samples'])
+        # dL_samples = at.as_tensor_variable(data['dL_samples'])
+        # print("dL_samples shape is %s"%(str(dL_samples.shape)))
+
+        # allNsamples = at.as_tensor_variable(data['allNsamples'])
+        # where_compute = at.as_tensor_variable(data['where_compute'])
+
+        m1d_samples = data['m1d_samples']
+        m2d_samples =  data['m2d_samples']
+        dL_samples =  data['dL_samples']
         print("dL_samples shape is %s"%(str(dL_samples.shape)))
 
-        allNsamples = at.as_tensor_variable(data['allNsamples'])
-        where_compute = at.as_tensor_variable(data['where_compute'])
+        allNsamples =  data['allNsamples']
+        where_compute = data['where_compute']
 
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
-            chi1_samples = at.as_tensor_variable(data['chi1_samples'])
-            chi2_samples = at.as_tensor_variable(data['chi2_samples'])
-            cost1_samples = at.as_tensor_variable(data['cost1_samples'])
-            cost2_samples = at.as_tensor_variable(data['cost2_samples'])
+            # chi1_samples = at.as_tensor_variable(data['chi1_samples'])
+            # chi2_samples = at.as_tensor_variable(data['chi2_samples'])
+            # cost1_samples = at.as_tensor_variable(data['cost1_samples'])
+            # cost2_samples = at.as_tensor_variable(data['cost2_samples'])
+            chi1_samples =  data['chi1_samples']
+            chi2_samples =  data['chi2_samples']
+            cost1_samples =  data['cost1_samples']
+            cost2_samples =  data['cost2_samples']
 
             spin_samples = [ chi1_samples, chi2_samples, cost1_samples, cost2_samples ]
 
@@ -284,24 +314,40 @@ def main():
 
 
     if FLAGS.spin_model=='none':
-        InjData = [ at.as_tensor_variable(injections['dL']), 
-                at.as_tensor_variable(injections['m1d']), 
-                at.as_tensor_variable(injections['m2d']), 
-                at.as_tensor_variable(injections['log_wt']), 
-                at.as_tensor_variable(injections['Ngen']), 
-                at.as_tensor_variable(injections['Ndet']), 
+        # InjData = [ at.as_tensor_variable(injections['dL']), 
+        #         at.as_tensor_variable(injections['m1d']), 
+        #         at.as_tensor_variable(injections['m2d']), 
+        #         at.as_tensor_variable(injections['log_wt']), 
+        #         at.as_tensor_variable(injections['Ngen']), 
+        #         at.as_tensor_variable(injections['Ndet']), 
+        #           ]
+        InjData = [ injections['dL'], 
+                injections['m1d'], 
+                injections['m2d'], 
+                 injections['log_wt'], 
+                 injections['Ngen'], 
+                 injections['Ndet'], 
                   ]
     else:
         
         if FLAGS.spin_inj=='chieffchip':
-            InjData = [ at.as_tensor_variable(injections['dL']), 
-                at.as_tensor_variable(injections['m1d']), 
-                at.as_tensor_variable(injections['m2d']), 
-                at.as_tensor_variable(injections['chieff']), 
-                at.as_tensor_variable(injections['chip']), 
-                at.as_tensor_variable(injections['log_wt']), 
-                at.as_tensor_variable(injections['Ngen']), 
-                at.as_tensor_variable(injections['Ndet']), 
+            # InjData = [ at.as_tensor_variable(injections['dL']), 
+            #     at.as_tensor_variable(injections['m1d']), 
+            #     at.as_tensor_variable(injections['m2d']), 
+            #     at.as_tensor_variable(injections['chieff']), 
+            #     at.as_tensor_variable(injections['chip']), 
+            #     at.as_tensor_variable(injections['log_wt']), 
+            #     at.as_tensor_variable(injections['Ngen']), 
+            #     at.as_tensor_variable(injections['Ndet']), 
+            #       ]
+            InjData = [ injections['dL'], 
+                 injections['m1d'], 
+                 injections['m2d'], 
+                 injections['chieff'], 
+                 injections['chip'], 
+                 injections['log_wt'], 
+                 injections['Ngen'], 
+                injections['Ndet'], 
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
 
@@ -315,54 +361,83 @@ def main():
                 cost1Inj = injections['spin1z']/chi1Inj
                 cost2Inj = injections['spin2z']/chi2Inj
                 
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(chi1Inj), 
-                    at.as_tensor_variable(chi2Inj),
-                    at.as_tensor_variable(cost1Inj),
-                    at.as_tensor_variable(cost2Inj),
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(chi1Inj), 
+                #     at.as_tensor_variable(chi2Inj),
+                #     at.as_tensor_variable(cost1Inj),
+                #     at.as_tensor_variable(cost2Inj),
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                     injections['m1d'], 
+                     injections['m2d'], 
+                     chi1Inj, 
+                     chi2Inj,
+                     cost1Inj,
+                     cost2Inj,
+                     injections['log_wt'], 
+                     injections['Ngen'], 
+                     injections['Ndet'], 
                       ]
 
             elif FLAGS.spin_model=='none':
 
                 print("Injections data has spins but those will not be used !")
     
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                    injections['m1d'], 
+                    injections['m2d'], 
+                    injections['log_wt'], 
+                    injections['Ngen'], 
+                    injections['Ndet'], 
                       ]
                 
         elif FLAGS.spin_inj=='default':
 
-                InjData = [ at.as_tensor_variable(injections['dL']), 
-                    at.as_tensor_variable(injections['m1d']), 
-                    at.as_tensor_variable(injections['m2d']), 
-                    at.as_tensor_variable(injections['chi1']), 
-                    at.as_tensor_variable(injections['chi2']),
-                    at.as_tensor_variable(injections['cost1']),
-                    at.as_tensor_variable(injections['cost2']),
-                    at.as_tensor_variable(injections['log_wt']), 
-                    at.as_tensor_variable(injections['Ngen']), 
-                    at.as_tensor_variable(injections['Ndet']), 
+                # InjData = [ at.as_tensor_variable(injections['dL']), 
+                #     at.as_tensor_variable(injections['m1d']), 
+                #     at.as_tensor_variable(injections['m2d']), 
+                #     at.as_tensor_variable(injections['chi1']), 
+                #     at.as_tensor_variable(injections['chi2']),
+                #     at.as_tensor_variable(injections['cost1']),
+                #     at.as_tensor_variable(injections['cost2']),
+                #     at.as_tensor_variable(injections['log_wt']), 
+                #     at.as_tensor_variable(injections['Ngen']), 
+                #     at.as_tensor_variable(injections['Ndet']), 
+                #       ]
+                InjData = [ injections['dL'], 
+                     injections['m1d'], 
+                     injections['m2d'], 
+                     injections['chi1'], 
+                     injections['chi2'],
+                     injections['cost1'],
+                     injections['cost2'],
+                    injections['log_wt'], 
+                     injections['Ngen'], 
+                     injections['Ndet'], 
                       ]
 
     
             
     if not FLAGS.pop_only:  
     
-        if 'gmm' in FLAGS.sampling_gw:
+        if 'gmm' in FLAGS.sampling_gw or 'gumbel' in FLAGS.sampling_gw:
             GWData =  [
-                       at.exp(gmm_log_wts), 
+                       onp.exp(gmm_log_wts), 
                        gmm_means, 
                        gmm_cho_covs, 
-                       at.as_tensor_variable(injections['Tobs']),
+                       injections['Tobs'],
                         Nevents
                       ]
         elif FLAGS.sampling_gw=='gauss':
@@ -372,14 +447,14 @@ def main():
                        gmm_means, 
                        gmm_icovs, 
                        gmm_log_dets, 
-                       at.as_tensor_variable(injections['Tobs']),
+                       injections['Tobs'],
                        Nevents, 
                       ]
             
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
-                       at.as_tensor_variable(injections['Tobs']), allNsamples, where_compute ]
+                     injections['Tobs'], allNsamples, where_compute ]
         
         
     print("Done.")
@@ -429,6 +504,8 @@ def main():
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
+                                    zres = FLAGS.zres,
+                                    pade=FLAGS.pade,
                                     Neff_min=FLAGS.min_Neff,
                                     Neff_min_lik = FLAGS.Neff_min_lik,
                                     log_lik_var_min = FLAGS.log_lik_var_min,
@@ -436,7 +513,6 @@ def main():
                                     pop_only = FLAGS.pop_only,
                                     N_successes_l = N_successes_l,
                                     Nsamplesuse = FLAGS.Nsamplesuse,
-                                    transform_samples = FLAGS.transform_samples,
                                     include_sel_uncertainty = FLAGS.sel_uncertainty,
                                     sel_smoothing = FLAGS.sel_smoothing,
                                     alpha_beta_prior = FLAGS.alpha_beta_prior,
@@ -489,25 +565,78 @@ def main():
         
         with model:
 
+            ip = model.initial_point()
+            
+            N = gmm_means.shape[0]
+            nd = gmm_means.shape[2]
+
+            ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+
+
+            wts = onp.exp(gmm_log_wts)
+            idx = onp.argmax(wts, axis=1)
+            
+            if FLAGS.sampling_gw=='gmm_cat':
+                ip['idx'] = idx.astype(int)
+
+            elif FLAGS.sampling_gw=='gmm':
+                cdf = onp.cumsum(wts, axis=1)
+                
+                # pick v in the open interval [CDF_{i-1}, CDF_i)
+                lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                hi = cdf[onp.arange(len(idx)), idx]
+                v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                
+                # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                ip['u_gmm'] =  u_init
+
+            elif FLAGS.sampling_gw=='gumbel':
+                # inputs
+                w = wts                     # (N, K)
+                tau = 1e-05                                 # same tau you use in the model
+                eps = 1e-6                                # desired spillover mass
+                N, K = w.shape
+                
+                # logits and target index per row
+                logits = onp.log(onp.clip(w, 1e-12, 1.0))   # (N, K)
+                idx = onp.argmax(logits, axis=1)           # (N,)
+                
+                # required margin Δ so top prob ≥ 1 - eps:
+                # Δ >= tau * log((K-1)/eps)
+                Delta = tau * (onp.log(max(K-1, 1)) - onp.log(eps))
+                
+                # build g_init so (logits + g) gives the target argmax with margin Δ
+                g_init = onp.zeros_like(logits)
+                for n in range(N):
+                    k = idx[n]
+                    # best competing logit (exclude the winner)
+                    max_other = logits[n, np.arange(K) != k].max() if K > 1 else -onp.inf
+                    # ensure: logits[n,k] + g_init[n,k] >= max_other + Δ
+                    need = (max_other + Delta) - logits[n, k]
+                    g_init[n, k] = max(0.0, need)
+
+                ip['gumbel'] = g_init
+            
             if FLAGS.debug:
-                print()
-                print('*'*80)
+                #print()
+                #print('*'*40)
                 print('Debugging...')
-                print('*'*80)
-                print()
+                #print('*'*40)
+                #print()
         
                 model.debug()
 
-                print('\nDone. ')
+                print('Done. ')
 
             if FLAGS.check_init:
-                print()
-                print('*'*80)
-                print('Check initial point...')
-                print('*'*80)
-                print()
+                #print()
+                #print('*'*40)
+                print('Checking initial point...')
+                #print('*'*40)
+                #print()
 
-                ip = model.initial_point()
+                
                 
                 try:
                     model.check_start_vals(ip)
@@ -519,8 +648,6 @@ def main():
                 except Exception as e:
                     print("Start invalid ❌:", e)
                     
-                
-                
                     print('Initial values:')
                     print(ip)
                     
@@ -645,6 +772,8 @@ def main():
                     vals = f_parts(trial)
                     bad = [i for i, v in enumerate(vals) if not onp.isfinite(onp.asarray(v)).all()]
                     print("bad term indices:", bad)
+                    
+                    raise ValueError()
                 
                 print('Done. ')
 
@@ -691,18 +820,54 @@ def main():
                     },
                 })
             else:
-                sampler = "pymc"
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
 
             print("\nModel variables:")
             # Print only the names of variables that are sampled
             print([v.name for v in model.free_RVs])
-            
-            print('\nSampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
-            trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
 
-            
+            print()
+            print('*'*80)
+            print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
+            print('*'*80)
+            print()
+
+            if FLAGS.sampler == 'pymc_bar':
+                pytensor.config.exception_verbosity = 'high'
+
+          
+                
+                # progress bar
+                #with tqdm(total=(FLAGS.nsteps + FLAGS.ntune)* FLAGS.nchains) as pbar:
+                with tqdm(
+                            total=(FLAGS.nsteps + FLAGS.ntune)* FLAGS.nchains,
+                            desc="Sampling",
+                            dynamic_ncols=True,      # auto width like PyMC
+                            smoothing=0.3,           # smoother it/s
+                            mininterval=0.1,         # refresh rate
+                            leave=True,
+                            bar_format=(
+                                "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, "
+                                "{rate_fmt}{postfix}]"
+                            ),
+                        ) as pbar:
+                    
+                    
+                    #def callback(trace, draw):
+                    #    pbar.update(1)
+                                
+                    cb = autils.make_tqdm_callback(pbar)
+                    trace = pm.sample(nuts_sampler='pymc', **sampler_kwargs,
+                                      callback=cb,
+                                      
+                                     )
+
+            else:
+                
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+
+            print('\nDone.')
         
         
     
