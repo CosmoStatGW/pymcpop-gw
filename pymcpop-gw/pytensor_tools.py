@@ -818,16 +818,10 @@ def Efun_at(z, Om, w0):
 
 
 
-<<<<<<< HEAD
-def z_from_dL_at( r, H0, Om, w0, Xi0, n ):
-    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )
-    #print('dLGrid_at',dLGrid_at.shape.eval())
-    print('dL max',r.max().eval())
-=======
+
 
 def z_from_dL_at( r, H0, Om, w0, Xi0, n , interp=False):
     dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n , interp=interp)
->>>>>>> 94f0894337ff17c2f6fc0798301f5dc6a74652a8
     z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
     return z2dL 
 
