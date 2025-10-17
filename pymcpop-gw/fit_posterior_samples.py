@@ -38,6 +38,7 @@ sys.path.append(MGCpath)
 from dataStructures.O1O2data import O1O2Data
 from dataStructures.O3adata import O3aData
 from dataStructures.O3bdata import O3bData
+from dataStructures.O4adata import O4aData
 from dataStructures.mockData import GWMockData
 
 
@@ -823,6 +824,7 @@ parser.add_argument("--n_gmm_min", default=1, type=int, required=False)
 parser.add_argument("--n_gmm_max", default=10, type=int, required=False)
 parser.add_argument("--fin_data", default='', type=str, required=True)
 parser.add_argument("--fnames", nargs='+', type=str, required=True)
+parser.add_argument("--metadata", nargs='+', type=str, required=True)
 parser.add_argument("--fout", default='GWTC-fits', type=str, required=False)
 parser.add_argument("--ps_prior", default='nocosmo', type=str, required=False)
 parser.add_argument("--plot", default=1, type=int, required=False)
@@ -854,7 +856,7 @@ if __name__=='__main__':
     
             #######################################################################################
 
-    for run_name in FLAGS.fnames:
+    for ir, run_name in enumerate(FLAGS.fnames):
     
         fname_ = os.path.join(FLAGS.fin_data, run_name)
         print()
@@ -865,7 +867,7 @@ if __name__=='__main__':
 
         if run_name == 'O1O2':
     
-            data = O1O2Data(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins=FLAGS.spins )
+            data = O1O2Data(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins=FLAGS.spins, metadata = FLAGS.metadata[ir] )
         
         elif run_name == 'O3a':
             
@@ -878,7 +880,8 @@ if __name__=='__main__':
                            GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
               which_spins=FLAGS.spins,
-              suffix_name=FLAGS.ps_prior
+              suffix_name=FLAGS.ps_prior,
+                           metadata = FLAGS.metadata[ir]
              )
         
         elif run_name == 'O3b':
@@ -892,9 +895,23 @@ if __name__=='__main__':
               #GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
               which_spins=FLAGS.spins,
-              suffix_name=FLAGS.ps_prior
+              suffix_name=FLAGS.ps_prior,
+                           metadata = FLAGS.metadata[ir]
              )
 
+        elif run_name == 'O4a':
+            events_names = {'not_use': ['GW230518_125908','GW230529_181500'], 
+                        'use':None }
+            
+            data = O4aData(fname_, 
+              events_use=events_names, 
+                SNR_th=FLAGS.snr_th, 
+                FAR_th=FLAGS.far_th,
+              which_spins=FLAGS.spins,
+              #suffix_name=FLAGS.ps_prior,
+                           metadata = FLAGS.metadata[ir]
+             )
+            
         else:
             # We are using simulated data 
             data = GWMockData( fname_, 
@@ -913,7 +930,7 @@ if __name__=='__main__':
                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s/skymap-%s/inclination-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins, FLAGS.skymap, FLAGS.inclination),
                 ]
         
-        if run_name in ('O3a', 'O3b'):
+        if run_name in ('O3a', 'O3b', 'O4a'):
             flist+= ['%s/%s/snrth-%s_farth-%s/dil_factor-%s/%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.ps_prior) , ]
     
         for p in flist:
