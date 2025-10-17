@@ -899,7 +899,7 @@ if __name__=='__main__':
                            metadata = FLAGS.metadata[ir]
              )
 
-        elif run_name == 'O4a' or run_name=='pe_samples':
+        elif run_name == 'O4a' or run_name=='pe_files':
             
             events_names = {'not_use': ['GW230518_125908','GW230529_181500'], 
                         'use':None }
@@ -922,9 +922,9 @@ if __name__=='__main__':
                              )
 
 
-        if ps_prior=='nocosmo' and run_name in ('O4a', 'pe_samples' ):
+        if FLAGS.ps_prior=='nocosmo' and run_name in ('O4a', 'pe_files' ):
             print("setting ps_prior = cosmo for O4a")
-            ps_prior = 'cosmo'
+            FLAGS.ps_prior = 'cosmo'
         
         flist = ['%s'%(FLAGS.fout), 
                   '%s/%s/'%(FLAGS.fout, run_name),
@@ -933,7 +933,7 @@ if __name__=='__main__':
 
         base_str = '%s/%s/snrth-%s_farth-%s/dil_factor-%s/'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)
         
-        if run_name in ('O3a', 'O3b', 'O4a',  'pe_samples'):
+        if run_name in ('O3a', 'O3b', 'O4a',  'pe_files'):
 
             flist+= ['%s/%s/snrth-%s_farth-%s/dil_factor-%s/%s/'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.ps_prior) ]
 
