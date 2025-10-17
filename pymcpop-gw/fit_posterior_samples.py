@@ -899,7 +899,8 @@ if __name__=='__main__':
                            metadata = FLAGS.metadata[ir]
              )
 
-        elif run_name == 'O4a':
+        elif run_name == 'O4a' or run_name=='pe_samples':
+            
             events_names = {'not_use': ['GW230518_125908','GW230529_181500'], 
                         'use':None }
             
@@ -919,19 +920,31 @@ if __name__=='__main__':
                                 which_spins=FLAGS.spins,
                                 inclination=FLAGS.inclination
                              )
-            
+
+
+        if ps_prior=='nocosmo' and run_name in ('O4a', 'pe_samples' ):
+            print("setting ps_prior = cosmo for O4a")
+            ps_prior = 'cosmo'
         
         flist = ['%s'%(FLAGS.fout), 
                   '%s/%s/'%(FLAGS.fout, run_name),
                   '%s/%s/snrth-%s_farth-%s/'%(FLAGS.fout,  run_name, int(FLAGS.snr_th), int(FLAGS.far_th), ),
-                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor),
-                '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins),
-                 '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s/skymap-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins, FLAGS.skymap),
-                 '%s/%s/snrth-%s_farth-%s/dil_factor-%s/spin-%s/skymap-%s/inclination-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.spins, FLAGS.skymap, FLAGS.inclination),
+                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)]
+
+        base_str = '%s/%s/snrth-%s_farth-%s/dil_factor-%s/'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)
+        
+        if run_name in ('O3a', 'O3b', 'O4a',  'pe_samples'):
+
+            flist+= ['%s/%s/snrth-%s_farth-%s/dil_factor-%s/%s/'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.ps_prior) ]
+
+            base_str += '/%s/'%FLAGS.ps_prior
+
+        flist+=[
+                base_str+'/spin-%s'%(FLAGS.spins),
+                 base_str+'/spin-%s/skymap-%s'%(FLAGS.spins, FLAGS.skymap),
+                 base_str+'/spin-%s/skymap-%s/inclination-%s'%(FLAGS.spins, FLAGS.skymap, FLAGS.inclination),
                 ]
         
-        if run_name in ('O3a', 'O3b', 'O4a'):
-            flist+= ['%s/%s/snrth-%s_farth-%s/dil_factor-%s/%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor, FLAGS.ps_prior) , ]
     
         for p in flist:
 
