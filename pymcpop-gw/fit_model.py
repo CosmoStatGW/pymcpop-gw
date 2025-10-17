@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='softplus', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)

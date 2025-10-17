@@ -1362,22 +1362,22 @@ def make_model(  priors,
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
                         
-                        selection_bias = sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 )) 
-                        #pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.02), 0.01 )))
+                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
+)
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
-                        selection_bias = sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))  
-                        #pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.05) ))   )      
+                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
+ 
                     elif sel_smoothing=='softplus':
                         print("Tapering sel effect with softplus")
                         # Slack (how sharp the corner is) and weight (penalty strength)
-                        nu = at.as_tensor_variable(0.01)     # smaller = sharper transition
+                        nu = at.as_tensor_variable(0.001)     # smaller = sharper transition
                         lam = at.as_tensor_variable(1e3)     # larger = stronger penalty
                         
                         excess  = (log_lik_var - log_lik_var_min) / nu
                         penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
 
-                        selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
+                        selection_bias = sel_effect 
                         
                         # If log_lik_var is a vector, sum to get a scalar penalty:
                         pm.Potential("bound_log_lik_var", -at.sum(penalty))
