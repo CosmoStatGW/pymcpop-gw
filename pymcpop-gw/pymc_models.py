@@ -1354,7 +1354,7 @@ def make_model(  priors,
                         print("Tapering sel effect with sigmoid smoothing")
                         
                         selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
-)
+
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
                         selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  

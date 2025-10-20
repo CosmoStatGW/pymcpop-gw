@@ -403,7 +403,7 @@ def main():
                     injections['Ndet'], 
                       ]
                 
-        elif FLAGS.spin_inj=='default':
+        elif FLAGS.spin_inj=='default' or FLAGS.spin_inj=='default_gauss':
 
                 # InjData = [ at.as_tensor_variable(injections['dL']), 
                 #     at.as_tensor_variable(injections['m1d']), 
@@ -427,6 +427,8 @@ def main():
                      injections['Ngen'], 
                      injections['Ndet'], 
                       ]
+        else:
+            raise ValueError('Enter valid spin model.')
 
     
             
