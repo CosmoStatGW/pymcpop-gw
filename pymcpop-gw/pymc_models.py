@@ -632,15 +632,15 @@ def make_model(  priors,
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
             if has_m2_break:
                 print("Including gap for secondary mass")
-                m_g_     = at.as_tensor_variable(45.).astype('float64')
-                w_g_     = at.as_tensor_variable(70.).astype('float64')
-                sig_g_l_ = at.as_tensor_variable(1e-04)
-                sig_g_h_ = at.as_tensor_variable(1e-04)
+                m_g_     =  pm.Uniform("m_g", lower=priors["m_g"][0], upper=priors["m_g"][1], initval=ivals.get("m_g")) 
+                w_g_     = pm.Uniform("w_g", lower=priors["w_g"][0], upper=priors["w_g"][1], initval=ivals.get("w_g")) 
+                sig_g_l_ = at.as_tensor_variable(1e-02)
+                sig_g_h_ = at.as_tensor_variable(1e-02)
             else:
                 m_g_     = at.as_tensor_variable(45.).astype('float64')
                 w_g_     = at.as_tensor_variable(70.).astype('float64')
-                sig_g_l_ = at.as_tensor_variable(1e-04)
-                sig_g_h_ = at.as_tensor_variable(1e-04)
+                sig_g_l_ = at.as_tensor_variable(1e-02)
+                sig_g_h_ = at.as_tensor_variable(1e-02)
             
             Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
@@ -1121,7 +1121,7 @@ def make_model(  priors,
             print('Removing dL^2 prior')
         elif dLprior == 'dVdz':
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=dc )-at.log1p(zs)
+            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, -1., dc=None )-at.log1p(zs)
 
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2

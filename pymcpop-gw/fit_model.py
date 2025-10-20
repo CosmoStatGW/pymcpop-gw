@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--eps_init", default=0.01, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=1, type=int, required=False)
-    parser.add_argument("--debug", default=1, type=int, required=False)
+    parser.add_argument("--debug", default=0, type=int, required=False)
     
     
     parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
