@@ -194,18 +194,9 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lamb
         #zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
         zinj = atools.atinterp(dLinj, dL_grid, z_grid)
     
-    print('\n\n')
-    print('sel bias with uncertainty')
-    print('m1inj max',m1inj.eval().max())
-    print('m1inj min',m1inj.eval().min())
-    print('zinj max',zinj.eval().max())
-    print('zinj min',zinj.eval().min())
 
     m1Src  = m1inj/(1+zinj)
     m2Src  = m2inj/(1+zinj)
-    print('m1Src max',m1Src.eval().max())
-    print('m2Src min',m1Src.eval().min())
-    print('\n\n')
 
     if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
