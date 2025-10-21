@@ -880,6 +880,9 @@ def make_model(  priors,
         # One grid build to interpolate later
         dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade)
 
+        if dLprior == 'dVdz':
+            dVdz_grid = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=None )-at.log1p(zgrid_)
+
 
 
         if not pop_only:
@@ -1121,16 +1124,18 @@ def make_model(  priors,
             print('Removing dL^2 prior')
         elif dLprior == 'dVdz':
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, -1., dc=None )-at.log1p(zs)
+            lpi = atools.atinterp( zs, zgrid_, dVdz_grid )
+            
+            #atools.log_dV_dz_at(zs, 67.90, 0.3065, -1., dc=None )-at.log1p(zs)
 
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
             # So I remove the dL^2 prior by hand on those
-            if not pop_only:
-                # 1D case: shape (N,)
-                lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
-            else:
-                # 2D case: shape (N, Nsamples)
+            # if not pop_only:
+            #     # 1D case: shape (N,)
+            #     lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
+            # else:
+            #     # 2D case: shape (N, Nsamples)
                 lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
             
             log_p_pop -= lpi
