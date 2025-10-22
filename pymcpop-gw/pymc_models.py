@@ -1004,7 +1004,7 @@ def make_model(  priors,
                     
                     vals = at.stack([log_Mc_det, logit_q, logd], axis=0)
 
-                elif spin_model == 'default' :
+                elif spin_model == 'default' or spin_model == 'default_gauss':
 
                     chi1 = atools.inv_logitat(samples[:,3])
                     chi2 = atools.inv_logitat(samples[:,4])
@@ -1136,7 +1136,7 @@ def make_model(  priors,
             #     lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
             # else:
             #     # 2D case: shape (N, Nsamples)
-                lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
+            #    lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
             
             log_p_pop -= lpi
 
