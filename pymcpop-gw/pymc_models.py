@@ -10,7 +10,7 @@ import pytensor
 import pymc as pm
 import numpy as np
 from pytensor.gradient import disconnected_grad as stop_grad
-from pymc.pytensorf import collect_default_updates
+#from pymc.pytensorf import collect_default_updates
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
@@ -177,7 +177,6 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
 #####################################################
 
-
 def sel_bias_with_uncertainty_at(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,
     Ndraw,
@@ -186,16 +185,28 @@ def sel_bias_with_uncertainty_at(
     interp,
     dL_grid=None, z_grid=None,
     *,
-    chunk_size=50_000,
+    chunk_size=10_000,
     use_float32=False,
+    N_inj_py=None,   # REQUIRED: Python int, e.g. int(m1inj_np.shape[0])
+    scan_updates = False
 ):
-    # ----- dtype handling -----
+    """
+    Chunked, scan-free version of sel_bias_with_uncertainty_at_0.
+    Equivalent math to the original vectorized function.
+
+    Returns (log_mu, Neff, var_log_lik_u) as float64.
+    """
+    if N_inj_py is None:
+        raise ValueError("Pass N_inj_py=<python int>, e.g. int(m1inj_np.shape[0]).")
+
+    # ---- dtype policy ----
     work_dtype = "float32" if use_float32 else str(getattr(m1inj, "dtype", "float64"))
     out_dtype  = "float64"
 
     def cast_work(x):
         return x if x is None else at.cast(x, work_dtype)
 
+    # Cast inputs for internal math
     m1inj      = cast_work(m1inj)
     m2inj      = cast_work(m2inj)
     dLinj      = cast_work(dLinj)
@@ -203,7 +214,7 @@ def sel_bias_with_uncertainty_at(
     Lambda     = at.cast(Lambda, work_dtype)
     Ndraw_w    = at.cast(Ndraw, work_dtype)
 
-    # spins
+    # Spins (preserve your original behavior)
     if (spin_model == 'default') or (spin_model == 'default_gauss'):
         spinsInj_sel = [cast_work(spinsInj[0]), cast_work(spinsInj[1]),
                         cast_work(spinsInj[2]), cast_work(spinsInj[3])]
@@ -212,25 +223,22 @@ def sel_bias_with_uncertainty_at(
     else:
         spinsInj_sel = [] if (spinsInj is None) else [cast_work(s) for s in spinsInj]
 
-    # constants
+    # Constants
     H0, Om, w0, Xi0, n = Lambda[:5]
     CHUNK = int(chunk_size)
+    N_py  = int(N_inj_py)
 
-    # loop/scan setup
-    N = m1inj.shape[0]
-    n_chunks = (N + CHUNK - 1) // CHUNK  # ceil-div in graph
+    # Accumulators in log-domain (stable + associative)
+    log_sum  = at.constant(-np.inf, dtype=work_dtype)
+    log_sum2 = at.constant(-np.inf, dtype=work_dtype)
 
-    lse_init  = at.constant(-np.inf, dtype=work_dtype)
-    lse2_init = at.constant(-np.inf, dtype=work_dtype)
-    logNdraw  = at.log(Ndraw_w)
-
-    # pre-cast grids once (if used)
+    # Pre-cast grids (if using interpolation path)
     dL_grid_w = cast_work(dL_grid)
     z_grid_w  = cast_work(z_grid)
 
-    def _chunk_reduce(i, lse_acc, lse2_acc):
-        start = i * CHUNK
-        stop  = at.minimum(start + CHUNK, N)
+    # --- Unrolled chunk loop (build-time) ---
+    for start in range(0, N_py, CHUNK):
+        stop = min(start + CHUNK, N_py)
 
         m1c   = m1inj[start:stop]
         m2c   = m2inj[start:stop]
@@ -238,23 +246,162 @@ def sel_bias_with_uncertainty_at(
         lpd_c = log_p_draw[start:stop]
         spins_c = [s[start:stop] for s in spinsInj_sel] if len(spinsInj_sel) else []
 
-        # dL -> z for this chunk
+        # Invert dL -> z for this chunk (same logic as original)
         if dL_grid is None:
             zinj_c = atools.z_from_dL_at(dLc, H0, Om, w0, Xi0, n, interp=interp)
         else:
             if z_grid is None:
                 raise ValueError('Pass z_grid if passing pre-computed dL_grid')
             zinj_c = atools.atinterp(dLc, dL_grid_w, z_grid_w)
+        zinj_c = at.cast(zinj_c, work_dtype)
 
-        # ensure working dtype (these helpers may return float64)
+        # Source-frame masses
+        m1Src = at.cast(m1c / (1 + zinj_c), work_dtype)
+        m2Src = at.cast(m2c / (1 + zinj_c), work_dtype)
+
+        # Optional (Mc, q) reparam
+        if mass_model in ('DP', 'DPUC'):
+            Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+            mass_1_use = at.cast(at.log(Mc_src_inj), work_dtype)     # log Mc
+            mass_2_use = at.cast(atools.logitat(q_inj), work_dtype)  # logit q
+        else:
+            mass_1_use = m1Src
+            mass_2_use = m2Src
+
+        # Population log-prob for this chunk
+        log_p_pop_c = log_p_pop_at(
+            mass_1_use, mass_2_use, zinj_c, dLc, spins_c, Lambda,
+            rate_model, mass_model, spin_model,
+            smoothing=smoothing, has_m2_break=has_m2_break
+        )
+        log_p_pop_c = at.cast(log_p_pop_c, work_dtype)
+
+        # Jacobian for DP/DPUC (exactly as original)
+        if mass_model in ('DP', 'DPUC'):
+            log_p_pop_c = log_p_pop_c + at.cast(
+                -at.log(m2Src) - at.log(m1Src - m2Src) - at.log1p(zinj_c),
+                work_dtype
+            )
+
+        # Importance weights
+        log_sel_b_c = at.cast(log_p_pop_c - lpd_c, work_dtype)
+
+        # Accumulate log-sum-exp across chunks
+        #   log_sum  = log( sum_i exp(log_sel_b_i) ) over all injections
+        #   log_sum2 = log( sum_i exp(2*log_sel_b_i) )
+        log_sum  = at.cast(at.logaddexp(log_sum,  at.logsumexp(     log_sel_b_c)), work_dtype)
+        log_sum2 = at.cast(at.logaddexp(log_sum2, at.logsumexp(2.0 * log_sel_b_c)), work_dtype)
+
+    # Finish: means across Ndraw
+    log_mu = at.cast(log_sum  - at.log(Ndraw_w), work_dtype)
+    logs2  = at.cast(log_sum2 - at.log(Ndraw_w), work_dtype)
+
+    # Talbot & Golomb (2023) N_eff; matches your original formulas
+    logNeff = at.cast(2.0 * log_mu - logs2 + at.log(Ndraw_w), work_dtype)
+
+    # Variance of log-l per unit obs (Talbot & Golomb 2023); uses Ndraw-1 like your code
+    var_log_lik_u = at.cast(atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_w - 1.0), work_dtype)
+
+    Neff = at.cast(at.exp(logNeff), work_dtype)
+
+    # Cast outputs back to float64 for model compatibility
+    log_mu        = at.cast(log_mu, out_dtype)
+    Neff          = at.cast(Neff, out_dtype)
+    var_log_lik_u = at.cast(var_log_lik_u, out_dtype)
+    return log_mu, Neff, var_log_lik_u
+
+
+def sel_bias_with_uncertainty_at_scan(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,
+    Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing, has_m2_break,
+    interp,
+    dL_grid=None, z_grid=None,
+    *,
+    chunk_size=10_000,
+    use_float32=False,
+    N_inj_py=None,        # Python int: len of injections (optional but recommended)
+    scan_updates=False,   # True for PyMC backend, False for NumPyro/BlackJAX
+):
+    """
+    Chunked selection-bias with pytensor.scan (fast compile, low memory).
+    Set scan_updates=True only when using the PyMC sampler.
+    Returns (log_mu, Neff, var_log_lik_u) as float64.
+    """
+    # dtypes
+    work_dtype = "float32" if use_float32 else str(getattr(m1inj, "dtype", "float64"))
+    out_dtype  = "float64"
+    def cw(x): return x if x is None else at.cast(x, work_dtype)
+
+    # cast inputs
+    m1inj, m2inj, dLinj, log_p_draw = map(cw, (m1inj, m2inj, dLinj, log_p_draw))
+    Lambda  = at.cast(Lambda, work_dtype)
+    Ndraw_w = at.cast(Ndraw, work_dtype)
+
+    # spins
+    if (spin_model in ("default", "default_gauss")) and spinsInj is not None:
+        spinsInj_sel = [cw(spinsInj[0]), cw(spinsInj[1]), cw(spinsInj[2]), cw(spinsInj[3])]
+    else:
+        spinsInj_sel = [] if (spinsInj is None or spin_model == "none") else [cw(s) for s in spinsInj]
+
+    # constants
+    H0, Om, w0, Xi0, n = Lambda[:5]
+    CHUNK = int(chunk_size)
+
+    # number of chunks (use Python int if provided to keep graph tiny)
+    if N_inj_py is None:
+        # falls back to symbolic (still fine); prefer passing N_inj_py for speed
+        N = m1inj.shape[0]
+        n_chunks = (N + CHUNK - 1) // CHUNK
+    else:
+        n_chunks = (int(N_inj_py) + CHUNK - 1) // CHUNK
+
+    # accumulators
+    lse_init  = at.constant(-np.inf, dtype=work_dtype)
+    lse2_init = at.constant(-np.inf, dtype=work_dtype)
+    logNdraw  = at.log(Ndraw_w)
+
+    # pre-cast grids
+    dL_grid_w = cw(dL_grid)
+    z_grid_w  = cw(z_grid)
+
+    # import only if we actually need RNG updates (PyMC backend)
+    if scan_updates:
+        from pymc.pytensorf import collect_default_updates
+
+    # keep body tiny: pass big tensors via non_sequences, index inside
+    def _body(i,
+              lse_acc, lse2_acc,
+              m1inj_ns, m2inj_ns, dLinj_ns, lpd_ns,
+              Lambda_ns, H0_ns, Om_ns, w0_ns, Xi0_ns, n_ns,
+              CHUNK_ns, Ndraw_ns, dL_grid_ns, z_grid_ns, smoothing_ns, has_m2_break_ns,
+              rate_model_ns, mass_model_ns, spin_model_ns, interp_ns,
+              *spins_ns):
+
+        N = m1inj_ns.shape[0]
+        start = i * CHUNK_ns
+        stop  = at.minimum(start + CHUNK_ns, N)
+
+        m1c   = m1inj_ns[start:stop]
+        m2c   = m2inj_ns[start:stop]
+        dLc   = dLinj_ns[start:stop]
+        lpd_c = lpd_ns[start:stop]
+        spins_c = [s[start:stop] for s in spins_ns] if len(spins_ns) else []
+
+        # dL -> z
+        if dL_grid_ns is None:
+            zinj_c = atools.z_from_dL_at(dLc, H0_ns, Om_ns, w0_ns, Xi0_ns, n_ns, interp=interp_ns)
+        else:
+            zinj_c = atools.atinterp(dLc, dL_grid_ns, z_grid_ns)
         zinj_c = at.cast(zinj_c, work_dtype)
 
         # source-frame masses
         m1Src = at.cast(m1c / (1 + zinj_c), work_dtype)
         m2Src = at.cast(m2c / (1 + zinj_c), work_dtype)
 
-        # optional (Mc, q) reparam
-        if mass_model in ('DP', 'DPUC'):
+        # optional (Mc, q)
+        if (mass_model_ns == 'DP') or (mass_model_ns == 'DPUC'):
             Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
             mass_1_use = at.cast(at.log(Mc_src_inj), work_dtype)
             mass_2_use = at.cast(atools.logitat(q_inj), work_dtype)
@@ -262,66 +409,69 @@ def sel_bias_with_uncertainty_at(
             mass_1_use = m1Src
             mass_2_use = m2Src
 
-        # population log-prob for this chunk
+        # population log-prob
         log_p_pop_c = log_p_pop_at(
-            mass_1_use, mass_2_use, zinj_c, dLc, spins_c, Lambda,
-            rate_model, mass_model, spin_model,
-            smoothing=smoothing, has_m2_break=has_m2_break
+            mass_1_use, mass_2_use, zinj_c, dLc, spins_c, Lambda_ns,
+            rate_model_ns, mass_model_ns, spin_model_ns,
+            smoothing=smoothing_ns, has_m2_break=has_m2_break_ns
         )
-        # ensure working dtype (log_p_pop_at may return float64)
         log_p_pop_c = at.cast(log_p_pop_c, work_dtype)
 
-        # remove Jacobian for (m1,m2)->(log Mc, logit q) if used
-        if mass_model in ('DP', 'DPUC'):
+        # jacobian for DP/DPUC
+        if (mass_model_ns == 'DP') or (mass_model_ns == 'DPUC'):
             log_p_pop_c = log_p_pop_c + at.cast(
-                -at.log(m2Src) - at.log(m1Src - m2Src) - at.log1p(zinj_c),
-                work_dtype
+                -at.log(m2Src) - at.log(m1Src - m2Src) - at.log1p(zinj_c), work_dtype
             )
 
-        # importance weights (force work dtype)
+        # weights
         log_sel_b_c = at.cast(log_p_pop_c - lpd_c, work_dtype)
 
-        # accumulate (stay in work dtype)
         new_lse  = at.cast(at.logaddexp(lse_acc,  at.logsumexp(     log_sel_b_c)), work_dtype)
         new_lse2 = at.cast(at.logaddexp(lse2_acc, at.logsumexp(2.0 * log_sel_b_c)), work_dtype)
 
-        # RNG updates from this subgraph (if any)
-        updates = collect_default_updates([zinj_c, log_p_pop_c, log_sel_b_c, new_lse, new_lse2])
+        if scan_updates:
+            updates = collect_default_updates([zinj_c, log_p_pop_c, log_sel_b_c, new_lse, new_lse2])
+        else:
+            updates = {}
 
         return (new_lse, new_lse2), updates
 
+    # build non_sequences to keep the body small & deterministic
+    nonseq = [
+        m1inj, m2inj, dLinj, log_p_draw,
+        Lambda, H0, Om, w0, Xi0, n,
+        at.as_tensor_variable(CHUNK, dtype="int64"),
+        Ndraw_w,
+        dL_grid_w, z_grid_w,
+        smoothing, has_m2_break,
+        rate_model, mass_model, spin_model, interp,
+    ] + (spinsInj_sel if len(spinsInj_sel) else [])
+
     (lse_hist, lse2_hist), _ = pytensor.scan(
-        fn=_chunk_reduce,
+        fn=_body,
         sequences=at.arange(n_chunks),
         outputs_info=[lse_init, lse2_init],
+        non_sequences=nonseq,
     )
 
     log_sum  = lse_hist[-1]
     log_sum2 = lse2_hist[-1]
 
-    # means
+    # finish
     log_mu = at.cast(log_sum  - logNdraw, work_dtype)
     logs2  = at.cast(log_sum2 - logNdraw, work_dtype)
 
-    # N_eff (Talbot & Golomb 2023)
     logNeff = at.cast(2.0 * log_mu - logs2 + at.log(Ndraw_w), work_dtype)
-
-    # variance of log l per unit obs (Talbot & Golomb 2023)
     var_log_lik_u = at.cast(atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_w - 1.0), work_dtype)
-
     Neff = at.cast(at.exp(logNeff), work_dtype)
 
-    # cast outputs back to float64 for model compatibility
-    log_mu        = at.cast(log_mu, out_dtype)
-    Neff          = at.cast(Neff, out_dtype)
-    var_log_lik_u = at.cast(var_log_lik_u, out_dtype)
-
-    return log_mu, Neff, var_log_lik_u
+    # outputs in float64 for model compatibility
+    return at.cast(log_mu, out_dtype), at.cast(Neff, out_dtype), at.cast(var_log_lik_u, out_dtype)
 
 
 
 
-def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None, chunk_size=None, use_float32=False,):
+def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None, **kwargs):
 
 
     H0, Om, w0, Xi0, n  = Lambda[:5]
@@ -448,7 +598,8 @@ def make_model(  priors,
                alpha_beta_prior='poly',
                dil_factor=1,
                use_log_alpha_beta=False ,
-               allTobs=None
+               allTobs=None,
+                 use_updates=True
                 ):
 
     ################################################
@@ -1388,8 +1539,22 @@ def make_model(  priors,
                 else:
                     print('Computing sel bias in one chunk')
                     sel_bias_fun = sel_bias_with_uncertainty_at_0
+
                 
-                log_mu_, Neff_, var_ll_u_ = sel_bias_fun( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], Lambda_, Ndraw, rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_, chunk_size = chunk_inj, use_float32=use_float32)
+                log_mu_, Neff_, var_ll_u_ = sel_bias_fun( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], 
+                                                          Lambda_, 
+                                                          Ndraw, 
+                                                          rate_model, mass_model, spin_model_name, 
+                                                          smoothing, 
+                                                          has_m2_break, 
+                                                          interp=pade, 
+                                                          dL_grid=dL_grid, 
+                                                          z_grid=zgrid_, 
+                                                          chunk_size = chunk_inj, 
+                                                          use_float32=use_float32, 
+                                                          N_inj_py=ninj_np, 
+                                                          scan_updates=use_updates,  
+                                                        )
                 
                 if not marginal_R0:
                     # This is really the number of expected events 

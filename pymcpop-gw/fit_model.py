@@ -502,7 +502,8 @@ def main():
     else:
         print('No initial values passed.')
         ivals={}
-        
+
+    use_updates =  ('pymc' in FLAGS.sampler)
     # right before building the model
     log_mem("before make_model")
     t0 = time.time()
@@ -542,7 +543,8 @@ def main():
                                     dil_factor=FLAGS.dil_factor,
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
                                     params_fix=params_fix,
-                                      allTobs=FLAGS.allTobs
+                                      allTobs=FLAGS.allTobs,
+                                use_updates = use_updates
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
