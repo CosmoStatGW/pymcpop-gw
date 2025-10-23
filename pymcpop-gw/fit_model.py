@@ -16,15 +16,24 @@ import argparse
 import json
 import sys
 import warnings
+import psutil
 
 from tqdm import tqdm 
 from tqdm.auto import tqdm
 import time
+import resource
 
 import arviz as az
 import matplotlib.pyplot as plt
 import corner
 
+
+_process = psutil.Process(os.getpid())
+def mem_gb():
+    return _process.memory_info().rss / (1024**3)  # Resident Set Size in GB
+
+def log_mem(tag):
+    print(f"[MEM] {tag}: {mem_gb():.2f} GB RSS")
 
 
 def main():
@@ -70,7 +79,10 @@ def main():
     parser.add_argument("--min_Neff", default=0, type=int, required=False)
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
-    
+    parser.add_argument("--chunk_inj", default=-1, type=int, required=False)
+    parser.add_argument("--use_float32", default=0, type=int, required=False)
+
+        
     
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
@@ -149,10 +161,7 @@ def main():
     if FLAGS.chain_method == "parallel":
         numpyro.set_host_device_count(device_count)
     
-    print("Available devices:", jax.devices())
-    print("Local device count:", jax.local_device_count())
-    print("Backend:", jax.default_backend())
-    
+
     # ----------------------------------------------------
     # 3️⃣ Now safe to import PyMC and others
     # ----------------------------------------------------
@@ -172,9 +181,6 @@ def main():
     
     pytensor.config.floatX = "float64"
     
-    print(f"Running on PyMC v{pm.__version__}")
-    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-    print("dtype test:", np.array(0., dtype=np.float64).dtype)
     
 
     # ----------------------------------------------------
@@ -195,7 +201,17 @@ def main():
     sys.stdout = myLog
     sys.stderr = myLog
 
+
+    print("Available devices:", jax.devices())
+    print("Local device count:", jax.local_device_count())
+    print("Backend:", jax.default_backend())
+
+    print(f"Running on PyMC v{pm.__version__}")
+    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype)
     
+
+    print(f"[PID] {os.getpid()}")
     
 
     with open(FLAGS.fin_priors) as json_file:
@@ -486,7 +502,10 @@ def main():
     else:
         print('No initial values passed.')
         ivals={}
-    
+        
+    # right before building the model
+    log_mem("before make_model")
+    t0 = time.time()
     model = models.make_model(  priors,
                                     GWData,
                                     InjData,
@@ -500,6 +519,8 @@ def main():
                                     dLprior = FLAGS.dLprior,
                                     sel_method=FLAGS.sel,
                                     fix_inj_len=FLAGS.fix_inj_len,
+                                    use_float32 = FLAGS.use_float32,
+                                    chunk_inj=FLAGS.chunk_inj,
                                     marginal_R0 = FLAGS.marginal_R0,
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
                                     fix_H0 = FLAGS.fix_H0,
@@ -523,7 +544,8 @@ def main():
                                     params_fix=params_fix,
                                       allTobs=FLAGS.allTobs
                                 )
-
+    print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
+    log_mem("after make_model")
     print('Done.')
 
     print()
@@ -567,6 +589,7 @@ def main():
         
         with model:
 
+            print("Setting initial point...")
             ip = model.initial_point()
             
             N = gmm_means.shape[0]
@@ -619,6 +642,8 @@ def main():
                     g_init[n, k] = max(0.0, need)
 
                 ip['gumbel'] = g_init
+
+            print("Done.")
             
             if FLAGS.debug:
                 #print()
@@ -858,16 +883,44 @@ def main():
                     
                     #def callback(trace, draw):
                     #    pbar.update(1)
-                                
+
+                    # --- warm-up (forces compile) ---
+                    print()
+                    # print("Warm up for compilation...")
+                    # _ = pm.sample(draws=2, tune=0, chains=1, cores=1, progressbar=False)
+                    # print("Done.")
+                    t0 = time.time()
+                    log_mem("before pm.sample main")
                     cb = autils.make_tqdm_callback(pbar)
                     trace = pm.sample(nuts_sampler='pymc', **sampler_kwargs,
                                       callback=cb,
                                       
                                      )
+                    print(f"[TIMER] pm.sample (main) took {time.time()-t0:.1f}s")
+                    log_mem("after pm.sample main")
+                    # Print peak resident memory (max RSS) used by this process.
+                    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                    # macOS returns bytes; Linux returns kilobytes:
+                    if sys.platform == "darwin":
+                        peak_gb = peak / (1024**3)
+                    else:
+                        peak_gb = peak / (1024**2)
+                    print(f"[MEM] peak RSS: {peak_gb:.2f} GB")
 
             else:
-                
+                t0 = time.time()
+                log_mem("before pm.sample main")
                 trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+                print(f"[TIMER] pm.sample (main) took {time.time()-t0:.1f}s")
+                log_mem("after pm.sample main")
+                # Print peak resident memory (max RSS) used by this process.
+                peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                # macOS returns bytes; Linux returns kilobytes:
+                if sys.platform == "darwin":
+                    peak_gb = peak / (1024**3)
+                else:
+                    peak_gb = peak / (1024**2)
+                print(f"[MEM] peak RSS: {peak_gb:.2f} GB")
 
             print('\nDone.')
         
