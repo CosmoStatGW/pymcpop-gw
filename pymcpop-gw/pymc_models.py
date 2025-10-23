@@ -250,6 +250,11 @@ def sel_bias_with_uncertainty_at_loop(
         m   = at.max(x64)
         return m + at.log(at.sum(at.exp(x64 - m)))
 
+    def _barrier(x):
+        # Creates a no-op node that blocks large elemwise fusion chains.
+        # Works for any dtype/shape and keeps gradients intact.
+        return x + at.zeros_like(x)
+
     # --- Unrolled chunk loop (build-time) ---
     for start in range(0, N_py, CHUNK):
         stop = min(start + CHUNK, N_py)
@@ -327,6 +332,9 @@ def sel_bias_with_uncertainty_at_loop(
         # Importance weights
         log_sel_b_c = at.cast(log_p_pop_c - lpd_c, work_dtype)
 
+        log_p_pop_c = _barrier(log_p_pop_c)   # fusion barrier #1
+        log_sel_b_c = _barrier(log_sel_b_c) 
+                       
         # Accumulate log-sum-exp across chunks
         if use_float32:
             log_sum  = at.logaddexp(log_sum,  _logsumexp64(     log_sel_b_c))

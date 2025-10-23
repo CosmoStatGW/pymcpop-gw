@@ -10,7 +10,7 @@
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
-
+os.environ.setdefault("PYTENSOR_FLAGS", "optimizer_excluding=fusion")
 
 import argparse
 import json
