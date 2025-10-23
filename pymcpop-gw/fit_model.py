@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--debug", default=0, type=int, required=False)
     
     
+    
     parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
     parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
     parser.add_argument("--min_Neff", default=0, type=int, required=False)
@@ -81,6 +82,7 @@ def main():
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
     parser.add_argument("--chunk_inj", default=-1, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
+    parser.add_argument("--inj_loop", default=0, type=int, required=False)
 
         
     
@@ -544,7 +546,8 @@ def main():
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
                                     params_fix=params_fix,
                                       allTobs=FLAGS.allTobs,
-                                use_updates = use_updates
+                                use_updates = use_updates,
+                                inj_loop = FLAGS.inj_loop
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
