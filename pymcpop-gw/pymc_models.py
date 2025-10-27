@@ -176,7 +176,141 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
 
 #####################################################
+
 def sel_bias_with_uncertainty_at_loop(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,
+    Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing, has_m2_break,
+    interp,
+    dL_grid=None, z_grid=None,
+    *,
+    chunk_size=10_000,
+    use_float32=False,
+    N_inj_py=None,   # REQUIRED: Python int, e.g. int(m1inj_np.shape[0])
+    #scan_updates = False
+):
+    """
+    Chunked, scan-free version of sel_bias_with_uncertainty_at_0.
+    Returns (log_mu, Neff, var_log_lik_u) as float64.
+
+    When use_float32=True, arrays stay fp32 but reductions/log-sums run in fp64.
+    """
+    if N_inj_py is None:
+        raise ValueError("Pass N_inj_py=<python int>, e.g. int(m1inj_np.shape[0]).")
+
+    work_dtype = "float32" if use_float32 else str(getattr(m1inj, "dtype", "float64"))
+    out_dtype  = "float64"
+
+    def cast_work(x):
+        return x if x is None else at.cast(x, work_dtype)
+
+    m1inj      = cast_work(m1inj)
+    m2inj      = cast_work(m2inj)
+    dLinj      = cast_work(dLinj)
+    log_p_draw = cast_work(log_p_draw)
+    Lambda     = at.cast(Lambda, work_dtype)
+    Ndraw_w    = at.cast(Ndraw, work_dtype)
+
+    if (spin_model == 'default') or (spin_model == 'default_gauss'):
+        spinsInj_sel = [cast_work(spinsInj[0]), cast_work(spinsInj[1]),
+                        cast_work(spinsInj[2]), cast_work(spinsInj[3])]
+    elif spin_model == 'none':
+        spinsInj_sel = []
+    else:
+        spinsInj_sel = [] if (spinsInj is None) else [cast_work(s) for s in spinsInj]
+
+    H0, Om, w0, Xi0, n = Lambda[:5]
+    CHUNK = int(chunk_size)
+    N_py  = int(N_inj_py)
+
+    # Accumulators: float64 when use_float32, else work_dtype
+    acc_dtype = "float64" if use_float32 else work_dtype
+    log_sum  = at.constant(-np.inf, dtype=acc_dtype)
+    log_sum2 = at.constant(-np.inf, dtype=acc_dtype)
+
+    dL_grid_w = cast_work(dL_grid)
+    z_grid_w  = cast_work(z_grid)
+
+    # stable logsumexp in float64
+    def _logsumexp64(x64):
+        m = at.max(x64)
+        return m + at.log(at.sum(at.exp(x64 - m)))
+
+    for start in range(0, N_py, CHUNK):
+        stop = min(start + CHUNK, N_py)
+
+        m1c   = m1inj[start:stop]
+        m2c   = m2inj[start:stop]
+        dLc   = dLinj[start:stop]
+        lpd_c = log_p_draw[start:stop]
+        spins_c = [s[start:stop] for s in spinsInj_sel] if len(spinsInj_sel) else []
+
+        if dL_grid is None:
+            zinj_c = atools.z_from_dL_at(dLc, H0, Om, w0, Xi0, n, interp=interp)
+        else:
+            if z_grid is None:
+                raise ValueError('Pass z_grid if passing pre-computed dL_grid')
+            zinj_c = atools.atinterp(dLc, dL_grid_w, z_grid_w)
+        zinj_c = at.cast(zinj_c, work_dtype)
+
+        m1Src = at.cast(m1c / (1 + zinj_c), work_dtype)
+        m2Src = at.cast(m2c / (1 + zinj_c), work_dtype)
+
+        if mass_model in ('DP', 'DPUC'):
+            Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+            mass_1_use = at.cast(at.log(Mc_src_inj), work_dtype)
+            mass_2_use = at.cast(atools.logitat(q_inj), work_dtype)
+        else:
+            mass_1_use = m1Src
+            mass_2_use = m2Src
+
+        log_p_pop_c = log_p_pop_at(
+            mass_1_use, mass_2_use, zinj_c, dLc, spins_c, Lambda,
+            rate_model, mass_model, spin_model,
+            smoothing=smoothing, has_m2_break=has_m2_break
+        )
+        log_p_pop_c = at.cast(log_p_pop_c, work_dtype)
+
+        if mass_model in ('DP', 'DPUC'):
+            log_p_pop_c = log_p_pop_c + at.cast(
+                -at.log(m2Src) - at.log(m1Src - m2Src) - at.log1p(zinj_c),
+                work_dtype
+            )
+
+        if use_float32:
+            # <-- KEY: do log-weights and reductions in float64 -->
+            log_sel_b_c64 = at.cast(log_p_pop_c, "float64") - at.cast(lpd_c, "float64")
+            log_sum  = at.logaddexp(log_sum,  _logsumexp64(     log_sel_b_c64))
+            log_sum2 = at.logaddexp(log_sum2, _logsumexp64(2.0 * log_sel_b_c64))
+        else:
+            log_sel_b_c = at.cast(log_p_pop_c - lpd_c, work_dtype)
+            log_sum  = at.cast(at.logaddexp(log_sum,  at.logsumexp(     log_sel_b_c)), work_dtype)
+            log_sum2 = at.cast(at.logaddexp(log_sum2, at.logsumexp(2.0 * log_sel_b_c)), work_dtype)
+
+    if use_float32:
+        # Finish entirely in float64 then cast outputs
+        Ndraw64 = at.cast(Ndraw, "float64")
+        log_mu64 = log_sum  - at.log(Ndraw64)
+        logs264  = log_sum2 - at.log(Ndraw64)
+        logNeff64 = 2.0 * log_mu64 - logs264 + at.log(Ndraw64)
+        delta64 = logs264 - 2.0 * log_mu64
+        eps64   = at.as_tensor_variable(1e-6, dtype="float64")
+        delta64 = at.maximum(delta64, -eps64)
+        var64   = atools.logdiffexp(delta64, 1.0) - at.log(Ndraw64 - 1.0)
+        Neff64  = at.exp(logNeff64)
+
+        return at.cast(log_mu64, out_dtype), at.cast(Neff64, out_dtype), at.cast(var64, out_dtype)
+    else:
+        log_mu = at.cast(log_sum  - at.log(Ndraw_w), work_dtype)
+        logs2  = at.cast(log_sum2 - at.log(Ndraw_w), work_dtype)
+        logNeff = at.cast(2.0 * log_mu - logs2 + at.log(Ndraw_w), work_dtype)
+        var_log_lik_u = at.cast(atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_w - 1.0), work_dtype)
+        Neff = at.cast(at.exp(logNeff), work_dtype)
+        return at.cast(log_mu, out_dtype), at.cast(Neff, out_dtype), at.cast(var_log_lik_u, out_dtype)
+
+
+def sel_bias_with_uncertainty_at_loop_0(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,
     Ndraw,
     rate_model, mass_model, spin_model,
