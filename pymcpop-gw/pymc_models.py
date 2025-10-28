@@ -353,10 +353,10 @@ def sel_bias_with_uncertainty_at_scan(
 
     if (spin_model == 'default') or (spin_model == 'default_gauss'):
         # Keep this tensor-y; avoid Python lists
-        spinsInj_sel = at.stack([spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]])
+        spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
     elif spin_model == 'none':
         # empty tensor (won't be used downstream)
-        spinsInj_sel = at.as_tensor_variable([], dtype=m1inj.dtype)
+        spinsInj_sel = []
 
     if dL_grid is None:
         zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp)
@@ -471,9 +471,9 @@ def sel_bias_with_uncertainty_at_0_batched(
     Lambda_t = at.as_tensor_variable(Lambda)
 
     if spin_model in ("default", "default_gauss"):
-        spinsInj_sel_t = at.stack([spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]])
+        spinsInj_sel_t = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
     else:
-        spinsInj_sel_t = at.as_tensor_variable([], dtype=m1inj.dtype)
+        spinsInj_sel_t = [] #at.as_tensor_variable([], dtype=m1inj.dtype)
 
     has_grid = dL_grid is not None
     if has_grid:
@@ -487,6 +487,12 @@ def sel_bias_with_uncertainty_at_0_batched(
     m2K, _,        _, _     = _pad_to_multiple(m2inj,   chunk_size, 1.0)
     dLK,  _,        _, _     = _pad_to_multiple(dLinj,   chunk_size, 1.0)  # positive
     lpdK, _,        _, _     = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
+    if spin_model in ("default", "default_gauss"):
+        s1K, _, _, _ = _pad_to_multiple(spinsInj[0],   chunk_size, 0. )
+        s2K, _, _, _ = _pad_to_multiple(spinsInj[1],   chunk_size, 0. )
+        ct1K, _, _, _ = _pad_to_multiple(spinsInj[2],   chunk_size, 1. )
+        ct2K, _, _, _ = _pad_to_multiple(spinsInj[3],   chunk_size, 1. )
+        spinsInj_sel_t_K = [ s1K, s2K, ct1K, ct2K ]
 
     # Mask to ignore the padded tail
     valid_mask = (at.arange(n_chunks * chunk_size) < N).reshape((n_chunks, chunk_size))
@@ -496,9 +502,15 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     # ---------- scan body ----------
     def batch_step(i, m_state, m2_state, s1_state, s2_state,
-                   m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t,
+                   m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K,
                    *maybe_grids):
+        
         m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+        if spin_model in ("default", "default_gauss"):
+            s1K, s2K, ct1K, ct2K = spinsInj_sel_t_K
+            s1 = s1K[i]; s2 = s2K[i], ct1=ct1K[i]; ct2=ct2K[i]
+            spinsInj_sel_t_use = [s1, s2, ct1, ct2]
+            
 
         # z(dL)
         if len(maybe_grids) == 2:
@@ -524,7 +536,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 
         # population log-prob
         log_p_pop = log_p_pop_at(
-            mass_1_use, mass_2_use, zinj, dL, spinsInj_sel_t, Lambda_t,
+            mass_1_use, mass_2_use, zinj, dL, spinsInj_sel_t_use, Lambda_t,
             rate_model, mass_model, spin_model,
             smoothing=smoothing, has_m2_break=has_m2_break
         )
@@ -560,7 +572,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     s1_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
     s2_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
 
-    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t]
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K]
     if has_grid:
         nonseq += [dL_grid_t, z_grid_t]
 
