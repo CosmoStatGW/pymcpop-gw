@@ -437,142 +437,162 @@ def _combine_logsumexp(m_s, s_s, m_c, s_c):
     s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
     return m_new, s_new
 
+
 def sel_bias_with_uncertainty_at_0_batched(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda, Ndraw,
     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
     chunk_size=4096, dL_grid=None, z_grid=None, scan_updates=False, **kwargs
 ):
-    """
-    JAX/NumPyro-friendly streaming version:
-    - Computes everything in chunks of `chunk_size` to keep GPU mem low.
-    - Avoids dynamic slicing and non-tensor `scan` arguments.
-    - Guards against NaNs from padded chunks and -inf arithmetic.
-    Returns: log_mu, Neff, var_log_lik_u
-    """
-
-    # ---------- helpers ----------
     def _pad_to_multiple(x, k, pad_value):
-        """Pad 1-D x to multiple of k (Python int) and reshape to (n_chunks, k)."""
-        N = x.shape[0]                                   # symbolic int
+        N = x.shape[0]
         n_chunks = (N + k - 1) // k
         N_pad = n_chunks * k - N
         pad = at.full((N_pad,), at.as_tensor_variable(pad_value, dtype=x.dtype), dtype=x.dtype)
         x_pad = at.concatenate([x, pad], axis=0)
-        xK = x_pad.reshape((n_chunks, k))                # first dim symbolic, second static
+        xK = x_pad.reshape((n_chunks, k))
         return xK, n_chunks, N, N_pad
 
     def _combine_logsumexp(m_s, s_s, m_c, s_c):
-        """Combine two log-sum-exp states (m = log base, s = sum of exp-shifted)."""
         m_new = at.maximum(m_s, m_c)
         s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
         return m_new, s_new
 
-    # ---------- constants / tensors ----------
     Lambda_t = at.as_tensor_variable(Lambda)
-
-    if spin_model in ("default", "default_gauss"):
-        spinsInj_sel_t = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
-    else:
-        spinsInj_sel_t = [] #at.as_tensor_variable([], dtype=m1inj.dtype)
+    use_dp = mass_model in ("DP", "DPUC")
+    spin_is_default = spin_model in ("default", "default_gauss")
 
     has_grid = dL_grid is not None
     if has_grid:
         dL_grid_t = at.as_tensor_variable(dL_grid)
         z_grid_t  = at.as_tensor_variable(z_grid)
 
-    use_dp = mass_model in ("DP", "DPUC")
+    # Pad observed vectors (safe pads)
+    m1K, n_chunks, N, _ = _pad_to_multiple(m1inj,   chunk_size, 2.0)  # m1 > m2
+    m2K, _,        _, _ = _pad_to_multiple(m2inj,   chunk_size, 1.0)
+    dLK,  _,        _, _ = _pad_to_multiple(dLinj,   chunk_size, 1.0)
+    lpdK, _,        _, _ = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
 
-    # ---------- pad & reshape observed vectors (safe pads) ----------
-    m1K, n_chunks, N, N_pad = _pad_to_multiple(m1inj,   chunk_size, 2.0)  # m1 > m2
-    m2K, _,        _, _     = _pad_to_multiple(m2inj,   chunk_size, 1.0)
-    dLK,  _,        _, _     = _pad_to_multiple(dLinj,   chunk_size, 1.0)  # positive
-    lpdK, _,        _, _     = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
-    if spin_model in ("default", "default_gauss"):
-        s1K, _, _, _ = _pad_to_multiple(spinsInj[0],   chunk_size, 0. )
-        s2K, _, _, _ = _pad_to_multiple(spinsInj[1],   chunk_size, 0. )
-        ct1K, _, _, _ = _pad_to_multiple(spinsInj[2],   chunk_size, 1. )
-        ct2K, _, _, _ = _pad_to_multiple(spinsInj[3],   chunk_size, 1. )
-        spinsInj_sel_t_K = [ s1K, s2K, ct1K, ct2K ]
+    # If spins used, pad each component separately
+    if spin_is_default:
+        s1K,  _, _, _ = _pad_to_multiple(spinsInj[0], chunk_size, 0.0)
+        s2K,  _, _, _ = _pad_to_multiple(spinsInj[1], chunk_size, 0.0)
+        ct1K, _, _, _ = _pad_to_multiple(spinsInj[2], chunk_size, 1.0)
+        ct2K, _, _, _ = _pad_to_multiple(spinsInj[3], chunk_size, 1.0)
 
-    # Mask to ignore the padded tail
     valid_mask = (at.arange(n_chunks * chunk_size) < N).reshape((n_chunks, chunk_size))
-
-    # Large negative number for masked entries (avoid -inf arithmetic)
     NEG_BIG = at.constant(-1e30, dtype=m1inj.dtype)
 
-    # ---------- scan body ----------
-    def batch_step(i, m_state, m2_state, s1_state, s2_state,
-                   m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K,
-                   *maybe_grids):
-        
-        m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
-        if spin_model in ("default", "default_gauss"):
-            s1K, s2K, ct1K, ct2K = spinsInj_sel_t_K
-            s1 = s1K[i]; s2 = s2K[i], ct1=ct1K[i]; ct2=ct2K[i]
-            spinsInj_sel_t_use = [s1, s2, ct1, ct2]
-            
+    # ---- scan body ----
+    if spin_is_default:
+        def batch_step(i, m_state, m2_state, s1_state, s2_state,
+                       m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                       s1K, s2K, ct1K, ct2K, *maybe_grids):
 
-        # z(dL)
-        if len(maybe_grids) == 2:
-            dL_grid_t, z_grid_t = maybe_grids
-            zinj = atools.atinterp(dL, dL_grid_t, z_grid_t)
-        else:
-            H0, Om, w0, Xi0, n = Lambda_t[:5]
-            zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+            m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+            s1 = s1K[i]; s2 = s2K[i]; ct1 = ct1K[i]; ct2 = ct2K[i]
+            spins_use = [s1, s2, ct1, ct2]
 
-        # source-frame masses
-        one_plus_z = 1 + zinj
-        m1Src = m1 / one_plus_z
-        m2Src = m2 / one_plus_z
+            if len(maybe_grids) == 2:
+                dL_grid_t, z_grid_t = maybe_grids
+                zinj = atools.atinterp(dL, dL_grid_t, z_grid_t)
+            else:
+                H0, Om, w0, Xi0, n = Lambda_t[:5]
+                zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
 
-        # mass reparam if needed
-        if use_dp:
-            Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-            mass_1_use = at.log(Mc_src_inj)
-            mass_2_use = atools.logitat(q_inj)
-        else:
-            mass_1_use = m1Src
-            mass_2_use = m2Src
+            one_plus_z = 1 + zinj
+            m1Src = m1 / one_plus_z
+            m2Src = m2 / one_plus_z
 
-        # population log-prob
-        log_p_pop = log_p_pop_at(
-            mass_1_use, mass_2_use, zinj, dL, spinsInj_sel_t_use, Lambda_t,
-            rate_model, mass_model, spin_model,
-            smoothing=smoothing, has_m2_break=has_m2_break
-        )
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = at.log(Mc_src_inj)
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
 
-        # Jacobian if DP/DPUC
-        if use_dp:
-            # Use small epsilon to avoid log(0) in weird edge cases
-            eps = at.constant(1e-30, dtype=m1inj.dtype)
-            log_p_pop += (-at.log(at.maximum(m2Src, eps))
-                          - at.log(at.maximum(m1Src - m2Src, eps))
-                          - at.log1p(zinj))
+            log_p_pop = log_p_pop_at(
+                mass_1_use, mass_2_use, zinj, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing, has_m2_break=has_m2_break
+            )
 
-        # selection-bias term
-        x = log_p_pop - lpd
+            if use_dp:
+                eps = at.constant(1e-30, dtype=m1inj.dtype)
+                log_p_pop += (-at.log(at.maximum(m2Src, eps))
+                              - at.log(at.maximum(m1Src - m2Src, eps))
+                              - at.log1p(zinj))
 
-        # mask padded elements with big negative (not -inf)
-        x = at.where(mask, x, NEG_BIG)
+            x = log_p_pop - lpd
+            x = at.where(mask, x, NEG_BIG)
 
-        # per-chunk stable accumulators
-        m_chunk = at.max(x)                 # finite (>= NEG_BIG)
-        s1_chunk = at.exp(x - m_chunk).sum()
-        s2_chunk = at.exp(2.0 * x - 2.0 * m_chunk).sum()
+            m_chunk = at.max(x)
+            s1_chunk = at.exp(x - m_chunk).sum()
+            s2_chunk = at.exp(2.0 * x - 2.0 * m_chunk).sum()
 
-        # merge into running states
-        m1_new, s1_new = _combine_logsumexp(m_state,  s1_state,  m_chunk,     s1_chunk)
-        m2_new, s2_new = _combine_logsumexp(m2_state, s2_state,  2.0*m_chunk, s2_chunk)
+            m1_new, s1_new = _combine_logsumexp(m_state,  s1_state,  m_chunk,     s1_chunk)
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state,  2.0*m_chunk, s2_chunk)
+            return m1_new, m2_new, s1_new, s2_new
+    else:
+        def batch_step(i, m_state, m2_state, s1_state, s2_state,
+                       m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, *maybe_grids):
 
-        return m1_new, m2_new, s1_new, s2_new
+            m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+            spins_use = []
 
+            if len(maybe_grids) == 2:
+                dL_grid_t, z_grid_t = maybe_grids
+                zinj = atools.atinterp(dL, dL_grid_t, z_grid_t)
+            else:
+                H0, Om, w0, Xi0, n = Lambda_t[:5]
+                zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+
+            one_plus_z = 1 + zinj
+            m1Src = m1 / one_plus_z
+            m2Src = m2 / one_plus_z
+
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = at.log(Mc_src_inj)
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            log_p_pop = log_p_pop_at(
+                mass_1_use, mass_2_use, zinj, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing, has_m2_break=has_m2_break
+            )
+
+            if use_dp:
+                eps = at.constant(1e-30, dtype=m1inj.dtype)
+                log_p_pop += (-at.log(at.maximum(m2Src, eps))
+                              - at.log(at.maximum(m1Src - m2Src, eps))
+                              - at.log1p(zinj))
+
+            x = log_p_pop - lpd
+            x = at.where(mask, x, NEG_BIG)
+
+            m_chunk = at.max(x)
+            s1_chunk = at.exp(x - m_chunk).sum()
+            s2_chunk = at.exp(2.0 * x - 2.0 * m_chunk).sum()
+
+            m1_new, s1_new = _combine_logsumexp(m_state,  s1_state,  m_chunk,     s1_chunk)
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state,  2.0*m_chunk, s2_chunk)
+            return m1_new, m2_new, s1_new, s2_new
+
+    # scan setup
     idxs = at.arange(n_chunks, dtype="int64")
     m_init  = at.as_tensor_variable(-at.inf, dtype=m1inj.dtype)
     m2_init = at.as_tensor_variable(-at.inf, dtype=m1inj.dtype)
     s1_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
     s2_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
 
-    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K]
+    # Build non_sequences (tensors only). Pass spins as separate tensors if used.
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t]
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
     if has_grid:
         nonseq += [dL_grid_t, z_grid_t]
 
@@ -589,14 +609,172 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     log_mu = logsumexp1 - at.log(Ndraw)
     logs2  = logsumexp2 - at.log(Ndraw)
-
     logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw)
     Neff = at.exp(logNeff)
-
-    # variance of log-l per unit obs
     var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw - 1)
-
     return log_mu, Neff, var_log_lik_u
+
+
+# def sel_bias_with_uncertainty_at_0_batched(
+#     m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda, Ndraw,
+#     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
+#     chunk_size=4096, dL_grid=None, z_grid=None, scan_updates=False, **kwargs
+# ):
+#     """
+#     JAX/NumPyro-friendly streaming version:
+#     - Computes everything in chunks of `chunk_size` to keep GPU mem low.
+#     - Avoids dynamic slicing and non-tensor `scan` arguments.
+#     - Guards against NaNs from padded chunks and -inf arithmetic.
+#     Returns: log_mu, Neff, var_log_lik_u
+#     """
+
+#     # ---------- helpers ----------
+#     def _pad_to_multiple(x, k, pad_value):
+#         """Pad 1-D x to multiple of k (Python int) and reshape to (n_chunks, k)."""
+#         N = x.shape[0]                                   # symbolic int
+#         n_chunks = (N + k - 1) // k
+#         N_pad = n_chunks * k - N
+#         pad = at.full((N_pad,), at.as_tensor_variable(pad_value, dtype=x.dtype), dtype=x.dtype)
+#         x_pad = at.concatenate([x, pad], axis=0)
+#         xK = x_pad.reshape((n_chunks, k))                # first dim symbolic, second static
+#         return xK, n_chunks, N, N_pad
+
+#     def _combine_logsumexp(m_s, s_s, m_c, s_c):
+#         """Combine two log-sum-exp states (m = log base, s = sum of exp-shifted)."""
+#         m_new = at.maximum(m_s, m_c)
+#         s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+#         return m_new, s_new
+
+#     # ---------- constants / tensors ----------
+#     Lambda_t = at.as_tensor_variable(Lambda)
+
+#     if spin_model in ("default", "default_gauss"):
+#         spinsInj_sel_t = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
+#     else:
+#         spinsInj_sel_t = [] #at.as_tensor_variable([], dtype=m1inj.dtype)
+
+#     has_grid = dL_grid is not None
+#     if has_grid:
+#         dL_grid_t = at.as_tensor_variable(dL_grid)
+#         z_grid_t  = at.as_tensor_variable(z_grid)
+
+#     use_dp = mass_model in ("DP", "DPUC")
+
+#     # ---------- pad & reshape observed vectors (safe pads) ----------
+#     m1K, n_chunks, N, N_pad = _pad_to_multiple(m1inj,   chunk_size, 2.0)  # m1 > m2
+#     m2K, _,        _, _     = _pad_to_multiple(m2inj,   chunk_size, 1.0)
+#     dLK,  _,        _, _     = _pad_to_multiple(dLinj,   chunk_size, 1.0)  # positive
+#     lpdK, _,        _, _     = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
+#     if spin_model in ("default", "default_gauss"):
+#         s1K, _, _, _ = _pad_to_multiple(spinsInj[0],   chunk_size, 0. )
+#         s2K, _, _, _ = _pad_to_multiple(spinsInj[1],   chunk_size, 0. )
+#         ct1K, _, _, _ = _pad_to_multiple(spinsInj[2],   chunk_size, 1. )
+#         ct2K, _, _, _ = _pad_to_multiple(spinsInj[3],   chunk_size, 1. )
+#         spinsInj_sel_t_K = [ s1K, s2K, ct1K, ct2K ]
+
+#     # Mask to ignore the padded tail
+#     valid_mask = (at.arange(n_chunks * chunk_size) < N).reshape((n_chunks, chunk_size))
+
+#     # Large negative number for masked entries (avoid -inf arithmetic)
+#     NEG_BIG = at.constant(-1e30, dtype=m1inj.dtype)
+
+#     # ---------- scan body ----------
+#     def batch_step(i, m_state, m2_state, s1_state, s2_state,
+#                    m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K,
+#                    *maybe_grids):
+        
+#         m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+#         if spin_model in ("default", "default_gauss"):
+#             s1K, s2K, ct1K, ct2K = spinsInj_sel_t_K
+#             s1 = s1K[i]; s2 = s2K[i], ct1=ct1K[i]; ct2=ct2K[i]
+#             spinsInj_sel_t_use = [s1, s2, ct1, ct2]
+            
+
+#         # z(dL)
+#         if len(maybe_grids) == 2:
+#             dL_grid_t, z_grid_t = maybe_grids
+#             zinj = atools.atinterp(dL, dL_grid_t, z_grid_t)
+#         else:
+#             H0, Om, w0, Xi0, n = Lambda_t[:5]
+#             zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+
+#         # source-frame masses
+#         one_plus_z = 1 + zinj
+#         m1Src = m1 / one_plus_z
+#         m2Src = m2 / one_plus_z
+
+#         # mass reparam if needed
+#         if use_dp:
+#             Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+#             mass_1_use = at.log(Mc_src_inj)
+#             mass_2_use = atools.logitat(q_inj)
+#         else:
+#             mass_1_use = m1Src
+#             mass_2_use = m2Src
+
+#         # population log-prob
+#         log_p_pop = log_p_pop_at(
+#             mass_1_use, mass_2_use, zinj, dL, spinsInj_sel_t_use, Lambda_t,
+#             rate_model, mass_model, spin_model,
+#             smoothing=smoothing, has_m2_break=has_m2_break
+#         )
+
+#         # Jacobian if DP/DPUC
+#         if use_dp:
+#             # Use small epsilon to avoid log(0) in weird edge cases
+#             eps = at.constant(1e-30, dtype=m1inj.dtype)
+#             log_p_pop += (-at.log(at.maximum(m2Src, eps))
+#                           - at.log(at.maximum(m1Src - m2Src, eps))
+#                           - at.log1p(zinj))
+
+#         # selection-bias term
+#         x = log_p_pop - lpd
+
+#         # mask padded elements with big negative (not -inf)
+#         x = at.where(mask, x, NEG_BIG)
+
+#         # per-chunk stable accumulators
+#         m_chunk = at.max(x)                 # finite (>= NEG_BIG)
+#         s1_chunk = at.exp(x - m_chunk).sum()
+#         s2_chunk = at.exp(2.0 * x - 2.0 * m_chunk).sum()
+
+#         # merge into running states
+#         m1_new, s1_new = _combine_logsumexp(m_state,  s1_state,  m_chunk,     s1_chunk)
+#         m2_new, s2_new = _combine_logsumexp(m2_state, s2_state,  2.0*m_chunk, s2_chunk)
+
+#         return m1_new, m2_new, s1_new, s2_new
+
+#     idxs = at.arange(n_chunks, dtype="int64")
+#     m_init  = at.as_tensor_variable(-at.inf, dtype=m1inj.dtype)
+#     m2_init = at.as_tensor_variable(-at.inf, dtype=m1inj.dtype)
+#     s1_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
+#     s2_init = at.as_tensor_variable(0.0, dtype=m1inj.dtype)
+
+#     nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, spinsInj_sel_t_K]
+#     if has_grid:
+#         nonseq += [dL_grid_t, z_grid_t]
+
+#     (m_final, m2_final, s1_final, s2_final), _ = pytensor.scan(
+#         fn=batch_step,
+#         sequences=[idxs],
+#         outputs_info=[m_init, m2_init, s1_init, s2_init],
+#         non_sequences=nonseq,
+#         strict=True,
+#     )
+
+#     logsumexp1 = m_final[-1] + at.log(s1_final[-1])
+#     logsumexp2 = m2_final[-1] + at.log(s2_final[-1])
+
+#     log_mu = logsumexp1 - at.log(Ndraw)
+#     logs2  = logsumexp2 - at.log(Ndraw)
+
+#     logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw)
+#     Neff = at.exp(logNeff)
+
+#     # variance of log-l per unit obs
+#     var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw - 1)
+
+#     return log_mu, Neff, var_log_lik_u
 
 
 def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None, **kwargs):
