@@ -389,6 +389,13 @@ def safe_sigmoid(x, x0, eps):
 #######################
 
 
+def poly_hinge_neg(x, tau=1e-3):
+    # Penalize x<0; 0 for x≥0; ~(-x) for x≤-tau; C¹ smooth in [-tau, 0]
+    t = at.clip(-x / tau, 0.0, 1.0)             # t ∈ [0,1]
+    mid = tau * (2*t*t - t*t*t)                 # cubic: r(-tau)=tau, r(0)=0, slopes match
+    tail = at.maximum(-(x + tau), 0.0)          # adds linear extension for x < -tau
+    return mid + tail
+
 
 def softplus_stable(x):
     # log(1 + exp(x)) computed stably for any x

@@ -372,7 +372,7 @@ def make_model(  priors,
                  fix_inj_len = False,
                  sel_method='Tobs',
                  N_DP_comp_max = 20,
-                is_GP_dL = False,
+                is_GP_dL = True,
                find_GP_L = True,
                fout=None,
                monotonicity = 'softplus',
@@ -1503,6 +1503,7 @@ def make_model(  priors,
                     log_ddL_dz     = pm.Deterministic("log_ddL_dz", log_ddL_dz_at_z, dims="event_index")
                     
                     # Monotonicity soft barrier
+                    print("monotonicity is %s"%monotonicity)
                     if monotonicity is not None:
                         print('Imposing d(dL)/dz >0 on all the domain')
                         

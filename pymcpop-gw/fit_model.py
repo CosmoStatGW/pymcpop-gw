@@ -96,7 +96,7 @@ def main():
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
      
-    parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
+    parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default='softplus', type=str, required=False)
     parser.add_argument("--nu", default=1e-15, type=float, required=False)
