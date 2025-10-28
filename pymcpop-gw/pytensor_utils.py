@@ -2,7 +2,133 @@ import time
 import sys
 import psutil
 import os
+import pytensor.tensor as at
 
+from pytensor.graph.basic import graph_inputs
+from pytensor.tensor.random.op import RandomVariable
+from pytensor.graph.basic import graph_inputs, Variable
+
+from pytensor.graph.basic import io_toposort
+from pytensor.printing import debugprint
+
+
+def dump_uniform_sources(outputs, context=2):
+    outs = outputs if isinstance(outputs, (list, tuple)) else [outputs]
+    nodes = io_toposort([], outs)
+    rv_nodes = [n for n in nodes if isinstance(getattr(n, "op", None), RandomVariable)]
+    print(f"Found {len(rv_nodes)} RandomVariable nodes")
+    for k, n in enumerate(rv_nodes, 1):
+        print(f"\n[{k}] RV op: {n.op}  | owner: {n}")
+        # who uses this random draw?
+        for out in n.outputs:
+            for client in out.clients:
+                print("  used by:", client)
+        # small subgraph around it (VERY helpful)
+        try:
+            print("\n--- debugprint around this node ---")
+            print(debugprint(n.outputs, print_type=True, stop_on_name=True, depth=context))
+        except Exception as e:
+            print("debugprint failed:", e)
+            
+# ---------- flatten containers ----------
+def _flatten(name, obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _flatten(f"{name}.{k}", v)
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield from _flatten(f"{name}[{i}]", v)
+    else:
+        yield name, obj
+
+# ---------- classification ----------
+def classify_tensor(x, model=None):
+    """
+    Classify x w.r.t. RandomVariables.
+    Returns dict with:
+      has_rv: bool
+      rv_nodes: list[str] of RV op types
+      is_value_var: bool
+      source_rv: RV (if x is a value var)
+    """
+    info = {
+        "has_rv": False,
+        "rv_nodes": [],
+        "is_value_var": False,
+        "source_rv": None,
+    }
+
+    # Non-PyTensor objects are deterministic
+    if not isinstance(x, Variable):
+        return info
+
+    # Is x itself a value-var?
+    if model is not None and x in model.values_to_rvs:
+        info["is_value_var"] = True
+        info["source_rv"] = model.values_to_rvs[x]
+
+    # Find any RVs in x's graph
+    try:
+        ins_gen = graph_inputs([x])
+        ins = list(ins_gen)  # materialize here so exceptions are caught
+        rv_ops = []
+        for v in ins:
+            if getattr(v, "owner", None) and isinstance(getattr(v.owner, "op", None), RandomVariable):
+                rv_ops.append(type(v.owner.op).__name__)
+        if rv_ops:
+            info["has_rv"] = True
+            info["rv_nodes"] = sorted(set(rv_ops))
+    except Exception:
+        # If graph introspection fails, assume deterministic for safety in reporting
+        return info
+
+    return info
+
+def print_input_rv_report(model=None, **kwargs):
+    """
+    Example:
+        print_input_rv_report(
+            model=model,
+            m1inj=m1inj, m2inj=m2inj, dLinj=dLinj, spinsInj=spinsInj,
+            log_p_draw=lpdinj, Lambda=Lambda_val, dL_grid=dL_grid_val, z_grid=z_grid_val
+        )
+    """
+    lines = []
+    for name, obj in kwargs.items():
+        for leaf_name, leaf in _flatten(name, obj):
+            info = classify_tensor(leaf, model=model)
+
+            status_bits = []
+            if info["is_value_var"]:
+                status_bits.append("VALUE_VAR")
+            if info["has_rv"]:
+                status_bits.append("CONTAINS_RV")
+            status = "deterministic" if not status_bits else ",".join(status_bits)
+
+            src = ""
+            if info["is_value_var"] and info["source_rv"] is not None:
+                src_name = getattr(info["source_rv"], "name", "<unnamed RV>")
+                src = f" (from {src_name})"
+
+            rv_types = f" rv_ops={info['rv_nodes']}" if info["rv_nodes"] else ""
+            dtype = getattr(leaf, "dtype", type(leaf).__name__)
+            shape_str = str(getattr(leaf, "shape", ""))
+
+            lines.append(f"- {leaf_name}: {status}{src}{rv_types} | dtype={dtype} | shape={shape_str}")
+
+    print("\n".join(lines))
+
+
+
+
+def as_value_var(x, model):
+    # If x is an RV, return its value-var; otherwise return x unchanged
+    return model.rvs_to_values.get(x, x)
+
+def stack_as_values(elems, model):
+    # Apply as_value_var to each element, then stack
+    vals = [as_value_var(e, model) for e in elems]
+    return at.stack(vals)
 
 
 def make_tqdm_callback_full(pbar):

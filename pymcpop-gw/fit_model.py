@@ -11,6 +11,8 @@
 import os
 os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
 os.environ.setdefault("PYTENSOR_FLAGS", "optimizer_excluding=fusion")
+os.environ.setdefault("PYTENSOR_FLAGS", "gcc__cxxflags=-fbracket-depth=2048")
+
 
 import argparse
 import json
@@ -72,6 +74,7 @@ def main():
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=1, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
+    parser.add_argument("--profile", default=0, type=int, required=False)
     
     
     
@@ -81,6 +84,7 @@ def main():
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
     parser.add_argument("--chunk_inj", default=-1, type=int, required=False)
+    parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default=0, type=int, required=False)
 
@@ -524,6 +528,7 @@ def main():
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     use_float32 = FLAGS.use_float32,
                                     chunk_inj=FLAGS.chunk_inj,
+                                    chunk_reduce = FLAGS.chunk_reduce,
                                     marginal_R0 = FLAGS.marginal_R0,
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
                                     fix_H0 = FLAGS.fix_H0,
@@ -667,21 +672,92 @@ def main():
                 print('Checking initial point...')
                 #print('*'*40)
                 #print()
-
-                
+   
                 
                 try:
+                    
+                    
                     model.check_start_vals(ip)
-                    f  = model.compile_logp(sum=True)
-                    g  = model.compile_dlogp()                      # gradient
+                
+                    # f  = model.compile_logp(sum=True)
+                    # g  = model.compile_dlogp()                      # gradient
+                    # assert np.isfinite(f(ip))
+                    # for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
+                    
+
+                    # log_lik
+                    print("Computing initial log-likelihood...")
+                    f = model.compile_logp(sum=True, profile=True)
                     assert np.isfinite(f(ip))
-                    for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
+                    
+                    # check time
+                    start_time = time.time()
+                    _ = f(ip)
+                    elapsed = time.time() - start_time
+                    print(f"Log-likelihood evaluation time: {elapsed:.3f} s")
+                    
+                    # gradient
+                    print("Computing initial log-likelihood's gradient...")
+                    g  = model.compile_dlogp(profile=True)                      
+                    grads = g(ip)
+                    
+                    # check time
+                    start_time = time.time()
+                    _ = g(ip)
+                    elapsed = time.time() - start_time
+                    print(f"Gradient evaluation time: {elapsed:.3f} s")
+                    
+                    offset = 0
+                    for name, val in ip.items():
+                        size = np.size(val)
+                        grad_block = grads[offset:offset + size]
+                        #print(f"{name}: {grad_block}")
+                        offset += size
+                        
+                        if size == 0:
+                            continue
+                                            
+                        # scalar
+                        if np.isscalar(val) or np.ndim(val) == 0:
+                            if not np.isfinite(grad_block):
+                                print(f"Non finite gradient for '{name}': {grad_block}")
+                            continue
+                        
+                        # tensor
+                        try:
+                            grad_block = grad_block.reshape(val.shape)
+                        except Exception as e:
+                            print(f"Impossible reshape for'{name}', grad_block.size={grad_block.size}, val.shape={val.shape}")
+                            continue
+                        
+                        mask = ~np.isfinite(grad_block)
+                        if np.any(mask):
+                            bad_idx = np.argwhere(mask)
+                            print(f"Non finite gradient for '{name}' ({len(bad_idx)} elements):")
+                            
+                            for idx in bad_idx:
+                                idx_tuple = tuple(idx)
+                                grad_val = grad_block[idx_tuple]
+                                try:
+                                    init_val = val[idx_tuple]
+                                except Exception:
+                                    init_val = "N/A" 
+                                event_idx = idx[0] if len(idx) > 0 else None
+                                print(f"Event {event_idx}: grad={grad_val}, ival={init_val}, idx={idx_tuple}, log-likelihood={f(ip)}")
+                            
+                    for gi in grads: assert np.all(np.isfinite(gi)) # every block finite
+                    
                     print("Start is finite ✅")
+
+                    
                 except Exception as e:
                     print("Start invalid ❌:", e)
                     
                     print('Initial values:')
                     print(ip)
+
+                    f  = model.compile_logp(sum=True)
+                    g  = model.compile_dlogp()   
                     
                     total_logp = float(f(ip))
                     grad_norms = [float((gi**2).sum()**0.5) for gi in g(ip)]
@@ -809,7 +885,13 @@ def main():
                 
                 print('Done. ')
 
-
+            
+            if FLAGS.profile:
+                    print('\nProfiling...')
+                    pytensor.config.profile = True
+                    pytensor.config.profile_memory = False
+                    sys.exit(0)
+                    
             # ----- sampler-specific kwargs -----
            
             sampler_kwargs = {
@@ -915,7 +997,13 @@ def main():
             else:
                 t0 = time.time()
                 log_mem("before pm.sample main")
-                trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+                
+                
+                
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, pytensor_kwargs={"allow_gc": True}, **sampler_kwargs)
+                
+                
+                
                 print(f"[TIMER] pm.sample (main) took {time.time()-t0:.1f}s")
                 log_mem("after pm.sample main")
                 # Print peak resident memory (max RSS) used by this process.
