@@ -98,7 +98,11 @@ def main():
      
     parser.add_argument("--is_GP_dL", default=0, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
-    parser.add_argument("--monotonicity", default=0, type=int, required=False)
+    parser.add_argument("--monotonicity", default='softplus', type=str, required=False)
+    parser.add_argument("--nu", default=1e-15, type=float, required=False)
+    parser.add_argument("--lam", default=1e03, type=float, required=False)
+    parser.add_argument("--clip_high", default=500, type=float, required=False)
+    parser.add_argument("--clip_low", default=-500, type=float, required=False)
     parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
     parser.add_argument("--GP_zero_point", default='y', type=str, required=False)
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
@@ -536,6 +540,10 @@ def main():
                                     is_GP_dL = FLAGS.is_GP_dL,
                                     find_GP_L = FLAGS.find_GP_L,
                                     monotonicity=FLAGS.monotonicity,
+                                    nu = FLAGS.nu,
+                                     lam = FLAGS.lam,
+                                     clip_low = FLAGS.clip_low,
+                                     clip_high=FLAGS.clip_high,
                                     GP_prior=FLAGS.GP_prior,
                                     GP_zero_point=FLAGS.GP_zero_point,
                                     invert_dL_GP=FLAGS.invert_dL_GP,

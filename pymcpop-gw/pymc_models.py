@@ -375,7 +375,11 @@ def make_model(  priors,
                 is_GP_dL = False,
                find_GP_L = True,
                fout=None,
-               monotonicity = True,
+               monotonicity = 'softplus',
+                nu = 1e-15,
+                 lam = 1e03,
+                 clip_low = -500,
+                 clip_high=500,
                GP_prior = 'gammainv',
                GP_zero_point = 'y',
                rescale_GP=False,
@@ -1499,29 +1503,30 @@ def make_model(  priors,
                     log_ddL_dz     = pm.Deterministic("log_ddL_dz", log_ddL_dz_at_z, dims="event_index")
                     
                     # Monotonicity soft barrier
-                    if monotonicity:
-
+                    if monotonicity is not None:
                         print('Imposing d(dL)/dz >0 on all the domain')
-                       
                         
-                        # Temperature (smaller => harder constraint). Keep as tensor, no Deterministic needed.
-                        nu   = at.as_tensor_variable(1e-15)
-                        k = 1.7/nu
-                        pm.Potential( "monotonicity", -at.sum(atools.softplus(-k * s_grid)) )
-                        
-                        # # Numerically safe probit argument
-                        # # s(z) = d dL / dz evaluated on your fixed grid (shape: (Nz,))
-                        # s    = ddL_dz_grid
-                        # x    = pm.math.clip(s / nu, -30.0, 30.0)
-                        
-                        # # Φ(x) = Normal CDF (a.k.a. probit link). pm.math.invprobit is stable and JAX-friendly.
-                        # Phi  = pm.math.invprobit(x)
-                        
-                        # # Observations: all 1s (means “s>0” everywhere on the grid”)
-                        # obs  = at.ones_like(atools.zGridGlobals_at, dtype="int8") 
-                        
-                        # # Single vectorized Bernoulli RV (no Python loop)
-                        # pm.Bernoulli("monotonicity", p=Phi, observed=obs)
+                        if monotonicity=='softplus':
+                            # Temperature (smaller => harder constraint). Keep as tensor, no Deterministic needed.
+                            print('Using softplus with nu=%s'%nu)
+                            #nu   = at.as_tensor_variable(1e-15)
+                            k = 1.7/nu
+                            pm.Potential( "monotonicity", -at.sum(atools.softplus(-k * s_grid)) )
+                            
+
+                        elif monotonicity=='softplus_clip':
+
+                            #nu   = at.as_tensor_variable(1e-05)                            
+                            print('Using stable softplus, nu=%s, clipping between %s, %s'%(nu,clip_low, clip_high ))
+                            pm.Potential( "monotonicity", -at.sum( at.logaddexp( 0.0, at.clip(-s_grid/nu, clip_low, clip_high) )  ) )
+                            
+                        elif monotonicity=='poly':
+
+                            print('Using smooth polynomial, nu=%s, lam=%s'%(nu, lam))
+                            #nu = at.as_tensor_variable(1e-5)
+                            #lam = at.as_tensor_variable(1e3)
+                            
+                            pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
 
 
  
