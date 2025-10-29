@@ -467,17 +467,14 @@ def sel_bias_with_uncertainty_at_0_batched(
     if has_grid:
         dL_grid_t = at.as_tensor_variable(dL_grid)
         z_grid_t  = at.as_tensor_variable(z_grid)
-
-        # === NEW: precompute bin indices ONCE outside the scan ===
-        # idx in [1, len-1], so [idx-1, idx] are valid
+        # Precompute bin indices once (avoid searchsorted inside scan)
         idx_full = at.searchsorted(dL_grid_t, dLinj, side="right")
-        idx_full = at.clip(idx_full, 1, dL_grid_t.shape[0] - 1)
+        idx_full = at.clip(idx_full, 1, dL_grid_t.shape[0] - 1)  # ensure [idx-1, idx] is valid
 
     # Pad observed vectors (safe pads)
     m1K, n_chunks, N, _ = _pad_to_multiple(m1inj,   chunk_size, 2.0)  # m1 > m2
     m2K, _,        _, _ = _pad_to_multiple(m2inj,   chunk_size, 1.0)
-    # Keep dL padding finite; any value is ok since masked later
-    dLK,  _,        _, _ = _pad_to_multiple(dLinj,   chunk_size, 1.0)
+    dLK,  _,        _, _ = _pad_to_multiple(dLinj,  chunk_size, 1.0)
     lpdK, _,        _, _ = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
 
     # If spins used, pad each component separately
@@ -487,9 +484,8 @@ def sel_bias_with_uncertainty_at_0_batched(
         ct1K, _, _, _ = _pad_to_multiple(spinsInj[2], chunk_size, 1.0)
         ct2K, _, _, _ = _pad_to_multiple(spinsInj[3], chunk_size, 1.0)
 
-    # === NEW: pad indices with safe value 1 (so idx-1, idx valid) ===
+    # Pad precomputed indices with safe value 1 (so idx-1, idx are valid)
     if has_grid:
-        # indices are integers; use int64 to match Aesara indexing
         one_idx = at.as_tensor_variable(1, dtype="int64")
         idxK, _, _, _ = _pad_to_multiple(idx_full, chunk_size, one_idx)
 
@@ -506,9 +502,8 @@ def sel_bias_with_uncertainty_at_0_batched(
             s1 = s1K[i]; s2 = s2K[i]; ct1 = ct1K[i]; ct2 = ct2K[i]
             spins_use = [s1, s2, ct1, ct2]
 
-            if len(maybe_grids) == 4:
-                # === NEW: linear interp using precomputed indices (no searchsorted here) ===
-                dL_grid_t, z_grid_t, idxK = maybe_grids[:3]
+            if len(maybe_grids) == 3:
+                dL_grid_t, z_grid_t, idxK = maybe_grids
                 idx = idxK[i]
                 il = idx - 1
                 ih = idx
@@ -563,6 +558,7 @@ def sel_bias_with_uncertainty_at_0_batched(
             spins_use = []
 
             if len(maybe_grids) == 3:
+                print("I am in the no-spin, maybe_grids=3 branch")
                 dL_grid_t, z_grid_t, idxK = maybe_grids
                 idx = idxK[i]
                 il = idx - 1
@@ -623,7 +619,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     if spin_is_default:
         nonseq += [s1K, s2K, ct1K, ct2K]
     if has_grid:
-        nonseq += [dL_grid_t, z_grid_t, idxK]  # === NEW: pass padded indices ===
+        nonseq += [dL_grid_t, z_grid_t, idxK]  # (grid_x, grid_y, precomputed indices)
 
     (m_final, m2_final, s1_final, s2_final), _ = pytensor.scan(
         fn=batch_step,
