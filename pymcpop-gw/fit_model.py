@@ -171,10 +171,12 @@ def main():
     
     import jax
     import jax.numpy as np
-    if not FLAGS.use_float32:
+    
+    if FLAGS.use_float32:
         jax.config.update("jax_enable_x64", False)
     else:
         jax.config.update("jax_enable_x64", True)
+        
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
     jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
