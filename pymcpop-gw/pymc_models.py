@@ -1201,7 +1201,10 @@ def make_model(  priors,
         print('No values for parameters to fix passed. Default values will be used. If fixing parameters, check that the values are consistent. Values of fixed parameters:')
         print(PLPeakO3params)
         params_fix=PLPeakO3params
-        
+
+
+    X = np.float32 if pytensor.config.floatX == "float32" else np.float64  # model dtype
+    print("Model dtype will be %s"%X)
     ################################################
     # Build model
     ################################################
@@ -1400,18 +1403,18 @@ def make_model(  priors,
             sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
             mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
             sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
-            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u").astype(X))
             m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
             v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
             m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)  )
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X)  )
             delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
+            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1], dtype=X), initval=ivals.get("lambda").astype(X) )
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
             lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
             lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
-            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
-            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta").astype(X))
+            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2").astype(X))
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
             if has_m2_break:
                 print("Including gap for secondary mass")

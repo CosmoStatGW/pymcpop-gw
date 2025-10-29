@@ -151,16 +151,16 @@ def main():
         os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
 
 
-    if FLAGS.use_float32:
-        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-    else:
-        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
     
-    # Optional but recommended: enable float64 early
-    if not FLAGS.use_float32:
-        os.environ.setdefault("JAX_ENABLE_X64", "True")
+    if FLAGS.use_float32:
+        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"#gcc__cxxflags=-fbracket-depth=2048"
+        os.environ.setdefault("JAX_ENABLE_X64", "False")
+    
     else:
+        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"#gcc__cxxflags=-fbracket-depth=2048"
         os.environ.setdefault("JAX_ENABLE_X64", "True")
+    
+
     os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 
 
@@ -208,7 +208,7 @@ def main():
     else:
         pytensor.config.floatX = "float64"
     
-    
+    X = np.float32 if pytensor.config.floatX == "float32" else np.float64  # model dtype
 
     # ----------------------------------------------------
     # 4️⃣ Multiprocessing setup (only for parallel chains)
