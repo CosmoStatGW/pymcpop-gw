@@ -1409,7 +1409,7 @@ def make_model(  priors,
             m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
             m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X)  )
             delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1], dtype=X), initval=np.asarray(ivals.get("lambda"), dtype=X)) )
+            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1], dtype=X), initval=np.asarray(ivals.get("lambda"), dtype=X))
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
             lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
             lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
