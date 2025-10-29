@@ -17,6 +17,9 @@ from jax.numpy import concatenate
 from jax.numpy import ones
 from jax.numpy import zeros
 
+from pytensor.gradient import disconnected_grad as stop_grad
+
+
 
 import pade_cosmo as pc
 
@@ -128,13 +131,13 @@ def make_z_grid(total=150, hi_boost=0.20):
 zGridGlobals_low = make_z_grid()
 
 
-zGridGlobals_at_low = at.as_tensor_variable(zGridGlobals_low)
+zGridGlobals_at_low = stop_grad(at.as_tensor_variable(zGridGlobals_low))
 
 
 
 zGridGlobals_high = make_z_grid(1000)
 
-zGridGlobals_at_high = at.as_tensor_variable(zGridGlobals_high)
+zGridGlobals_at_high = stop_grad(at.as_tensor_variable(zGridGlobals_high))
 
 
 max_m = 500.
@@ -148,18 +151,24 @@ _mass_grid_np = onp.unique(
     ])
 )
 _mass_grid_np.sort()
-_mass_grid_at = at.as_tensor_variable(_mass_grid_np)
+_mass_grid_at = stop_grad(at.as_tensor_variable(_mass_grid_np))
 
 def _get_mass_grid():
     return _mass_grid_at
 
 
 
-_tgrid  = onp.linspace(0.0, 1.0, 2000)
-_tgrid_at = at.as_tensor_variable(_tgrid)
+_tgrid  = onp.linspace(0.0, 1.0, 500)
+_tgrid_at = stop_grad(at.as_tensor_variable(_tgrid))
+
+_tgrid_100  = onp.linspace(0.0, 1.0, 100)
+_tgrid_at_100 = stop_grad(at.as_tensor_variable(_tgrid_100))
 
 def _get_t_grid():
     return _tgrid_at
+
+def _get_t_grid_100():
+    return _tgrid_at_100
     
 
 
@@ -426,6 +435,73 @@ def atinterp(x, xs, ys, eps=1e-12, side="right"):
     denom = at.maximum(xh - xl, eps)  # protect against accidental ties
     r = (x - xl) / denom
     return (1 - r) * yl + r * yh
+
+
+def atinterp_uniform_from_step(x, x_min, step, y, eps=1e-12, side="right"):
+    """
+    Linear interpolation on a *uniform, sorted, ascending* 1-D grid that
+    reproduces the semantics of:
+
+        idxs = searchsorted(xs, x, side=side)
+        idxs = clip(idxs, 1, N-1)
+        xl = xs[idxs-1]; xh = xs[idxs]
+        yl = y[idxs-1]; yh = y[idxs]
+        r = (x - xl) / max(xh - xl, eps)
+        out = (1-r)*yl + r*yh
+
+    Parameters
+    ----------
+    x : scalar/array (broadcastable)
+    x_min : scalar tensor/number
+        First grid point (xs[0]).
+    step : scalar tensor/number
+        Constant grid spacing: xs[k] = x_min + k*step
+    y : 1-D tensor, length N >= 2
+        Values on the grid (ys).
+    eps : small positive to guard denom (matches your original).
+    side : "right" or "left"
+        Same meaning as in numpy/pytensor searchsorted.
+
+    Returns
+    -------
+    Tensor with the same shape as x, dtype = y.dtype.
+    """
+    y = at.as_tensor_variable(y)
+    x = at.as_tensor_variable(x).astype(y.dtype)
+    x_min = at.as_tensor_variable(x_min).astype(y.dtype)
+    step = at.as_tensor_variable(step).astype(y.dtype)
+
+    N = y.shape[0]             # symbolic length
+    Nm1 = N - 1                # N-1
+
+    # fractional position t = (x - x_min)/step
+    t = (x - x_min) / step
+
+    # insertion index like searchsorted
+    if side == "right":
+        j = at.ceil(t).astype("int64")
+    elif side == "left":
+        # numpy.searchsorted(..., side='left') is equivalent to floor(t)
+        j = at.floor(t).astype("int64")
+    else:
+        raise ValueError("side must be 'right' or 'left'")
+
+    # clip *exactly* like your original: to [1, N-1]
+    j = at.clip(j, 1, Nm1)     # j in [1, N-1]
+    i = j - 1                  # i in [0, N-2]
+
+    # reconstruct xl, xh from uniform grid
+    i_f = i.astype(y.dtype)
+    xl = x_min + i_f * step
+    xh = xl + step             # = x_min + j*step
+
+    yl = y[i]
+    yh = y[i + 1]
+
+    denom = at.maximum(xh - xl, at.as_tensor_variable(eps).astype(y.dtype))
+    r = (x - xl) / denom
+    return (1.0 - r) * yl + r * yh
+
 
 def atinterp_minimal(x, xs, ys):
 
@@ -731,7 +807,7 @@ class TrapzOp(Op):
         y, x = inputs                    # y: (M,N), x: (1,N)
         # Broadcast x to (M,N)
         x_b = np.broadcast_to(x, y.shape)
-        out = np.trapz(y, x_b, axis=self.axis)  # (M,)
+        out = np.trapezoid(y, x_b, axis=self.axis)  # (M,)
         outputs[0][0] = out
 
     def grad(self, inputs, output_grads):
@@ -748,7 +824,7 @@ class TrapzOp(Op):
                 xv_b = jnp.broadcast_to(xv, yv.shape)
 
                 def trapz_sum(y_, x_):
-                    return jnp.sum(jnp.trapz(y_, x_, axis=1))
+                    return jnp.sum(jnp.trapezoid(y_, x_, axis=1))
 
                 dy = jax.grad(trapz_sum, argnums=0)(yv, xv_b)  # (M,N)
                 dx_full = jax.grad(trapz_sum, argnums=1)(yv, xv_b)  # (M,N)
@@ -774,8 +850,9 @@ PI = np.pi #at.as_tensor_variable(np.pi)
 
 
 # Precompute n-point Gauss–Legendre nodes/weights on [0,1]
-def gauss_legendre_01(n=32, dtype="float64"):
+def gauss_legendre_01(n=32, ): #dtype="float64"):
     from numpy.polynomial.legendre import leggauss
+    dtype=pytensor.config.floatX
     x, w = leggauss(n)                 # on [-1, 1]
     x01 = (x + 1.0) * 0.5              # map to [0, 1]
     w01 = w * 0.5
@@ -1268,20 +1345,10 @@ def logC_PLP( m, beta, deltam, ml, res=100):
     Gives inverse log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
     
-
-    # max_m = at.as_tensor_variable(500)
-  
-    
-    # x2 = at.linspace(ml, 15, res )
-    # x3 = at.linspace(15.01, 100, res )
-    # x4 = at.linspace(101.1, max_m, int(res/2) )
-    # xx = at.concatenate([ x2, x3, x4 ] )
-    # p2 = at.exp(logpdfm2_PLP( xx , beta, deltam, ml))
-    # cdf = atcumtrapz(p2, xx, )
-    # itr = atinterp( m, xx[1:], at.log(cdf))
-    # return itr
-
-    _tgrid = _get_t_grid()
+    if res!=100:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid_100()
     
     xx = ml + (max_m - ml) * _tgrid
 
@@ -1312,13 +1379,16 @@ def logC_PLP( m, beta, deltam, ml, res=100):
 #     return at.log(attrapzvec(p1,ms))
 
 
-def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=1000):
+def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=500):
     """
     Log integral of p(m1, m2) dm1 dm2 (total normalization of the mass function).
     Uses a cached global grid; ml and mh can be stochastic.
     """
-    
-    _tgrid = _get_t_grid()
+
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
     
     xx = ml + (mh - ml) * _tgrid
 
@@ -1442,7 +1512,7 @@ def logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=45, w_g = 80, sig_g_low = 5., s
 
 
 
-def logC_PLP_reg( m, beta, deltam, ml, res=1000, smoothing='LVK'):
+def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
@@ -1469,7 +1539,10 @@ def logC_PLP_reg( m, beta, deltam, ml, res=1000, smoothing='LVK'):
 
     #xx = at.linspace(ml, 500, res)
 
-    _tgrid = _get_t_grid()
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
     
     xx = ml + (max_m - ml) * _tgrid 
 
@@ -1489,7 +1562,7 @@ def logC_PLP_reg( m, beta, deltam, ml, res=1000, smoothing='LVK'):
 
 
 
-def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=1000):
+def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=500):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
@@ -1497,7 +1570,11 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
     '''
 
 
-    _tgrid = _get_t_grid()
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+        
     ms = ml + (mh - ml) * _tgrid 
     
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  ))
@@ -1579,7 +1656,7 @@ def logpdfm1_DPLDP(
     return log_S + log_mix 
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK'):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500 ):
     
         m1, m2 = theta
         alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
@@ -1589,10 +1666,15 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
     
         lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
         
-        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing) 
+        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
    
-        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
-    
+        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, res=resN)
+
+        # print(lC.ndim)
+        # print(lC.shape.eval())
+        # assert lC.ndim == 1
+        # assert ln.ndim == 0
+
         lpdf = lpdfm1 + lpdfm2 -lC -ln
     
         #lpdf = at.switch(
@@ -1610,12 +1692,15 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
         
      
 
-def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high = 5, has_m2_break=False, res=5000, smoothing='LVK'):
+def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high = 5, has_m2_break=False, res=500, smoothing='LVK'):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
 
-    _tgrid = _get_t_grid()
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
     
     xx = m2_low + (max_m - m2_low) * _tgrid 
         
@@ -1630,14 +1715,16 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
 
 
 
-
-def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=2000, smoothing='LVK'):
+def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=500, smoothing='LVK'):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
     '''
     
-    _tgrid = _get_t_grid()
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
     
     ms = m1_low + (m_high - m1_low) * _tgrid 
             

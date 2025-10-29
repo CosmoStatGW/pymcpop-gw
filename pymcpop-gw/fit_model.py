@@ -9,9 +9,13 @@
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
-os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes
-os.environ.setdefault("PYTENSOR_FLAGS", "optimizer_excluding=fusion")
-os.environ.setdefault("PYTENSOR_FLAGS", "gcc__cxxflags=-fbracket-depth=2048")
+#os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes. done later
+
+
+#os.environ.setdefault("PYTENSOR_FLAGS", "optimizer_excluding=fusion")
+#os.environ.setdefault("PYTENSOR_FLAGS", "gcc__cxxflags=-fbracket-depth=2048")
+
+#os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
 
 
 import argparse
@@ -75,6 +79,8 @@ def main():
     parser.add_argument("--check_init", default=1, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
     parser.add_argument("--profile", default=0, type=int, required=False)
+
+    parser.add_argument("--save_thetas", default=0, type=int, required=False)
     
     
     
@@ -143,9 +149,18 @@ def main():
     if FLAGS.chain_method == "parallel":
         # Must set before importing numpyro/jax/pymc
         os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+
+
+    if FLAGS.use_float32:
+        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+    else:
+        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
     
     # Optional but recommended: enable float64 early
-    os.environ.setdefault("JAX_ENABLE_X64", "True")
+    if not FLAGS.use_float32:
+        os.environ.setdefault("JAX_ENABLE_X64", "True")
+    else:
+        os.environ.setdefault("JAX_ENABLE_X64", "True")
     os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 
 
@@ -156,9 +171,12 @@ def main():
     
     import jax
     import jax.numpy as np
-    jax.config.update("jax_enable_x64", True)
+    if not FLAGS.use_float32:
+        jax.config.update("jax_enable_x64", False)
+    else:
+        jax.config.update("jax_enable_x64", True)
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-
+    jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
     from scipy.special import ndtr, ndtri, erfinv
     
@@ -184,8 +202,11 @@ def main():
     import data_tools as dt
     import pytensor_tools as atools
     import pytensor_utils as autils
-    
-    pytensor.config.floatX = "float64"
+
+    if FLAGS.use_float32:
+        pytensor.config.floatX = "float32"
+    else:
+        pytensor.config.floatX = "float64"
     
     
 
@@ -214,7 +235,10 @@ def main():
 
     print(f"Running on PyMC v{pm.__version__}")
     print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-    print("dtype test:", np.array(0., dtype=np.float64).dtype)
+    if FLAGS.use_float32:
+        print("dtype test:", np.array(0., dtype=np.float32).dtype)
+    else:
+        print("dtype test:", np.array(0., dtype=np.float64).dtype)
     
 
     print(f"[PID] {os.getpid()}")
@@ -552,7 +576,8 @@ def main():
                                     params_fix=params_fix,
                                       allTobs=FLAGS.allTobs,
                                 use_updates = use_updates,
-                                inj_loop = FLAGS.inj_loop
+                                inj_loop = FLAGS.inj_loop,
+                                save_thetas = FLAGS.save_thetas
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
@@ -979,10 +1004,15 @@ def main():
                     t0 = time.time()
                     log_mem("before pm.sample main")
                     cb = autils.make_tqdm_callback(pbar)
-                    trace = pm.sample(nuts_sampler='pymc', **sampler_kwargs,
+
+                    
+                    trace = pm.sample(nuts_sampler='pymc', idata_kwargs={"log_likelihood": False},
+                                      **sampler_kwargs,
                                       callback=cb,
                                       
                                      )
+
+                    
                     print(f"[TIMER] pm.sample (main) took {time.time()-t0:.1f}s")
                     log_mem("after pm.sample main")
                     # Print peak resident memory (max RSS) used by this process.
@@ -1000,7 +1030,7 @@ def main():
                 
                 
                 
-                trace = pm.sample(nuts_sampler=FLAGS.sampler, pytensor_kwargs={"allow_gc": True}, **sampler_kwargs)
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, idata_kwargs={"log_likelihood": False}, pytensor_kwargs={"allow_gc": True}, **sampler_kwargs)
                 
                 
                 
