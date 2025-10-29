@@ -437,70 +437,37 @@ def atinterp(x, xs, ys, eps=1e-12, side="right"):
     return (1 - r) * yl + r * yh
 
 
-def atinterp_uniform_from_step(x, x_min, step, y, eps=1e-12, side="right"):
+def atinterp_uniform(x, x0, x1, n_pts, ys, eps=1e-30):
     """
-    Linear interpolation on a *uniform, sorted, ascending* 1-D grid that
-    reproduces the semantics of:
+    Linear interpolation on a *uniform* grid without searchsorted.
 
-        idxs = searchsorted(xs, x, side=side)
-        idxs = clip(idxs, 1, N-1)
-        xl = xs[idxs-1]; xh = xs[idxs]
-        yl = y[idxs-1]; yh = y[idxs]
-        r = (x - xl) / max(xh - xl, eps)
-        out = (1-r)*yl + r*yh
-
-    Parameters
-    ----------
-    x : scalar/array (broadcastable)
-    x_min : scalar tensor/number
-        First grid point (xs[0]).
-    step : scalar tensor/number
-        Constant grid spacing: xs[k] = x_min + k*step
-    y : 1-D tensor, length N >= 2
-        Values on the grid (ys).
-    eps : small positive to guard denom (matches your original).
-    side : "right" or "left"
-        Same meaning as in numpy/pytensor searchsorted.
-
-    Returns
-    -------
-    Tensor with the same shape as x, dtype = y.dtype.
+    Grid: xs[j] = x0 + j*dx, j=0..n_pts-1, dx = (x1-x0)/(n_pts-1)
+    Inputs:
+      x     : query values (tensor)
+      x0,x1 : grid endpoints (scalars or 0-d tensors)
+      n_pts : number of grid points (python int or 0-d int tensor)
+      ys    : values on grid (shape (n_pts,))
+    Returns:
+      y(x)  : linearly interpolated values, same shape/bcast as x
     """
-    y = at.as_tensor_variable(y)
-    x = at.as_tensor_variable(x).astype(y.dtype)
-    x_min = at.as_tensor_variable(x_min).astype(y.dtype)
-    step = at.as_tensor_variable(step).astype(y.dtype)
+    x  = at.as_tensor_variable(x)
+    x0 = at.as_tensor_variable(x0, dtype=x.dtype)
+    x1 = at.as_tensor_variable(x1, dtype=x.dtype)
 
-    N = y.shape[0]             # symbolic length
-    Nm1 = N - 1                # N-1
+    # dx = (x1-x0)/(n_pts-1)
+    n_minus_1 = at.as_tensor_variable(n_pts - 1, dtype="int64")
+    n_minus_1_f = at.cast(n_minus_1, x.dtype)
+    dx = (x1 - x0) / at.maximum(n_minus_1_f, at.as_tensor_variable(eps, dtype=x.dtype))
 
-    # fractional position t = (x - x_min)/step
-    t = (x - x_min) / step
+    # t = (x - x0)/dx; j = floor(t) in [0, n_pts-2]
+    t  = (x - x0) / at.maximum(dx, at.as_tensor_variable(eps, dtype=x.dtype))
+    j  = at.floor(t).astype("int64")
+    j  = at.clip(j, 0, n_pts - 2)
 
-    # insertion index like searchsorted
-    if side == "right":
-        j = at.ceil(t).astype("int64")
-    elif side == "left":
-        # numpy.searchsorted(..., side='left') is equivalent to floor(t)
-        j = at.floor(t).astype("int64")
-    else:
-        raise ValueError("side must be 'right' or 'left'")
-
-    # clip *exactly* like your original: to [1, N-1]
-    j = at.clip(j, 1, Nm1)     # j in [1, N-1]
-    i = j - 1                  # i in [0, N-2]
-
-    # reconstruct xl, xh from uniform grid
-    i_f = i.astype(y.dtype)
-    xl = x_min + i_f * step
-    xh = xl + step             # = x_min + j*step
-
-    yl = y[i]
-    yh = y[i + 1]
-
-    denom = at.maximum(xh - xl, at.as_tensor_variable(eps).astype(y.dtype))
-    r = (x - xl) / denom
-    return (1.0 - r) * yl + r * yh
+    r  = at.cast(t - at.cast(j, t.dtype), x.dtype)  # fractional part in [0,1)
+    yl = ys[j]
+    yh = ys[j + 1]
+    return (1 - r) * yl + r * yh
 
 
 def atinterp_minimal(x, xs, ys):
@@ -1556,7 +1523,13 @@ def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
     
     p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml, smoothing=smoothing))
     cdf = atcumtrapz(p2, xx, )
-    itr = atinterp( m, xx[1:], at.log(cdf) )
+    
+    #itr = atinterp( m, xx[1:], at.log(cdf) )
+    
+    x0 = xx[1]                 # because you used xx[1:] for interpolation
+    x1 = xx[-1]
+    nU = xx.shape[0] - 1       # length of xx[1:]
+    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf))
 
     return itr
 
@@ -1708,7 +1681,14 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     
     cdf = atcumtrapz( p2, xx, )
 
-    itr = atinterp( m, xx[1:], at.log(cdf) )
+    #itr = atinterp( m, xx[1:], at.log(cdf) )
+
+    # grid endpoints and size (xx is uniform)
+    x0 = xx[1]                 # because you used xx[1:] for interpolation
+    x1 = xx[-1]
+    nU = xx.shape[0] - 1       # length of xx[1:]
+    #print("ising uniform interp")
+    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf))
     
     return itr
 
