@@ -468,11 +468,15 @@ def sel_bias_with_uncertainty_at_0_batched(
     if has_grid:
         dL_grid_t = at.as_tensor_variable(dL_grid)
         z_grid_t  = at.as_tensor_variable(z_grid)
+        dL_pad_value = dL_grid_t[0]  
+    else:
+        dL_pad_value = at.min(dLinj)
+
 
     # Pad observed vectors (safe pads)
     m1K, n_chunks, N, _ = _pad_to_multiple(m1inj,   chunk_size, 2.0)  # m1 > m2
     m2K, _,        _, _ = _pad_to_multiple(m2inj,   chunk_size, 1.0)
-    dLK,  _,        _, _ = _pad_to_multiple(dLinj,   chunk_size, 1.0)
+    dLK,  _,        _, _ = _pad_to_multiple(dLinj,   chunk_size, dL_pad_value )
     lpdK, _,        _, _ = _pad_to_multiple(log_p_draw, chunk_size, 0.0)
 
     # If spins used, pad each component separately
@@ -483,7 +487,7 @@ def sel_bias_with_uncertainty_at_0_batched(
         ct2K, _, _, _ = _pad_to_multiple(spinsInj[3], chunk_size, 1.0)
 
     valid_mask = (at.arange(n_chunks * chunk_size) < N).reshape((n_chunks, chunk_size))
-    #NEG_BIG = at.constant(-1e30, dtype=m1inj.dtype)
+    NEG_BIG = -np.inf #at.constant(-1e30, dtype=m1inj.dtype)
 
 
     # ---- scan body ----
@@ -528,7 +532,7 @@ def sel_bias_with_uncertainty_at_0_batched(
                               - at.log1p(zinj))
 
             x = log_p_pop - lpd
-            x = at.where(mask, x, -np.inf)
+            x = at.where(mask, x, NEG_BIG)
 
             m_chunk = at.max(x)
             s1_chunk = at.exp(x - m_chunk).sum()
@@ -576,7 +580,7 @@ def sel_bias_with_uncertainty_at_0_batched(
                               - at.log1p(zinj))
 
             x = log_p_pop - lpd
-            x = at.where(mask, x, -np.inf)
+            x = at.where(mask, x, NEG_BIG)
 
             m_chunk = at.max(x)
             s1_chunk = at.exp(x - m_chunk).sum()
@@ -742,7 +746,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 #             else:
 #                 # --------------- ORIGINAL fp64 path (exactly as before) ---------------
 #                 x = log_p_pop - lpd
-#                 x = at.where(mask, x, -np.inf)
+#                 x = at.where(mask, x, NEG_BIG)
 
 #                 m_chunk = at.max(x)
 #                 s1_chunk = at.exp(x - m_chunk).sum()
@@ -812,7 +816,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 #             else:
 #                 # --------------- ORIGINAL fp64 path (exactly as before) ---------------
 #                 x = log_p_pop - lpd
-#                 x = at.where(mask, x, -np.inf)
+#                 x = at.where(mask, x, NEG_BIG)
 
 #                 m_chunk = at.max(x)
 #                 s1_chunk = at.exp(x - m_chunk).sum()
