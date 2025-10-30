@@ -93,7 +93,8 @@ def main():
     parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
-    parser.add_argument("--inj_loop", default=0, type=int, required=False)
+    parser.add_argument("--inj_loop", default='vec', type=str, required=False)
+    parser.add_argument("--wrap_logp", default=0, type=int, required=False)
 
         
     
@@ -587,7 +588,8 @@ def main():
                                       allTobs=FLAGS.allTobs,
                                 use_updates = use_updates,
                                 inj_loop = FLAGS.inj_loop,
-                                save_thetas = FLAGS.save_thetas
+                                save_thetas = FLAGS.save_thetas,
+                                wrap_logp=FLAGS.wrap_logp
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

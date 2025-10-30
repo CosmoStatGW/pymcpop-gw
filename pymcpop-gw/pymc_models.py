@@ -52,122 +52,100 @@ except Exception:  # fallback for older layouts
 
 
 @functools.lru_cache(maxsize=None)
-def _make_log_p_pop_ofg(
+def _make_log_p_pop_ofg_min(
     dtype: str,
     rate_model: str,
     mass_model: str,
     spin_model: str,
     smoothing: str,
     has_m2_break: bool,
-    spin_is_default: bool,
     with_dc: bool,
 ):
-    # ---- symbolic inputs (vectors) ----
+    # Symbolic inputs (vectors)
     m1s    = at.vector('m1s',    dtype=dtype)
     m2s    = at.vector('m2s',    dtype=dtype)
     z      = at.vector('z',      dtype=dtype)
     dL     = at.vector('dL',     dtype=dtype)
-    Lambda = at.vector('Lambda', dtype=dtype)
+    Lambda = at.vector('Lambda', dtype=dtype)   # single 1-D vector only
     ins = [m1s, m2s, z, dL, Lambda]
 
-    # optional spins
-    if spin_is_default:
-        s1  = at.vector('s1',  dtype=dtype)
-        s2  = at.vector('s2',  dtype=dtype)
-        ct1 = at.vector('ct1', dtype=dtype)
-        ct2 = at.vector('ct2', dtype=dtype)
-        spins_syms = [s1, s2, ct1, ct2]
-        ins += spins_syms
-    else:
-        spins_syms = []
-
-    # optional dc
+    dc = at.vector('dc', dtype=dtype) if with_dc else None
     if with_dc:
-        dc = at.vector('dc', dtype=dtype)
         ins.append(dc)
-    else:
-        dc = None
 
-    # ---- build inner kernel once ----
-    out = log_p_pop_at_unwrap(
-        m1s, m2s, z, dL, spins_syms, Lambda,
+    # Build once from your *original* implementation
+    out = log_p_pop_at(
+        m1s, m2s, z, dL, [], Lambda,   # spin_model='none' → empty spin list
         rate_model, mass_model, spin_model,
         smoothing=smoothing, has_m2_break=has_m2_break, dc=dc
     )
 
-    # Inline to remove runtime OpFromGraph overhead
-    return OpFromGraph(ins, [out], inline=True, on_unused_input="ignore")
+    # (Optional) keep dL marked as used even if dc short-circuits it internally:
+    if with_dc:
+        out = out + at.sum(dL) * at.as_tensor_variable(0.0, dtype=dtype)
 
+    return OpFromGraph(ins, [out], inline=True)
 
-def log_p_pop_at(
+def log_p_pop_at_wrap(
     m1s, m2s, z, dL, spins, Lambda,
     rate_model, mass_model, spin_model,
-    smoothing='LVK', has_m2_break=False, dc=None, dtype="float64"
+    smoothing='LVK', has_m2_break=False, dc=None, dtype='float64'
 ):
-    """Drop-in wrapper around log_p_pop_at_unwrap with cached, inlined graph."""
-
-    def _vec(x):
+    """Wrapper that only wraps when Lambda is a single 1-D tensor.
+       Otherwise, call the original function directly."""
+    # Flatten core vectors
+    def _v(x):
         v = x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
         if v.dtype != dtype:
             v = v.astype(dtype)
         return v.flatten()
 
-    # core vectors
-    m1s_ = _vec(m1s)
-    m2s_ = _vec(m2s)
-    z_   = _vec(z)
-    dL_  = _vec(dL)
+    m1s_ = _v(m1s)
+    m2s_ = _v(m2s)
+    z_   = _v(z)
+    dL_  = _v(dL)
 
-    # Lambda: allow list/tuple of scalars/symbolics
-    if isinstance(Lambda, (list, tuple)):
-        elems = []
-        for x in Lambda:
-            vx = _vec(x)
-            elems.append(vx[0] if vx.size == 1 else vx.ravel()[0])
-        Lambda_ = at.stack(elems).astype(dtype)
-    else:
-        Lambda_ = _vec(Lambda)
+    # If Lambda is already a single 1-D tensor, we can safely wrap.
+    can_wrap = isinstance(Lambda, at.Variable) and Lambda.ndim == 1
 
-    # spins
-    spin_is_default = bool(spins) and len(spins) == 4
-    if spin_is_default:
-        s1_, s2_, ct1_, ct2_ = (_vec(spins[0]), _vec(spins[1]), _vec(spins[2]), _vec(spins[3]))
+    if not can_wrap:
+        # Fall back to your original, unwrapped implementation
+        return log_p_pop_at(
+            m1s, m2s, z, dL, [], Lambda,
+            rate_model, mass_model, spin_model,
+            smoothing=smoothing, has_m2_break=has_m2_break, dc=dc
+        )
 
-    # dc
+    Lambda_ = _v(Lambda)
     with_dc = dc is not None
     if with_dc:
-        dc_ = _vec(dc)
+        dc_ = _v(dc)
         dc_ = at.repeat(dc_[0], dL_.shape[0]) if dc_.size == 1 else dc_
 
-    ofg = _make_log_p_pop_ofg(
+    ofg = _make_log_p_pop_ofg_min(
         dtype=dtype,
         rate_model=rate_model,
         mass_model=mass_model,
         spin_model=spin_model,
         smoothing=smoothing,
         has_m2_break=bool(has_m2_break),
-        spin_is_default=spin_is_default,
         with_dc=with_dc,
     )
 
-    if spin_is_default and with_dc:
-        return ofg(m1s_, m2s_, z_, dL_, Lambda_, s1_, s2_, ct1_, ct2_, dc_)[0]
-    elif spin_is_default:
-        return ofg(m1s_, m2s_, z_, dL_, Lambda_, s1_, s2_, ct1_, ct2_)[0]
-    elif with_dc:
+    if with_dc:
         return ofg(m1s_, m2s_, z_, dL_, Lambda_, dc_)[0]
     else:
         return ofg(m1s_, m2s_, z_, dL_, Lambda_)[0]
 
 
-def log_p_pop_at_unwrap(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, smoothing='LVK', has_m2_break=False, dc=None):
+def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_model, smoothing='LVK', has_m2_break=False, dc=None):
 
 
     ###################################
     # get parameters and compute log p_pop
     ####################################
     
-    #H0, Om, w0, Xi0, n = Lambda[:5] 
+    #was: H0, Om, w0, Xi0, n = Lambda[:5] 
     H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
 
     if dc is None:
@@ -194,36 +172,53 @@ def log_p_pop_at_unwrap(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, 
     
     if spin_model=='chieffchip':
         
-        muE, sigE, muP, sigP, rho = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3], Lambda[istart+4] #Lambda[istart:istart+5]
+        #muE, sigE, muP, sigP, rho = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3], Lambda[istart+4] #was: Lambda[istart:istart+5]
+        muE   = Lambda[istart + 0]
+        sigE  = Lambda[istart + 1]
+        muP   = Lambda[istart + 2]
+        sigP  = Lambda[istart + 3]
+        rho   = Lambda[istart + 4]
         chieff, chip = spins[0], spins[1]
 
         lpspin = atools.logpdf_multivariate_trunc_2D(  chieff, chip, muE, muP, sigE, sigP, rho,
                                                      at.as_tensor_variable(-1.), at.as_tensor_variable(1.), 
                                                      at.as_tensor_variable(0.), at.as_tensor_variable(1.) 
                                                     )
-        istart_spin = istart+4
+        istart_spin = istart + 5
 
     elif spin_model=='chieffchip_uc':
         
-        muE, sigE, muP, sigP = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3] #Lambda[istart:istart+4]
+        #muE, sigE, muP, sigP = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3] # was: Lambda[istart:istart+4]
+        muE   = Lambda[istart + 0]
+        sigE  = Lambda[istart + 1]
+        muP   = Lambda[istart + 2]
+        sigP  = Lambda[istart + 3]
         chieff, chip = spins[0], spins[1]
 
         lpchie = atools.truncGausslowerupper_at_lpdf(chieff, muE, sigE, xmin=at.as_tensor_variable(-1), xmax=at.as_tensor_variable(1))
         lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=at.as_tensor_variable(0), xmax=at.as_tensor_variable(1))
 
         lpspin = lpchie+lpchip
-        istart_spin = istart+3
+        istart_spin = istart+4
 
     elif spin_model=='default':
 
-        alphaChi, betaChi, zeta, sigmat = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3]#Lambda[istart:istart+4]
+        #alphaChi, betaChi, zeta, sigmat = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3]#Lambda[istart:istart+4]
+        alphaChi = Lambda[istart + 0]
+        betaChi  = Lambda[istart + 1]
+        zeta     = Lambda[istart + 2]
+        sigmat   = Lambda[istart + 3]
         lpspin = atools.logpdf_default_spin(spins, [alphaChi, betaChi, zeta, sigmat])
-        istart_spin = istart+3
+        istart_spin = istart+4
     
     elif spin_model=='default_gauss':
-        muChi, sigmaChi, zeta, sigmat = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3] #Lambda[istart:istart+4]
+        #muChi, sigmaChi, zeta, sigmat = Lambda[istart],Lambda[istart+1], Lambda[istart+2], Lambda[istart+3] #Lambda[istart:istart+4]
+        muChi    = Lambda[istart + 0]
+        sigmaChi = Lambda[istart + 1]
+        zeta     = Lambda[istart + 2]
+        sigmat   = Lambda[istart + 3]
         lpspin = atools.logpdf_default_spin_gauss(spins, [muChi, sigmaChi, zeta, sigmat])
-        istart_spin = istart+3
+        istart_spin = istart+4
    
     else:
         lpspin = at.zeros( z.shape )
@@ -236,12 +231,36 @@ def log_p_pop_at_unwrap(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, 
     ### BBH
     if mass_model=='PLPreg':
         
-        lp, al, bb, dm, ml, mh, muM, sM = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5], Lambda[istart_spin+6], Lambda[istart_spin+7] #Lambda[-8:]
+        #lp, al, bb, dm, ml, mh, muM, sM = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5], Lambda[istart_spin+6], Lambda[istart_spin+7] #Lambda[-8:]
+        lp  = Lambda[istart_spin + 0]
+        al   = Lambda[istart_spin + 1]
+        bb   = Lambda[istart_spin + 2]
+        dm   = Lambda[istart_spin + 3]
+        ml   = Lambda[istart_spin + 4]
+        mh   = Lambda[istart_spin + 5]
+        muM  = Lambda[istart_spin + 6]
+        sM   = Lambda[istart_spin + 7]
         lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], smoothing=smoothing)
+
+        # print("mass params check: [lp, al, bb, dm, ml, mh, muM, sM]")
+        # print( [v.eval() for v in [lp, al, bb, dm, ml, mh, muM, sM]] )
+
+        # print("mass params check from previous: [lp, al, bb, dm, ml, mh, muM, sM]")
+        # print( [v.eval() for v in Lambda[-8:] ] )
 
     elif mass_model=='DPLDP':
         
-        x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20 = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5], Lambda[istart_spin+6], Lambda[istart_spin+7], Lambda[istart_spin+8], Lambda[istart_spin+9], Lambda[istart_spin+10], Lambda[istart_spin+11], Lambda[istart_spin+12], Lambda[istart_spin+13], Lambda[istart_spin+14], Lambda[istart_spin+15], Lambda[istart_spin+16], Lambda[istart_spin+17], Lambda[istart_spin+18], Lambda[istart_spin+19]
+        #x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20 = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5], Lambda[istart_spin+6], Lambda[istart_spin+7], Lambda[istart_spin+8], Lambda[istart_spin+9], Lambda[istart_spin+10], Lambda[istart_spin+11], Lambda[istart_spin+12], Lambda[istart_spin+13], Lambda[istart_spin+14], Lambda[istart_spin+15], Lambda[istart_spin+16], Lambda[istart_spin+17], Lambda[istart_spin+18], Lambda[istart_spin+19]
+        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
 
         lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
 
@@ -311,6 +330,9 @@ def log_p_pop_at_unwrap(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, 
         # 5) Mixture over components -> per-observation log-lik
         lpmass = at.logsumexp(logp_components, axis=0)  # (N,)
 
+    else:
+        raise ValueError(f"Unknown mass_model: {mass_model}")
+        
     ###################################
     # jacobian
     
@@ -341,8 +363,18 @@ def sel_bias_with_uncertainty_at_loop(
     use_float32=False,
     N_inj_py=None,        # REQUIRED: Python int
     idx_full=None,         # OPTIONAL: precomputed int64 indices for dL_grid
+    wrap_logp = False,
     **kwargs
 ):
+
+    
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
+    
     if N_inj_py is None:
         raise ValueError("Pass N_inj_py=<python int>.")
 
@@ -382,7 +414,7 @@ def sel_bias_with_uncertainty_at_loop(
     if (dL_grid is not None) and (idx_full is None):
         print("Precomputed searchsorted for injections...")
         idx_full = at.searchsorted(dL_grid_w, dLinj, side="right")
-        idx_full = at.clip(idx_full, 1, dL_grid_w.shape[0] - 1)
+        idx_full = stop_grad(at.clip(idx_full, 1, dL_grid_w.shape[0] - 1))
     # Ensure work dtype for safety
     if idx_full is not None:
         idx_full = at.cast(idx_full, "int64")
@@ -435,7 +467,7 @@ def sel_bias_with_uncertainty_at_loop(
             mass_1_use = m1Src
             mass_2_use = m2Src
 
-        log_p_pop_c = log_p_pop_at(
+        log_p_pop_c = log_p_pop_fun(
             mass_1_use, mass_2_use, zinj_c, dLc, spins_c, Lambda,
             rate_model, mass_model, spin_model,
             smoothing=smoothing, has_m2_break=has_m2_break
@@ -652,7 +684,7 @@ def _two_pass_logsumexp_stream(log_sel_b):
     return logsumexp1, logsumexp2, N
 
 
-def sel_bias_with_uncertainty_at_scan(
+def sel_bias_with_uncertainty_at_scan_slow(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda, Ndraw,
     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
     dL_grid=None, z_grid=None, use_float32=False, **kwargs
@@ -753,6 +785,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
     chunk_size=4096, dL_grid=None, z_grid=None, scan_updates=False,
     use_float32=False,   # "float64" (default) or "float32" or True/False
+    wrap_logp=False, 
     **kwargs
 ):
     """
@@ -772,6 +805,15 @@ def sel_bias_with_uncertainty_at_0_batched(
     (log_mu, Neff, var_log_lik_u)
     """
 
+
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
+
+        
     # --- dtype handling ---
     if isinstance(use_float32, str):
         use32 = (use_float32.lower() == "float32")
@@ -839,19 +881,15 @@ def sel_bias_with_uncertainty_at_0_batched(
     # ---- compute x for all elements at once (flatten -> compute -> reshape) ----
     def _vectorized_zinj(dL_flat):
         if has_grid:
-            idx_flat = idxK.flatten()
-            il = idx_flat - 1
-            ih = idx_flat
-            xl = dL_grid_t[il]
-            xh = dL_grid_t[ih]
-            yl = z_grid_t[il]
-            yh = z_grid_t[ih]
-            denom = at.maximum(xh - xl, tiny)
-            r = (dL_flat - xl) / denom
-            zinj_flat = (1.0 - r) * yl + r * yh
-            return zinj_flat
+            # Use the exact same helper as the non-batched version
+            return atools.atinterp(dL_flat, dL_grid_t, z_grid_t)
         else:
-            H0, Om, w0, Xi0, n = Lambda_t[:5]
+            #H0, Om, w0, Xi0, n = Lambda_t[:5]
+            H0  = Lambda_t[0]
+            Om  = Lambda_t[1]
+            w0  = Lambda_t[2]
+            Xi0 = Lambda_t[3]
+            n   = Lambda_t[4]
             return atools.z_from_dL_at(dL_flat, H0, Om, w0, Xi0, n, interp=interp)
 
     # flatten inputs
@@ -890,7 +928,7 @@ def sel_bias_with_uncertainty_at_0_batched(
         spins_use_f = []
 
     # population log-density for all elements (broadcasted inside)
-    log_p_pop_f = log_p_pop_at(
+    log_p_pop_f = log_p_pop_fun(
         mass_1_use_f, mass_2_use_f, zinj_f, dL_f, spins_use_f, Lambda_t,
         rate_model, mass_model, spin_model,
         smoothing=smoothing, has_m2_break=has_m2_break
@@ -898,11 +936,15 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     # DP Jacobian terms if needed
     if use_dp:
-        eps = tiny
+        # eps = tiny
+        # log_p_pop_f = (log_p_pop_f
+        #                - at.log(at.maximum(m2Src_f, eps))
+        #                - at.log(at.maximum(m1Src_f - m2Src_f, eps))
+        #                - at.log1p(zinj_f))
         log_p_pop_f = (log_p_pop_f
-                       - at.log(at.maximum(m2Src_f, eps))
-                       - at.log(at.maximum(m1Src_f - m2Src_f, eps))
-                       - at.log1p(zinj_f))
+               - at.log(m2Src_f)
+               - at.log(m1Src_f - m2Src_f)
+               - at.log1p(zinj_f))
 
     # x = log_p_pop - log_p_draw, mask padding to NEG_BIG
     x_f = log_p_pop_f - lpd_f
@@ -927,6 +969,8 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     logsumexp1 = m_global  + at.log(S1 + tiny)
     logsumexp2 = m2_global + at.log(S2 + tiny)
+    # logsumexp1 = m_global  + at.log(S1)
+    # logsumexp2 = m2_global + at.log(S2)
 
     # ---- final stats (same as your originals) ----
     Ndraw_t = _astype(Ndraw)
@@ -945,6 +989,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
     chunk_size=4096, dL_grid=None, z_grid=None, scan_updates=False,
     use_float32=False,    # <<< NEW: "float64" (default) or "float32"
+    wrap_logp=False, 
     **kwargs
 ):
     # --- helper to choose working dtype (memory-safe: casts are shallow in PyTensor graph) ---
@@ -952,6 +997,13 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     work_dtype_int = "int32" if use_float32 else "int64"
 
 
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
+        
     print("new batched version")
     if use_float32:
         print("using float32")
@@ -992,7 +1044,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
         dL_grid_t = _astype(at.as_tensor_variable(dL_grid))
         z_grid_t  = _astype(at.as_tensor_variable(z_grid))
         idx_full = at.searchsorted(dL_grid_t, _astype(dLinj), side="right")
-        idx_full = at.clip(idx_full, 1, dL_grid_t.shape[0] - 1)
+        idx_full = stop_grad(at.clip(idx_full, 1, dL_grid_t.shape[0] - 1))
+        # idxs = stop_grad(idxs)
 
     # Pad observed vectors (now in working dtype)
     m1K, n_chunks, N, _ = _pad_to_multiple(m1inj,   chunk_size, 2.0)
@@ -1053,7 +1106,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
                 mass_1_use = m1Src
                 mass_2_use = m2Src
 
-            log_p_pop = log_p_pop_at(
+            log_p_pop = log_p_pop_fun(
                 mass_1_use, mass_2_use, zinj, dL, spins_use, Lambda_t,
                 rate_model, mass_model, spin_model,
                 smoothing=smoothing, has_m2_break=has_m2_break
@@ -1814,10 +1867,22 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 #     return log_mu, Neff, var_log_lik_u
 
 
-def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None, **kwargs):
+def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, Lambda,  Ndraw, rate_model, mass_model, spin_model, smoothing, has_m2_break, interp, dL_grid=None, z_grid=None, wrap_logp=False, **kwargs):
 
 
-    H0, Om, w0, Xi0, n  = Lambda[:5]
+    #H0, Om, w0, Xi0, n  = Lambda[:5]
+    H0  = Lambda[0]
+    Om  = Lambda[1]
+    w0  = Lambda[2]
+    Xi0 = Lambda[3]
+    n   = Lambda[4]
+
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
 
     if (spin_model=='default') or (spin_model=='default_gauss'):
         spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
@@ -1832,9 +1897,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, La
         #zinj = atools.invert_monotone_binary_at(dLinj, dL_grid, z_grid)
         zinj = atools.atinterp(dLinj, dL_grid, z_grid)
     
-
-    m1Src  = m1inj/(1+zinj)
-    m2Src  = m2inj/(1+zinj)
+    one_p_z = 1.0 + zinj
+    m1Src  = m1inj/one_p_z
+    m2Src  = m2inj/one_p_z
 
     if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
@@ -1846,18 +1911,27 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, La
         mass_1_use = m1Src
         mass_2_use = m2Src
 
-    log_p_pop = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
+    log_p_pop = log_p_pop_fun(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
+
+    # log_p_pop_w = log_p_pop_at_wrap( mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
+
+    # log_p_pop_ = log_p_pop_at(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, Lambda, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break)
+
+    # print("wrap vs unwrap diff max in injections:")
+    # print((log_p_pop_w-log_p_pop).eval().max())
 
     if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
 
     log_sel_b = log_p_pop-log_p_draw
-  
+
+    # Ndraw must be a symbolic tensor with a floating dtype for logs
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(m1inj.dtype)
     
-    log_mu = at.logsumexp(log_sel_b) - at.log(Ndraw)
+    log_mu = at.logsumexp(log_sel_b) - at.log(Ndraw_t)
     
-    logs2 = at.logsumexp(2.0*log_sel_b) - at.log(Ndraw)
+    logs2 = at.logsumexp(2.0*log_sel_b) - at.log(Ndraw_t)
 
 
     #####################################
@@ -1882,13 +1956,13 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, La
     # Difference between the two is ~1/N_draw , so negligible for large injection sets
     #####################################
 
-    logNeff = 2*log_mu - logs2 + at.log(Ndraw)
+    logNeff = 2*log_mu - logs2 + at.log(Ndraw_t)
 
     #####################################
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw-1)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw_t-1)
 
     Neff = at.exp(logNeff)
     
@@ -2038,8 +2112,9 @@ def make_model(  priors,
                use_log_alpha_beta=False ,
                allTobs=None,
                  use_updates=True,
-                 inj_loop=False,
-                 save_thetas=False
+                 inj_loop='vec',
+                 save_thetas=False,
+                 wrap_logp=False
                 ):
 
     ################################################
@@ -2847,6 +2922,14 @@ def make_model(  priors,
         # Population prior
         ################################################
 
+
+        if wrap_logp:
+            log_p_pop_fun = log_p_pop_at_wrap
+            print("Using wrapped p_pop")
+        else:
+            log_p_pop_fun = log_p_pop_at
+            print("Using regular p_pop")
+
         
         if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
 
@@ -2872,13 +2955,23 @@ def make_model(  priors,
             # dirichelet processs will be for log(Mc_src), logit(q) ...
             logMc_src =  log_Mc_det - at.log1p(zs)
             
-            log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc)
+            log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc)
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
             log_p_pop -=  at.log(m2src) + at.log(m1src-m2src) + at.log1p(zs) 
             
         else:    
         
-            log_p_pop = log_p_pop_at( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
+            log_p_pop = log_p_pop_fun( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
+
+
+            # log_p_pop_w = log_p_pop_at_wrap( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
+
+            # log_p_pop_ = log_p_pop_at( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
+
+            # print("wrap vs unwrap diff max:")
+            # print((log_p_pop_w-log_p_pop).eval().max())
+
+            
 
         
         if dLprior=='dLsq':
@@ -2996,20 +3089,26 @@ def make_model(  priors,
 
                 if chunk_inj!=-1:
                     print('Using chunked version of sel. bias for memory efficiency.')
-                    if inj_loop:
+                    if inj_loop=='loop':
                         sel_bias_fun = sel_bias_with_uncertainty_at_loop
                         print("Using version with python loop")
                         print('Chunk size is %s'%chunk_inj)
-                    else:
+                    elif inj_loop=='vec':
                         sel_bias_fun = sel_bias_with_uncertainty_at_0_batched 
                         #sel_bias_with_uncertainty_at_scan
-                        print("Using version with pytensor scan in batches")
+                        print("Using version with pytensor vectorization in batches")
                         print('Chunk size is %s'%chunk_inj)
                         #print("use_float32 is %s"%use_float32)
+                    elif inj_loop=='scan':
+                        sel_bias_fun = sel_bias_with_uncertainty_at_0_batched_scan
+                        print("Using version with pytensor scan in batches")
+                        print('Chunk size is %s'%chunk_inj)
+                    else:
+                        raise ValueError()
                 else:
                     if chunk_reduce:
                         print("Using chunked version for reduction of logsumexp")
-                        sel_bias_fun = sel_bias_with_uncertainty_at_scan
+                        sel_bias_fun = sel_bias_with_uncertainty_at_scan_slow
                     else: 
                         print('Computing sel bias in one chunk')
                         sel_bias_fun = sel_bias_with_uncertainty_at_0
@@ -3028,8 +3127,31 @@ def make_model(  priors,
                                                           chunk_size = chunk_inj, 
                                                           use_float32=use_float32_bias, 
                                                           N_inj_py=ninj_np, 
-                                                          scan_updates=use_updates,  
+                                                          scan_updates=use_updates, 
+                                                          wrap_logp = wrap_logp
                                                         )
+
+                # log_mu_1, Neff_1, var_ll_u_1 = sel_bias_with_uncertainty_at_0( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], 
+                #                                           Lambda_, 
+                #                                           Ndraw, 
+                #                                           rate_model, mass_model, spin_model_name, 
+                #                                           smoothing, 
+                #                                           has_m2_break, 
+                #                                           interp=pade, 
+                #                                           dL_grid=dL_grid, 
+                #                                           z_grid=zgrid_, 
+                #                                           chunk_size = chunk_inj, 
+                #                                           use_float32=use_float32_bias, 
+                #                                           N_inj_py=ninj_np, 
+                #                                           scan_updates=use_updates, 
+                #                                           wrap_logp = False
+                #                                         )
+
+                # print("Difference in log_mu_1 :")
+                # print((log_mu_1 - log_mu_).eval().max())
+
+                # print("Difference in var_ll_u_1 :")
+                # print((var_ll_u_1 - var_ll_u_).eval().max())
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
