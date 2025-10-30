@@ -92,6 +92,7 @@ def main():
     parser.add_argument("--chunk_inj", default=-1, type=int, required=False)
     parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
+    parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default=0, type=int, required=False)
 
         
@@ -153,11 +154,17 @@ def main():
 
     
     if FLAGS.use_float32:
-        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"#gcc__cxxflags=-fbracket-depth=2048"
+        try:
+            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+        except:
+            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "False")
     
     else:
-        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"#gcc__cxxflags=-fbracket-depth=2048"
+        try:
+            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+        except:
+            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "True")
     
 
@@ -553,6 +560,7 @@ def main():
                                     sel_method=FLAGS.sel,
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     use_float32 = FLAGS.use_float32,
+                                    use_float32_bias = FLAGS.use_float32_bias,
                                     chunk_inj=FLAGS.chunk_inj,
                                     chunk_reduce = FLAGS.chunk_reduce,
                                     marginal_R0 = FLAGS.marginal_R0,
