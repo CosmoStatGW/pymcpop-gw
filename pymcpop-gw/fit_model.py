@@ -155,17 +155,17 @@ def main():
 
     
     if FLAGS.use_float32:
-        try:
-            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-        except:
-            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
+        #try:
+        #    os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+        #except:
+        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "False")
     
     else:
-        try:
-            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-        except:
-            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
+        #try:
+        #    os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+        #except:
+        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "True")
     
 
