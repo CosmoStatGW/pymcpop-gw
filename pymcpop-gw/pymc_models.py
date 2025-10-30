@@ -28,7 +28,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
     # get parameters and compute log p_pop
     ####################################
     
-    H0, Om, w0, Xi0, n = Lambda[:5] 
+    #H0, Om, w0, Xi0, n = Lambda[:5] 
+    H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
 
     if dc is None:
         Xi = atools.Xifun_at(z, Xi0, n)
@@ -224,7 +225,9 @@ def sel_bias_with_uncertainty_at_loop(
     else:
         spinsInj_sel = [] if (spinsInj is None) else [cast_work(s) for s in spinsInj]
 
-    H0, Om, w0, Xi0, n = Lambda[:5]
+    #H0, Om, w0, Xi0, n = Lambda[:5]
+    H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
+    
     CHUNK = int(chunk_size)
     N_py  = int(N_inj_py)
 
@@ -352,7 +355,8 @@ def sel_bias_with_uncertainty_at_scan(
     rate_model, mass_model, spin_model, smoothing, has_m2_break, interp,
     dL_grid=None, z_grid=None, use_float32=False, **kwargs
 ):
-    H0, Om, w0, Xi0, n  = Lambda[:5]
+    #H0, Om, w0, Xi0, n  = Lambda[:5]
+    H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
 
     if (spin_model == 'default') or (spin_model == 'default_gauss'):
         # Keep this tensor-y; avoid Python lists
@@ -513,7 +517,8 @@ def sel_bias_with_uncertainty_at_0_batched(
                 r = (dL - xl) / denom
                 zinj = (1 - r) * yl + r * yh
             else:
-                H0, Om, w0, Xi0, n = Lambda_t[:5]
+                #H0, Om, w0, Xi0, n = Lambda_t[:5]
+                H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
                 zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
 
             one_plus_z = 1 + zinj
@@ -569,7 +574,8 @@ def sel_bias_with_uncertainty_at_0_batched(
                 r = (dL - xl) / denom
                 zinj = (1 - r) * yl + r * yh
             else:
-                H0, Om, w0, Xi0, n = Lambda_t[:5]
+                #H0, Om, w0, Xi0, n = Lambda_t[:5]
+                H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
                 zinj = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
 
             one_plus_z = 1 + zinj
@@ -2000,8 +2006,9 @@ def make_model(  priors,
 
                 if spin_model == 'none' :
                     
-                    vals = at.stack([log_Mc_det, logit_q, logd ], axis=0)
-                    # at.zeros(log_Mc_det.shape), at.zeros(log_Mc_det.shape), at.zeros(log_Mc_det.shape), at.zeros(log_Mc_det.shape) 
+                    X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
+                    d_int  = at.as_tensor_variable(3, dtype=X.dtype)
+
 
                 elif spin_model == 'default' or spin_model == 'default_gauss':
 
@@ -2011,13 +2018,14 @@ def make_model(  priors,
                     cost1 = atools.inv_flogitat(samples[:,5])
                     cost2 = atools.inv_flogitat(samples[:,6])
 
-                    vals = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=0)
+                    X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
+                    d_int  = at.as_tensor_variable(7, dtype=X.dtype)
 
 
             
 
                 # X as (N, d)
-                X = vals.T                                   # (N, d)
+                #X = vals.T                                   # (N, d)
                 #print("X shape is %s"%(X[:, None, :].shape.eval()))
                 #print("mus_l shape is %s"%(mus_l.shape.eval()))
                 
@@ -2031,9 +2039,10 @@ def make_model(  priors,
                 
                 # r^T F r for each (obs, comp)
                 quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
+
                 
                 # Component logpdfs (Multivariate Normal)
-                log_norm = -0.5 * vals.shape[0] * at.log(2.0 * np.pi)     # scalar
+                log_norm = -0.5 * d_int * at.log(2.0 * np.pi)     # scalar
                 logp_components = (
                     -0.5 * quad
                     + log_norm
@@ -2043,6 +2052,8 @@ def make_model(  priors,
                 
                 # Mixture log-likelihood per observation: logsumexp over components
                 gwl = at.logsumexp(logp_components, axis=1)   # (N,)
+
+
         
             
             else:

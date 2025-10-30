@@ -18,6 +18,7 @@ from jax.numpy import ones
 from jax.numpy import zeros
 
 from pytensor.gradient import disconnected_grad as stop_grad
+#from pytensor import gradient as atg
 
 
 
@@ -421,6 +422,21 @@ def meshgrid_at(x, y):
 
 
 def atinterp(x, xs, ys, eps=1e-12, side="right"):
+    # xs, ys tensors; x can be scalar or tensor
+    idxs = at.searchsorted(xs, x, side=side)
+    idxs = at.clip(idxs, 1, xs.shape[0] - 1)
+    # <-- stop grad through the discrete selection -->
+    idxs = stop_grad(idxs)
+
+    xl = xs[idxs - 1]; xh = xs[idxs]
+    yl = ys[idxs - 1]; yh = ys[idxs]
+
+    eps_t = at.as_tensor_variable(eps, dtype=xl.dtype)
+    denom = at.maximum(xh - xl, eps_t)
+    r = (x - xl) / denom
+    return (1 - r) * yl + r * yh
+
+def atinterp_working(x, xs, ys, eps=1e-12, side="right"):
 
     # was atinterp_safe_fast
     
@@ -438,6 +454,28 @@ def atinterp(x, xs, ys, eps=1e-12, side="right"):
 
 
 def atinterp_uniform(x, x0, x1, n_pts, ys, eps=1e-30):
+    x  = at.as_tensor_variable(x)
+    x0 = at.as_tensor_variable(x0, dtype=x.dtype)
+    x1 = at.as_tensor_variable(x1, dtype=x.dtype)
+
+    n_minus_1 = at.as_tensor_variable(n_pts - 1, dtype="int64")
+    n_minus_1_f = at.cast(n_minus_1, x.dtype)
+    eps_t = at.as_tensor_variable(eps, dtype=x.dtype)
+
+    dx = (x1 - x0) / at.maximum(n_minus_1_f, eps_t)
+    t  = (x - x0) / at.maximum(dx, eps_t)
+
+    j = at.floor(t).astype("int64")
+    j = at.clip(j, 0, n_pts - 2)
+    # <-- stop grad through discrete index -->
+    j = stop_grad(j)
+
+    r  = at.cast(t - at.cast(j, t.dtype), x.dtype)
+    yl = ys[j]
+    yh = ys[j + 1]
+    return (1 - r) * yl + r * yh
+
+def atinterp_uniform_working(x, x0, x1, n_pts, ys, eps=1e-30):
     """
     Linear interpolation on a *uniform* grid without searchsorted.
 
