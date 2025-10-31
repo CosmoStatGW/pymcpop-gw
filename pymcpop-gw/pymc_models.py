@@ -385,6 +385,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
 #####################################################
 
 
+
 def sel_bias_with_uncertainty_at_0_batched_scan(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     Lambda, Ndraw,
@@ -397,20 +398,21 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     dcinj=None,
     # symbolic grids (may depend on RVs)
     dL_grid=None,               # 1-D, increasing in dL
-    z_grid=None,                # 1-D, z(dL_grid)
-    dc_grid=None,               # 1-D, dc(z_grid) (unused here; we compute dc analytically)
-    log_ddL_dz_grid=None,       # 1-D, log(ddL/dz)(z_grid) (unused here; computed analytically)
+    z_grid=None,                # 1-D, z(dL_grid) and base for z→{dc,logdd}
+    dc_grid=None,               # 1-D, dc(z_grid)
+    log_ddL_dz_grid=None,       # 1-D, log(ddL/dz)(z_grid)
     *,
     chunk_size=4096,
     **kwargs
 ):
-    """GPU-stable scan version:
-       - dL→z via index-based linear interpolation (no atinterp on padded rows)
-       - dc and log_ddL_dz computed via analytic functions (avoids OOB interps)
     """
-
-    print("sel_bias_with_uncertainty_at_0_batched_scan, GPU-stable scan version")
-    
+    GPU-stable scan with symmetric grid handling:
+      • If grids are provided, precompute all indices OUTSIDE the scan (with stop_grad),
+        then do in-scan linear interpolation only (no searchsorted, no atinterp).
+      • Pass dc and log_ddL_dz via grids when present; otherwise compute analytically.
+      • Avoid duplicate variables in non_sequences.
+    """
+    # --- helpers ---
     def _as_at(x):
         return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
 
@@ -425,21 +427,29 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
         xK = at.concatenate([x, pad], axis=0).reshape((C, k))
         return xK, C, N
 
+    def _lin_interp_with_indices(x, xg, yg, idx, eps):
+        il, ih = idx - 1, idx
+        xl, xh = xg[il], xg[ih]
+        yl, yh = yg[il], yg[ih]
+        denom  = at.maximum(xh - xl, eps)
+        r = (x - xl) / denom
+        return (1.0 - r) * yl + r * yh
+
     def _combine_logsumexp(m_s, s_s, m_c, s_c):
         m_new = at.maximum(m_s, m_c)
         s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
         return m_new, s_new
 
-    # tensors
+    # --- tensors / config ---
     m1_all   = _as_at(m1inj)
     m2_all   = _as_at(m2inj)
     dL_all   = _as_at(dLinj)
     lpd_all  = _as_at(log_p_draw)
     Lambda_t = _as_at(Lambda)
+
     H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
     log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
 
-    # spins
     spin_is_default = (spin_model in ("default", "default_gauss"))
     if spin_is_default:
         s1_all = _as_at(spinsInj[0]); s2_all = _as_at(spinsInj[1])
@@ -449,7 +459,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
     K = int(chunk_size)
 
-    # pad & mask
+    # --- pad & mask ---
     m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
     m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
     dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
@@ -462,49 +472,82 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
     idxs = at.arange(C, dtype=int_dtype)
     valid_mask = (at.arange(C*K, dtype=int_dtype) < N).reshape((C, K))
-    NEG_BIG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)  # finite sentinel
-    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    NEG_BIG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)
+    eps     = at.as_tensor_variable(1e-30,   dtype=work_dtype)
+    tinyL   = at.as_tensor_variable(1e-300,  dtype=work_dtype)
 
-    have_grids = (dL_grid is not None) and (z_grid is not None)
-    if have_grids:
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc  = (dc_grid is not None) and (z_grid is not None)
+    have_ldd = (log_ddL_dz_grid is not None) and (z_grid is not None)
+
+    # --- Precompute OUTSIDE: z_all (dL→z via grid if provided; else via zinj/cosmology) ---
+    if have_dLz:
         dL_grid_t = _as_at(dL_grid)
         z_grid_t  = _as_at(z_grid)
-
-        # Precompute indices safely for all rows; pad idx with 1 so [il,ih] valid
-        idx_full = at.searchsorted(dL_grid_t, dL_all, side="right").astype(int_dtype)
+        idx_dL_full = at.searchsorted(dL_grid_t, dL_all, side="right").astype(int_dtype)
         lo = at.as_tensor_variable(1, dtype=int_dtype)
         hi = (dL_grid_t.shape[0] - 1).astype(int_dtype)
-        idx_full = at.clip(idx_full, lo, hi)
-        idx_full = stop_grad(idx_full)
-        one_idx = at.as_tensor_variable(1, dtype=int_dtype)
-        idxK, _, _ = _pad_to_multiple(idx_full, K, one_idx)
+        idx_dL_full = stop_grad(at.clip(idx_dL_full, lo, hi))
+        z_all = _lin_interp_with_indices(dL_all, dL_grid_t, z_grid_t, idx_dL_full, eps)
+    else:
+        if zinj is not None:
+            z_all = _as_at(zinj)
+        else:
+            z_all = atools.z_from_dL_at(dL_all, H0, Om, w0, Xi0, n, interp=interp)
+        z_grid_t = None  # not used unless dc/logdd grids are present
 
-    # ---- scan body ----
+    # pad z for scan (we only pass zK; no need to pass dL-grid or its indices)
+    zK, _, _ = _pad_to_multiple(z_all, K, 0.0)
+
+    # --- Precompute OUTSIDE: z→dc indices and z→log_ddL_dz indices (if grids provided) ---
+    if have_dc:
+        dc_grid_t = _as_at(dc_grid)
+        idx_z_dc_full = at.searchsorted(z_grid_t, z_all, side="right").astype(int_dtype)
+        loz = at.as_tensor_variable(1, dtype=int_dtype)
+        hiz = (z_grid_t.shape[0] - 1).astype(int_dtype)
+        idx_z_dc_full = stop_grad(at.clip(idx_z_dc_full, loz, hiz))
+        idx_z_dc_K, _, _ = _pad_to_multiple(idx_z_dc_full, K, at.as_tensor_variable(1, dtype=int_dtype))
+    else:
+        dc_grid_t = None
+        idx_z_dc_K = None
+
+    if have_ldd:
+        logdd_grid_t = _as_at(log_ddL_dz_grid)
+        # reuse same z_grid_t; compute separate index array (can't duplicate same var in nonseq)
+        idx_z_ldd_full = at.searchsorted(z_grid_t, z_all, side="right").astype(int_dtype)
+        loz2 = at.as_tensor_variable(1, dtype=int_dtype)
+        hiz2 = (z_grid_t.shape[0] - 1).astype(int_dtype)
+        idx_z_ldd_full = stop_grad(at.clip(idx_z_ldd_full, loz2, hiz2))
+        idx_z_ldd_K, _, _ = _pad_to_multiple(idx_z_ldd_full, K, at.as_tensor_variable(1, dtype=int_dtype))
+    else:
+        logdd_grid_t = None
+        idx_z_ldd_K = None
+
+    # ---- scan body (no searchsorted here) ----
     if spin_is_default:
         def step(i, m_state, m2_state, s1_state, s2_state,
                  m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
-                 s1K, s2K, ct1K, ct2K, *maybe):
+                 s1K, s2K, ct1K, ct2K,
+                 zK, z_grid_t, dc_grid_t, idx_z_dc_K, logdd_grid_t, idx_z_ldd_K):
             m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
             s1 = s1K[i];  s2 = s2K[i]; ct1 = ct1K[i]; ct2 = ct2K[i]
             spins_use = [s1, s2, ct1, ct2]
 
-            # z interpolation
-            if have_grids:
-                dL_grid_t, z_grid_t, idxK = maybe
-                idx = idxK[i]
-                il, ih = idx - 1, idx
-                xl = dL_grid_t[il]; xh = dL_grid_t[ih]
-                yl = z_grid_t[il];  yh = z_grid_t[ih]
-                denom = at.maximum(xh - xl, eps)
-                r = (dL - xl) / denom
-                zinj_c = (1 - r) * yl + r * yh
+            zinj_c = zK[i]
+
+            # dc from grid if available, else analytic
+            if (dc_grid_t is not None) and (idx_z_dc_K is not None) and (z_grid_t is not None):
+                dc_c = _lin_interp_with_indices(zinj_c, z_grid_t, dc_grid_t, idx_z_dc_K[i], eps)
+            else:
+                H0, Om = Lambda_t[0], Lambda_t[1]
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, interp=interp)
+
+            # log(ddL/dz) from grid if available, else analytic
+            if (logdd_grid_t is not None) and (idx_z_ldd_K is not None) and (z_grid_t is not None):
+                logdd_c = _lin_interp_with_indices(zinj_c, z_grid_t, logdd_grid_t, idx_z_ldd_K[i], eps)
             else:
                 H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
-                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
-
-            # compute dc, logdd analytically (safe & fast)
-            dc_c    = atools.dcfun_at(zinj_c, H0, Om, interp=interp)
-            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+                logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
 
             one_p_z = 1.0 + zinj_c
             m1Src = m1 / one_p_z
@@ -546,24 +589,24 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             return m_new, m2_new, s1_new, s2_new
     else:
         def step(i, m_state, m2_state, s1_state, s2_state,
-                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, *maybe):
+                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                 zK, z_grid_t, dc_grid_t, idx_z_dc_K, logdd_grid_t, idx_z_ldd_K):
             m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
             spins_use = []
-            H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
-            if have_grids:
-                dL_grid_t, z_grid_t, idxK = maybe
-                idx = idxK[i]
-                il, ih = idx - 1, idx
-                xl = dL_grid_t[il]; xh = dL_grid_t[ih]
-                yl = z_grid_t[il];  yh = z_grid_t[ih]
-                denom = at.maximum(xh - xl, eps)
-                r = (dL - xl) / denom
-                zinj_c = (1 - r) * yl + r * yh
-            else:           
-                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
 
-            dc_c    = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
-            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+            zinj_c = zK[i]
+
+            if (dc_grid_t is not None) and (idx_z_dc_K is not None) and (z_grid_t is not None):
+                dc_c = _lin_interp_with_indices(zinj_c, z_grid_t, dc_grid_t, idx_z_dc_K[i], eps)
+            else:
+                H0, Om = Lambda_t[0], Lambda_t[1]
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, interp=interp)
+
+            if (logdd_grid_t is not None) and (idx_z_ldd_K is not None) and (z_grid_t is not None):
+                logdd_c = _lin_interp_with_indices(zinj_c, z_grid_t, logdd_grid_t, idx_z_ldd_K[i], eps)
+            else:
+                H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+                logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
 
             one_p_z = 1.0 + zinj_c
             m1Src = m1 / one_p_z
@@ -604,25 +647,69 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c,    s2c)
             return m_new, m2_new, s1_new, s2_new
 
-    # non_sequences
-    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
-    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
-
+    # --- build non_sequences (NO duplicates, NO None) ---
     nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t]
     if spin_is_default:
         nonseq += [s1K, s2K, ct1K, ct2K]
-    if have_grids:
-        nonseq += [dL_grid_t, z_grid_t, idxK]
+    nonseq += [zK]
+    if z_grid is not None:                 # used by dc/logdd interps if present
+        nonseq += [z_grid_t]
+    if have_dc:
+        nonseq += [dc_grid_t, idx_z_dc_K]
+    else:
+        nonseq += [None, None]             # keep signature stable
+    if have_ldd:
+        nonseq += [logdd_grid_t, idx_z_ldd_K]
+    else:
+        nonseq += [None, None]
 
-    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
-        fn=step,
-        sequences=[idxs],
-        outputs_info=[m_init, m_init, s_init, s_init],
-        non_sequences=nonseq,
-        strict=True
-    )
+    # PyTensor can't accept None; filter them out but keep the order that step expects
+    # We'll align by passing placeholders only when present; so rebuild nonseq & step signature accordingly:
+    # To keep this simple and correct, reassemble args exactly as step expects:
 
-    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    # Rebuild without Nones and compute a matching step wrapper
+    packed = []
+    if spin_is_default:
+        def call_scan(fn):
+            (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+                fn=fn,
+                sequences=[idxs],
+                outputs_info=[at.as_tensor_variable(-at.inf, dtype=work_dtype),
+                              at.as_tensor_variable(-at.inf, dtype=work_dtype),
+                              at.as_tensor_variable(0.0,    dtype=work_dtype),
+                              at.as_tensor_variable(0.0,    dtype=work_dtype)],
+                non_sequences=[m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                               s1K, s2K, ct1K, ct2K,
+                               zK] +
+                              ([z_grid_t] if z_grid is not None else []) +
+                              ([dc_grid_t, idx_z_dc_K] if have_dc else []) +
+                              ([logdd_grid_t, idx_z_ldd_K] if have_ldd else []),
+                strict=True
+            )
+            return m_fin, m2_fin, s1_fin, s2_fin
+
+        m_fin, m2_fin, s1_fin, s2_fin = call_scan(step)
+    else:
+        def call_scan(fn):
+            (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+                fn=fn,
+                sequences=[idxs],
+                outputs_info=[at.as_tensor_variable(-at.inf, dtype=work_dtype),
+                              at.as_tensor_variable(-at.inf, dtype=work_dtype),
+                              at.as_tensor_variable(0.0,    dtype=work_dtype),
+                              at.as_tensor_variable(0.0,    dtype=work_dtype)],
+                non_sequences=[m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                               zK] +
+                              ([z_grid_t] if z_grid is not None else []) +
+                              ([dc_grid_t, idx_z_dc_K] if have_dc else []) +
+                              ([logdd_grid_t, idx_z_ldd_K] if have_ldd else []),
+                strict=True
+            )
+            return m_fin, m2_fin, s1_fin, s2_fin
+
+        m_fin, m2_fin, s1_fin, s2_fin = call_scan(step)
+
+    # --- finalize ---
     logsumexp1 = m_fin[-1]  + at.log(at.maximum(s1_fin[-1], tinyL))
     logsumexp2 = m2_fin[-1] + at.log(at.maximum(s2_fin[-1], tinyL))
 
