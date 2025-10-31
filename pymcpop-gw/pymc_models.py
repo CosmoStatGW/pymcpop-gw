@@ -1056,6 +1056,173 @@ def sel_bias_with_uncertainty_at_loop(
 
 
 
+# def sel_bias_with_uncertainty_at_0_batched(
+#     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+#     Lambda, Ndraw,
+#     rate_model, mass_model, spin_model,
+#     smoothing, has_m2_break, interp,
+#     wrap_logp=False,
+#     # kept for API compat (used only if grids are not provided)
+#     log_ddL_dz_inj=None,
+#     zinj=None,
+#     dcinj=None,
+#     # symbolic grids (preferred; may depend on RVs)
+#     dL_grid=None,           # 1-D, strictly increasing in dL
+#     z_grid=None,            # 1-D, z(dL_grid)
+#     dc_grid=None,           # 1-D, dc(z_grid)
+#     log_ddL_dz_grid=None,   # 1-D, log(ddL/dz) sampled at z_grid
+#     *,
+#     chunk_size=4096,
+#     **kwargs
+# ):
+#     """
+#     Vectorized + batched reduction with per-batch interpolation from grids.
+
+#     - If dL_grid / z_grid / dc_grid / log_ddL_dz_grid are provided, compute z, dc,
+#       and log_ddL_dz per batch via `atinterp`, and pass BOTH `dc` and `log_ddL_dz_pre`
+#       to log_p_pop_*.
+#     - Otherwise, falls back to precomputed arrays if given, else cosmology.
+#     """
+
+#     print("This is sel_bias_with_uncertainty_at_0_batched")
+    
+#     # ---- helpers ----
+#     def _as_at(x):
+#         return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+#     work_dtype = getattr(m1inj, "dtype", "float64")
+#     int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+#     K = int(chunk_size)
+
+#     def _vec1(x, dtype=work_dtype):
+#         v = x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+#         if v.ndim != 1:
+#             v = at.flatten(v, 1)
+#         return v.astype(dtype) if v.dtype != dtype else v
+
+#     def _pad_to_K(x, K, pad_value):
+#         x = _vec1(x)
+#         N = x.shape[0]
+#         C = (N + K - 1) // K
+#         Npad = C * K - N
+#         pad = at.full((Npad,), at.as_tensor_variable(pad_value).astype(x.dtype), dtype=x.dtype)
+#         xK  = at.concatenate([x, pad], axis=0).reshape((C, K))
+#         return xK, C, N
+
+#     # ---- pad observed arrays to (C, K) ----
+#     m1K, C, N = _pad_to_K(m1inj,  K, 2.0)
+#     m2K, _, _ = _pad_to_K(m2inj,  K, 1.0)
+#     dLK,  _, _ = _pad_to_K(dLinj, K, 1.0)
+#     lpdK, _, _ = _pad_to_K(log_p_draw, K, 0.0)
+
+#     # Lambda and cosmology pieces
+#     Lambda_t = _as_at(Lambda)
+#     H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+#     log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+#     use_dp = (mass_model in ("DP", "DPUC"))
+
+#     # spins
+#     spin_is_default = (spin_model in ("default", "default_gauss"))
+#     if spin_is_default:
+#         s1K, _, _  = _pad_to_K(spinsInj[0], K, 0.0)
+#         s2K, _, _  = _pad_to_K(spinsInj[1], K, 0.0)
+#         ct1K, _, _ = _pad_to_K(spinsInj[2], K, 1.0)
+#         ct2K, _, _ = _pad_to_K(spinsInj[3], K, 1.0)
+
+#     # mask for padded tail
+#     mask   = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+#     NEG_BG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)
+#     tiny   = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+#     # ---- per-batch z, dc, logdd via grids (preferred) ----
+#     have_grids = (dL_grid is not None) and (z_grid is not None) and (dc_grid is not None) and (log_ddL_dz_grid is not None)
+#     if have_grids:
+#         print("Interpolating per-batch from pre-computed grids")
+#         dL_grid_t         = _as_at(dL_grid)
+#         z_grid_t          = _as_at(z_grid)
+#         dc_grid_t         = _as_at(dc_grid)
+#         log_ddL_dz_grid_t = _as_at(log_ddL_dz_grid)
+
+#         # atinterp supports tensor x; apply directly to (C,K)
+#         zK  = atools.atinterp(dLK,  dL_grid_t, z_grid_t)
+#         dcK = atools.atinterp(zK,   z_grid_t,  dc_grid_t)
+#         dK  = atools.atinterp(zK,   z_grid_t,  log_ddL_dz_grid_t)
+#     else:
+#         print("Recomputing cosmology!")
+#         # fallback: use precomputes if given; else cosmology on (C,K)
+#         if zinj is not None:
+#             zK, _, _ = _pad_to_K(zinj, K, 0.0)
+#         else:
+#             zK = atools.z_from_dL_at(dLK, H0, Om, w0, Xi0, n, interp=interp)
+
+#         if dcinj is not None:
+#             dcK, _, _ = _pad_to_K(dcinj, K, 0.0)
+#         else:
+#             dcK = atools.dcfun_at(zK, H0, Om, interp=interp)
+
+#         if log_ddL_dz_inj is not None:
+#             dK, _, _ = _pad_to_K(log_ddL_dz_inj, K, 0.0)
+#         else:
+#             dK = atools.log_ddL_dz(zK, H0, Om, w0, Xi0, n, dc=dcK, interp=interp)
+
+#     # ---- masses in source frame ----
+#     one_p_z = 1.0 + zK
+#     m1SrcK  = m1K / one_p_z
+#     m2SrcK  = m2K / one_p_z
+
+#     if use_dp:
+#         McK, qK = atools.Mcq_from_m1m2_at(m1SrcK, m2SrcK)
+#         m1useK  = at.log(McK)
+#         m2useK  = atools.logitat(qK)
+#     else:
+#         m1useK, m2useK = m1SrcK, m2SrcK
+
+#     spins_arg = [s1K, s2K, ct1K, ct2K] if spin_is_default else []
+
+#     # ---- log p_pop ----
+#     lpK = log_p_pop_fun(
+#         m1useK, m2useK, zK, dLK, spins_arg, Lambda_t,
+#         rate_model, mass_model, spin_model,
+#         smoothing=smoothing, has_m2_break=has_m2_break,
+#         log_ddL_dz_pre=dK,
+#         dc=dcK,
+#     )
+
+#     if use_dp:
+#         lpK = (lpK
+#                - at.log(at.maximum(m2SrcK, tiny))
+#                - at.log(at.maximum(m1SrcK - m2SrcK, tiny))
+#                - at.log1p(zK))
+
+#     # ---- stable batched reducer ----
+#     xK = lpK - lpdK
+#     xK = at.where(mask, xK, NEG_BG)
+
+#     m_chunks = at.max(xK, axis=1)                 # (C,)
+#     y  = at.exp(xK - m_chunks[:, None])           # (C,K)
+#     s1 = at.sum(y, axis=1)                        # (C,)
+#     s2 = at.sum(at.sqr(y), axis=1)                # (C,)
+
+#     m_global  = at.max(m_chunks)
+#     S1 = at.sum(s1 * at.exp(m_chunks - m_global))
+#     m2_global = 2.0 * m_global
+#     S2 = at.sum(s2 * at.exp(2.0 * m_chunks - m2_global))
+
+#     logsumexp1 = m_global  + at.log(S1 + tiny)
+#     logsumexp2 = m2_global + at.log(S2 + tiny)
+
+#     # ---- outputs ----
+#     Ndraw_t = _as_at(Ndraw).astype(work_dtype)
+#     log_mu  = logsumexp1 - at.log(Ndraw_t)
+#     logs2   = logsumexp2 - at.log(Ndraw_t)
+
+#     logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+#     Neff    = at.exp(logNeff)
+#     var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+
+#     return log_mu, Neff, var_log_lik_u
+
+
 def sel_bias_with_uncertainty_at_0_batched(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     Lambda, Ndraw,
@@ -1077,15 +1244,12 @@ def sel_bias_with_uncertainty_at_0_batched(
 ):
     """
     Vectorized + batched reduction with per-batch interpolation from grids.
-
-    - If dL_grid / z_grid / dc_grid / log_ddL_dz_grid are provided, compute z, dc,
-      and log_ddL_dz per batch via `atinterp`, and pass BOTH `dc` and `log_ddL_dz_pre`
-      to log_p_pop_*.
-    - Otherwise, falls back to precomputed arrays if given, else cosmology.
+    Tweaks:
+      - Clamp ONLY padded entries before interpolation to avoid NaNs on GPU/JIT.
+      - Light numerical guards on logs/divisions.
     """
 
-    print("This is sel_bias_with_uncertainty_at_0_batched")
-    
+    print("this is new sel_bias_with_uncertainty_at_0_batched")
     # ---- helpers ----
     def _as_at(x):
         return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
@@ -1131,24 +1295,32 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     # mask for padded tail
     mask   = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
-    NEG_BG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)
-    tiny   = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    NEG_BG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)  # finite sentinel (avoid -inf math)
+    tiny   = at.as_tensor_variable(1e-30,  dtype=work_dtype)   # for log/denom guards
+    tinyL  = at.as_tensor_variable(1e-300, dtype=work_dtype)   # ultra-small for final logs
 
     # ---- per-batch z, dc, logdd via grids (preferred) ----
     have_grids = (dL_grid is not None) and (z_grid is not None) and (dc_grid is not None) and (log_ddL_dz_grid is not None)
     if have_grids:
-        print("Interpolating per-batch from pre-computed grids")
         dL_grid_t         = _as_at(dL_grid)
         z_grid_t          = _as_at(z_grid)
         dc_grid_t         = _as_at(dc_grid)
         log_ddL_dz_grid_t = _as_at(log_ddL_dz_grid)
 
-        # atinterp supports tensor x; apply directly to (C,K)
-        zK  = atools.atinterp(dLK,  dL_grid_t, z_grid_t)
-        dcK = atools.atinterp(zK,   z_grid_t,  dc_grid_t)
-        dK  = atools.atinterp(zK,   z_grid_t,  log_ddL_dz_grid_t)
+        # Clamp ONLY padded entries before interpolation:
+        # snap padded tail to interior index 1 (valid), then clip to [lo, hi].
+        dL_lo, dL_hi = dL_grid_t[0], dL_grid_t[-1]
+        z_lo,  z_hi  = z_grid_t[0],  z_grid_t[-1]
+
+        dLq = at.where(mask, dLK, dL_grid_t[1])     # real data untouched
+        dLq = at.clip(dLq, dL_lo, dL_hi)
+
+        zK  = atools.atinterp(dLq, dL_grid_t, z_grid_t)
+        zq  = at.clip(zK, z_lo, z_hi)               # safe for z-based lookups
+
+        dcK = atools.atinterp(zq,  z_grid_t,  dc_grid_t)
+        dK  = atools.atinterp(zq,  z_grid_t,  log_ddL_dz_grid_t)
     else:
-        print("Recomputing cosmology!")
         # fallback: use precomputes if given; else cosmology on (C,K)
         if zinj is not None:
             zK, _, _ = _pad_to_K(zinj, K, 0.0)
@@ -1166,7 +1338,7 @@ def sel_bias_with_uncertainty_at_0_batched(
             dK = atools.log_ddL_dz(zK, H0, Om, w0, Xi0, n, dc=dcK, interp=interp)
 
     # ---- masses in source frame ----
-    one_p_z = 1.0 + zK
+    one_p_z = 1.0 + (zq if have_grids else zK)  # use clamped z if grids path
     m1SrcK  = m1K / one_p_z
     m2SrcK  = m2K / one_p_z
 
@@ -1181,7 +1353,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     # ---- log p_pop ----
     lpK = log_p_pop_fun(
-        m1useK, m2useK, zK, dLK, spins_arg, Lambda_t,
+        m1useK, m2useK, (zq if have_grids else zK), dLK, spins_arg, Lambda_t,
         rate_model, mass_model, spin_model,
         smoothing=smoothing, has_m2_break=has_m2_break,
         log_ddL_dz_pre=dK,
@@ -1192,7 +1364,7 @@ def sel_bias_with_uncertainty_at_0_batched(
         lpK = (lpK
                - at.log(at.maximum(m2SrcK, tiny))
                - at.log(at.maximum(m1SrcK - m2SrcK, tiny))
-               - at.log1p(zK))
+               - at.log1p(zq if have_grids else zK))
 
     # ---- stable batched reducer ----
     xK = lpK - lpdK
@@ -1208,8 +1380,8 @@ def sel_bias_with_uncertainty_at_0_batched(
     m2_global = 2.0 * m_global
     S2 = at.sum(s2 * at.exp(2.0 * m_chunks - m2_global))
 
-    logsumexp1 = m_global  + at.log(S1 + tiny)
-    logsumexp2 = m2_global + at.log(S2 + tiny)
+    logsumexp1 = m_global  + at.log(at.maximum(S1, tinyL))
+    logsumexp2 = m2_global + at.log(at.maximum(S2, tinyL))
 
     # ---- outputs ----
     Ndraw_t = _as_at(Ndraw).astype(work_dtype)
@@ -1221,7 +1393,6 @@ def sel_bias_with_uncertainty_at_0_batched(
     var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
 
     return log_mu, Neff, var_log_lik_u
-
 
     
 def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
