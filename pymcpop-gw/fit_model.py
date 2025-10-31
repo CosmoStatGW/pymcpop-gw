@@ -33,6 +33,7 @@ import arviz as az
 import matplotlib.pyplot as plt
 import corner
 
+import sys, multiprocessing as mp
 
 _process = psutil.Process(os.getpid())
 def mem_gb():
@@ -206,6 +207,7 @@ def main():
     import numpy as onp
     import matplotlib.pyplot as plt
     import corner
+
     
     # Custom modules
     import pymc_models as models
@@ -250,7 +252,8 @@ def main():
     else:
         print("dtype test:", np.array(0., dtype=np.float64).dtype)
     
-
+    
+    
     print(f"[PID] {os.getpid()}")
     
 
@@ -603,13 +606,22 @@ def main():
     
     if FLAGS.backend=='disk':
         backend=None
-    else:
-        # for saving see https://discourse.pymc.io/t/saving-intermediate-results-using-mcmc-in-pymc4/9938
-        # Not well tested
-        import clickhouse_driver
-        import mcbackend
-        ch_client = clickhouse_driver.Client("localhost")
-        backend = mcbackend.ClickHouseBackend(ch_client)
+    if FLAGS.backend=='ztrace':
+        # # for saving see https://discourse.pymc.io/t/saving-intermediate-results-using-mcmc-in-pymc4/9938
+        # # Not well tested
+        # import clickhouse_driver
+        # import mcbackend
+        # ch_client = clickhouse_driver.Client("localhost")
+        # backend = mcbackend.ClickHouseBackend(ch_client)
+        import zarr, numcodecs
+        
+        from pymc.backends.zarr import ZarrTrace
+        
+        spath=os.path.join(FLAGS.fout, "trace_backup.zarr")
+        backend = ZarrTrace(store=spath)
+        print("Intermediate trace will be stored at %s"%spath)
+        print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
+        #print("Has ZarrTrace:", ZarrTrace is not None)
 
          
 
@@ -978,6 +990,7 @@ def main():
             # Print only the names of variables that are sampled
             print([v.name for v in model.free_RVs])
 
+
             print()
             print('*'*80)
             print('Sampling with %s with %s method...' %(FLAGS.sampler, FLAGS.chain_method))
@@ -1018,10 +1031,10 @@ def main():
                     cb = autils.make_tqdm_callback(pbar)
 
                     
-                    trace = pm.sample(nuts_sampler='pymc', idata_kwargs={"log_likelihood": False},
-                                      **sampler_kwargs,
+                    trace = pm.sample(nuts_sampler='pymc', 
+                                      idata_kwargs={"log_likelihood": False},
                                       callback=cb,
-                                      
+                                      **sampler_kwargs,    
                                      )
 
                     
@@ -1042,7 +1055,10 @@ def main():
                 
                 
                 
-                trace = pm.sample(nuts_sampler=FLAGS.sampler, idata_kwargs={"log_likelihood": False}, pytensor_kwargs={"allow_gc": True}, **sampler_kwargs)
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, 
+                                  idata_kwargs={"log_likelihood": False}, 
+                                  pytensor_kwargs={"allow_gc": True}, 
+                                  **sampler_kwargs)
                 
                 
                 
@@ -1246,6 +1262,7 @@ def main():
 
 
 
+    
 if __name__=='__main__':
         
 
