@@ -398,6 +398,257 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     # symbolic grids (may depend on RVs)
     dL_grid=None,               # 1-D, increasing in dL
     z_grid=None,                # 1-D, z(dL_grid)
+    dc_grid=None,               # 1-D, dc(z_grid) (unused here; we compute dc analytically)
+    log_ddL_dz_grid=None,       # 1-D, log(ddL/dz)(z_grid) (unused here; computed analytically)
+    *,
+    chunk_size=4096,
+    **kwargs
+):
+    """GPU-stable scan version:
+       - dL→z via index-based linear interpolation (no atinterp on padded rows)
+       - dc and log_ddL_dz computed via analytic functions (avoids OOB interps)
+    """
+
+    print("sel_bias_with_uncertainty_at_0_batched_scan, GPU-stable scan version")
+    
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    def _pad_to_multiple(x, k, pad_value):
+        x = _as_at(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full((Npad,), at.as_tensor_variable(pad_value, dtype=x.dtype), dtype=x.dtype)
+        xK = at.concatenate([x, pad], axis=0).reshape((C, k))
+        return xK, C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    # tensors
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+    Lambda_t = _as_at(Lambda)
+    H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1_all = _as_at(spinsInj[0]); s2_all = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2]); ct2_all = _as_at(spinsInj[3])
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # pad & mask
+    m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
+    m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
+    dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
+    lpdK,_, _ = _pad_to_multiple(lpd_all,  K, 0.0)
+    if spin_is_default:
+        s1K,  _, _ = _pad_to_multiple(s1_all,  K, 0.0)
+        s2K,  _, _ = _pad_to_multiple(s2_all,  K, 0.0)
+        ct1K, _, _ = _pad_to_multiple(ct1_all, K, 1.0)
+        ct2K, _, _ = _pad_to_multiple(ct2_all, K, 1.0)
+
+    idxs = at.arange(C, dtype=int_dtype)
+    valid_mask = (at.arange(C*K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BIG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)  # finite sentinel
+    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+    have_grids = (dL_grid is not None) and (z_grid is not None)
+    if have_grids:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
+
+        # Precompute indices safely for all rows; pad idx with 1 so [il,ih] valid
+        idx_full = at.searchsorted(dL_grid_t, dL_all, side="right").astype(int_dtype)
+        lo = at.as_tensor_variable(1, dtype=int_dtype)
+        hi = (dL_grid_t.shape[0] - 1).astype(int_dtype)
+        idx_full = at.clip(idx_full, lo, hi)
+        idx_full = stop_grad(idx_full)
+        one_idx = at.as_tensor_variable(1, dtype=int_dtype)
+        idxK, _, _ = _pad_to_multiple(idx_full, K, one_idx)
+
+    # ---- scan body ----
+    if spin_is_default:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                 s1K, s2K, ct1K, ct2K, *maybe):
+            m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+            s1 = s1K[i];  s2 = s2K[i]; ct1 = ct1K[i]; ct2 = ct2K[i]
+            spins_use = [s1, s2, ct1, ct2]
+
+            # z interpolation
+            if have_grids:
+                dL_grid_t, z_grid_t, idxK = maybe
+                idx = idxK[i]
+                il, ih = idx - 1, idx
+                xl = dL_grid_t[il]; xh = dL_grid_t[ih]
+                yl = z_grid_t[il];  yh = z_grid_t[ih]
+                denom = at.maximum(xh - xl, eps)
+                r = (dL - xl) / denom
+                zinj_c = (1 - r) * yl + r * yh
+            else:
+                H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+
+            # compute dc, logdd analytically (safe & fast)
+            dc_c    = atools.dcfun_at(zinj_c, H0, Om, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = at.log(Mc_src_inj)
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing, has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+            )
+
+            if use_dp:
+                lp = (lp
+                      - at.log(at.maximum(m2Src, eps))
+                      - at.log(at.maximum(m1Src - m2Src, eps))
+                      - at.log1p(zinj_c))
+
+            x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m  = at.max(x)
+            y  = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,     s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c,    s2c)
+            return m_new, m2_new, s1_new, s2_new
+    else:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, *maybe):
+            m1 = m1K[i]; m2 = m2K[i]; dL = dLK[i]; lpd = lpdK[i]; mask = valid_mask[i]
+            spins_use = []
+            H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+            if have_grids:
+                dL_grid_t, z_grid_t, idxK = maybe
+                idx = idxK[i]
+                il, ih = idx - 1, idx
+                xl = dL_grid_t[il]; xh = dL_grid_t[ih]
+                yl = z_grid_t[il];  yh = z_grid_t[ih]
+                denom = at.maximum(xh - xl, eps)
+                r = (dL - xl) / denom
+                zinj_c = (1 - r) * yl + r * yh
+            else:           
+                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+
+            dc_c    = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = at.log(Mc_src_inj)
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing, has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+            )
+
+            if use_dp:
+                lp = (lp
+                      - at.log(at.maximum(m2Src, eps))
+                      - at.log(at.maximum(m1Src - m2Src, eps))
+                      - at.log1p(zinj_c))
+
+            x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m  = at.max(x)
+            y  = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,     s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c,    s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    # non_sequences
+    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t]
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
+    if have_grids:
+        nonseq += [dL_grid_t, z_grid_t, idxK]
+
+    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+        fn=step,
+        sequences=[idxs],
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True
+    )
+
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    logsumexp1 = m_fin[-1]  + at.log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + at.log(at.maximum(s2_fin[-1], tinyL))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = logsumexp1 - at.log(Ndraw_t)
+    logs2   = logsumexp2 - at.log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+
+def sel_bias_with_uncertainty_at_0_batched_scan_new(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing, has_m2_break, interp,
+    wrap_logp=False,
+    # kept for API compat (ignored when grids are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # symbolic grids (may depend on RVs)
+    dL_grid=None,               # 1-D, increasing in dL
+    z_grid=None,                # 1-D, z(dL_grid)
     dc_grid=None,               # 1-D, dc(z_grid)
     log_ddL_dz_grid=None,       # 1-D, log(ddL/dz)(z_grid)
     *,
@@ -891,6 +1142,147 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
 
 def sel_bias_with_uncertainty_at_loop(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing, has_m2_break, interp,
+    wrap_logp=False,
+    # kept for API compat (ignored when grids are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # symbolic grids (may depend on RVs)
+    dL_grid=None,           # 1-D, strictly increasing in dL
+    z_grid=None,            # 1-D, z(dL_grid)
+    dc_grid=None,           # optional: if provided, we can atinterp on z (loop has no padding)
+    log_ddL_dz_grid=None,   # optional: same as above
+    *,
+    chunk_size=4096,
+    N_inj_py=None,
+    **kwargs
+):
+    """
+    Low-memory Python loop (GPU-stable).
+    - Computes z per chunk: from (dL_grid,z_grid) via atinterp if provided, else analytic.
+    - Computes dc and log_ddL_dz per chunk: from grids if both (z_grid & dc/logdd grids) exist, else analytic.
+    - Passes dc and log_ddL_dz_pre to log_p_pop_* (new API preserved).
+    """
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    if N_inj_py is None:
+        # try best-effort extraction
+        tv = getattr(getattr(m1inj, "tag", object()), "test_value", None)
+        if tv is None:
+            raise ValueError("Pass N_inj_py=<python int> for the loop variant.")
+        N_inj_py = int(tv.shape[0])
+
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+    Lambda_t = _as_at(Lambda)
+
+    H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    if (spin_model == "default") or (spin_model == "default_gauss"):
+        s1_all = _as_at(spinsInj[0]); s2_all = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2]); ct2_all = _as_at(spinsInj[3])
+        use_spins = True
+    else:
+        use_spins = False
+
+    CH = int(chunk_size)
+    N_py = int(N_inj_py)
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    eps  = at.as_tensor_variable(1e-30,  dtype=work_dtype)
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+
+    log_sum  = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    log_sum2 = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+
+    # grids tensors if provided
+    have_z_from_grid = (dL_grid is not None) and (z_grid is not None)
+    if have_z_from_grid:
+        dL_grid_t = _as_at(dL_grid); z_grid_t = _as_at(z_grid)
+    have_dc_grid = (dc_grid is not None) and (z_grid is not None)
+    if have_dc_grid:
+        dc_grid_t = _as_at(dc_grid)
+    have_logdd_grid = (log_ddL_dz_grid is not None) and (z_grid is not None)
+    if have_logdd_grid:
+        logdd_grid_t = _as_at(log_ddL_dz_grid)
+
+    for start in range(0, N_py, CH):
+        stop = min(start + CH, N_py)
+
+        m1  = m1_all[start:stop]
+        m2  = m2_all[start:stop]
+        dL  = dL_all[start:stop]
+        lpd = lpd_all[start:stop]
+        spins_use = [s1_all[start:stop], s2_all[start:stop], ct1_all[start:stop], ct2_all[start:stop]] if use_spins else []
+
+        # z per chunk
+        if have_z_from_grid:
+            zinj_c = atools.atinterp(dL, dL_grid_t, z_grid_t)    # safe in loop (no padding)
+        else:
+            zinj_c = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+
+        # dc and logdd per chunk (prefer grids if BOTH available; else analytic)
+        if have_dc_grid and have_logdd_grid:
+            dc_c    = atools.atinterp(zinj_c, z_grid_t, dc_grid_t)
+            logdd_c = atools.atinterp(zinj_c, z_grid_t, logdd_grid_t)
+        else:
+            dc_c    = atools.dcfun_at(zinj_c, H0, Om, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+
+        one_p_z = 1.0 + zinj_c
+        m1Src = m1 / one_p_z
+        m2Src = m2 / one_p_z
+
+        if mass_model in ("DP", "DPUC"):
+            Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+            mass_1_use = at.log(Mc_src_inj)
+            mass_2_use = atools.logitat(q_inj)
+        else:
+            mass_1_use = m1Src
+            mass_2_use = m2Src
+
+        lp = log_p_pop_fun(
+            mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_t,
+            rate_model, mass_model, spin_model,
+            smoothing=smoothing, has_m2_break=has_m2_break,
+            log_ddL_dz_pre=logdd_c,
+            dc=dc_c,
+        )
+
+        if mass_model in ("DP", "DPUC"):
+            lp = (lp
+                  - at.log(at.maximum(m2Src, eps))
+                  - at.log(at.maximum(m1Src - m2Src, eps))
+                  - at.log1p(zinj_c))
+
+        x  = lp - lpd
+        m  = at.max(x)
+        y  = at.exp(x - m)
+        s1c = at.sum(y)
+        s2c = at.sum(at.sqr(y))
+
+        log_sum  = at.logaddexp(log_sum,  m + at.log(at.maximum(s1c, tinyL)))
+        log_sum2 = at.logaddexp(log_sum2, 2.0*m + at.log(at.maximum(s2c, tinyL)))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = log_sum  - at.log(Ndraw_t)
+    logs2   = log_sum2 - at.log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+def sel_bias_with_uncertainty_at_loop_new(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     Lambda, Ndraw,
     rate_model, mass_model, spin_model,
