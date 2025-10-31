@@ -1722,102 +1722,145 @@ def sel_bias_with_uncertainty_at_0_batched(
     **kwargs
 ):
     """
-    Vectorized + batched reduction with per-batch interpolation from grids.
-    Tweaks:
-      - Clamp ONLY padded entries before interpolation to avoid NaNs on GPU/JIT.
-      - Light numerical guards on logs/divisions.
+    Vectorized + batched reduction with symmetric, GPU-stable interpolation:
+
+    - Compute all searchsorted indices ONCE over the full (C,K) payload (via flat views).
+    - Disconnect gradients through indices (piecewise-constant).
+    - Linear interpolation only; no atinterp.
+    - Mask-only clamping so real data are untouched; padded tail won't go OOB.
     """
 
-    print("this is new sel_bias_with_uncertainty_at_0_batched")
     # ---- helpers ----
     def _as_at(x):
         return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
 
-    work_dtype = getattr(m1inj, "dtype", "float64")
-    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
-    K = int(chunk_size)
-
-    def _vec1(x, dtype=work_dtype):
+    def _vec1(x, dtype):
         v = x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
         if v.ndim != 1:
             v = at.flatten(v, 1)
         return v.astype(dtype) if v.dtype != dtype else v
 
-    def _pad_to_K(x, K, pad_value):
-        x = _vec1(x)
+    def _pad_to_K(x, K, pad_value, dtype):
+        x = _vec1(x, dtype)
         N = x.shape[0]
         C = (N + K - 1) // K
         Npad = C * K - N
-        pad = at.full((Npad,), at.as_tensor_variable(pad_value).astype(x.dtype), dtype=x.dtype)
+        pad = at.full((Npad,), at.as_tensor_variable(pad_value, dtype=x.dtype), dtype=x.dtype)
         xK  = at.concatenate([x, pad], axis=0).reshape((C, K))
         return xK, C, N
 
-    # ---- pad observed arrays to (C, K) ----
-    m1K, C, N = _pad_to_K(m1inj,  K, 2.0)
-    m2K, _, _ = _pad_to_K(m2inj,  K, 1.0)
-    dLK,  _, _ = _pad_to_K(dLinj, K, 1.0)
-    lpdK, _, _ = _pad_to_K(log_p_draw, K, 0.0)
+    def _lin_interp_with_indices(x, xg, yg, idx, eps):
+        il, ih = idx - 1, idx
+        xl, xh = xg[il], xg[ih]
+        yl, yh = yg[il], yg[ih]
+        denom  = at.maximum(xh - xl, eps)
+        r = (x - xl) / denom
+        return (1.0 - r) * yl + r * yh
 
-    # Lambda and cosmology pieces
+    # ---- config / dtypes ----
+    work_dtype = getattr(m1inj, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # ---- pad observed arrays to (C,K) ----
+    m1K, C, N = _pad_to_K(m1inj,  K, 2.0, work_dtype)
+    m2K, _, _ = _pad_to_K(m2inj,  K, 1.0, work_dtype)
+    dLK,  _, _ = _pad_to_K(dLinj, K, 1.0, work_dtype)
+    lpdK, _, _ = _pad_to_K(log_p_draw, K, 0.0, work_dtype)
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1K, _, _  = _pad_to_K(spinsInj[0], K, 0.0, work_dtype)
+        s2K, _, _  = _pad_to_K(spinsInj[1], K, 0.0, work_dtype)
+        ct1K, _, _ = _pad_to_K(spinsInj[2], K, 1.0, work_dtype)
+        ct2K, _, _ = _pad_to_K(spinsInj[3], K, 1.0, work_dtype)
+
+    # mask for padded tail
+    mask   = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)  # finite sentinel
+    tiny   = at.as_tensor_variable(1e-30,   dtype=work_dtype)
+    tinyL  = at.as_tensor_variable(1e-300,  dtype=work_dtype)
+
+    # cosmology pieces / logp dispatcher
     Lambda_t = _as_at(Lambda)
     H0, Om, w0, Xi0, n = Lambda_t[0], Lambda_t[1], Lambda_t[2], Lambda_t[3], Lambda_t[4]
     log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
     use_dp = (mass_model in ("DP", "DPUC"))
 
-    # spins
-    spin_is_default = (spin_model in ("default", "default_gauss"))
-    if spin_is_default:
-        s1K, _, _  = _pad_to_K(spinsInj[0], K, 0.0)
-        s2K, _, _  = _pad_to_K(spinsInj[1], K, 0.0)
-        ct1K, _, _ = _pad_to_K(spinsInj[2], K, 1.0)
-        ct2K, _, _ = _pad_to_K(spinsInj[3], K, 1.0)
+    # ---------- Interpolation path selection ----------
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc  = (dc_grid is not None) and (z_grid is not None)
+    have_ldd = (log_ddL_dz_grid is not None) and (z_grid is not None)
 
-    # mask for padded tail
-    mask   = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
-    NEG_BG = at.as_tensor_variable(-1.0e30, dtype=work_dtype)  # finite sentinel (avoid -inf math)
-    tiny   = at.as_tensor_variable(1e-30,  dtype=work_dtype)   # for log/denom guards
-    tinyL  = at.as_tensor_variable(1e-300, dtype=work_dtype)   # ultra-small for final logs
+    # ---------- dL -> z (vectorized, single searchsorted) ----------
+    if have_dLz:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
 
-    # ---- per-batch z, dc, logdd via grids (preferred) ----
-    have_grids = (dL_grid is not None) and (z_grid is not None) and (dc_grid is not None) and (log_ddL_dz_grid is not None)
-    if have_grids:
-        dL_grid_t         = _as_at(dL_grid)
-        z_grid_t          = _as_at(z_grid)
-        dc_grid_t         = _as_at(dc_grid)
-        log_ddL_dz_grid_t = _as_at(log_ddL_dz_grid)
+        # Flatten, clamp only padded entries to interior before searchsorted
+        dL_flat = dLK.reshape((-1,))
+        mask_flat = mask.reshape((-1,))
 
-        # Clamp ONLY padded entries before interpolation:
-        # snap padded tail to interior index 1 (valid), then clip to [lo, hi].
-        dL_lo, dL_hi = dL_grid_t[0], dL_grid_t[-1]
-        z_lo,  z_hi  = z_grid_t[0],  z_grid_t[-1]
-
-        dLq = at.where(mask, dLK, dL_grid_t[1])     # real data untouched
-        dLq = at.clip(dLq, dL_lo, dL_hi)
-
-        zK  = atools.atinterp(dLq, dL_grid_t, z_grid_t)
-        zq  = at.clip(zK, z_lo, z_hi)               # safe for z-based lookups
-
-        dcK = atools.atinterp(zq,  z_grid_t,  dc_grid_t)
-        dK  = atools.atinterp(zq,  z_grid_t,  log_ddL_dz_grid_t)
+        safe_dL = at.where(mask_flat, dL_flat, dL_grid_t[1])
+        # compute indices and clip
+        idx_dL = at.searchsorted(dL_grid_t, safe_dL, side="right").astype(int_dtype)
+        lo = at.as_tensor_variable(1, dtype=int_dtype)
+        hi = (dL_grid_t.shape[0] - 1).astype(int_dtype)
+        idx_dL = stop_grad(at.clip(idx_dL, lo, hi))
+        # linear interp and reshape back to (C,K)
+        z_flat = _lin_interp_with_indices(safe_dL, dL_grid_t, z_grid_t, idx_dL, tiny)
+        zK = z_flat.reshape((C, K))
     else:
-        # fallback: use precomputes if given; else cosmology on (C,K)
+        # No grids: use provided arrays or cosmology, already in batch shape
         if zinj is not None:
-            zK, _, _ = _pad_to_K(zinj, K, 0.0)
+            zK, _, _ = _pad_to_K(zinj, K, 0.0, work_dtype)
         else:
             zK = atools.z_from_dL_at(dLK, H0, Om, w0, Xi0, n, interp=interp)
 
+    # ---------- z -> dc (vectorized) ----------
+    if have_dc:
+        dc_grid_t = _as_at(dc_grid)
+        z_grid_t2 = _as_at(z_grid)  # same base grid
+
+        z_flat = zK.reshape((-1,))
+        # only clamp padded tail for indexing
+        z_safe = at.where(mask_flat, z_flat, z_grid_t2[1])
+        idx_z_dc = at.searchsorted(z_grid_t2, z_safe, side="right").astype(int_dtype)
+        loz = at.as_tensor_variable(1, dtype=int_dtype)
+        hiz = (z_grid_t2.shape[0] - 1).astype(int_dtype)
+        idx_z_dc = stop_grad(at.clip(idx_z_dc, loz, hiz))
+
+        dc_flat = _lin_interp_with_indices(z_safe, z_grid_t2, dc_grid_t, idx_z_dc, tiny)
+        dcK = dc_flat.reshape((C, K))
+    else:
         if dcinj is not None:
-            dcK, _, _ = _pad_to_K(dcinj, K, 0.0)
+            dcK, _, _ = _pad_to_K(dcinj, K, 0.0, work_dtype)
         else:
             dcK = atools.dcfun_at(zK, H0, Om, interp=interp)
 
+    # ---------- z -> log_ddL_dz (vectorized) ----------
+    if have_ldd:
+        ldd_grid_t = _as_at(log_ddL_dz_grid)
+        z_grid_t3  = _as_at(z_grid)
+
+        z_flat = zK.reshape((-1,))
+        z_safe = at.where(mask_flat, z_flat, z_grid_t3[1])
+        idx_z_ldd = at.searchsorted(z_grid_t3, z_safe, side="right").astype(int_dtype)
+        loz2 = at.as_tensor_variable(1, dtype=int_dtype)
+        hiz2 = (z_grid_t3.shape[0] - 1).astype(int_dtype)
+        idx_z_ldd = stop_grad(at.clip(idx_z_ldd, loz2, hiz2))
+
+        d_flat = _lin_interp_with_indices(z_safe, z_grid_t3, ldd_grid_t, idx_z_ldd, tiny)
+        dK = d_flat.reshape((C, K))
+    else:
         if log_ddL_dz_inj is not None:
-            dK, _, _ = _pad_to_K(log_ddL_dz_inj, K, 0.0)
+            dK, _, _ = _pad_to_K(log_ddL_dz_inj, K, 0.0, work_dtype)
         else:
             dK = atools.log_ddL_dz(zK, H0, Om, w0, Xi0, n, dc=dcK, interp=interp)
 
     # ---- masses in source frame ----
-    one_p_z = 1.0 + (zq if have_grids else zK)  # use clamped z if grids path
+    one_p_z = 1.0 + zK
     m1SrcK  = m1K / one_p_z
     m2SrcK  = m2K / one_p_z
 
@@ -1832,7 +1875,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     # ---- log p_pop ----
     lpK = log_p_pop_fun(
-        m1useK, m2useK, (zq if have_grids else zK), dLK, spins_arg, Lambda_t,
+        m1useK, m2useK, zK, dLK, spins_arg, Lambda_t,
         rate_model, mass_model, spin_model,
         smoothing=smoothing, has_m2_break=has_m2_break,
         log_ddL_dz_pre=dK,
@@ -1843,16 +1886,16 @@ def sel_bias_with_uncertainty_at_0_batched(
         lpK = (lpK
                - at.log(at.maximum(m2SrcK, tiny))
                - at.log(at.maximum(m1SrcK - m2SrcK, tiny))
-               - at.log1p(zq if have_grids else zK))
+               - at.log1p(zK))
 
-    # ---- stable batched reducer ----
+    # ---- stable batched reduction ----
     xK = lpK - lpdK
     xK = at.where(mask, xK, NEG_BG)
 
-    m_chunks = at.max(xK, axis=1)                 # (C,)
-    y  = at.exp(xK - m_chunks[:, None])           # (C,K)
-    s1 = at.sum(y, axis=1)                        # (C,)
-    s2 = at.sum(at.sqr(y), axis=1)                # (C,)
+    m_chunks = at.max(xK, axis=1)               # (C,)
+    y  = at.exp(xK - m_chunks[:, None])         # (C,K)
+    s1 = at.sum(y, axis=1)                      # (C,)
+    s2 = at.sum(at.sqr(y), axis=1)              # (C,)
 
     m_global  = at.max(m_chunks)
     S1 = at.sum(s1 * at.exp(m_chunks - m_global))
