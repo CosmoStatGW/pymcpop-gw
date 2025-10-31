@@ -168,9 +168,11 @@ def main():
         #except:
         os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "True")
+        os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
     
 
     os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+    os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
 
     # ----------------------------------------------------
@@ -187,7 +189,8 @@ def main():
         jax.config.update("jax_enable_x64", True)
         
     jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-    jax.config.update("jax_default_matmul_precision", "tensorfloat32")
+    #jax.config.update("jax_default_matmul_precision", "tensorfloat32")
+    jax.config.update("jax_default_matmul_precision", "highest")
 
     from scipy.special import ndtr, ndtri, erfinv
     
