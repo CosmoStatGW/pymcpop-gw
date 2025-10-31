@@ -888,9 +888,12 @@ def Xifun_at(z, Xi0, n):
     return Xi0+(1-Xi0)/(1+z)**n
 
 
-def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False):
+def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False, dc=None):
     """Luminosity distance at redshift ``z``."""
-    return Xifun_at(z, Xi0, n)*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
+    if dc is not None:
+        return Xifun_at(z, Xi0, n)*(z+1.0)*dc
+    else:
+        return Xifun_at(z, Xi0, n)*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
 
 
 def Efun_at(z, Om, w0):
@@ -927,7 +930,7 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False):
     
     # H0 in Mpc, dLs in Gpc
     if dc is None:
-        dc = dcfun_at(z, H0, Om0,  w0, Xi0, n, interp=interp) # Gpc
+        dc = dcfun_at(z, H0, Om0,  w0, interp=interp) # Gpc
     
     Xi = Xifun_at(z, Xi0, n)
     res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  

@@ -67,7 +67,7 @@ def main():
     
     
     parser.add_argument("--dLprior", default='none', type=str, required=False)
-    parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
+    parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
     parser.add_argument("--sampling_gw", default='gmm_cat', type=str, required=False)

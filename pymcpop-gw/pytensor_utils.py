@@ -10,6 +10,13 @@ from pytensor.graph.basic import graph_inputs, Variable
 
 from pytensor.graph.basic import io_toposort
 from pytensor.printing import debugprint
+from pytensor import shared
+import numpy as onp
+
+
+def pt_vec(x, DT="float64"):
+    x = onp.asarray(x, dtype=DT).reshape(-1)
+    return shared(x, borrow=True)  # or at.as_tensor_variable(x) if truly tiny
 
 
 def dump_uniform_sources(outputs, context=2):
