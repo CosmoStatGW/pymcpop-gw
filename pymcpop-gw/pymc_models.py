@@ -2085,6 +2085,9 @@ def make_model(  priors,
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
             # So I remove the dL^2 prior by hand on those
+            print(
+            "⚠️ Warning:  O1-O2 do not have posteriors with dVdz prior. I remove the dL^2 prior by hand on the first 10 elements. Do this with knowledge of the dataset. "
+        )
             if not pop_only:
                 # 1D case: shape (N,)
                 #lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
