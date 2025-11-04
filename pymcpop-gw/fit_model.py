@@ -96,6 +96,9 @@ def main():
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default='vec', type=str, required=False)
     parser.add_argument("--wrap_logp", default=0, type=int, required=False)
+    parser.add_argument("--interp_inj", default=0, type=int, required=False)
+
+    
 
         
     
@@ -169,8 +172,9 @@ def main():
         os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
         os.environ.setdefault("JAX_ENABLE_X64", "True")
         os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
+        #os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_compile,fast_run=0"
     
-
+    
     os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
     os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
@@ -205,6 +209,7 @@ def main():
     # ----------------------------------------------------
     import pymc as pm
     import pytensor
+    pytensor.config.openmp = True   # parallelize elemwise/sum where possible
     #import pytensor.tensor as at
     import arviz as az
     import numpy as onp
@@ -595,7 +600,8 @@ def main():
                                 use_updates = use_updates,
                                 inj_loop = FLAGS.inj_loop,
                                 save_thetas = FLAGS.save_thetas,
-                                wrap_logp=FLAGS.wrap_logp
+                                wrap_logp=FLAGS.wrap_logp,
+                                interp_inj=FLAGS.interp_inj
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
@@ -609,7 +615,7 @@ def main():
     
     if FLAGS.backend=='disk':
         backend=None
-    if FLAGS.backend=='ztrace':
+    elif FLAGS.backend=='ztrace':
         # # for saving see https://discourse.pymc.io/t/saving-intermediate-results-using-mcmc-in-pymc4/9938
         # # Not well tested
         # import clickhouse_driver

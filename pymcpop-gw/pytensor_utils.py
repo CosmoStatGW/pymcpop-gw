@@ -14,6 +14,33 @@ from pytensor import shared
 import numpy as onp
 
 
+
+def _bin_indices(x, edges):
+    """
+    x:      (B, K) values to bin
+    edges:  (NBINS+1,) monotonically increasing bin edges
+    returns idx: (B, K) int64 in [0, NBINS-1]
+    """
+    idx = at.searchsorted(edges, x, side="right") - 1
+    idx = at.clip(idx, 0, edges.shape[0] - 2)
+    return idx.astype("int64")
+
+
+def _scatter_sum_batched(values, idx, nbins):
+    """
+    values: (B, K) floatX  -> per-sample contribution to add to the bin
+    idx:    (B, K) int64   -> bin index per sample
+    nbins:  python int or 0-d tensor, number of bins
+    return: (B, nbins) floatX, sum of 'values' per bin for every batch row
+    """
+    B, K = values.shape
+    base = at.arange(B, dtype="int64") * nbins        # (B,)
+    pos = (base[:, None] + idx).flatten()             # (B*K,)
+    val = values.flatten()                            # (B*K,)
+    out = at.zeros((B * nbins,), values.dtype)        # (B*nbins,)
+    out = at.inc_subtensor(out[pos], val, inplace=False)
+    return out.reshape((B, nbins))
+
 def pt_vec(x, DT="float64"):
     x = onp.asarray(x, dtype=DT).reshape(-1)
     return shared(x, borrow=True)  # or at.as_tensor_variable(x) if truly tiny

@@ -1414,29 +1414,59 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
     return 1/(1-alpha)*(mmax**(1-alpha)-mmin**(1-alpha))
 
 
+# def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
+#     """
+#     log ∫_{mmin}^{mmax} m^{-alpha} dm
+#     = log( (mmax^(1-α) - mmin^(1-α)) / (1-α) ), with a stable α≈1 branch.
+#     """
+#     # tensors + guards
+#     epsv  = at.as_tensor_variable(eps).astype(mmin.dtype)
+
+#     mmin_c = at.clip(mmin, epsv, INF)
+#     mmax_c = at.maximum(at.clip(mmax, epsv,INF), mmin_c * (1.0 + 1e-12))
+
+#     t = at.as_tensor_variable(1.0).astype(alpha.dtype) - alpha  # t = 1 - α
+#     close = at.abs(t) < 1e-6
+
+#     # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
+#     num = at.pow(mmax_c, t) - at.pow(mmin_c, t)
+#     log_not1 = at.log(at.abs(num)) - at.log(at.abs(t))
+
+#     # α = 1: log( log(mmax/mmin) )
+#     log_ratio = at.log(mmax_c / mmin_c)
+#     log_eq1   = at.log(at.clip(log_ratio, epsv, np.inf))
+
+#     return at.switch(close, log_eq1, log_not1)
+
+
 def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
     """
     log ∫_{mmin}^{mmax} m^{-alpha} dm
-    = log( (mmax^(1-α) - mmin^(1-α)) / (1-α) ), with a stable α≈1 branch.
+    = log( (mmax^(1-α) - mmin^(1-α)) / (1-α) ), with a stable α≈1 path, no switch.
     """
-    # tensors + guards
-    epsv  = at.as_tensor_variable(eps).astype(mmin.dtype)
+    # sanitize bounds
+    dtype = mmin.dtype
+    epsv  = at.as_tensor_variable(eps).astype(dtype)
 
     mmin_c = at.clip(mmin, epsv, INF)
-    mmax_c = at.maximum(at.clip(mmax, epsv,INF), mmin_c * (1.0 + 1e-12))
+    mmax_c = at.maximum(at.clip(mmax, epsv, INF), mmin_c * (1.0 + 1e-12))
 
-    t = at.as_tensor_variable(1.0).astype(alpha.dtype) - alpha  # t = 1 - α
-    close = at.abs(t) < 1e-6
+    # t = 1 - alpha
+    one = at.as_tensor_variable(1.0).astype(alpha.dtype)
+    t   = one - alpha
 
-    # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
-    num = at.pow(mmax_c, t) - at.pow(mmin_c, t)
-    log_not1 = at.log(at.abs(num)) - at.log(at.abs(t))
+    # Let a = log(mmax), b = log(mmin), Δ = a - b > 0
+    a = at.log(mmax_c)
+    b = at.log(mmin_c)
+    delta = a - b
 
-    # α = 1: log( log(mmax/mmin) )
-    log_ratio = at.log(mmax_c / mmin_c)
-    log_eq1   = at.log(at.clip(log_ratio, epsv, np.inf))
-
-    return at.switch(close, log_eq1, log_not1)
+    # For t≠0: log( (mmax^t - mmin^t) / |t| )
+    # = t*b + log(|expm1(t*Δ)|) - log(|t|).
+    # This expression is *also* the correct continuous limit at t→0 (α→1):
+    # as t→0, log(|expm1(t*Δ)|) - log|t| → log(Δ), giving log(log(mmax/mmin)).
+    return (t * b
+            + at.log(at.abs(at.expm1(t * delta)))
+            - at.log(at.abs(t)))
     
 
 ####### Power Law + Peak smooth edges , LVK low-end ########
