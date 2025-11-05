@@ -1351,7 +1351,7 @@ def make_model(  priors,
             nXi0_ = 0.
         else:
             Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
-            nXi0_ = pm.Uniform('n', lower=priors['n'][0], upper=priors['n'][1], initval=ivals.get('nXi0')) 
+            nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
 
         Lambda_ = [H0_, Om_, w0_, Xi0_, nXi0_]
 
@@ -2419,15 +2419,23 @@ def make_model(  priors,
                         
                         selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
 
+                    
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
-                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
- 
+
+                        
+                        #selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
+
+                        selection_bias = sel_effect
+                        _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var, deltam=0.01, ml=-0.01))
+
+
+                        
                     elif sel_smoothing=='softplus':
                         print("Tapering sel effect with softplus")
                         # Slack (how sharp the corner is) and weight (penalty strength)
-                        nu = at.as_tensor_variable(0.001)     # smaller = sharper transition
-                        lam = at.as_tensor_variable(1e3)     # larger = stronger penalty
+                        nu = at.as_tensor_variable(0.01)     # smaller = sharper transition
+                        lam = at.as_tensor_variable(1.)     # larger = stronger penalty
                         
                         excess  = (log_lik_var - log_lik_var_min) / nu
                         penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
