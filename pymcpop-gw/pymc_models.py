@@ -2086,7 +2086,7 @@ def make_model(  priors,
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
             # So I remove the dL^2 prior by hand on those
             print(
-            "⚠️ Warning:  O1-O2 do not have posteriors with dVdz prior. I remove the dL^2 prior by hand on the first 10 elements. Do this with knowledge of the dataset. "
+            "⚠️ Warning: I remove the dL^2 prior by hand on the first 10 elements. This is usually done with LVK data for BBHs as O1-O2 do not have posteriors with dVdz prior. Do this with knowledge of the dataset. "
         )
             if not pop_only:
                 # 1D case: shape (N,)

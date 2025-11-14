@@ -631,6 +631,8 @@ def main():
         print("Intermediate trace will be stored at %s"%spath)
         print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
         #print("Has ZarrTrace:", ZarrTrace is not None)
+    else:
+        raise ValueError("backend can be disk or ztrace, got %s"%FLAGS.backend)
 
          
 
@@ -950,18 +952,7 @@ def main():
                     pytensor.config.profile_memory = False
                     sys.exit(0)
                     
-            # ----- sampler-specific kwargs -----
-           
-            sampler_kwargs = {
-                    "draws": FLAGS.nsteps,
-                    "tune":FLAGS.ntune,
-                    "target_accept": FLAGS.target_accept,
-                    "chains": FLAGS.nchains,
-                    #"random_seed": 42,
-                    "cores": FLAGS.ncores,
-                    "progressbar": True,
-                    "trace": backend,
-                }
+
     
             if FLAGS.sampler == "numpyro":
                 sampler = "numpyro"
