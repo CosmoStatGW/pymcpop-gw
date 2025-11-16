@@ -566,6 +566,7 @@ def main():
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
                                     smoothing=FLAGS.smoothing,
+                                    has_m2_break=FLAGS.has_m2_break,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
@@ -601,7 +602,7 @@ def main():
                                 inj_loop = FLAGS.inj_loop,
                                 save_thetas = FLAGS.save_thetas,
                                 wrap_logp=FLAGS.wrap_logp,
-                                interp_inj=FLAGS.interp_inj
+                                interp_inj=FLAGS.interp_inj,
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
