@@ -12,6 +12,7 @@ import pymc as pm
 import numpy as np
 from pytensor.gradient import disconnected_grad as stop_grad
 from pytensor.compile.mode import get_default_mode
+from pymc.distributions import transforms as tr
 #from pymc.pytensorf import collect_default_updates
 from pytensor import config
 
@@ -361,7 +362,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     
     elif mass_model=='DP':
 
-        alpha, beta, w, mu, fishers, ldets_inv, logw  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5], Lambda[istart_spin+6] #Lambda[-8:-1]
+        alpha, beta, w, mu, fishers, ldets_inv, logw  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5] , Lambda[istart_spin+6] #Lambda[-8:-1]
         Nmax=Lambda[istart_spin+7]
 
         # 1) Pack observations into (N, 2)
@@ -384,7 +385,25 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
             + 0.5 * ldets_inv[:, None]
             + logw[:, None]
         )                                           # (K, N)
+
+        # # 2a) Solve L * y = diff^T  for each component k
+        # #    diff.transpose -> (K, 2, N); solve_lower_triangular acts per-k
+        # y = at.solve_lower_triangular(L, diff.transpose(0, 2, 1))  # (K, 2, N)
         
+        # # 3) Mahalanobis term: ||y||^2  → (K, N)
+        # quad = at.sum(y**2, axis=1).T  # sum over the 2 dims, then transpose to (K, N)
+        
+        # # 3a) log |Σ^{-1}|  from L:  log|Σ| = 2 * sum(log(diag(L)))  ⇒ log|Σ^{-1}| = -2 * ...
+        # logdet_prec = -2.0 * at.sum(at.log(at.diagonal(L, axis1=1, axis2=2)), axis=1)  # (K,)
+        
+        # # 4) Component log-densities (d=2)
+        # logp_components = (
+        #     -0.5 * quad
+        #     - 0.5 * 2 * at.log(2.0 * np.pi)
+        #     + 0.5 * logdet_prec[:, None]
+        #     + logw[:, None]
+        # )  # (K, N)
+
         # 5) Mixture over components -> per-observation log-lik
         lpmass = at.logsumexp(logp_components, axis=0)  # (N,)
 
@@ -1549,205 +1568,123 @@ def make_model(  priors,
             Lambda_ += [muM_, sM_ ]
 
         ### Non - parametric
-        elif mass_model=='DPUC':
-            print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
+        elif mass_model in ('DPUC', 'DP'):
 
-            
-            alpha = pm.Gamma("alpha", 1.0, 1.0)
+            alpha_inv = pm.Gamma("alpha_inv", 0.05, 5. )
+            alpha = 1/alpha_inv
             beta = pm.Beta("beta", 1.0, alpha, dims="component" )
             w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
             logw = at.log(w)
-
-
-            #### Sigma prior limits: 
-
-
-            # Option 1: Fixes std from (\tau * \lambda ) parametrization
-            # Here check how to choose the parameters of the Gamma priors!
-
-            #---- global–local prior on SDs (uncorrelated) ----
-            # controls local variability
-            # a_lam1, b_lam1 = 0.6, 0.6
-            # a_lam2, b_lam2 =   0.5, 0.5
-            
-            # # One global precision per dimension (shared across components)
-            # a_tau1, b_tau1 =   24, 4  # for z1 = log(Mc)
-            # a_tau2, b_tau2 =  4, 2 # for z2 = logit(q)
-            # tau1 = pm.Gamma("tau1", a_tau1, b_tau1)
-            # tau2 = pm.Gamma("tau2", a_tau2, b_tau2)
-            
-            # # Local precisions per component, per dimension
-            # lam1 = pm.Gamma("lam1", a_lam1, b_lam1, dims="component")
-            # lam2 = pm.Gamma("lam2", a_lam2, b_lam2, dims="component")
-            
-            # # Per-component, per-dimension standard deviations (independent axes)
-            # sig1 = pm.Deterministic("sig1", 1.0 / at.sqrt(tau1 * lam1), dims="component")
-            # sig2 = pm.Deterministic("sig2", 1.0 / at.sqrt(tau2 * lam2), dims="component")
-
-
-
-            # mu_ln1, s_ln1 = -1.163789654413117, 0.36380796502993723
-            # mu_ln2, s_ln2 = -1.1074484102105713, 0.48718303162186627
-            # sig1_max, sig2_max = 0.7971738948530454, 2.0086525885321533
-
-            # # In your PyMC model (uncorrelated shown; for correlated use as marginals):
-            # sig1 = pm.Truncated("sig1", pm.LogNormal.dist(mu=mu_ln1, sigma=s_ln1),
-            #                     lower=0.0, upper=sig1_max, dims="component")
-            # sig2 = pm.Truncated("sig2", pm.LogNormal.dist(mu=mu_ln2, sigma=s_ln2),
-            #                     lower=0.0, upper=sig2_max, dims="component")
-
-
-            # sig1 = pm.Uniform("sig1", lower=0.01, upper=5, dims="component")
-            # sig2 = pm.Uniform("sig2", lower=0.01, upper=10, dims="component")
-
-
-            sig1 = pm.InverseGamma("sig1", alpha=4.72, beta=1.39, dims="component")
-            sig2 = pm.InverseGamma("sig2", alpha=0.5, beta=0.4, dims="component")
-            
-            
-
-            sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
-                      dims=("GMMdimension", "component"))
-
-
-            #### Mean prior limits:  remember that mu is log(Mc), logit(q).
-
-            # Option 1 : sample mean of the gaussians from given prior
-            # with this choice, the prior on the mean will be flat in log(Mc), logit(q).
         
+
+            #### Mean prior limits
+     
             mu1 = pm.Uniform('mulMc', lower=1.13, upper=4.38, dims= ("component" ))
             mu2 = pm.Uniform('mulq', lower=-2.75, upper=9.37, dims= ("component" ))
             
 
-            # z1_lo = 1.13
-            # z1_hi = 4.38
-            # mu1_mid = (z1_lo+z1_hi)/2
-            # mu1_sd = (-z1_lo+z1_hi)/2
-            # span1 = -z1_lo+z1_hi
-
-            # z2_lo = -2.75
-            # z2_hi = 9.37
-            # mu2_mid = (z2_lo+z2_hi)/2
-            # mu2_sd = (-z2_lo+z2_hi)/2
-            # span2 = -z2_lo+z2_hi
-
-            # mu1 = pm.TruncatedNormal("mu1", mu=mu1_mid, sigma=mu1_sd,
-            #              lower=z1_lo-0.5*span1, upper=z1_hi+0.5*span1,
-            #              dims="component")
-            # mu2 = pm.TruncatedNormal("mu2", mu=mu2_mid, sigma=mu2_sd,
-            #              lower=z2_lo-0.5*span2, upper=z2_hi+0.5*span2,
-            #              dims="component")
-
             mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
                       dims=("GMMdimension", "component"))
 
-            # Option 2: check ...
+            #### Sigma prior limits
+            
+            # --- choose interpretable tails in *z-scored* transformed space ---
+            alpha_tail = 0.05      # P(tau_j > Uj) = alpha_tail
+            U1, U2 = 5, 10      # "too-wide" typical std per dim (tune via prior predictive)
+            
+            # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
+            alpha_shape = 0.5
+            
+            # λ_j = - U_j^{-alpha} * log(alpha_tail)
+            lambda_ell1 = -(U1**(-alpha_shape)) * np.log(alpha_tail)
+            lambda_ell2 = -(U2**(-alpha_shape)) * np.log(alpha_tail)
+            
+            # -------- GLOBAL scales (per dimension), prior on ℓτ = 1/τ via  Fréchet logp --------
+            ell_tau1 = pm.CustomDist(
+                "ell_tau1",
+                lambda_ell1, 1.0,                                  # pass (lambda_ell, d) with d=1 -> alpha=0.5
+                logp=lambda value, lambda_ell1, d: atools.frechet_logp_full(value, lambda_ell1, d),
+                transform=tr.log, initval=1.0
+            )
+            ell_tau2 = pm.CustomDist(
+                "ell_tau2",
+                lambda_ell2, 1.0,
+                logp=lambda value, lambda_ell2, d: atools.frechet_logp_full(value, lambda_ell2, d),
+                transform=tr.log, initval=1.0
+            )
+            
+            tau1 = pm.Deterministic("tau1", 1.0 / ell_tau1)        # global std scale (dim 1)
+            tau2 = pm.Deterministic("tau2", 1.0 / ell_tau2)        # global std scale (dim 2)
+            
+            # -------- LOCAL per-component log deviations (centered at 0) --------
+            # s_local ~ 0.7 ~ factor ≈ e^{±0.7} ≈ ×2 around τ
+            s_local = 0.5
+            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
+            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
+            
+            
+            # -------- Assemble marginal stds  --------
+            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1), dims="component")   # dims: ("component",)
+            sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
 
-            Lambda_ += [ w, mu, sd, logw ]
+
+
+            if mass_model=='DPUC':
+                print("Modeling mass distribution as Dirichelet Process with uncorrelated components. Max number of components: %s"%N_DP_comp_max)
+                sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
+                      dims=("GMMdimension", "component"))
+
+                Lambda_ += [ w, mu, sd, logw ]
+
+            elif mass_model=='DP':
+                print("Modeling mass distribution as Dirichelet Process with correlation. Max number of components: %s"%N_DP_comp_max)
+                # -------- Correlation prior (as you had it) --------
+                eta = 1.5                                              # >1 shrinks ρ toward 0 a bit
+                rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
+                rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims=("component",))
+    
+    
+                # # Useful terms
+                one_minus_r2 = 1.0 - rho**2
+                sqrt1mr2     = at.sqrt(one_minus_r2)
+                
+                # ----- Cholesky of Σ (for reference / if you need solves) -----
+                # Σ = [[s1^2, ρ s1 s2], [ρ s1 s2, s2^2]]
+                # Cholesky L = diag([s1, s2]) @ [[1, 0], [ρ, sqrt(1-ρ^2)]]
+                row0 = at.stack([sig1,               at.zeros_like(sig1)], axis=1)          # (K,2)
+                row1 = at.stack([rho * sig2,         sig2 * sqrt1mr2     ], axis=1)          # (K,2)
+                L    = at.stack([row0, row1], axis=1)     
+                Cho_cov = pm.Deterministic("Cho_cov", L, dims=("component","GMMdimension","GMMdimension_1"))
+                
+                # ----- log |Σ^{-1}| (no inverses) -----
+                # det Σ = s1^2 * s2^2 * (1 - ρ^2)
+                # log |Σ^{-1}| = - log det Σ
+                ldets_inv = pm.Deterministic(
+                    "ldets_inv",
+                    -2.0 * at.log(sig1) - 2.0 * at.log(sig2) - at.log(one_minus_r2),
+                    dims="component",
+                )
+                
+                # ----- Precision Σ^{-1} in closed form (Fisher) -----
+                # Σ^{-1} = 1 / [ (1-ρ^2) s1^2 s2^2 ] * [[ s2^2, -ρ s1 s2 ], [ -ρ s1 s2, s1^2 ]]
+                den = one_minus_r2 * (sig1**2) * (sig2**2)
+                F11 =  (sig2**2)            / den
+                F22 =  (sig1**2)            / den
+                F12 = -(rho * sig2 * sig1)    / den
+                
+                Fisher = pm.Deterministic( "Fisher", at.stack([
+                    at.stack([F11, F12], axis=1),
+                    at.stack([F12, F22], axis=1)
+                ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
+    
+                
+                ################################################
+    
+                Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
 
             Lambda_ += [N_DP_comp_max]
 
-        elif mass_model=='DP':
 
-            alpha = pm.Gamma("alpha", 1.0, 1.0)
-            beta = pm.Beta("beta", 1.0, alpha, dims="component" )
-            w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
-            logw = at.log(w)
-
-
-            mu1 = pm.Uniform('mulMc', lower=1.13, upper=4.38, dims= ("component" ))
-            mu2 = pm.Uniform('mulq', lower=-2.75, upper=9.37, dims= ("component" ))
-
-            mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
-                      dims=("GMMdimension", "component"))
-
-
-            ################################################
-            # cholesky option 1 (slower)
-
-            # ---- Per-component LKJ Cholesky (NO batching) ----
-            # packed_list = []
-            # L_list = []
-            # for k in range(N_DP_comp_max):
-            #     pk = pm.LKJCholeskyCov(f"chol_packed_{k}",
-            #                            n=2, eta=2.0, sd_dist=pm.HalfNormal.dist(2.5),
-            #                            compute_corr=False)     # returns length-3 vector
-            #     Lk = pm.expand_packed_triangular(2, pk, lower=True)  # (2,2)
-            #     packed_list.append(pk)
-            #     L_list.append(Lk)
-    
-            # # Stack to tensors
-            # chol_packed = at.stack(packed_list, axis=0)   # (K, 3)
-            # L = at.stack(L_list, axis=0)                  # (K, 2, 2)
-    
-            # # Optional: save deterministics with coords
-            # #pm.Deterministic("chol_packed_all", chol_packed, dims=("component",))
-            # #pm.Deterministic("Sigma_chol", L, dims=("component","dim","dim"))
-    
-            # # Precompute Σ^{-1} and log|Σ|
-            # invL = pm.math.matrix_inverse(L)                  # (K,2,2)
-            # Fisher = at.matmul(at.swapaxes(invL, -1, -2), invL)
-            # ldets_inv = 2.0 * (pm.math.log(L[:,0,0]) + pm.math.log(L[:,1,1]))  # (K,)
-
-
-
-            ################################################
-            # cholesky option 2
-
-            # # ---- prior on SDs (uncorrelated) ----
-            # # Per-component, per-dimension standard deviations (independent axes)
-
-            sig1 = pm.InverseGamma("sig1", alpha=4.72, beta=1.39, dims="component")
-            sig2 = pm.InverseGamma("sig2", alpha=0.5, beta=0.4, dims="component")
-
-            #sig1 = pm.Uniform("sig1", lower=0.01, upper=3, dims="component")
-            #sig2 = pm.Uniform("sig2", lower=0.01, upper=5, dims="component")
-
-            # # ----- Correlation prior equivalent to LKJ(eta) in 2D -----
-            eta = 1.0  # uninformative on correlations
-            rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims="component")   # (0,1)
-            rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims="component")  # (-1,1)
-
-
-            # # Useful terms
-            one_minus_r2 = 1.0 - rho**2
-            sqrt1mr2     = at.sqrt(one_minus_r2)
-            
-            # ----- Cholesky of Σ (for reference / if you need solves) -----
-            # Σ = [[s1^2, ρ s1 s2], [ρ s1 s2, s2^2]]
-            # Cholesky L = diag([s1, s2]) @ [[1, 0], [ρ, sqrt(1-ρ^2)]]
-            row0 = at.stack([sig1,               at.zeros_like(sig1)], axis=1)          # (K,2)
-            row1 = at.stack([rho * sig2,         sig2 * sqrt1mr2     ], axis=1)          # (K,2)
-            L    = at.stack([row0, row1], axis=1)     
-            Cho_cov = pm.Deterministic("Cho_cov", L, dims=("component","GMMdimension","GMMdimension_1"))
-            
-            # ----- log |Σ^{-1}| (no inverses) -----
-            # det Σ = s1^2 * s2^2 * (1 - ρ^2)
-            # log |Σ^{-1}| = - log det Σ
-            ldets_inv = pm.Deterministic(
-                "ldets_inv",
-                -2.0 * at.log(sig1) - 2.0 * at.log(sig2) - at.log(one_minus_r2),
-                dims="component",
-            )
-            
-            # ----- Precision Σ^{-1} in closed form (Fisher) -----
-            # Σ^{-1} = 1 / [ (1-ρ^2) s1^2 s2^2 ] * [[ s2^2, -ρ s1 s2 ], [ -ρ s1 s2, s1^2 ]]
-            den = one_minus_r2 * (sig1**2) * (sig2**2)
-            F11 =  (sig2**2)            / den
-            F22 =  (sig1**2)            / den
-            F12 = -(rho * sig2 * sig1)    / den
-            
-            Fisher = pm.Deterministic( "Fisher", at.stack([
-                at.stack([F11, F12], axis=1),
-                at.stack([F12, F22], axis=1)
-            ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
-
-            
-            ################################################
-
-            Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
-
-            Lambda_+=[N_DP_comp_max]
             
         ################################################
         # If including total normalization of the rate, add it here
@@ -2020,8 +1957,8 @@ def make_model(  priors,
             
             spins = []
 
-
-        Lambda_ = at.stack(Lambda_, axis=0)
+        if mass_model not in ('DP', 'DPUC'):
+            Lambda_ = at.stack(Lambda_, axis=0)
 
 
         # # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 

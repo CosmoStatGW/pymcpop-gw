@@ -19,7 +19,7 @@ from jax.numpy import zeros
 
 from pytensor.gradient import disconnected_grad as stop_grad
 #from pytensor import gradient as atg
-
+from pymc.distributions.dist_math import check_parameters
 
 
 import pade_cosmo as pc
@@ -306,6 +306,31 @@ def get_sample_from_cho_lMclqld(x, mu, L):
 def stick_breaking(beta):
     portion_remaining = at.concatenate([[1], at.extra_ops.cumprod(1 - beta)[:-1]])
     return beta * portion_remaining
+
+
+def frechet_logp_full(value, lambda_ell, d):
+    """
+    Fréchet-like kernel:
+      log f(x) = log(alpha*lambda) - (alpha+1) log x - lambda * x^{-alpha},  x>0
+    with alpha = d/2 > 0, lambda>0.
+    """
+    x   = at.as_tensor_variable(value)
+    lam = at.as_tensor_variable(lambda_ell)
+    d_  = at.as_tensor_variable(d)
+    alpha = d_ / 2.0
+
+    # core logp
+    logp = (
+        at.log(alpha * lam)
+        - (alpha + 1.0) * at.log(x)
+        - lam * at.power(x, -alpha)   # use at.power for JAX friendliness
+    )
+
+    # single boolean condition (no 'alltrue' needed)
+    ok = (x > 0) & (lam > 0) & (d_ > 0)
+
+    # return -inf outside support; keeps graph differentiable
+    return check_parameters(logp, ok, msg="Frechet requires x>0, lambda>0, d>0")
 
 
 
