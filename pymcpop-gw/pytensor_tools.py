@@ -981,6 +981,7 @@ alpha = at.as_tensor_variable(0.01)    # small tail probability
 lambda_ = at.log(1 / alpha) / U
 
 alpha_ell = at.as_tensor_variable(0.01)
+alpha_large = at.as_tensor_variable(0.01)
 #L = at.as_tensor_variable(0.01)
 
 d_GP = at.as_tensor_variable(1)

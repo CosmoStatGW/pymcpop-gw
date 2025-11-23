@@ -587,6 +587,8 @@ def make_model(  priors,
                 L_list = []
                 M_list = []
                 ell_list = []
+                dz_all = [] 
+                ell_maxs = []
             
                 for _ in tqdm(range(trials)):
                     Xwhite = rng.standard_normal((N, nd))
@@ -630,25 +632,43 @@ def make_model(  priors,
                     
                     dz = np.diff(z)
                     dz_pos = dz[dz > tol]
+                    dz_all.append(dz_pos)
+                    
                     # Pick a conservative floor (1.5–3× min spacing). You can also use a small percentile.
                     c = 2.0
                     ell_min = float(c * np.min(dz_pos))
                     ell_list.append(ell_min)
-            
+
+                    
+                    z_span = np.quantile(z_nodes, 0.95) - np.quantile(z_nodes, 0.05)  # from the same mocks; ~2
+                    #print(z_span)
+                    ell_max = z_span    # or ell_max = 1.5 * z_span if you want a bit of extra room
+                    ell_maxs.append(ell_max)
+                    
                 if not L_list or not M_list:
                     raise RuntimeError("Could not gather stats for ℓ and ν; check data or ranges.")
             
                 L = np.max(L_list)                # conservative min-lengthscale driver
                 M = np.max(M_list)                # conservative slope scale
-                ell_min = np.max(ell_list)
+                #ell_min = np.max(ell_list)
+                
                 # ν so that ν * softplus(g) adds ~5% of typical |lb| when softplus(g)≈s0
                 nu0 = float(np.clip(0.05 * M / s0, 1e-3, 0.2))
                 # reasonable ℓ0 from spacing (use 5× median gap, or 0.2 of span)
                 ell0 = float(max(5.0 * robust_stat(L_list), 0.2 * (np.max(z_nodes) - np.min(z_nodes))))
                 # amplitude η0 moderate
                 eta0 = 0.2
+
+                dz_all = np.concatenate(dz_all)
+                q_small = 0.95      # 50% quantile
+                ell_min_data = np.quantile(dz_all, q_small)
+                ell_min = 2.0 * ell_min_data   # even more conservative
+                ell_max = 2*max(ell_maxs)
+
+                
+
             
-                return dict(L=L, M=M, nu0=nu0, ell0=ell0, eta0=eta0, ell_min=ell_min)
+                return dict(L=L, M=M, nu0=nu0, ell0=ell0, eta0=eta0, ell_min=ell_min, ell_max=ell_max)
 
 
             # ---- call it (convert your shareds to NumPy once) ----
@@ -672,43 +692,43 @@ def make_model(  priors,
             ell0 = stats["ell0"]
             eta0 = stats["eta0"]
             ell_min = stats["ell_min"]
+            ell_max = stats["ell_max"]
             
-            print(f"L (max spacing proxy): {stats['L']:.6g}")
-            print(f"M (max |lb| proxy):    {stats['M']:.6g}")
-            print(f"nu0:                   {nu0:.6g}")
-            print(f"ell0:                  {ell0:.6g}")
-            print(f"eta0:                  {eta0:.6g}")
+            #print(f"L (max spacing proxy): {stats['L']:.6g}")
+            #print(f"M (max |lb| proxy):    {stats['M']:.6g}")
+            #print(f"nu0:                   {nu0:.6g}")
+            #print(f"ell0:                  {ell0:.6g}")
+            #print(f"eta0:                  {eta0:.6g}")
             print(f"ell_min:                  {ell_min:.6g}")
+            print(f"ell_max:                  {ell_max:.6g}")
 
-            L = stats["L"]
-            M = stats["M"]
-            ell_min = stats["ell_min"]
+            #L = stats["L"]
+            #M = stats["M"]
+            #ell_min = stats["ell_min"]
 
-            
+    
             beta = atools.find_beta(stats["L"], 2., p0=0.01)
-
             al = atools.find_al(stats["L"], 10., p0=0.01)
 
             
         else:
-            L =  0.0117581 #at.as_tensor_variable(0.02867221802205662)
-            beta = 0.0141 #5.1811
-            al = 3.0586 # 0.5579
-            M = 10.5263
-            #L = at.mean(at.diff(at.sort( d_ )))
+            raise ValueError()
         
         
         
         #print('L is %s'%stats["L"].eval())
         #print('M is %s'%stats["M"].eval())
-        print(f"Found beta: {beta:.4f}")
-        print(f"Found alpha: {al:.4f}")
+        #print(f"Found beta: {beta:.4f}")
+        #print(f"Found alpha: {al:.4f}")
         #cprint(f"Found nu0: {nu0:.4f}")
-        print(f"Mean length scale: {2 / beta:.4f}")
+        #print(f"Mean length scale: {2 / beta:.4f}")
         
         #if True:
-        lambda_ell = -at.log(atools.alpha_ell) * L**(atools.d_GP / 2)
+        lambda_ell = -at.log(atools.alpha_ell) * ell_min**(atools.d_GP / 2)
         print('lambda_ell is %s'%lambda_ell.eval())
+
+        lambda_large = -np.log(atools.alpha_large) / ell_max
+        print('lambda_large is %s'%lambda_large.eval())
 
         import matplotlib.pyplot as plt
         from scipy.stats import gamma
@@ -729,7 +749,7 @@ def make_model(  priors,
         plt.yscale("log")
         plt.xscale("log")
         plt.ylim(1e-05,10)
-        plt.axvline(L, ls='--', color='k')
+        plt.axvline(ell_min, ls='--', color='k')
         plt.legend()
         plt.grid()
         #plt.show()
@@ -815,6 +835,11 @@ def make_model(  priors,
                                   random=atools.frechet_random,
                                  )
                 print('ℓ prior is frechet')
+                print('Add large ℓ penalty')
+                _ = pm.Potential(
+                    "pc_large_ell",
+                    -lambda_large * ℓ
+                            )
             
             elif GP_prior=='gamma':
                 ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
