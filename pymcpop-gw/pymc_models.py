@@ -1570,7 +1570,12 @@ def make_model(  priors,
         ### Non - parametric
         elif mass_model in ('DPUC', 'DP'):
 
-            alpha_inv = pm.Gamma("alpha_inv", 0.05, 5. )
+            print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
+                
+            alpha_inv_params = (0.05, 5.)
+            alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1] )
+            print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
+            
             alpha = 1/alpha_inv
             beta = pm.Beta("beta", 1.0, alpha, dims="component" )
             w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
@@ -1578,9 +1583,21 @@ def make_model(  priors,
         
 
             #### Mean prior limits
+
+            # upmu1 = 3.8
+            # upmu2 =  4.6
+            # lowmu1 = 1.83
+            # lowmu2 =  -0.44
+
+            # DPLDP 1k
+            lowmu1 = 1.8
+            upmu1 = 4.21
+            lowmu2 =  -0.65
+            upmu2 =  5.4
+            
      
-            mu1 = pm.Uniform('mulMc', lower=1.13, upper=4.38, dims= ("component" ))
-            mu2 = pm.Uniform('mulq', lower=-2.75, upper=9.37, dims= ("component" ))
+            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ))
+            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ))
             
 
             mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
@@ -1590,10 +1607,14 @@ def make_model(  priors,
             
             # --- choose interpretable tails in *z-scored* transformed space ---
             alpha_tail = 0.05      # P(tau_j > Uj) = alpha_tail
-            U1, U2 = 5, 10      # "too-wide" typical std per dim (tune via prior predictive)
+            U1, U2 = (upmu1-lowmu1)/2 , (upmu2-lowmu2)/2    # "too-wide" typical std per dim (tune via prior predictive)
+            print("U1 = %s "%U1)
+            print("U2 = %s "%U2)
+            print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
             
             # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
             alpha_shape = 0.5
+
             
             # λ_j = - U_j^{-alpha} * log(alpha_tail)
             lambda_ell1 = -(U1**(-alpha_shape)) * np.log(alpha_tail)
@@ -1618,30 +1639,75 @@ def make_model(  priors,
             
             # -------- LOCAL per-component log deviations (centered at 0) --------
             # s_local ~ 0.7 ~ factor ≈ e^{±0.7} ≈ ×2 around τ
-            s_local = 0.5
+            s_local = 1
             eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
             eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
-            
+            print("s_local=%s"%s_local)
             
             # -------- Assemble marginal stds  --------
             sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1), dims="component")   # dims: ("component",)
             sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
 
 
+            # ----- PC-low prior: penalize tiny sigma (i.e., large ell = 1/sigma) -----
 
+            ell_min = 0.06
+            print("ell_min=%s"%ell_min)
+
+            c = 1. #0.8
+            
+            # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
+            L_small_1 = c * ell_min     # "too small" std in z-units (tunable but principled)
+            L_small_2 = c * ell_min     # "too small" std in z-units (tunable but principled)
+            alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
+
+            print("Adding PC penalty on small variance")
+            print("L_small_1 = %s "%L_small_1)
+            print("L_small_2 = %s "%L_small_2)
+            print("P( sigma < L_small ) = %s "%alpha_small)
+
+            
+            
+            # Convert to penalty on ell = 1/sigma:
+            #   P(ell > 1/L_small) = alpha_small
+            #   lambda_small = -log(1 - alpha_small) / (1/L_small)
+            lambda_small_1 = -np.log(1 - alpha_small) * L_small_1
+            lambda_small_2 = -np.log(1 - alpha_small) * L_small_2
+            
+            # Apply to each component (sig1, sig2 already deterministic)
+            _ = pm.Potential(
+                "pc_small_sig1",
+                -lambda_small_1 * (1.0 / sig1).sum()
+            )
+            _ = pm.Potential(
+                "pc_small_sig2",
+                -lambda_small_2 * (1.0 / sig2).sum()
+            )
+
+            
             if mass_model=='DPUC':
-                print("Modeling mass distribution as Dirichelet Process with uncorrelated components. Max number of components: %s"%N_DP_comp_max)
+                print("No m1-m2 correlation.")
+                
                 sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
                       dims=("GMMdimension", "component"))
 
                 Lambda_ += [ w, mu, sd, logw ]
 
             elif mass_model=='DP':
-                print("Modeling mass distribution as Dirichelet Process with correlation. Max number of components: %s"%N_DP_comp_max)
-                # -------- Correlation prior (as you had it) --------
-                eta = 1.5                                              # >1 shrinks ρ toward 0 a bit
+                print("Including m1-m2 correlation.")
+                # -------- Correlation prior --------
+
+                eta=1.
+                print("eta = %s"%eta)
                 rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
-                rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims=("component",))
+                #rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims=("component",))
+
+                #rho_max = 0.9  # cap on |rho|
+                # choose fraction f of L_small you allow for the minor axis
+                f = 0.5   # minor axis at least 100xf% of L_small in worst case
+                rho_max = np.sqrt(1.0 - f**2)  # ≈ 0.866
+                print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
+                rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
     
     
                 # # Useful terms
@@ -1667,17 +1733,44 @@ def make_model(  priors,
                 
                 # ----- Precision Σ^{-1} in closed form (Fisher) -----
                 # Σ^{-1} = 1 / [ (1-ρ^2) s1^2 s2^2 ] * [[ s2^2, -ρ s1 s2 ], [ -ρ s1 s2, s1^2 ]]
-                den = one_minus_r2 * (sig1**2) * (sig2**2)
-                F11 =  (sig2**2)            / den
-                F22 =  (sig1**2)            / den
-                F12 = -(rho * sig2 * sig1)    / den
+                # variances
+                var1 = sig1**2          # (K,)
+                var2 = sig2**2          # (K,)
+                cov12 = rho * sig1 * sig2
+                
+                den = one_minus_r2 * (var1) * (var2)
+                F11 =  (var2)            / den
+                F22 =  (var1)            / den
+                F12 = -(cov12)    / den
                 
                 Fisher = pm.Deterministic( "Fisher", at.stack([
                     at.stack([F11, F12], axis=1),
                     at.stack([F12, F22], axis=1)
                 ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
     
+
                 
+                # trace = var1 + var2                     # (K,)
+                # det   = var1 * var2 * (1.0 - rho**2)    # (K,)
+                
+                # # discriminant of the characteristic polynomial
+                # disc = at.sqrt(trace**2 - 4.0 * det)    # (K,)
+                
+                # # smallest eigenvalue λ_min
+                # lam_min = 0.5 * (trace - disc)          # (K,)
+                # s_min   = at.sqrt(lam_min)              # minor-axis std per component
+
+                # L_eig = 1      # "too small" minor-axis std (tune)
+                # alpha_eig = 0.05
+                
+                # lambda_eig = -L_eig * np.log(1.0 - alpha_eig)
+                
+                # _ = pm.Potential(
+                #     "pc_small_eig",
+                #     -lambda_eig * at.sum(1.0 / s_min)
+                # )
+
+
                 ################################################
     
                 Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
@@ -1991,16 +2084,6 @@ def make_model(  priors,
                                        log_ddL_dz_pre=log_ddL_dz
                                      )
 
-
-            # log_p_pop_w = log_p_pop_at_wrap( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
-
-            # log_p_pop_ = log_p_pop_at( m1src, m2src, zs, d, spins, Lambda_, rate_model, mass_model, spin_model, smoothing=smoothing, has_m2_break=has_m2_break, dc=dc)
-
-            # print("wrap vs unwrap diff max:")
-            # print((log_p_pop_w-log_p_pop).eval().max())
-
-            
-
         
         if dLprior=='dLsq':
             # Remove \pi(d)~dL^2 prior on distance 
@@ -2064,7 +2147,7 @@ def make_model(  priors,
             
 
             # then sum log likelihoods
-            likelihood_val = at.sum( log_p_pop_marg ) #pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
+            likelihood_val = at.sum( log_p_pop_marg )  
 
             # Check number of effective samples for computing MC integral 
             logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*at.log(allNsamples)
@@ -2074,12 +2157,7 @@ def make_model(  priors,
             if Neff_min_lik>0:
                 
                 _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
-                
-                # see https://discourse.pymc.io/t/conditionally-reject-samples/3107
-                # ind_sw_l = pm.Deterministic('ind_l', 1. * (Neff_lik<Neff_min_lik) )
-                # ind_l = pm.Bernoulli('Neff_l_bound', ind_sw_l, observed=np.zeros(N_np), testval=np.zeros(N_np) )
-
-            
+              
             else:
                 print("No bound on effective number of samples for individual event MC integrals")
 
