@@ -1549,10 +1549,26 @@ def make_model(  priors,
                         elif monotonicity=='poly':
 
                             print('Using smooth polynomial, nu=%s, lam=%s'%(nu, lam))
-                            #nu = at.as_tensor_variable(1e-5)
-                            #lam = at.as_tensor_variable(1e3)
                             
-                            pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
+                            # pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
+
+                            # GP derivative g(z)
+                            g_grid = grad_log_distance_ratio_grid
+                            
+                            # dimensionless monotonicity condition
+                            q_grid = g_grid + b_full
+                        
+                            # tolerance
+                            eps = 1e-05
+                        
+                            # penalise only q < -eps
+                            q_tol = q_grid + eps
+                        
+                            # then in model:
+                            pm.Potential("monotonicity",
+                                     -lam * at.sum(atools.poly_hinge_neg(q_tol, nu)))
+
+                            
 
 
  
