@@ -333,7 +333,16 @@ def frechet_logp_full(value, lambda_ell, d):
     return check_parameters(logp, ok, msg="Frechet requires x>0, lambda>0, d>0")
 
 
+def frechet_random(lambda_ell, d, size=None, rng=None):
+    # Sample via the same reparam: U ~ Exp(lambda), ℓ = U^{-2/d}
+    rng = onp.random.default_rng() if rng is None else rng
+    lam = onp.asarray(lambda_ell, dtype=onp.float64)
+    d_  = onp.asarray(d, dtype=onp.float64)
+    alpha = d_ / 2.0
+    u = rng.exponential(scale=1.0/lam, size=size)
+    return u ** (-1.0 / alpha)
 
+    
 #######################
 # sigmoids
 ########################

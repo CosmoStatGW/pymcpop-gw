@@ -1590,10 +1590,10 @@ def make_model(  priors,
             # lowmu2 =  -0.44
 
             # DPLDP 1k
-            lowmu1 = 1.8
-            upmu1 = 4.21
-            lowmu2 =  -0.65
-            upmu2 =  5.4
+            lowmu1 = 1.5
+            upmu1 = 5.6
+            lowmu2 =  -1.2
+            upmu2 =  10.
             
      
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ))
@@ -1606,83 +1606,70 @@ def make_model(  priors,
             #### Sigma prior limits
             
             # --- choose interpretable tails in *z-scored* transformed space ---
-            alpha_tail = 0.05      # P(tau_j > Uj) = alpha_tail
-            U1, U2 = (upmu1-lowmu1)/2 , (upmu2-lowmu2)/2    # "too-wide" typical std per dim (tune via prior predictive)
+            alpha_tail = 0.2      # P(tau_j > Uj) = alpha_tail
+            U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim (tune via prior predictive)
             print("U1 = %s "%U1)
             print("U2 = %s "%U2)
             print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
-            
-            # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
-            alpha_shape = 0.5
+            lambda_large_1 = -np.log(alpha_tail) / U1   # NOTE: divide by ell_max
+            lambda_large_2 = -np.log(alpha_tail) / U2   # NOTE: divide by ell_max
 
-            
-            # λ_j = - U_j^{-alpha} * log(alpha_tail)
-            lambda_ell1 = -(U1**(-alpha_shape)) * np.log(alpha_tail)
-            lambda_ell2 = -(U2**(-alpha_shape)) * np.log(alpha_tail)
-            
-            # -------- GLOBAL scales (per dimension), prior on ℓτ = 1/τ via  Fréchet logp --------
-            ell_tau1 = pm.CustomDist(
-                "ell_tau1",
-                lambda_ell1, 1.0,                                  # pass (lambda_ell, d) with d=1 -> alpha=0.5
-                logp=lambda value, lambda_ell1, d: atools.frechet_logp_full(value, lambda_ell1, d),
-                transform=tr.log, initval=1.0
-            )
-            ell_tau2 = pm.CustomDist(
-                "ell_tau2",
-                lambda_ell2, 1.0,
-                logp=lambda value, lambda_ell2, d: atools.frechet_logp_full(value, lambda_ell2, d),
-                transform=tr.log, initval=1.0
-            )
-            
-            tau1 = pm.Deterministic("tau1", 1.0 / ell_tau1)        # global std scale (dim 1)
-            tau2 = pm.Deterministic("tau2", 1.0 / ell_tau2)        # global std scale (dim 2)
-            
-            # -------- LOCAL per-component log deviations (centered at 0) --------
-            # s_local ~ 0.7 ~ factor ≈ e^{±0.7} ≈ ×2 around τ
-            s_local = 1
-            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
-            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
-            print("s_local=%s"%s_local)
-            
-            # -------- Assemble marginal stds  --------
-            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1), dims="component")   # dims: ("component",)
-            sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
+        
 
-
-            # ----- PC-low prior: penalize tiny sigma (i.e., large ell = 1/sigma) -----
+            # ----- PC-low prior: penalize tiny sigma  -----
 
             ell_min = 0.06
             print("ell_min=%s"%ell_min)
 
-            c = 1. #0.8
+            c1 = 2. #0.8
+            c2 = 2. #0.8
             
             # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
-            L_small_1 = c * ell_min     # "too small" std in z-units (tunable but principled)
-            L_small_2 = c * ell_min     # "too small" std in z-units (tunable but principled)
-            alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
+            L_small_1 = c1 * ell_min     # "too small" std in z-units (tunable but principled)
+            L_small_2 = c2 * ell_min     # "too small" std in z-units (tunable but principled)
+            alpha_small = 0.0001     # P( sigma < L_small ) = alpha_small
 
+            
             print("Adding PC penalty on small variance")
             print("L_small_1 = %s "%L_small_1)
             print("L_small_2 = %s "%L_small_2)
             print("P( sigma < L_small ) = %s "%alpha_small)
 
+            # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
+            alpha_shape = 0.5
+
+            lambda_ell_1 = -at.log(alpha_small) * L_small_1**(alpha_shape) # small scale
+            lambda_ell_2 = -at.log(alpha_small) * L_small_2**(alpha_shape) # small scale
             
+
             
-            # Convert to penalty on ell = 1/sigma:
-            #   P(ell > 1/L_small) = alpha_small
-            #   lambda_small = -log(1 - alpha_small) / (1/L_small)
-            lambda_small_1 = -np.log(1 - alpha_small) * L_small_1
-            lambda_small_2 = -np.log(1 - alpha_small) * L_small_2
+            tau1 = pm.CustomDist("tau1", lambda_ell_1, 1,
+                          logp=atools.frechet_logp_full,
+                          transform=tr.log, initval=0.2,
+                          random=atools.frechet_random, )
+
+            tau2 = pm.CustomDist("tau2", lambda_ell_2, 1,
+                          logp=atools.frechet_logp_full,
+                          transform=tr.log, initval=0.2,
+                          random=atools.frechet_random, )
+
+
+            s_local = 0.5
+            #eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
+            #eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
+            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+5, dims=("component",))
+            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+5, dims=("component",))
+
+            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1), dims="component")   # dims: ("component",)
+            sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
             
-            # Apply to each component (sig1, sig2 already deterministic)
-            _ = pm.Potential(
-                "pc_small_sig1",
-                -lambda_small_1 * (1.0 / sig1).sum()
-            )
-            _ = pm.Potential(
-                "pc_small_sig2",
-                -lambda_small_2 * (1.0 / sig2).sum()
-            )
+
+            # ----- Penalize large sigma -----
+
+            # _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * sig1, dims="component" )
+            # _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * sig2, dims="component" )
+    
+
 
             
             if mass_model=='DPUC':
@@ -1698,17 +1685,21 @@ def make_model(  priors,
                 # -------- Correlation prior --------
 
                 eta=1.
-                print("eta = %s"%eta)
-                rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
-                #rho   = pm.Deterministic("rho", 2.0 * rho_u - 1.0, dims=("component",))
+                # print("eta = %s"%eta)
+                # rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
 
-                #rho_max = 0.9  # cap on |rho|
-                # choose fraction f of L_small you allow for the minor axis
+                # #rho_max = 0.9  # cap on |rho|
+                # # choose fraction f of L_small you allow for the minor axis
                 f = 0.5   # minor axis at least 100xf% of L_small in worst case
                 rho_max = np.sqrt(1.0 - f**2)  # ≈ 0.866
-                print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
-                rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
-    
+                # print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
+                # rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
+
+                rho = pm.Uniform("rho", lower=-rho_max, upper=rho_max, dims="component")
+                pm.Potential(
+                    "lkj_corr_prior",
+                    (eta - 1.0) * at.log(1.0 - rho**2).sum()
+                )
     
                 # # Useful terms
                 one_minus_r2 = 1.0 - rho**2
