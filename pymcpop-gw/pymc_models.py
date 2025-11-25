@@ -589,6 +589,7 @@ def make_model(  priors,
                 ell_list = []
                 dz_all = [] 
                 ell_maxs = []
+                zmaxs = []
             
                 for _ in tqdm(range(trials)):
                     Xwhite = rng.standard_normal((N, nd))
@@ -609,6 +610,9 @@ def make_model(  priors,
             
                     # z from dL via compiled function (returns NumPy)
                     z_nodes = z_from_dL_fn(d_nodes.astype(np.float64), float(H0), float(Om), )
+
+                    z_max_mon_ = np.quantile( z_from_dL_fn( np.squeeze(dLinj).astype(np.float64), float(H0), float(Om), ), 0.99 )
+                    
                     z_nodes = np.asarray(z_nodes, dtype=np.float64)
                     z_nodes.sort()
                     # enforce strictly increasing
@@ -638,12 +642,15 @@ def make_model(  priors,
                     c = 2.0
                     ell_min = float(c * np.min(dz_pos))
                     ell_list.append(ell_min)
+                    
 
                     
                     z_span = np.quantile(z_nodes, 0.95) - np.quantile(z_nodes, 0.05)  # from the same mocks; ~2
                     #print(z_span)
                     ell_max = z_span    # or ell_max = 1.5 * z_span if you want a bit of extra room
                     ell_maxs.append(ell_max)
+
+                    zmaxs.append(max(z_max_mon_, np.quantile(z_nodes, 0.99)))
                     
                 if not L_list or not M_list:
                     raise RuntimeError("Could not gather stats for ℓ and ν; check data or ranges.")
@@ -665,10 +672,13 @@ def make_model(  priors,
                 ell_min = 2.0 * ell_min_data   # even more conservative
                 ell_max = 2*max(ell_maxs)
 
+                z_max_mono = max(zmaxs)                     # or your z_max, e.g. max detected z
+
+
                 
 
             
-                return dict(L=L, M=M, nu0=nu0, ell0=ell0, eta0=eta0, ell_min=ell_min, ell_max=ell_max)
+                return dict(L=L, M=M, nu0=nu0, ell0=ell0, eta0=eta0, ell_min=ell_min, ell_max=ell_max, z_max_mono=z_max_mono)
 
 
             # ---- call it (convert your shareds to NumPy once) ----
@@ -729,6 +739,9 @@ def make_model(  priors,
 
         lambda_large = -np.log(atools.alpha_large) / ell_max
         print('lambda_large is %s'%lambda_large.eval())
+
+        z_max_mono =  stats["z_max_mono"]
+        print('z_max_mono is %s'%z_max_mono)
 
         import matplotlib.pyplot as plt
         from scipy.stats import gamma
@@ -1559,12 +1572,16 @@ def make_model(  priors,
                             
                             # dimensionless monotonicity condition
                             q_grid = g_grid + b_full
+
+                            mask = (atools.zGridGlobals_at <= z_max_mono)  # boolean mask on the grid
+                        
+                            q_mono = q_grid[mask]
                         
                             # tolerance
                             eps = 0.
                         
                             # penalise only q < -eps
-                            q_tol = q_grid + eps
+                            q_tol = q_mono + eps
                         
                             # then in model:
                             pm.Potential("monotonicity",
