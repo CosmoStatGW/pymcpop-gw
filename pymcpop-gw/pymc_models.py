@@ -376,8 +376,8 @@ def make_model(  priors,
                find_GP_L = True,
                fout=None,
                monotonicity = 'softplus',
-                nu = 1e-15,
-                 lam = 1e03,
+                nu = 0.5,
+                 lam = 10,
                  clip_low = -500,
                  clip_high=500,
                GP_prior = 'gammainv',
@@ -1530,9 +1530,10 @@ def make_model(  priors,
                     # Monotonicity soft barrier
                     print("monotonicity is %s"%monotonicity)
                     if monotonicity is not None:
-                        print('Imposing d(dL)/dz >0 on all the domain')
+                        
                         
                         if monotonicity=='softplus':
+                            print('Imposing d(dL)/dz >0 on all the domain')
                             # Temperature (smaller => harder constraint). Keep as tensor, no Deterministic needed.
                             print('Using softplus with nu=%s'%nu)
                             #nu   = at.as_tensor_variable(1e-15)
@@ -1542,12 +1543,13 @@ def make_model(  priors,
 
                         elif monotonicity=='softplus_clip':
 
-                            #nu   = at.as_tensor_variable(1e-05)                            
+                            #nu   = at.as_tensor_variable(1e-05)  
+                            print('Imposing d(dL)/dz >0 on all the domain')
                             print('Using stable softplus, nu=%s, clipping between %s, %s'%(nu,clip_low, clip_high ))
                             pm.Potential( "monotonicity", -at.sum( at.logaddexp( 0.0, at.clip(-s_grid/nu, clip_low, clip_high) )  ) )
                             
                         elif monotonicity=='poly':
-
+                            print('Imposing d(dL)/dz >0 on all the domain')
                             print('Using smooth polynomial, nu=%s, lam=%s'%(nu, lam))
                             
                             # pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
@@ -1559,7 +1561,7 @@ def make_model(  priors,
                             q_grid = g_grid + b_full
                         
                             # tolerance
-                            eps = 1e-05
+                            eps = 0.
                         
                             # penalise only q < -eps
                             q_tol = q_grid + eps
@@ -1567,9 +1569,11 @@ def make_model(  priors,
                             # then in model:
                             pm.Potential("monotonicity",
                                      -lam * at.sum(atools.poly_hinge_neg(q_tol, nu)))
-
+                        else:
+                            print('No monotonicity constraint.')
                             
-
+                    else:
+                            print('No monotonicity constraint.')
 
  
                 else:

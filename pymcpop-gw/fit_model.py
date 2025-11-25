@@ -99,8 +99,8 @@ def main():
     parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default='softplus', type=str, required=False)
-    parser.add_argument("--nu", default=1e-15, type=float, required=False)
-    parser.add_argument("--lam", default=1e03, type=float, required=False)
+    parser.add_argument("--nu", default=0.5, type=float, required=False)
+    parser.add_argument("--lam", default=10, type=float, required=False)
     parser.add_argument("--clip_high", default=500, type=float, required=False)
     parser.add_argument("--clip_low", default=-500, type=float, required=False)
     parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
@@ -654,90 +654,107 @@ def main():
 
             if FLAGS.is_GP_dL:
                 if 'f_rotated_' not in ivals.keys():
-    
-                    print("Initializing f_rotated_ to linear function....")
+
                     import scipy.linalg as la
-        
-                    # z_grid_at = atools.zGridGlobals_at  # shape (N,), strictly increasing
-                    # z_grid = z_grid_at.eval()
-                    # N = z_grid.size
-        
-                    # # --- 2) build a tiny increasing target f(z) ---
-                    # # anchor at z0 so f(z0)=0, then add a very small positive slope
-                    # z0 = z_grid[0]
-                    # s0 = 0.05   # ~0.5% per unit z; tune 1e-3..1e-2 as you like
-                    # f_init = s0 * (z_grid - z0)     # nearly zero and gently increasing
+                    if True:
+                        print("Initializing f_rotated_ to linear function....")
+                        
+            
+                       
+                        z_grid = atools.zGridGlobals   # (N,)
+                        N = z_grid.size
+                        z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
+                        
+                        Xn = z_grid[:, None]
+                        Xm = z_mid[:,  None]
+                        
+                        # 2) Hyperparams (same you used for the node init)
+                        try:
+                            ell0 = ivals['ℓ']
+                            eta0 = ivals['η']
+                            print("Found ℓ, η in prior")
+                        except Exception:
+                            eta0 = 0.2
+                            ell0 = 0.3
+                            print("ℓ, η not found, using η=0.2, ℓ=0.3")
+                        
+                        jitter = 1e-4
+                        
+                        # 3) Kernels
+                        Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
+                        Kmm = atools.matern52_1d(Xm, Xm, eta0, ell0) + jitter * np.eye(N - 1)
+                        Kmn = atools.matern52_1d(Xm, Xn, eta0, ell0)              # (N-1, N)
+                        
+                        # 4) The node function you used to build f_rotated_ (same as your snippet)
+                        z0 = z_grid[0]
+                        s0 = 0.001
+                        f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
+    
+                        
+                        # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
+                        #    Use Cholesky solves for stability; reuse Knn factorization
+                        c_nn = la.cho_factor(Knn, lower=True, check_finite=False)
+                        f_mid_init = Kmn @ la.cho_solve(c_nn, f_nodes_init)       # (N-1,)
+                        
+                        # 6) Whiten both with their own Cholesky factors:
+                        Ln = la.cholesky(Knn, lower=True, check_finite=False)
+                        Lm = la.cholesky(Kmm, lower=True, check_finite=False)
+                        
+                        u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True, check_finite=False)  # (N,)
+                        u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
+                        
+    
+                        ip["f_rotated_"]     = u_nodes_init + 1e-3 * onp.random.randn(u_nodes_init.size)
+                        #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
                     
-                    # # (optional) keep it even smaller:
-                    # f_init *= 0.5               # shrink if you want it closer to zero
-        
-                    # try:
-                    #     ell0 = ivals['ℓ']
-                    #     eta0 = ivals['η']
-                    #     print("Found ell, eta in prior")
-                    # except:
-                    #     eta0 = 0.2          # reasonable starting amplitude
-                    #     ell0 = 0.3          # reasonable starting lengthscale (smooth)
-                    #     print("ell, eta not found, using eta=0.2 , ell=0.3")
-                    
-                    # jitter = 1e-4
-                    
-                    
-        
-        
-                    
-                    # X = z_grid.reshape(-1, 1)
-                    # K = atools.matern52_1d(X, X, eta0, ell0) + jitter * np.eye(N)
-                    # L = np.linalg.cholesky(K)
-                    # f_rot_init = np.linalg.solve(L, f_init)   # shape (N,)
-        
-                    # ip["f_rotated_"] = onp.asarray(f_rot_init) + 1e-3 * onp.random.randn(len(f_rot_init))
-
-                    # 1) Pull the same grid you used for the node init
-                    z_grid = atools.zGridGlobals   # (N,)
-                    N = z_grid.size
-                    z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
-                    
-                    Xn = z_grid[:, None]
-                    Xm = z_mid[:,  None]
-                    
-                    # 2) Hyperparams (same you used for the node init)
-                    try:
-                        ell0 = ivals['ℓ']
-                        eta0 = ivals['η']
-                        print("Found ℓ, η in prior")
-                    except Exception:
-                        eta0 = 0.2
-                        ell0 = 0.3
-                        print("ℓ, η not found, using η=0.2, ℓ=0.3")
-                    
-                    jitter = 1e-4
-                    
-                    # 3) Kernels
-                    Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
-                    Kmm = atools.matern52_1d(Xm, Xm, eta0, ell0) + jitter * np.eye(N - 1)
-                    Kmn = atools.matern52_1d(Xm, Xn, eta0, ell0)              # (N-1, N)
-                    
-                    # 4) The node function you used to build f_rotated_ (same as your snippet)
-                    z0 = z_grid[0]
-                    s0 = 0.001
-                    f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
-                    
-                    # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
-                    #    Use Cholesky solves for stability; reuse Knn factorization
-                    c_nn = la.cho_factor(Knn, lower=True, check_finite=False)
-                    f_mid_init = Kmn @ la.cho_solve(c_nn, f_nodes_init)       # (N-1,)
-                    
-                    # 6) Whiten both with their own Cholesky factors:
-                    Ln = la.cholesky(Knn, lower=True, check_finite=False)
-                    Lm = la.cholesky(Kmm, lower=True, check_finite=False)
-                    
-                    u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True, check_finite=False)  # (N,)
-                    u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
-                    
-
-                    ip["f_rotated_"]     = u_nodes_init + 1e-3 * onp.random.randn(u_nodes_init.size)
-                    #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
+                    else:
+                        def inv_softplus_stable(y):
+                                    # stable inverse softplus
+                                    return np.where(
+                                        y > 20,
+                                        y + np.log1p(-np.exp(-y)),
+                                        np.log(np.expm1(y))
+                                    )
+    
+                        # 1) grids
+                        z_grid = atools.zGridGlobals
+                        N = z_grid.size
+                        
+                        # 2) hyperparameters for init
+                        ell0 = ivals.get("ℓ", 0.3)
+                        eta0 = ivals.get("η", 0.2)
+                        
+                        jitter = 1e-4
+                        
+                        # 3) kernels
+                        Xn = z_grid[:, None]
+                        Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
+                        
+                        # 4) compute b_em
+                        dc = atools.dcfun_at(z_grid, 67.7, 0.31, -1).eval()
+                        b_em = atools.d_log_dLEM_dz(z_grid, 67.7, 0.31, -1, dc=dc).eval()
+                        
+                        # 5) target q = b_em - eps
+                        eps = 1e-3
+                        q_target = np.clip(b_em - eps, 1e-6, None)
+                        
+                        # 6) invert softplus
+                        f_nodes_init = inv_softplus_stable(q_target)
+                        
+                        # 7) small noise
+                        f_nodes_init += onp.random.normal(scale=0.03, size=f_nodes_init.shape)
+                        
+                        # 8) whiten
+                        Ln = la.cholesky(Knn, lower=True)
+                        u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True)
+                        
+                        # 9) normalize to match N(0,1)
+                        u_nodes_init = (u_nodes_init - u_nodes_init.mean()) / u_nodes_init.std()
+                        
+                        # 10) add tiny noise
+                        u_nodes_init += 1e-3 * onp.random.randn(N)
+                        
+                        ip["f_rotated_"] = u_nodes_init
     
                 else:
                     print("Initializing f_rotated_ from file....")
