@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
     parser.add_argument("--backend", default='disk', type=str, required=False)
+    parser.add_argument("--nev_min", default=0, type=int, required=False)
+    parser.add_argument("--nev_max", default=-1, type=int, required=False)
     
     parser.add_argument("--pop_only", default=0, type=int, required=False)
     
@@ -60,7 +62,12 @@ def main():
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
     parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
-    parser.add_argument("--N_DP_comp_max", default=50, type=int, required=False)
+    
+    parser.add_argument("--N_DP_comp_max", default=100, type=int, required=False)
+    parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
+    parser.add_argument("--alpha_small", default=0.01, type=float, required=False)
+    
+    
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
@@ -322,6 +329,48 @@ def main():
         allNgm =  data['allNgm']
         Nevents =  data['Nevents']
 
+        if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
+
+            N_or = Nevents
+
+            if FLAGS.nev_max == -1 :
+                print("Starting from event %s"%FLAGS.nev_min)
+                mask_0D = (slice(FLAGS.nev_min, None ))
+                mask_1D = (slice(FLAGS.nev_min, None ), slice(None))
+                mask_2D = (slice(FLAGS.nev_min, None), slice(None), slice(None))
+                mask_3D = (slice(FLAGS.nev_min , None), slice(None), slice(None), slice(None))
+                Nev_exp = Nevents - FLAGS.nev_min
+            elif FLAGS.nev_min == 0 :
+                print("Ending at event %s"%FLAGS.nev_max)
+                mask_0D = (slice(None, FLAGS.nev_max ))
+                mask_1D = (slice(None, FLAGS.nev_max ), slice(None))
+                mask_2D = (slice(None, FLAGS.nev_max), slice(None), slice(None))
+                mask_3D = (slice(None, FLAGS.nev_max), slice(None), slice(None), slice(None))
+                Nev_exp = FLAGS.nev_max
+            else:
+                print("Using events between %s and %s"%(FLAGS.nev_min,FLAGS.nev_max))
+                Nev_exp = FLAGS.nev_max - FLAGS.nev_min
+                mask_0D = (slice(FLAGS.nev_min, FLAGS.nev_max ))
+                mask_1D = (slice(FLAGS.nev_min, FLAGS.nev_max ), slice(None))
+                mask_2D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None))
+                mask_3D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None), slice(None))
+
+            samples_means_at = samples_means_at[mask_1D]
+            samples_cho_covs_at = samples_cho_covs_at[mask_2D]
+        
+            gmm_log_wts = gmm_log_wts[mask_1D]
+            gmm_means = gmm_means[mask_2D]
+            gmm_icovs =  gmm_icovs[mask_3D]
+            gmm_cho_covs =  gmm_cho_covs[mask_3D]
+            gmm_log_dets =  gmm_log_dets[mask_1D]
+            allNgm =  allNgm[mask_0D]
+            Nevents =  len(allNgm)
+
+            assert Nevents == Nev_exp
+
+            print("Number of events used: %s. Original events were %s."%(Nevents, N_or))
+
+
     
 
     else:
@@ -578,6 +627,8 @@ def main():
                                     chunk_reduce = FLAGS.chunk_reduce,
                                     marginal_R0 = FLAGS.marginal_R0,
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
+                                    alpha_tail = FLAGS.alpha_tail,
+                                    alpha_small = FLAGS.alpha_small,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,

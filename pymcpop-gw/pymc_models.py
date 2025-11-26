@@ -1143,7 +1143,9 @@ def make_model(  priors,
                  use_float32 = False,
                  use_float32_bias=False,
                  sel_method='Tobs',
-                 N_DP_comp_max = 20,
+                 N_DP_comp_max = 100,
+                 alpha_tail = 0.2,
+                 alpha_small = 0.01,
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -1572,7 +1574,7 @@ def make_model(  priors,
 
             print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
                 
-            alpha_inv_params = (0.05, 5.)
+            alpha_inv_params = (1., 1.)
             alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1] )
             print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
             
@@ -1592,8 +1594,12 @@ def make_model(  priors,
             # DPLDP 1k
             lowmu1 = 1.5
             upmu1 = 5.6
+            
             lowmu2 =  -1.2
             upmu2 =  10.
+
+            U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim 
+
             
      
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ))
@@ -1605,16 +1611,6 @@ def make_model(  priors,
 
             #### Sigma prior limits
             
-            # --- choose interpretable tails in *z-scored* transformed space ---
-            alpha_tail = 0.2      # P(tau_j > Uj) = alpha_tail
-            U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim (tune via prior predictive)
-            print("U1 = %s "%U1)
-            print("U2 = %s "%U2)
-            print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
-            lambda_large_1 = -np.log(alpha_tail) / U1   # NOTE: divide by ell_max
-            lambda_large_2 = -np.log(alpha_tail) / U2   # NOTE: divide by ell_max
-
-        
 
             # ----- PC-low prior: penalize tiny sigma  -----
 
@@ -1627,7 +1623,7 @@ def make_model(  priors,
             # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
             L_small_1 = c1 * ell_min     # "too small" std in z-units (tunable but principled)
             L_small_2 = c2 * ell_min     # "too small" std in z-units (tunable but principled)
-            alpha_small = 0.0001     # P( sigma < L_small ) = alpha_small
+            #alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
 
             
             print("Adding PC penalty on small variance")
@@ -1643,31 +1639,48 @@ def make_model(  priors,
             
 
             
-            tau1 = pm.CustomDist("tau1", lambda_ell_1, 1,
-                          logp=atools.frechet_logp_full,
-                          transform=tr.log, initval=0.2,
-                          random=atools.frechet_random, )
+            # tau1 = pm.CustomDist("tau1", lambda_ell_1, 1,
+            #               logp=atools.frechet_logp_full,
+            #               transform=tr.log, initval=0.2,
+            #               random=atools.frechet_random, )
 
-            tau2 = pm.CustomDist("tau2", lambda_ell_2, 1,
-                          logp=atools.frechet_logp_full,
-                          transform=tr.log, initval=0.2,
-                          random=atools.frechet_random, )
+            # tau2 = pm.CustomDist("tau2", lambda_ell_2, 1,
+            #               logp=atools.frechet_logp_full,
+            #               transform=tr.log, initval=0.2,
+            #               random=atools.frechet_random, )
+
+            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2,  )
+            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2,  )
 
 
-            s_local = 0.5
-            #eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
-            #eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
-            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+5, dims=("component",))
-            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+5, dims=("component",))
+            s_local = .5
+            # eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
+            # eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
+            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",))
+            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",))
 
-            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1), dims="component")   # dims: ("component",)
+            #eps1 = pm.Deterministic("eps1", at.zeros(N_DP_comp_max_np) )
+            #eps2 = pm.Deterministic("eps2", at.zeros(N_DP_comp_max_np) )
+
+            # * at.exp(eps2)
+            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   # dims: ("component",)
             sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
-            
 
-            # ----- Penalize large sigma -----
+            if alpha_tail!=-1:
 
-            # _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * sig1, dims="component" )
-            # _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * sig2, dims="component" )
+                # ----- Penalize large sigma -----
+                
+                #alpha_tail = penalty_tail #0.2      # P(tau_j > Uj) = alpha_tail
+                print("U1 = %s "%U1)
+                print("U2 = %s "%U2)
+                print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
+                
+                lambda_large_1 = -np.log(alpha_tail) / U1   
+                lambda_large_2 = -np.log(alpha_tail) / U2   
+    
+    
+                _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * tau1,  )
+                _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * tau2, )
     
 
 
@@ -1685,21 +1698,21 @@ def make_model(  priors,
                 # -------- Correlation prior --------
 
                 eta=1.
-                # print("eta = %s"%eta)
-                # rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
+                print("eta = %s"%eta)
+                rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
 
                 # #rho_max = 0.9  # cap on |rho|
                 # # choose fraction f of L_small you allow for the minor axis
                 f = 0.5   # minor axis at least 100xf% of L_small in worst case
                 rho_max = np.sqrt(1.0 - f**2)  # ≈ 0.866
-                # print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
-                # rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
+                print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
+                rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
 
-                rho = pm.Uniform("rho", lower=-rho_max, upper=rho_max, dims="component")
-                pm.Potential(
-                    "lkj_corr_prior",
-                    (eta - 1.0) * at.log(1.0 - rho**2).sum()
-                )
+                # rho = pm.Uniform("rho", lower=-rho_max, upper=rho_max, dims="component")
+                # pm.Potential(
+                #     "lkj_corr_prior",
+                #     (eta - 1.0) * at.log(1.0 - rho**2).sum()
+                # )
     
                 # # Useful terms
                 one_minus_r2 = 1.0 - rho**2
