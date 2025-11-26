@@ -55,7 +55,8 @@ def main():
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
     
-    
+    parser.add_argument("--nev_min", default=0, type=int, required=False)
+    parser.add_argument("--nev_max", default=-1, type=int, required=False)
     
     parser.add_argument("--dLprior", default='none', type=str, required=False)
     parser.add_argument("--use_sel_spin", default=1, type=int, required=False)
@@ -279,6 +280,53 @@ def main():
         gmm_means_sub = data['gmm_means_sub']
         gmm_icovs_sub = data['gmm_icovs_sub']
         gmm_log_dets_sub = data['gmm_log_dets_sub']
+
+
+        if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
+
+            N_or = Nevents
+
+            if FLAGS.nev_max == -1 :
+                print("Starting from event %s"%FLAGS.nev_min)
+                mask_0D = (slice(FLAGS.nev_min, None ))
+                mask_1D = (slice(FLAGS.nev_min, None ), slice(None))
+                mask_2D = (slice(FLAGS.nev_min, None), slice(None), slice(None))
+                mask_3D = (slice(FLAGS.nev_min , None), slice(None), slice(None), slice(None))
+                Nev_exp = Nevents - FLAGS.nev_min
+            elif FLAGS.nev_min == 0 :
+                print("Ending at event %s"%FLAGS.nev_max)
+                mask_0D = (slice(None, FLAGS.nev_max ))
+                mask_1D = (slice(None, FLAGS.nev_max ), slice(None))
+                mask_2D = (slice(None, FLAGS.nev_max), slice(None), slice(None))
+                mask_3D = (slice(None, FLAGS.nev_max), slice(None), slice(None), slice(None))
+                Nev_exp = FLAGS.nev_max
+            else:
+                print("Using events between %s and %s"%(FLAGS.nev_min,FLAGS.nev_max))
+                Nev_exp = FLAGS.nev_max - FLAGS.nev_min
+                mask_0D = (slice(FLAGS.nev_min, FLAGS.nev_max ))
+                mask_1D = (slice(FLAGS.nev_min, FLAGS.nev_max ), slice(None))
+                mask_2D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None))
+                mask_3D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None), slice(None))
+
+            samples_means_at = samples_means_at[mask_1D]
+            samples_cho_covs_at = samples_cho_covs_at[mask_2D]
+        
+            gmm_log_wts = gmm_log_wts[mask_1D]
+            gmm_means = gmm_means[mask_2D]
+            gmm_icovs =  gmm_icovs[mask_3D]
+            gmm_cho_covs =  gmm_cho_covs[mask_3D]
+            gmm_log_dets =  gmm_log_dets[mask_1D]
+            allNgm =  allNgm[mask_0D]
+            Nevents =  len(allNgm)
+
+
+            gmm_means_sub = gmm_means_sub[mask_2D]
+            gmm_icovs_sub = gmm_icovs_sub[mask_3D]
+            gmm_log_dets_sub = gmm_log_dets_sub[mask_1D]
+
+            assert Nevents == Nev_exp
+
+            print("Number of events used: %s. Original events were %s."%(Nevents, N_or))
 
     else:
         print("Using n max samples = %s"%FLAGS.nsamplesmax)
