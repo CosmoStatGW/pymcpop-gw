@@ -99,7 +99,8 @@ def main():
      
     parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
-    parser.add_argument("--monotonicity", default='softplus', type=str, required=False)
+    parser.add_argument("--monotonicity", default='poly', type=str, required=False)
+    parser.add_argument("--monotonicity_scale", default=0., type=float, required=False)
     parser.add_argument("--nu", default=0.5, type=float, required=False)
     parser.add_argument("--lam", default=10, type=float, required=False)
     parser.add_argument("--clip_high", default=500, type=float, required=False)
@@ -588,6 +589,7 @@ def main():
                                     is_GP_dL = FLAGS.is_GP_dL,
                                     find_GP_L = FLAGS.find_GP_L,
                                     monotonicity=FLAGS.monotonicity,
+                                    monotonicity_scale=FLAGS.monotonicity_scale,
                                     nu = FLAGS.nu,
                                      lam = FLAGS.lam,
                                      clip_low = FLAGS.clip_low,

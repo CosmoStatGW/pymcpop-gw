@@ -375,8 +375,9 @@ def make_model(  priors,
                 is_GP_dL = True,
                find_GP_L = True,
                fout=None,
-               monotonicity = 'softplus',
-                nu = 0.5,
+               monotonicity = 'poly',
+                 monotonicity_scale = 1. ,
+                nu = 0.25,
                  lam = 10,
                  clip_low = -500,
                  clip_high=500,
@@ -1574,18 +1575,48 @@ def make_model(  priors,
                             q_grid = g_grid + b_full
 
                             mask = (atools.zGridGlobals_at <= z_max_mono)  # boolean mask on the grid
-                        
-                            q_mono = q_grid[mask]
-                        
-                            # tolerance
-                            eps = 0.
-                        
-                            # penalise only q < -eps
-                            q_tol = q_mono + eps
-                        
-                            # then in model:
-                            pm.Potential("monotonicity",
-                                     -lam * at.sum(atools.poly_hinge_neg(q_tol, nu)))
+
+                            if monotonicity_scale==0:
+                                q_mono = q_grid[mask]
+                            
+                                # tolerance
+                                eps = 0.
+                            
+                                # penalise only q < -eps
+                                q_tol = q_mono + eps
+
+                                N_mono = q_tol.shape[0]
+                            
+                                # then in model:
+                                pm.Potential("monotonicity",
+                                         -lam * at.sum(atools.poly_hinge_neg(q_tol, nu)) / N_mono 
+                                            )
+
+                            else:
+                                print("Standardize monotonicity with scale %s"%monotonicity_scale) 
+                                g_mono = g_grid[mask]
+                                b_mono = b_full[mask]
+
+                                # avoid crazy ratios if b is small but still inside mask
+                                b_min  = 1e-10
+                                b_safe = at.maximum(b_mono, b_min)
+                                
+                                # r(z) = 1 + g/b  ;  r>0 <=> dL_GW' > 0
+                                r_mono = 1.0 + g_mono / b_safe
+
+                                # standardize so the penalty sees O(1) numbers
+                                
+                                x = r_mono / monotonicity_scale   # dimensionless, O(1) if r is O(1)
+                                N_mono = x.shape[0]
+                                
+                                # soft monotonicity penalty: penalize x<0 (i.e. r<0)
+                                pm.Potential(
+                                    "monotonicity",
+                                    -lam * at.sum(atools.poly_hinge_neg(x, tau=nu)) / N_mono
+                                            )
+
+
+
                         else:
                             print('No monotonicity constraint.')
                             
