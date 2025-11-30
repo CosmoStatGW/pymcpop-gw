@@ -377,6 +377,7 @@ def make_model(  priors,
                fout=None,
                monotonicity = 'poly',
                  monotonicity_scale = 1. ,
+                 zmin_mono = 0, 
                 nu = 0.25,
                  lam = 10,
                  clip_low = -500,
@@ -1575,6 +1576,10 @@ def make_model(  priors,
                             q_grid = g_grid + b_full
 
                             mask = (atools.zGridGlobals_at <= z_max_mono)  # boolean mask on the grid
+
+                            if zmin_mono!=0:
+                                print("Lower lim for monotonicity penalty at z=%s"%zmin_mono)
+                                mask &= (atools.zGridGlobals_at >= zmin_mono)
 
                             if monotonicity_scale==0:
                                 q_mono = q_grid[mask]
