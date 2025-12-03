@@ -135,6 +135,7 @@ def main():
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
+    parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
     parser.add_argument("--zres", default='low', type=str, required=False)
     
@@ -661,6 +662,7 @@ def main():
                                 save_thetas = FLAGS.save_thetas,
                                 wrap_logp=FLAGS.wrap_logp,
                                 interp_inj=FLAGS.interp_inj,
+                                param=FLAGS.param
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

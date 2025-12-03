@@ -196,7 +196,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  smoothing='LVK', 
                  has_m2_break=False, 
                  dc=None, 
-                 log_ddL_dz_pre=None
+                 log_ddL_dz_pre=None,
+                 param='vanilla'
                 ):
 
 
@@ -415,7 +416,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     #log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
     
     if log_ddL_dz_pre is None:
-        log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
+        log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc, param=param)
     else:
         log_ddL_dz = log_ddL_dz_pre
 
@@ -544,11 +545,11 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
                 r = (dL - xl) / denom
                 zinj_c = (1 - r) * yl + r * yh
             else:
-                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp, param=param)
 
             # analytic dc and log_ddL_dz
             dc_c    = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
-            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp, param=param)
 
             one_p_z = 1.0 + zinj_c
             m1Src = m1 / one_p_z
@@ -605,10 +606,10 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
                 r = (dL - xl) / denom
                 zinj_c = (1 - r) * yl + r * yh
             else:
-                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp)
+                zinj_c  = atools.z_from_dL_at(dL, H0, Om, w0, Xi0, n, interp=interp, param=param)
 
             dc_c    = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
-            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp, param=param)
 
             one_p_z = 1.0 + zinj_c
             m1Src = m1 / one_p_z
@@ -779,7 +780,7 @@ def sel_bias_with_uncertainty_at_loop(
             logdd_c = atools.atinterp(zinj_c, z_grid_t, logdd_grid_t)
         else:
             dc_c    = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
-            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp)
+            logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dc_c, interp=interp, param=param)
 
         one_p_z = 1.0 + zinj_c
         m1Src = m1 / one_p_z
@@ -928,7 +929,7 @@ def sel_bias_with_uncertainty_at_0_batched(
         if zinj is not None:
             zK, _, _ = _pad_to_K(zinj, K, 0.0, work_dtype)
         else:
-            zK = atools.z_from_dL_at(dLK, H0, Om, w0, Xi0, n, interp=interp)
+            zK = atools.z_from_dL_at(dLK, H0, Om, w0, Xi0, n, interp=interp, param=param)
 
     # ---------- analytic dc(z) and log_ddL_dz(z) ----------
     if dcinj is not None:
@@ -939,7 +940,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     if log_ddL_dz_inj is not None:
         dK, _, _ = _pad_to_K(log_ddL_dz_inj, K, 0.0, work_dtype)
     else:
-        dK = atools.log_ddL_dz(zK, H0, Om, w0, Xi0, n, dc=dcK, interp=interp)
+        dK = atools.log_ddL_dz(zK, H0, Om, w0, Xi0, n, dc=dcK, interp=interp, param=param)
 
     # ---- masses in source frame ----
     one_p_z = 1.0 + zK
@@ -1036,13 +1037,13 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
     if zinj is None:
         print("Sel bias is recomputing zinj!")
-        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp  )
+        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp, param=param) 
     if dcinj is None:
         print("Sel bias is recomputing dcinj!")
         dcinj = atools.dcfun_at(zinj, H0, Om, w0, interp=interp)        
     if log_ddL_dz_inj is None:
         print("Sel bias is recomputing log_ddL_dz_inj!")
-        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n, dc=dcinj, interp=interp)
+        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n, dc=dcinj, interp=interp, param=param)
     
     
     one_p_z = 1.0 + zinj
@@ -1183,7 +1184,8 @@ def make_model(  priors,
                  inj_loop='vec',
                  save_thetas=False,
                  wrap_logp=False,
-                 interp_inj=True
+                 interp_inj=True,
+                 param='vanilla'
                 ):
 
     ################################################
@@ -1386,6 +1388,8 @@ def make_model(  priors,
         else:
             Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
             nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
+
+            print("For Xi0-n, we use the %s parameterization"%param)
 
         Lambda_ = [H0_, Om_, w0_, Xi0_, nXi0_]
 
@@ -1826,8 +1830,8 @@ def make_model(  priors,
         # Precompute cosmology pieces 
         # One grid build to interpolate later
         dc_grid = atools.dcfun_at(zgrid_, H0_, Om_, w0_, interp=pade)
-        dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade, dc=dc_grid)
-        log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade)
+        dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade, dc=dc_grid, param=param)
+        log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade, param=param)
 
 
 
@@ -2301,6 +2305,7 @@ def make_model(  priors,
                                                           log_ddL_dz_inj = log_ddL_dz_inj,
                                                             zinj = zinj,
                                                             dcinj = dcinj,
+                                                          param=param
                                                         )
 
                 

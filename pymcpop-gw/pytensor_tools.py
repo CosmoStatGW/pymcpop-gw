@@ -927,12 +927,30 @@ def Xifun_at(z, Xi0, n):
     return Xi0+(1-Xi0)/(1+z)**n
 
 
-def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False, dc=None):
+def Xifun_at_polexp(z, Xi0, n):
+    r"""
+    Ξ(z) = exp(  -(1-Ξ0)[1 - (1+z)^n] / (1+z)^{2n}  )
+           * [ Ξ0 + (1-Ξ0)(1+z)^{-n} ]
+    """
+    exponent = -(1 - Xi0) * (1 - (1 + z)**n) / (1 + z)**(2 * n)
+    prefactor = Xi0 + (1 - Xi0) * (1 + z)**(-n)
+    return at.exp(exponent) * prefactor
+
+
+def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False, dc=None, param='vanilla'):
     """Luminosity distance at redshift ``z``."""
+    
+    if param=='vanilla':
+        Xi = Xifun_at(z, Xi0, n)
+        print("In dLfun_at, using vanilla")
+    elif param=='polexp':
+        Xi = Xifun_at_polexp(z, Xi0, n)
+        print("In dLfun_at, using polexp")
+    
     if dc is not None:
-        return Xifun_at(z, Xi0, n)*(z+1.0)*dc
+        return Xi*(z+1.0)*dc
     else:
-        return Xifun_at(z, Xi0, n)*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
+        return Xi*(z+1.0)*dcfun_at(z, H0, Om, w0, interp=interp)
 
 
 def Efun_at(z, Om, w0):
@@ -944,8 +962,8 @@ def Efun_at(z, Om, w0):
 
 
 
-def z_from_dL_at( r, H0, Om, w0, Xi0, n , interp=False):
-    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n , interp=interp)
+def z_from_dL_at( r, H0, Om, w0, Xi0, n , interp=False, param='vanilla'):
+    dLGrid_at = dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n , interp=interp, param=param)
     z2dL = atinterp( r, dLGrid_at, zGridGlobals_at ) 
     return z2dL 
 
@@ -965,14 +983,54 @@ def log_dV_dz_at(z, H0, Om0, w0, dc=None, interp=False):
     return res
 
 
-def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False):
+def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False, param='vanilla'):
     
     # H0 in Mpc, dLs in Gpc
     if dc is None:
         dc = dcfun_at(z, H0, Om0,  w0, interp=interp) # Gpc
+
+    if param=='vanilla':
+        print("In log_ddL_dz, using vanilla")
+
+        Xi = Xifun_at(z, Xi0, n)
+        res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+    elif param=='polexp':
+        print("In log_ddL_dz, using polexp")
+
+        # ---- Xi(z) in the polexp parametrization ----
+        onepz = 1 + z
+
+        exponent = -(1 - Xi0) * (1 - onepz**n) / (onepz**(2 * n))
+        prefactor = Xi0 + (1 - Xi0) * onepz**(-n)
+
+        Xi = at.exp(exponent) * prefactor
+
+        # ---- dXi/dz for polexp ----
+        # exponent = -(1 - Xi0) * C * D, with
+        # C = 1 - (1+z)^n, D = (1+z)^(-2n)
+        C = 1 - onepz**n
+        D = onepz**(-2 * n)
+        dC = -n * onepz**(n - 1)
+        dD = -2 * n * onepz**(-2 * n - 1)
+
+        d_exponent = -(1 - Xi0) * (dC * D + C * dD)
+
+        # prefactor = Xi0 + (1 - Xi0) * (1+z)^(-n)
+        d_prefactor = -(1 - Xi0) * n * onepz**(-n - 1)
+
+        # dXi/dz = exp(exponent) * (d_exponent * prefactor + d_prefactor)
+        dXi = at.exp(exponent) * (d_exponent * prefactor + d_prefactor)
+
+        # ---- d d_c / dz ----
+        ddc_dz = c_light_at / (1e03 * H0 * Efun_at(z, Om0, w0))
+
+        # ---- d d_L / dz = d/dz [Xi (1+z) d_c] ----
+        dL_dz = (dXi * onepz + Xi) * dc + Xi * onepz * ddc_dz
+
+        # log d(d_L/dz)
+        res = at.log(dL_dz)
     
-    Xi = Xifun_at(z, Xi0, n)
-    res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+    
         
     return res
 
