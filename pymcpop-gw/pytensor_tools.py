@@ -230,7 +230,12 @@ def logsumexp(x, y):
     return at.logaddexp(x, y)
 
 def logitat(p):
-    return at.log(p) - at.log(1. - p)
+    #return at.log(p) - at.log(1. - p)
+    # Always stay strictly away from 0 and 1
+    eps = at.as_tensor_variable(1e-12, dtype=p.dtype)
+    p_safe = at.clip(p, eps, 1.0 - eps)
+    # Use log1p for better stability near the boundaries
+    return at.log(p_safe) - at.log1p(-p_safe)
 
 def inv_logitat(p):
     return 1. / (1 + at.exp(-p))

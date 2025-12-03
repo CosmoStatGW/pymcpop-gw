@@ -557,7 +557,9 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             use_dp = (mass_model in ("DP", "DPUC"))
             if use_dp:
                 Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-                mass_1_use = at.log(Mc_src_inj)
+                #mass_1_use = at.log(Mc_src_inj)
+                #eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
+                mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
                 mass_2_use = atools.logitat(q_inj)
             else:
                 mass_1_use = m1Src
@@ -615,7 +617,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             use_dp = (mass_model in ("DP", "DPUC"))
             if use_dp:
                 Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-                mass_1_use = at.log(Mc_src_inj)
+                #mass_1_use = at.log(Mc_src_inj)
+                mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
                 mass_2_use = atools.logitat(q_inj)
             else:
                 mass_1_use = m1Src
@@ -945,7 +948,8 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     if use_dp:
         McK, qK = atools.Mcq_from_m1m2_at(m1SrcK, m2SrcK)
-        m1useK  = at.log(McK)
+        m1useK  = at.log(at.maximum(McK, tiny) )
+        #mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
         m2useK  = atools.logitat(qK)
     else:
         m1useK, m2useK = m1SrcK, m2SrcK
@@ -1047,7 +1051,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
     if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-        log_Mc_src_inj = at.log(Mc_src_inj)
+        #log_Mc_src_inj = at.log(Mc_src_inj)
+        eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
+        log_Mc_src_inj = at.log(at.maximum(Mc_src_inj, eps))
         logit_q_inj = atools.logitat(q_inj)      
         mass_1_use = log_Mc_src_inj
         mass_2_use = logit_q_inj
@@ -1067,7 +1073,10 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
     if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
-        log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
+        eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
+        log_p_pop += (- at.log(m2Src) 
+                      - at.log(at.maximum(m1Src - m2Src, eps)) #at.log(m1Src-m2Src) 
+                      - at.log1p(zinj) )
 
     log_sel_b = log_p_pop-log_p_draw
 
@@ -2082,7 +2091,11 @@ def make_model(  priors,
             
             log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-            log_p_pop -=  at.log(m2src) + at.log(m1src-m2src) + at.log1p(zs) 
+            eps = at.as_tensor_variable(1e-30, dtype=m2src.dtype)
+            log_p_pop -=  at.log(m2src) + at.log(at.maximum(m1src - m2src, eps)) + at.log1p(zs) 
+
+            #print("Nans in  log_p_pop:")
+            #print( np.isnan(log_p_pop.eval()).sum() )
             
         else:    
         

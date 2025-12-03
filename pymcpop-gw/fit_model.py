@@ -195,6 +195,7 @@ def main():
     
     import jax
     import jax.numpy as np
+    #jax.config.update("jax_disable_jit", True) # for debugging
     
     if FLAGS.use_float32:
         jax.config.update("jax_enable_x64", False)
@@ -700,76 +701,71 @@ def main():
     ################################################
 
     if int(pm.__version__.split('.')[1])>20: # recent versions of pymc
-        
-        sampler_kwargs = {
-                    "draws": FLAGS.nsteps,
-                    "tune":FLAGS.ntune,
-                    "target_accept": FLAGS.target_accept,
-                    "chains": FLAGS.nchains,
-                    "random_seed": 42,
-                    #"initvals": ivals,
-                    "cores": FLAGS.ncores,
-                    "progressbar": True,
-                    "trace": backend,
-                    #"chain_method":'parallel'
-                }
 
         
         with model:
 
             print("Setting initial point...")
-            ip = model.initial_point()
+
+            if FLAGS.ivals == "":
+                print("No ivals provided; using MAP estimate as init..")
+                ip = pm.find_MAP()   # CPU backend, no JAX involved
+                #print("Initial point with MAP:")
+                #print(ip)
+            else:                    
+                ip = model.initial_point()
+                print("Using model init point as init")
             
-            N = gmm_means.shape[0]
-            nd = gmm_means.shape[2]
-
-            ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
-
-
-            wts = onp.exp(gmm_log_wts)
-            idx = onp.argmax(wts, axis=1)
-            
-            if FLAGS.sampling_gw=='gmm_cat':
-                ip['idx'] = idx.astype(int)
-
-            elif FLAGS.sampling_gw=='gmm':
-                cdf = onp.cumsum(wts, axis=1)
+                N = gmm_means.shape[0]
+                nd = gmm_means.shape[2]
+    
+                ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+    
+    
+                wts = onp.exp(gmm_log_wts)
+                idx = onp.argmax(wts, axis=1)
                 
-                # pick v in the open interval [CDF_{i-1}, CDF_i)
-                lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
-                hi = cdf[onp.arange(len(idx)), idx]
-                v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
-                
-                # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
-                u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
-                ip['u_gmm'] =  u_init
-
-            elif FLAGS.sampling_gw=='gumbel':
-                # inputs
-                w = wts                     # (N, K)
-                tau = 1e-05                                 # same tau you use in the model
-                eps = 1e-6                                # desired spillover mass
-                N, K = w.shape
-                
-                # logits and target index per row
-                logits = onp.log(onp.clip(w, 1e-12, 1.0))   # (N, K)
-                idx = onp.argmax(logits, axis=1)           # (N,)
-                
-                # required margin Δ so top prob ≥ 1 - eps:
-                # Δ >= tau * log((K-1)/eps)
-                Delta = tau * (onp.log(max(K-1, 1)) - onp.log(eps))
-                
-                # build g_init so (logits + g) gives the target argmax with margin Δ
-                g_init = onp.zeros_like(logits)
-                for n in range(N):
-                    k = idx[n]
-                    # best competing logit (exclude the winner)
-                    max_other = logits[n, np.arange(K) != k].max() if K > 1 else -onp.inf
-                    # ensure: logits[n,k] + g_init[n,k] >= max_other + Δ
-                    need = (max_other + Delta) - logits[n, k]
-                    g_init[n, k] = max(0.0, need)
-
-                ip['gumbel'] = g_init
+                if FLAGS.sampling_gw=='gmm_cat':
+                    ip['idx'] = idx.astype(int)
+    
+                elif FLAGS.sampling_gw=='gmm':
+                    cdf = onp.cumsum(wts, axis=1)
+                    
+                    # pick v in the open interval [CDF_{i-1}, CDF_i)
+                    lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                    hi = cdf[onp.arange(len(idx)), idx]
+                    v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                    
+                    # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                    u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                    ip['u_gmm'] =  u_init
+    
+                elif FLAGS.sampling_gw=='gumbel':
+                    # inputs
+                    w = wts                     # (N, K)
+                    tau = 1e-05                                 # same tau you use in the model
+                    eps = 1e-6                                # desired spillover mass
+                    N, K = w.shape
+                    
+                    # logits and target index per row
+                    logits = onp.log(onp.clip(w, 1e-12, 1.0))   # (N, K)
+                    idx = onp.argmax(logits, axis=1)           # (N,)
+                    
+                    # required margin Δ so top prob ≥ 1 - eps:
+                    # Δ >= tau * log((K-1)/eps)
+                    Delta = tau * (onp.log(max(K-1, 1)) - onp.log(eps))
+                    
+                    # build g_init so (logits + g) gives the target argmax with margin Δ
+                    g_init = onp.zeros_like(logits)
+                    for n in range(N):
+                        k = idx[n]
+                        # best competing logit (exclude the winner)
+                        max_other = logits[n, np.arange(K) != k].max() if K > 1 else -onp.inf
+                        # ensure: logits[n,k] + g_init[n,k] >= max_other + Δ
+                        need = (max_other + Delta) - logits[n, k]
+                        g_init[n, k] = max(0.0, need)
+    
+                    ip['gumbel'] = g_init
 
             print("Done.")
             
@@ -1011,13 +1007,60 @@ def main():
                     sys.exit(0)
                     
 
+
+            print("\nModel variables:")
+            vnames = [v.name for v in model.free_RVs]
+            # Print only the names of variables that are sampled
+            print(vnames)
+            print("Initial values:")
+            ivals = {k: v for k, v in ip.items() if k in vnames}
+            print(ivals)
+
+            # Make JSON-serializable
+            ivals_json = {}
+            for k, v in ivals.items():
+                arr = np.asarray(v)
+                if arr.shape == ():      # scalar
+                    ivals_json[k] = float(arr)
+                else:
+                    ivals_json[k] = arr.tolist()
+            
+            with open( os.path.join( FLAGS.fout,"ivals_map.json"), "w") as f:
+                json.dump(ivals_json, f, indent=2)
+
+            
+            sampler_kwargs = {
+                    "draws": FLAGS.nsteps,
+                    "tune":FLAGS.ntune,
+                    "target_accept": FLAGS.target_accept,
+                    "chains": FLAGS.nchains,
+                    "random_seed": 42,
+                    "initvals": ivals,
+                    "cores": FLAGS.ncores,
+                    "progressbar": True,
+                    "trace": backend,
+                    #"chain_method":'parallel'
+                }
     
             if FLAGS.sampler == "numpyro":
+
+                if FLAGS.check_init:
+                    from pymc.sampling.jax import get_jaxified_logp
+                    jax_logp_fn = get_jaxified_logp(model)
+                    # Initial point in PyMC’s order
+                    #ip = model.initial_point()
+                    x0 = [np.asarray(v) for v in ip.values()]
+                    
+                    print("Testing JAX logp at PyMC initial point...")
+                    print(jax_logp_fn(x0))
+
+                
                 sampler = "numpyro"
                 sampler_kwargs.update({
                                 # "cores": 1,                         # JAX: single OS process
                                 "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
+                                    "jitter": False, 
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
@@ -1044,9 +1087,7 @@ def main():
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
 
-            print("\nModel variables:")
-            # Print only the names of variables that are sampled
-            print([v.name for v in model.free_RVs])
+            
 
 
             print()
@@ -1274,14 +1315,19 @@ def main():
 
     print("\nMaking summary plots...")
 
+
+    vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x')]
+
     try:
-        az.plot_trace(trace, var_names = vplot, );
+        print("Plotting trace...")
+        az.plot_trace(trace, var_names = vnames, );
         plt.savefig( os.path.join(FLAGS.fout, 'trace.pdf'), bbox_inches='tight')
         plt.close()
     except:
         print('No trace plot produced')
 
     try:
+        print("Plotting corner...")
         _ = corner.corner(
             trace,
             var_names = vplot,
