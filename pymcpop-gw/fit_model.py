@@ -66,6 +66,12 @@ def main():
     parser.add_argument("--N_DP_comp_max", default=100, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
     parser.add_argument("--alpha_small", default=0.01, type=float, required=False)
+    parser.add_argument("--L_small_1", default=0.05, type=float, required=False)
+    parser.add_argument("--L_small_2", default=0.1, type=float, required=False)
+    parser.add_argument("--s_local", default=0.5, type=float, required=False)
+    parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
+
+    
     
     
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
@@ -103,11 +109,7 @@ def main():
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default='vec', type=str, required=False)
     parser.add_argument("--wrap_logp", default=0, type=int, required=False)
-    parser.add_argument("--interp_inj", default=0, type=int, required=False)
-
-    
-
-        
+    parser.add_argument("--interp_inj", default=1, type=int, required=False)
     
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
@@ -120,12 +122,12 @@ def main():
     
     parser.add_argument("--fout", default='results/', type=str, required=True)
     
-    parser.add_argument("--sampler", default='pymc', type=str, required=False)
+    parser.add_argument("--sampler", default='pymc_bar', type=str, required=False)
     parser.add_argument("--nsteps", default=100, type=int, required=True)
     parser.add_argument("--ntune", default=100, type=int, required=True)
     parser.add_argument("--nchains", default=1, type=int, required=False)
     parser.add_argument("--ncores", default=1, type=int, required=False)
-    parser.add_argument("--target_accept", default=0.8, type=float, required=False)
+    parser.add_argument("--target_accept", default=0.9, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
     
     
@@ -629,6 +631,10 @@ def main():
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
                                     alpha_tail = FLAGS.alpha_tail,
                                     alpha_small = FLAGS.alpha_small,
+                                    L_small_1 = FLAGS.L_small_1,
+                                    L_small_2 = FLAGS.L_small_2,
+                                    alpha_inv_params = FLAGS.alpha_inv_params,
+                                    s_local = FLAGS.s_local,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,

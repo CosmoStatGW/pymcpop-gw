@@ -844,7 +844,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     **kwargs
 ):
     """Vectorized + batched reduction, only z(dL) interpolated from grids.
-    dc(z) and log_ddL_dz(z) computed analytically, matching yesterday's behavior.
+    dc(z) and log_ddL_dz(z) computed analytically.
     """
 
     def _as_at(x):
@@ -1146,6 +1146,10 @@ def make_model(  priors,
                  N_DP_comp_max = 100,
                  alpha_tail = 0.2,
                  alpha_small = 0.01,
+                 L_small_1 = 0.05,
+                 L_small_2 = 0.1,
+                 s_local = 0.5,
+                 alpha_inv_params = (1, 1),
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -1574,7 +1578,7 @@ def make_model(  priors,
 
             print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
                 
-            alpha_inv_params = (1., 1.)
+            #alpha_inv_params = (1., 1.)
             alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1] )
             print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
             
@@ -1614,28 +1618,33 @@ def make_model(  priors,
 
             # ----- PC-low prior: penalize tiny sigma  -----
 
-            ell_min = 0.06
-            print("ell_min=%s"%ell_min)
+            # ell_min = 0.06
+            # print("ell_min=%s"%ell_min)
 
-            c1 = 2. #0.8
-            c2 = 2. #0.8
+            # c1 = 2. #0.8
+            # c2 = 2. #0.8
             
-            # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
-            L_small_1 = c1 * ell_min     # "too small" std in z-units (tunable but principled)
-            L_small_2 = c2 * ell_min     # "too small" std in z-units (tunable but principled)
-            #alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
+            # # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
+            # L_small_1 = c1 * ell_min     # "too small" std in z-units (tunable but principled)
+            # L_small_2 = c2 * ell_min     # "too small" std in z-units (tunable but principled)
+            # #alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
 
             
-            print("Adding PC penalty on small variance")
+            #print("Adding PC penalty on small variance")
             print("L_small_1 = %s "%L_small_1)
             print("L_small_2 = %s "%L_small_2)
-            print("P( sigma < L_small ) = %s "%alpha_small)
+
+            print("U1 = %s "%U1)
+            print("U2 = %s "%U2)
+
+            
+            #print("P( sigma < L_small ) = %s "%alpha_small)
 
             # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
-            alpha_shape = 0.5
+            #alpha_shape = 0.5
 
-            lambda_ell_1 = -at.log(alpha_small) * L_small_1**(alpha_shape) # small scale
-            lambda_ell_2 = -at.log(alpha_small) * L_small_2**(alpha_shape) # small scale
+            #lambda_ell_1 = -at.log(alpha_small) * L_small_1**(alpha_shape) # small scale
+            #lambda_ell_2 = -at.log(alpha_small) * L_small_2**(alpha_shape) # small scale
             
 
             
@@ -1653,9 +1662,12 @@ def make_model(  priors,
             tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2,  )
 
 
-            s_local = .5
+            #s_local = .5
             # eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
             # eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
+
+            print("s_local = %s "%s_local)
+            
             eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",))
             eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",))
 
@@ -1671,8 +1683,7 @@ def make_model(  priors,
                 # ----- Penalize large sigma -----
                 
                 #alpha_tail = penalty_tail #0.2      # P(tau_j > Uj) = alpha_tail
-                print("U1 = %s "%U1)
-                print("U2 = %s "%U2)
+                
                 print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
                 
                 lambda_large_1 = -np.log(alpha_tail) / U1   
