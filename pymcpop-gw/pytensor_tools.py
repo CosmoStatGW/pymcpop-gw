@@ -180,7 +180,7 @@ def _get_t_grid_100():
 
 # safe_pos = lambda x: at.clip(x, EPS32.astype(x.dtype), BIG32.astype(x.dtype))   # >0, finite
 # safe_div = lambda a,b: a / safe_pos(b)
-# safe_log = lambda x: at.log(safe_pos(x))
+# safe_log = lambda x: safe_log(safe_pos(x))
 # safe_sqrt= lambda x: at.sqrt(safe_pos(x))
 # clip_unit= lambda p: at.clip(p, 1e-12, 1 - 1e-7)  # probs in (0,1)
 
@@ -229,13 +229,12 @@ def logsumexp(x, y):
     #return x + at.log1p(at.exp(y-x))
     return at.logaddexp(x, y)
 
-def logitat(p):
-    #return at.log(p) - at.log(1. - p)
+def logitat(p, eps=1e-12):
+    #return safe_log(p) - safe_log(1. - p)
     # Always stay strictly away from 0 and 1
-    eps = at.as_tensor_variable(1e-12, dtype=p.dtype)
     p_safe = at.clip(p, eps, 1.0 - eps)
     # Use log1p for better stability near the boundaries
-    return at.log(p_safe) - at.log1p(-p_safe)
+    return safe_log(p_safe) - at.log1p(-p_safe)
 
 def inv_logitat(p):
     return 1. / (1 + at.exp(-p))
@@ -244,8 +243,10 @@ def inv_flogitat(p):
     return (at.exp(p) - 1. ) / (1. + at.exp(p))
 
  
-def flogitat(p):
-    return at.log(1 + p) - at.log(1 - p)
+def flogitat(p, eps=1e-12):
+    p_safe = at.clip(p, -1.0 + eps, 1.0 - eps)
+    return safe_log(1.0 + p_safe) - safe_log(1.0 - p_safe)
+    #return safe_log(1 + p) - safe_log(1 - p)
 
 
 def logit(p):
@@ -302,8 +303,8 @@ def get_sample_from_cho_lMclqld(x, mu, L):
     # Log probability of standard normal x
     logp = (
     -0.5 * at.sum(x**2)   # instead of at.dot(x.T, x)
-    - 0.5 * mu.shape[0] * at.log(2 * atools.PI)
-    - at.sum(at.log(at.diagonal(L)))  # log determinant of L
+    - 0.5 * mu.shape[0] * safe_log(2 * atools.PI)
+    - at.sum(safe_log(at.diagonal(L)))  # log determinant of L
     )
     return sample, logp
 
@@ -326,8 +327,8 @@ def frechet_logp_full(value, lambda_ell, d):
 
     # core logp
     logp = (
-        at.log(alpha * lam)
-        - (alpha + 1.0) * at.log(x)
+        safe_log(alpha * lam)
+        - (alpha + 1.0) * safe_log(x)
         - lam * at.power(x, -alpha)   # use at.power for JAX friendliness
     )
 
@@ -371,7 +372,7 @@ def sigmoid(x, x0, s, eps=1e-12, clip=1e-15):
 #     return 1/(1+at.exp((-(x-m)/sig)))
 
 def log_sigmoid(x, m, sig):
-    return at.log(sigmoid(x, m, sig)) 
+    return safe_log(sigmoid(x, m, sig)) 
 
 
 def safe_sigmoid(x, x0, eps):
@@ -442,6 +443,9 @@ def safe_sigmoid(x, x0, eps):
 def softplus(x):
     # log(1 + exp(x)) with good numerical stability
     return at.maximum(x, 0) + at.log1p(at.exp(-at.abs(x)))
+
+def safe_log(x, eps=1e-12):
+    return at.log(at.clip(x, eps, np.inf))
 
 
 ##########################
@@ -973,13 +977,13 @@ def log_j_at(z, Om, H0=70, dc=None,  interp=False):
     if dc is None:
         dc = dcfun_at(z, H0, Om, interp=interp)
     dc*=H0/c_light*1e03
-    return at.log(4*PI)+2*at.log(dc)-at.log(Efun_at(z, Om=Om))
+    return safe_log(4*PI)+2*safe_log(dc)-safe_log(Efun_at(z, Om=Om))
 
 
 def log_dV_dz_at(z, H0, Om0, w0, dc=None, interp=False):
     if dc is None:
         dc = dcfun_at(z, H0, Om0, w0, interp=interp)    
-    res =  at.log(4*PI)+at.log(c_light)-at.log(H0)+2*at.log(dc)-at.log(Efun_at(z, Om0, w0))-3*at.log(10)
+    res =  safe_log(4*PI)+safe_log(c_light)-safe_log(H0)+2*safe_log(dc)-safe_log(Efun_at(z, Om0, w0))-3*safe_log(10)
     return res
 
 
@@ -993,7 +997,7 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False, param='vanilla'):
         print("In log_ddL_dz, using vanilla")
 
         Xi = Xifun_at(z, Xi0, n)
-        res = at.log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
+        res = safe_log( ( Xi - n*(1-Xi0)/(1+z)**n ) * dc + Xi * c_light_at * (1+z)/(1e03*H0*Efun_at(z,Om0,  w0)) )  
     elif param=='polexp':
         print("In log_ddL_dz, using polexp")
 
@@ -1028,7 +1032,7 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False, param='vanilla'):
         dL_dz = (dXi * onepz + Xi) * dc + Xi * onepz * ddc_dz
 
         # log d(d_L/dz)
-        res = at.log(dL_dz)
+        res = safe_log(dL_dz)
     
     
         
@@ -1047,13 +1051,13 @@ def u_z_at(z, Om, w0):
 def log_j_z_at(z, Om, w0, ):
     E = Efun_at(z, Om, w0)
     u = u_z_at(z, Om, w0).T
-    logj = 2*at.log(u) - at.log(E)
+    logj = 2*safe_log(u) - safe_log(E)
     return logj
 
 def log_j_z_at_norm(z, Om, w0, zmax):
     logj = log_j_z_at(z, Om, w0)
     zz = at.geomspace(1e-7, zmax, 10000) # fixed (zmin, zmax)
-    log_norm = at.log(attrapzvec(at.exp(log_j_z_at(zz, Om, w0)), zz))
+    log_norm = safe_log(attrapzvec(at.exp(log_j_z_at(zz, Om, w0)), zz))
     return logj - log_norm
 
 
@@ -1083,8 +1087,8 @@ def zdist_at_MD(z, gamma, kappa, zp):
 
 
 def log_zdist_at_MD(z, gamma, kappa, zp):
-    lrate =  gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
-    lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
+    lrate =  gamma*at.log1p(z)-safe_log(1+((1+z)/(1+zp))**(gamma+kappa))
+    lC0 = safe_log( 1+(1+zp)**(-gamma-kappa))
     return lC0+lrate
 
 
@@ -1117,9 +1121,9 @@ def p_z_MD(z, gamma, kappa, zp, Om, normalize=True, zmax=20, dc=None):
 
 
 def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
-    #lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
+    #lC0 = safe_log( 1+(1+zp)**(-gamma-kappa))
     
-    log_psiz = log_psi_z_MD(z, gamma, kappa, zp) #gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
+    log_psiz = log_psi_z_MD(z, gamma, kappa, zp) #gamma*at.log1p(z)-safe_log(1+((1+z)/(1+zp))**(gamma+kappa))
     
     log_dVdz = log_dV_dz_at(z, H0, Om, w0, dc=dc )
 
@@ -1134,8 +1138,8 @@ def N_per_year( gamma, kappa, zp, H0, Om, w0, R0=1., dc=None, z_max = 100, res=1
     return norm
 
 def log_psi_z_MD(z, gamma, kappa, zp):
-    lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
-    log_psiz = lC0+gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
+    lC0 = safe_log( 1+(1+zp)**(-gamma-kappa))
+    log_psiz = lC0+gamma*at.log1p(z)-safe_log(1+((1+z)/(1+zp))**(gamma+kappa))
     return log_psiz-at.log1p(z)
 
 
@@ -1154,7 +1158,7 @@ def log_p_z_PL_norm(z, gamma, H0, Om, w0, dc=None):
     pz = at.exp( gamma*at.log1p(zz)+log_dV_dz_at(zz, H0, Om, w0,dc=None )-at.log1p(zz) )
     norm = attrapzvec(pz, zz)
     
-    return log_psiz+log_dVdz-at.log1p(z)-at.log(norm)
+    return log_psiz+log_dVdz-at.log1p(z)-safe_log(norm)
 
 
 
@@ -1178,7 +1182,7 @@ def log_p_z_PL_norm(z, gamma, H0, Om, w0, dc=None):
 
     
 #     detC = s1**2* s2**2 - sEsP**2
-#     logdetC = at.log(detC)
+#     logdetC = safe_log(detC)
 
 #     Cinv = at.zeros( (2, 2) )
 #     Cinv = at.set_subtensor( Cinv[0,0], s2**2/detC )
@@ -1201,7 +1205,7 @@ def logpdf_multivariate_trunc_2D(x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2):
     # covariance pieces
     sEsP   = rho * s1 * s2
     detC   = at.clip(s1**2 * s2**2 - sEsP**2, 1e-300, np.inf)  # det Σ = s1^2 s2^2 (1-ρ^2)
-    logdetC = at.log(detC)
+    logdetC = safe_log(detC)
 
     # precision Σ^{-1} via stacks (no set_subtensor)
     Cinv00 = (s2**2) / detC
@@ -1217,7 +1221,7 @@ def logpdf_multivariate_trunc_2D(x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2):
     Fd    = at.dot(Cinv, delta.T)                      # (2,n)
     quad  = at.sum(delta * Fd.T, axis=1)               # (n,)
 
-    logpdf = -0.5 * (2.0 * at.log(2.0 * atools.PI) + logdetC + quad)  # (n,)
+    logpdf = -0.5 * (2.0 * safe_log(2.0 * atools.PI) + logdetC + quad)  # (n,)
 
     return at.where(where_inf, MIN, logpdf)
 
@@ -1230,16 +1234,16 @@ def logpdf_default_spin(theta, lambdaBBHspin):
   
     normBeta =  at.gammaln(alphaChi) + at.gammaln(betaChi) - at.gammaln(alphaChi + betaChi)
         
-    lpdfs1 = (alphaChi-1.0)*at.log(chi1) + (betaChi-1.0)*at.log1p(-chi1)
-    lpdfs2 = (alphaChi-1.0)*at.log(chi2) + (betaChi-1.0)*at.log1p(-chi2)
+    lpdfs1 = (alphaChi-1.0)*safe_log(chi1) + (betaChi-1.0)*at.log1p(-chi1)
+    lpdfs2 = (alphaChi-1.0)*safe_log(chi2) + (betaChi-1.0)*at.log1p(-chi2)
 
     logpdfampl = lpdfs1 + lpdfs2 - 2*normBeta
    
   
-    lpdfcos1_gauss = -0.5*(1.0-cost1)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
-    lpdfcos2_gauss = -0.5*(1.0-cost2)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
+    lpdfcos1_gauss = -0.5*(1.0-cost1)**2/(sigmat**2)-safe_log(sigmat)-safe_log(at.erf(at.sqrt(2.)/sigmat))
+    lpdfcos2_gauss = -0.5*(1.0-cost2)**2/(sigmat**2)-safe_log(sigmat)-safe_log(at.erf(at.sqrt(2.)/sigmat))
 
-    return logpdfampl + logsumexp( at.log(2.0)+at.log(zeta)-at.log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, at.log(1.0-zeta)-at.log(4.0) )
+    return logpdfampl + logsumexp( safe_log(2.0)+safe_log(zeta)-safe_log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, safe_log(1.0-zeta)-safe_log(4.0) )
 
 
 def logpdf_default_spin_gauss(theta, lambdaBBHspin):
@@ -1254,10 +1258,10 @@ def logpdf_default_spin_gauss(theta, lambdaBBHspin):
     logpdfampl = lpdfs1 + lpdfs2
    
   
-    lpdfcos1_gauss = -0.5*(1.0-cost1)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
-    lpdfcos2_gauss = -0.5*(1.0-cost2)**2/(sigmat**2)-at.log(sigmat)-at.log(at.erf(at.sqrt(2.)/sigmat))
+    lpdfcos1_gauss = -0.5*(1.0-cost1)**2/(sigmat**2)-safe_log(sigmat)-safe_log(at.erf(at.sqrt(2.)/sigmat))
+    lpdfcos2_gauss = -0.5*(1.0-cost2)**2/(sigmat**2)-safe_log(sigmat)-safe_log(at.erf(at.sqrt(2.)/sigmat))
 
-    return logpdfampl + logsumexp( at.log(2.0)+at.log(zeta)-at.log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, at.log(1.0-zeta)-at.log(4.0) )
+    return logpdfampl + logsumexp( safe_log(2.0)+safe_log(zeta)-safe_log(PI) + lpdfcos1_gauss + lpdfcos2_gauss, safe_log(1.0-zeta)-safe_log(4.0) )
 
     
         
@@ -1274,14 +1278,14 @@ def logpdf_flat_sharp(theta, lambdaBBHmass):
     m1, m2 = theta
     ml, mh = lambdaBBHmass
 
-    return at.where( (m1>=ml) & (m1<=mh) & (m2>=ml) & (m2<=mh) & (m2<=m1), -2*at.log( mh-ml ) , MIN  )
+    return at.where( (m1>=ml) & (m1<=mh) & (m2>=ml) & (m2<=mh) & (m2<=m1), -2*safe_log( mh-ml ) , MIN  )
 
 
 def logpdf_flat(theta, lambdaBBHmass):  
     m1, m2 = theta
     ml, mh = lambdaBBHmass
 
-    return -2*at.log( mh-ml ) + at.log(1-sigmoid(m1, mh, 0.05))+log_sigmoid(m1, ml, 0.05)+ at.log(1-sigmoid(m2, mh, 0.05))+log_sigmoid(m2, ml, 0.05)
+    return -2*safe_log( mh-ml ) + safe_log(1-sigmoid(m1, mh, 0.05))+log_sigmoid(m1, ml, 0.05)+ safe_log(1-sigmoid(m2, mh, 0.05))+log_sigmoid(m2, ml, 0.05)
 
     
     
@@ -1307,7 +1311,7 @@ def truncGausslowerupper_at_lpdf(x, loc, scale, xmin=0, xmax=1):
     Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
     
     return at.where( (x>=xmin) & (x<=xmax), 
-                    -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
+                    -safe_log(scale)-0.5*safe_log(2*PI)-safe_log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
 
 
 def truncGausslowerupper_at_lpdf_nonly(x, loc, scale, xmin=0, xmax=1):    
@@ -1315,7 +1319,7 @@ def truncGausslowerupper_at_lpdf_nonly(x, loc, scale, xmin=0, xmax=1):
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
     Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
     
-    return -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) 
+    return -safe_log(scale)-0.5*safe_log(2*PI)-safe_log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) 
 
 def truncGausslower_at_lpdf(x, loc, scale, xmin=0):    
 
@@ -1323,7 +1327,7 @@ def truncGausslower_at_lpdf(x, loc, scale, xmin=0):
     #Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
     
     return at.where( x>=xmin, 
-                    -at.log(scale)-0.5*at.log(2*PI)-at.log(1.-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
+                    -safe_log(scale)-0.5*safe_log(2*PI)-safe_log(1.-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
 
 
 def double_gauss_norm(mu, sigma):
@@ -1334,13 +1338,13 @@ def double_gauss_norm(mu, sigma):
 
 def truncGausslower_at_logpdf(x, loc, scale, xmin=0):  
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
-    return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
-    #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
+    return at.where(x>xmin, safe_log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
+    #return -safe_log(scale)-0.5*safe_log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 def truncGausslower_at_pdf(x, loc, scale, xmin=0):  
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
     return at.where(x>xmin, at.exp( -(x-loc)**2/(2*scale**2))/(at.sqrt(2.*PI)*scale)/(1.-Phialpha) , at.as_tensor_variable(0.) )
-    #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
+    #return -safe_log(scale)-0.5*safe_log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 
 
@@ -1348,7 +1352,7 @@ def logpdf_gauss(theta, lambdaBBHmass):
     m1, m2 = theta
     loc, scale = lambdaBBHmass
     
-    return truncGausslower_at_logpdf(m1, loc, scale, xmin=0) + truncGausslower_at_logpdf(m2, loc, scale, xmin=0) -at.log(double_gauss_norm(loc, scale))
+    return truncGausslower_at_logpdf(m1, loc, scale, xmin=0) + truncGausslower_at_logpdf(m2, loc, scale, xmin=0) -safe_log(double_gauss_norm(loc, scale))
 
 def logpdf_gauss_cond(theta, lambdaBBHmass):  
     m1, m2 = theta
@@ -1367,7 +1371,7 @@ def truncated_power_law(m, alpha, ml, mh):
         
         where_compute = (ml < m) & (m < mh )
 
-        result = at.where(where_compute, at.log(m)*(-alpha), MIN)
+        result = at.where(where_compute, safe_log(m)*(-alpha), MIN)
         
         return result
 
@@ -1402,7 +1406,7 @@ def logS_PLP(m, deltam, ml, eps=1e-12):
     S = t * t * (3.0 - 2.0 * t)
 
     # log S, safely (avoid log(0) at the lower edge)
-    return at.log(at.clip(S, at.as_tensor_variable(eps).astype(m.dtype), 1.0))
+    return safe_log(at.clip(S, at.as_tensor_variable(eps).astype(m.dtype), 1.0))
     
 def logS_PLP_LVK(m, deltam, ml,):
         
@@ -1413,7 +1417,7 @@ def logS_PLP_LVK(m, deltam, ml,):
         
         s = at.where( maskL, MIN, at.as_tensor_variable(0.)  )
         
-        s1 = at.where( maskM,  at.log(1/(1+ at.exp(deltam/(m-ml) + deltam/(m-ml - deltam) ) ))  , s  )
+        s1 = at.where( maskM,  safe_log(1/(1+ at.exp(deltam/(m-ml) + deltam/(m-ml - deltam) ) ))  , s  )
         
         return s1   
 
@@ -1429,7 +1433,7 @@ def logpdfm1_PLP(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass):
 
     lS = logS_PLP(m, deltam, ml) 
         
-    result =  at.where( where_compute, at.log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component)+lS
+    result =  at.where( where_compute, safe_log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component)+lS
                        , MIN )
     return result
 
@@ -1438,7 +1442,7 @@ def logpdfm1_PLP(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass):
 def logpdfm2_PLP(m2, beta, deltam, ml):
 
     where_compute = (ml<= m2) #& (~where_nan)
-    res = at.log(m2)*(beta)+logS_PLP(m2, deltam, ml)
+    res = safe_log(m2)*(beta)+logS_PLP(m2, deltam, ml)
     result = at.where( where_compute, res, MIN )
            
     return result
@@ -1465,7 +1469,7 @@ def logC_PLP( m, beta, deltam, ml, res=100):
     cdf = atcumtrapz(p2, xx)                             # (NM-1,)
 
     # Interpolate log C at m
-    return atinterp(m, xx[1:], at.log(cdf))
+    return atinterp(m, xx[1:], safe_log(cdf))
 
 
 
@@ -1481,7 +1485,7 @@ def logC_PLP( m, beta, deltam, ml, res=100):
 #     ms = at.linspace(ml, mh, res)
 #     ps = at.exp( logpdfm1_PLP( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass  ))
 #     p1 = at.where( (ms>=ml) & (ms<=mh), ps, 0.)
-#     return at.log(attrapzvec(p1,ms))
+#     return safe_log(attrapzvec(p1,ms))
 
 
 def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=500):
@@ -1502,7 +1506,7 @@ def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=500):
     p    = at.exp(logp)
 
     Z = attrapzvec(p, xx)                              # (scalar)
-    return at.log(at.clip(Z, 1e-300, np.inf))
+    return safe_log(at.clip(Z, 1e-300, np.inf))
             
     
             
@@ -1527,11 +1531,11 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
 
 #     # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
 #     num = at.pow(mmax_c, t) - at.pow(mmin_c, t)
-#     log_not1 = at.log(at.abs(num)) - at.log(at.abs(t))
+#     log_not1 = safe_log(at.abs(num)) - safe_log(at.abs(t))
 
 #     # α = 1: log( log(mmax/mmin) )
-#     log_ratio = at.log(mmax_c / mmin_c)
-#     log_eq1   = at.log(at.clip(log_ratio, epsv, np.inf))
+#     log_ratio = safe_log(mmax_c / mmin_c)
+#     log_eq1   = safe_log(at.clip(log_ratio, epsv, np.inf))
 
 #     return at.switch(close, log_eq1, log_not1)
 
@@ -1553,8 +1557,8 @@ def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
     t   = one - alpha
 
     # Let a = log(mmax), b = log(mmin), Δ = a - b > 0
-    a = at.log(mmax_c)
-    b = at.log(mmin_c)
+    a = safe_log(mmax_c)
+    b = safe_log(mmin_c)
     delta = a - b
 
     # For t≠0: log( (mmax^t - mmin^t) / |t| )
@@ -1562,8 +1566,8 @@ def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
     # This expression is *also* the correct continuous limit at t→0 (α→1):
     # as t→0, log(|expm1(t*Δ)|) - log|t| → log(Δ), giving log(log(mmax/mmin)).
     return (t * b
-            + at.log(at.abs(at.expm1(t * delta)))
-            - at.log(at.abs(t)))
+            + safe_log(at.abs(at.expm1(t * delta)))
+            - safe_log(at.abs(t)))
     
 
 ####### Power Law + Peak smooth edges , LVK low-end ########
@@ -1589,26 +1593,26 @@ def logpdf_PLP_reg(theta, lambdaBBHmass,  smoothing='LVK'):
  
 def logpdfm1_PLP_reg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, sl=0.05, sh=0.05, smoothing='LVK'):
 
-    return logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing)  + log_sigmoid(m, ml, sl) + at.log(1-safe_sigmoid(m, mh, sh)) 
+    return logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing)  + log_sigmoid(m, ml, sl) + safe_log(1-safe_sigmoid(m, mh, sh)) 
     
-    # at.log(1-sigmoid(m, mh, sh))  #log1m_sigmoid_stable(m, mh, sh)
-    #at.log(1-safe_sigmoid(m, mh, sh)) 
+    # safe_log(1-sigmoid(m, mh, sh))  #log1m_sigmoid_stable(m, mh, sh)
+    #safe_log(1-safe_sigmoid(m, mh, sh)) 
     #+ log1m_sigmoid_stable(m, mh, sh)
 
 def logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK'):
 
     log_norm = log_norm_truncated_pl_num(alpha, ml, mh) #norm_truncated_pl_num(alpha, ml, mh)
-    log_trunc_component =  -alpha*at.log(m) - log_norm #1./(m**alpha)/norm
-    log_gauss_component = -0.5 * at.square((m - muMass) / sigmaMass) - at.log(sigmaMass) - 0.5 * at.log(2*PI)
+    log_trunc_component =  -alpha*safe_log(m) - log_norm #1./(m**alpha)/norm
+    log_gauss_component = -0.5 * at.square((m - muMass) / sigmaMass) - safe_log(sigmaMass) - 0.5 * safe_log(2*PI)
 
     if smoothing=='LVK':
         lS = logS_PLP_LVK(m, deltam, ml)
     else:
         lS = logS_PLP(m, deltam, ml)
         
-    #result =  at.log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component) + lS
+    #result =  safe_log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component) + lS
 
-    result = logsumexp( at.log1p(-lambdaPeak) + log_trunc_component, at.log(lambdaPeak) + log_gauss_component ) + lS
+    result = logsumexp( at.log1p(-lambdaPeak) + log_trunc_component, safe_log(lambdaPeak) + log_gauss_component ) + lS
  
     return result
 
@@ -1625,7 +1629,7 @@ def logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=45, w_g = 80, sig_g_low = 5., s
     else:
         lS = logS_PLP(m, deltam, ml) 
     
-    lpdfval = beta*at.log(m) + lS
+    lpdfval = beta*safe_log(m) + lS
     
     if not has_m2_break:
         return lpdfval
@@ -1638,7 +1642,7 @@ def logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=45, w_g = 80, sig_g_low = 5., s
         right_edge = safe_sigmoid(m, m_g + w_g, sig_g_high )
         
         # Smooth mask transitions from 1 to 0 over the window [m_g, m_g + w_g]
-        mask = at.log( left_edge + right_edge )
+        mask = safe_log( left_edge + right_edge )
         
         # Smoothly blend between lpdfval and MIN
         return mask + lpdfval
@@ -1692,12 +1696,12 @@ def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
     p2 = at.exp(logpdfm2_PLP_noreg( xx , beta, deltam, ml, smoothing=smoothing))
     cdf = atcumtrapz(p2, xx, )
     
-    #itr = atinterp( m, xx[1:], at.log(cdf) )
+    #itr = atinterp( m, xx[1:], safe_log(cdf) )
     
     x0 = xx[1]                 # because you used xx[1:] for interpolation
     x1 = xx[-1]
     nU = xx.shape[0] - 1       # length of xx[1:]
-    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf))
+    itr = atinterp_uniform(m, x0, x1, nU, safe_log(cdf))
 
     return itr
 
@@ -1720,7 +1724,7 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
     
     ps = at.exp( logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  ))
 
-    return  at.log( attrapzvec(ps, ms) )
+    return  safe_log( attrapzvec(ps, ms) )
 
 
             
@@ -1737,12 +1741,12 @@ def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.
     # Compute log normalization constant
     norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
     norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
-    log_N = at.log(norm1 + norm2)
+    log_N = safe_log(norm1 + norm2)
 
 
     # log(pdf) in each regime
-    log_val1 = -alpha1 * at.log(m1 / mb)
-    log_val2 = -alpha2 * at.log(m1 / mb)
+    log_val1 = -alpha1 * safe_log(m1 / mb)
+    log_val2 = -alpha2 * safe_log(m1 / mb)
 
   
     # Smooth weight function (sigmoid transition)
@@ -1751,13 +1755,13 @@ def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.
     # Use log-sum-exp to compute:
     # log(w * exp(log_val1) + (1-w) * exp(log_val2))
     log_mix_val = logsumexp(
-        at.log(w) + log_val1,
+        safe_log(w) + log_val1,
         at.log1p(-w) + log_val2
     )
 
     
     s1 = at.log1p(-safe_sigmoid(m1, m_high, sh))
-    s2 = at.log(safe_sigmoid(m1, m1_low, sl))
+    s2 = safe_log(safe_sigmoid(m1, m1_low, sl))
 
     return log_mix_val - log_N + s1 + s2
 
@@ -1774,8 +1778,8 @@ def logpdfm1_DPLDP(
     Log of the mixture model. Assumes other components return log-probabilities.
     """
     
-    log_lambda0 = at.log(lambda0)
-    log_lambda1 = at.log(lambda1)
+    log_lambda0 = safe_log(lambda0)
+    log_lambda1 = safe_log(lambda1)
     log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
 
     log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
@@ -1849,14 +1853,14 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     
     cdf = atcumtrapz( p2, xx, )
 
-    #itr = atinterp( m, xx[1:], at.log(cdf) )
+    #itr = atinterp( m, xx[1:], safe_log(cdf) )
 
     # grid endpoints and size (xx is uniform)
     x0 = xx[1]                 # because you used xx[1:] for interpolation
     x1 = xx[-1]
     nU = xx.shape[0] - 1       # length of xx[1:]
     #print("ising uniform interp")
-    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf))
+    itr = atinterp_uniform(m, x0, x1, nU, safe_log(cdf))
     
     return itr
 
@@ -1879,7 +1883,7 @@ def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
     lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing  )
     ps = at.exp( lpdf)
     
-    return at.log( attrapzvec(ps, ms) )
+    return safe_log( attrapzvec(ps, ms) )
 
 
 
@@ -1892,27 +1896,27 @@ def log1mexp(x):
     """
     Numerically stable log(1 - exp(x)) for x < 0
     """
-    log2 = at.log(2.0)
+    log2 = safe_log(2.0)
     return at.switch(
         x <= -log2,
         at.log1p(-at.exp(x)),
-        at.log(-at.expm1(x))
+        safe_log(-at.expm1(x))
     )
 
 # --- Broken power law ---
 def log_broken_power_law_FP_pdf(m, λ_p, norm=False, maxm=100, epsilon=0.1):
     m_NSmax, m_BHmin, α1, α2, α_dip = λ_p
 
-    log_region1 = α1 * at.log(m)
-    log_region2 = (α1 - α_dip) * at.log(m_NSmax) + α_dip * at.log(m)
-    log_region3 = (α1 - α_dip) * at.log(m_NSmax) + (α_dip - α2) * at.log(m_BHmin) + α2 * at.log(m)
+    log_region1 = α1 * safe_log(m)
+    log_region2 = (α1 - α_dip) * safe_log(m_NSmax) + α_dip * safe_log(m)
+    log_region3 = (α1 - α_dip) * safe_log(m_NSmax) + (α_dip - α2) * safe_log(m_BHmin) + α2 * safe_log(m)
 
     s1 = safe_sigmoid(m, m_NSmax, epsilon)
     s2 = safe_sigmoid(m, m_BHmin, epsilon)
 
     log_part1 = log_region1 + at.log1p(-s1)
-    log_part2 = log_region2 + at.log(s1) + at.log1p(-s2)
-    log_part3 = log_region3 + at.log(s2)
+    log_part2 = log_region2 + safe_log(s1) + at.log1p(-s2)
+    log_part3 = log_region3 + safe_log(s2)
 
     result = logsumexp(
         logsumexp(log_part1, log_part2),
@@ -1924,24 +1928,24 @@ def log_broken_power_law_FP_pdf(m, λ_p, norm=False, maxm=100, epsilon=0.1):
         log_vals = log_broken_power_law_FP_pdf(mgrid, λ_p, norm=False, maxm=maxm)
         vals = at.exp(log_vals)
         norm_factor = attrapzvec(vals, mgrid)
-        return result - at.log(norm_factor)
+        return result - safe_log(norm_factor)
     else:
         return result
 
 
 def log_l_filter_at(m, m0, η):
-    log_x = η * (at.log(m0) - at.log(m))
+    log_x = η * (safe_log(m0) - safe_log(m))
     return -logsumexp(0.0, log_x)
 
 def log_h_filter_at(m, m0, η):
-    log_x = η * (at.log(m0) - at.log(m))
+    log_x = η * (safe_log(m0) - safe_log(m))
     return log_x - logsumexp(0.0, log_x)
 
 
 def log_notch_filter_at(m, γlow, γhigh, ηlow, ηhigh, A):
     log_l = log_l_filter_at(m, γlow, ηlow)
     log_h = log_h_filter_at(m, γhigh, ηhigh)
-    log_prod = log_l + log_h + at.log(A)
+    log_prod = log_l + log_h + safe_log(A)
     return log1mexp(log_prod)  # safe: log(1 - A * l * h)
 
 def log_f_q_FP(q, m2, Λ_q, has_m2_break=False, epsilon=0.1):
@@ -1950,9 +1954,9 @@ def log_f_q_FP(q, m2, Λ_q, has_m2_break=False, epsilon=0.1):
     
     s = safe_sigmoid(m2, m_break, epsilon)
 
-    log_s = at.log(s)
+    log_s = safe_log(s)
     log1m_s = at.log1p(-s)
-    log_q = at.log(q)
+    log_q = safe_log(q)
 
     log_term1 = log1m_s + beta_low * log_q
     log_term2 = log_s + beta_high * log_q
@@ -1970,7 +1974,7 @@ def log_f_q_FP(q, m2, Λ_q, has_m2_break=False, epsilon=0.1):
         right_edge = safe_sigmoid(m2, m_g + w_g, sig_g_high )
         
         # Smooth mask transitions from 1 to 0 over the window [m_g, m_g + w_g]
-        mask = at.log( left_edge + right_edge )
+        mask = safe_log( left_edge + right_edge )
         
         # Smoothly blend between lpdfval and MIN
         return mask + lpdfval
@@ -2007,8 +2011,8 @@ def logpdfm1_FP(m, λ_m, norm=False):
         logB = log_B_notches(m, λ_b)
 
         log_terms1 = 0.0  # log(1)
-        log_terms2 = at.log(c1) + log_G1
-        log_terms3 = at.log(c2) + log_G2
+        log_terms2 = safe_log(c1) + log_G1
+        log_terms3 = safe_log(c2) + log_G2
             
         logsum = logsumexp(
                 logsumexp(log_terms1, log_terms2),
@@ -2024,7 +2028,7 @@ def logpdfm1_FP(m, λ_m, norm=False):
         log_vals = my_logp(mgrid, λ_m)
         vals = at.exp(log_vals)
         norm_factor = attrapzvec(vals, mgrid)
-        return log_unnorm - at.log(norm_factor)
+        return log_unnorm - safe_log(norm_factor)
     else:
         return log_unnorm
 
@@ -2076,7 +2080,7 @@ def logpdf_FP(theta, lambdaBBHmass, norm=True, norm_p1=False, res=1000, force_m2
         trapz0 = TrapzOp(axis=0)
         norm_factor = trapz0(inner.dimshuffle(0, 'x'), m1_grid_[:, None])
 
-        return joint - at.log(norm_factor)
+        return joint - safe_log(norm_factor)
     else:
         return joint
 

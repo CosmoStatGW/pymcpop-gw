@@ -70,6 +70,9 @@ def main():
     parser.add_argument("--L_small_2", default=0.1, type=float, required=False)
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
     parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
+    parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
+    parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
+    parser.add_argument("--gamma_DP_params", nargs='+', type=float, default=[1., 1.], required=False)
 
     
     
@@ -88,6 +91,7 @@ def main():
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
+    parser.add_argument("--MAP_init", default=0, type=int, required=False)
     parser.add_argument("--eps_init", default=0.01, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=1, type=int, required=False)
@@ -129,6 +133,7 @@ def main():
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.9, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
+    parser.add_argument("--jax_debug_nans", default=1, type=int, required=False)
     
     
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -202,8 +207,11 @@ def main():
         jax.config.update("jax_enable_x64", False)
     else:
         jax.config.update("jax_enable_x64", True)
-        
-    jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+
+    if FLAGS.jax_debug_nans:
+        jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+    else:
+        jax.config.update("jax_debug_nans", False)
     #jax.config.update("jax_default_matmul_precision", "tensorfloat32")
     jax.config.update("jax_default_matmul_precision", "highest")
 
@@ -615,6 +623,7 @@ def main():
                                     GWData,
                                     InjData,
                                     ivals=ivals,
+                                    eps_init = FLAGS.eps_init,
                                     sampling_GW = FLAGS.sampling_gw,
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
@@ -662,7 +671,10 @@ def main():
                                 save_thetas = FLAGS.save_thetas,
                                 wrap_logp=FLAGS.wrap_logp,
                                 interp_inj=FLAGS.interp_inj,
-                                param=FLAGS.param
+                                param=FLAGS.param,
+                                DP_prior=FLAGS.DP_prior,
+                                sigma_softmax=FLAGS.sigma_softmax,
+                                gamma_DP_params=FLAGS.gamma_DP_params
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
@@ -708,67 +720,41 @@ def main():
         with model:
 
             print("Setting initial point...")
+            vnames = [v.name for v in model.free_RVs]
 
-            if FLAGS.ivals == "":
-                print("No ivals provided; using MAP estimate as init..")
-                ip = pm.find_MAP()   # CPU backend, no JAX involved
-                #print("Initial point with MAP:")
-                #print(ip)
-            else:                    
-                ip = model.initial_point()
-                print("Using model init point as init")
             
-                N = gmm_means.shape[0]
-                nd = gmm_means.shape[2]
+            if FLAGS.ivals == "":
+                if FLAGS.MAP_init:
+                    print("No ivals provided; using MAP estimate as init..")
+                    MAP = pm.find_MAP()   # CPU backend, no JAX involved
+                    print("Initial point with MAP:")
+                    ip_tmp_ = model.initial_point()
+                    ip = { k:MAP[k] for k in ip_tmp_.keys()}
+                    ip_vals = {k:MAP[k] for k in vnames if k not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx')}
+                    print(ip_vals)
+                    MAP_init=True
+                else:
+                    print("No ivals provided; MAP init is False. Using default init.")
+                    MAP_init=False
+                    ip = model.initial_point()
+            else:                    
+                #print("Using model init point as init")
+                MAP_init=False
+                ip = model.initial_point()
+                # N = gmm_means.shape[0]
+                # nd = gmm_means.shape[2]
     
-                ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+                # ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
     
     
-                wts = onp.exp(gmm_log_wts)
-                idx = onp.argmax(wts, axis=1)
+                # wts = onp.exp(gmm_log_wts)
+                # idx = onp.argmax(wts, axis=1)
                 
-                if FLAGS.sampling_gw=='gmm_cat':
-                    ip['idx'] = idx.astype(int)
+                # if FLAGS.sampling_gw=='gmm_cat':
+                #     ip['idx'] = idx.astype(int)
     
-                elif FLAGS.sampling_gw=='gmm':
-                    cdf = onp.cumsum(wts, axis=1)
-                    
-                    # pick v in the open interval [CDF_{i-1}, CDF_i)
-                    lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
-                    hi = cdf[onp.arange(len(idx)), idx]
-                    v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
-                    
-                    # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
-                    u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
-                    ip['u_gmm'] =  u_init
-    
-                elif FLAGS.sampling_gw=='gumbel':
-                    # inputs
-                    w = wts                     # (N, K)
-                    tau = 1e-05                                 # same tau you use in the model
-                    eps = 1e-6                                # desired spillover mass
-                    N, K = w.shape
-                    
-                    # logits and target index per row
-                    logits = onp.log(onp.clip(w, 1e-12, 1.0))   # (N, K)
-                    idx = onp.argmax(logits, axis=1)           # (N,)
-                    
-                    # required margin Δ so top prob ≥ 1 - eps:
-                    # Δ >= tau * log((K-1)/eps)
-                    Delta = tau * (onp.log(max(K-1, 1)) - onp.log(eps))
-                    
-                    # build g_init so (logits + g) gives the target argmax with margin Δ
-                    g_init = onp.zeros_like(logits)
-                    for n in range(N):
-                        k = idx[n]
-                        # best competing logit (exclude the winner)
-                        max_other = logits[n, np.arange(K) != k].max() if K > 1 else -onp.inf
-                        # ensure: logits[n,k] + g_init[n,k] >= max_other + Δ
-                        need = (max_other + Delta) - logits[n, k]
-                        g_init[n, k] = max(0.0, need)
-    
-                    ip['gumbel'] = g_init
 
+                
             print("Done.")
             
             if FLAGS.debug:
@@ -1011,24 +997,9 @@ def main():
 
 
             print("\nModel variables:")
-            vnames = [v.name for v in model.free_RVs]
+            mvars = model.value_vars
             # Print only the names of variables that are sampled
             print(vnames)
-            print("Initial values:")
-            ivals = {k: v for k, v in ip.items() if k in vnames}
-            print(ivals)
-
-            # Make JSON-serializable
-            ivals_json = {}
-            for k, v in ivals.items():
-                arr = np.asarray(v)
-                if arr.shape == ():      # scalar
-                    ivals_json[k] = float(arr)
-                else:
-                    ivals_json[k] = arr.tolist()
-            
-            with open( os.path.join( FLAGS.fout,"ivals_map.json"), "w") as f:
-                json.dump(ivals_json, f, indent=2)
 
             
             sampler_kwargs = {
@@ -1037,24 +1008,76 @@ def main():
                     "target_accept": FLAGS.target_accept,
                     "chains": FLAGS.nchains,
                     "random_seed": 42,
-                    "initvals": ivals,
+                    #"initvals": ivals,
                     "cores": FLAGS.ncores,
                     "progressbar": True,
                     "trace": backend,
                     #"chain_method":'parallel'
                 }
+
+            if MAP_init:
+                
+                #print(mvars)
+                #print("Initial point with MAP:")
+                #print(ip)
+
+                #print("mvars:")
+                #print(mvars)
+
+                #print("vnames:")
+                #print(vnames)
+                
+                #print("ip keys:")
+                #print( list(ip.keys()))
+                
+                #print("Initial values from MAP:")
+                
+                ivals = {k: ip[k] for k in ip.keys() if k in vnames}
+                #print(ivals)
+
+                # Make JSON-serializable
+                ivals_json = {}
+                for k, v in ivals.items():
+                    arr = np.asarray(v)
+                    if arr.shape == ():      # scalar
+                        ivals_json[k] = float(arr)
+                    else:
+                        ivals_json[k] = arr.tolist()
+                
+                with open( os.path.join( FLAGS.fout,"ivals_MAP.json"), "w") as f:
+                    json.dump(ivals_json, f, indent=2)
+
+                sampler_kwargs['initvals'] = MAP
     
             if FLAGS.sampler == "numpyro":
 
                 if FLAGS.check_init:
                     from pymc.sampling.jax import get_jaxified_logp
+                    from pymc.initial_point import make_initial_point_fn
+                    import jax.numpy as jnp
+                
+                    # internal initial point in *value_var* space
+                    if MAP_init:
+                        # Build an internal initial-point function that uses MAP as initvals
+                        ip_fn = make_initial_point_fn(model=model, overrides=MAP)
+                        
+                        # One concrete internal point (value_var space)
+                        ip_internal = ip_fn(42)  # seed
+                        
+                        #print("value_vars:", [vv.name for vv in model.value_vars])
+                        print("ip_internal keys:", ip_internal.keys())
+
+                    else:
+                        ip_internal = ip
+                        
+                    value_vars = model.value_vars
+                    x0 = [jnp.asarray(ip_internal[vv.name]) for vv in value_vars]
+                        
+            
                     jax_logp_fn = get_jaxified_logp(model)
-                    # Initial point in PyMC’s order
-                    #ip = model.initial_point()
-                    x0 = [np.asarray(v) for v in ip.values()]
-                    
+                
                     print("Testing JAX logp at PyMC initial point...")
-                    print(jax_logp_fn(x0))
+                    print(jax_logp_fn(x0))   
 
                 
                 sampler = "numpyro"
@@ -1318,7 +1341,7 @@ def main():
     print("\nMaking summary plots...")
 
 
-    vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x')]
+    vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx')]
 
     try:
         print("Plotting trace...")

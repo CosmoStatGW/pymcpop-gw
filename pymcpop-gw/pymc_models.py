@@ -352,8 +352,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         sd2 = sd[1][:, None]
         
         # Per-dimension log-Normal pdfs, broadcasted
-        logp1 = -0.5 * (diff1**2 / (sd1**2)) - 0.5 * at.log(2 * atools.PI) - at.log(sd1)
-        logp2 = -0.5 * (diff2**2 / (sd2**2)) - 0.5 * at.log(2 * atools.PI) - at.log(sd2)
+        logp1 = -0.5 * (diff1**2 / (sd1**2)) - 0.5 * atools.safe_log(2 * atools.PI) - atools.safe_log(sd1)
+        logp2 = -0.5 * (diff2**2 / (sd2**2)) - 0.5 * atools.safe_log(2 * atools.PI) - atools.safe_log(sd2)
         
         # Sum the two independent dimensions → (n_comp, n_obs)
         logp_components = logp1 + logp2
@@ -382,7 +382,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         nd = 2
         logp_components = (
             -0.5 * quad
-            - 0.5 * nd * at.log(2.0 * np.pi)
+            - 0.5 * nd * atools.safe_log(2.0 * np.pi)
             + 0.5 * ldets_inv[:, None]
             + logw[:, None]
         )                                           # (K, N)
@@ -395,12 +395,12 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         # quad = at.sum(y**2, axis=1).T  # sum over the 2 dims, then transpose to (K, N)
         
         # # 3a) log |Σ^{-1}|  from L:  log|Σ| = 2 * sum(log(diag(L)))  ⇒ log|Σ^{-1}| = -2 * ...
-        # logdet_prec = -2.0 * at.sum(at.log(at.diagonal(L, axis1=1, axis2=2)), axis=1)  # (K,)
+        # logdet_prec = -2.0 * at.sum(atools.safe_log(at.diagonal(L, axis1=1, axis2=2)), axis=1)  # (K,)
         
         # # 4) Component log-densities (d=2)
         # logp_components = (
         #     -0.5 * quad
-        #     - 0.5 * 2 * at.log(2.0 * np.pi)
+        #     - 0.5 * 2 * atools.safe_log(2.0 * np.pi)
         #     + 0.5 * logdet_prec[:, None]
         #     + logw[:, None]
         # )  # (K, N)
@@ -558,9 +558,9 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             use_dp = (mass_model in ("DP", "DPUC"))
             if use_dp:
                 Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-                #mass_1_use = at.log(Mc_src_inj)
+                #mass_1_use = atools.safe_log(Mc_src_inj)
                 #eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
-                mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
                 mass_2_use = atools.logitat(q_inj)
             else:
                 mass_1_use = m1Src
@@ -575,8 +575,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
             if use_dp:
                 lp = (lp
-                      - at.log(at.maximum(m2Src, eps))
-                      - at.log(at.maximum(m1Src - m2Src, eps))
+                      - atools.safe_log(at.maximum(m2Src, eps))
+                      - atools.safe_log(at.maximum(m1Src - m2Src, eps))
                       - at.log1p(zinj_c))
 
             x = at.where(mask, lp - lpd, NEG_BIG)
@@ -618,8 +618,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             use_dp = (mass_model in ("DP", "DPUC"))
             if use_dp:
                 Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-                #mass_1_use = at.log(Mc_src_inj)
-                mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
+                #mass_1_use = atools.safe_log(Mc_src_inj)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
                 mass_2_use = atools.logitat(q_inj)
             else:
                 mass_1_use = m1Src
@@ -634,8 +634,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
             if use_dp:
                 lp = (lp
-                      - at.log(at.maximum(m2Src, eps))
-                      - at.log(at.maximum(m1Src - m2Src, eps))
+                      - atools.safe_log(at.maximum(m2Src, eps))
+                      - atools.safe_log(at.maximum(m1Src - m2Src, eps))
                       - at.log1p(zinj_c))
 
             x = at.where(mask, lp - lpd, NEG_BIG)
@@ -669,15 +669,15 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     )
 
     tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
-    logsumexp1 = m_fin[-1]  + at.log(at.maximum(s1_fin[-1], tinyL))
-    logsumexp2 = m2_fin[-1] + at.log(at.maximum(s2_fin[-1], tinyL))
+    logsumexp1 = m_fin[-1]  + atools.safe_log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + atools.safe_log(at.maximum(s2_fin[-1], tinyL))
 
     Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
-    log_mu  = logsumexp1 - at.log(Ndraw_t)
-    logs2   = logsumexp2 - at.log(Ndraw_t)
-    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
     Neff    = at.exp(logNeff)
-    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
 
     return log_mu, Neff, var_log_lik_u
 
@@ -788,7 +788,7 @@ def sel_bias_with_uncertainty_at_loop(
 
         if mass_model in ("DP", "DPUC"):
             Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-            mass_1_use = at.log(Mc_src_inj)
+            mass_1_use = atools.safe_log(Mc_src_inj)
             mass_2_use = atools.logitat(q_inj)
         else:
             mass_1_use = m1Src
@@ -804,8 +804,8 @@ def sel_bias_with_uncertainty_at_loop(
 
         if mass_model in ("DP", "DPUC"):
             lp = (lp
-                  - at.log(at.maximum(m2Src, eps))
-                  - at.log(at.maximum(m1Src - m2Src, eps))
+                  - atools.safe_log(at.maximum(m2Src, eps))
+                  - atools.safe_log(at.maximum(m1Src - m2Src, eps))
                   - at.log1p(zinj_c))
 
         x  = lp - lpd
@@ -814,15 +814,15 @@ def sel_bias_with_uncertainty_at_loop(
         s1c = at.sum(y)
         s2c = at.sum(at.sqr(y))
 
-        log_sum  = at.logaddexp(log_sum,  m + at.log(at.maximum(s1c, tinyL)))
-        log_sum2 = at.logaddexp(log_sum2, 2.0*m + at.log(at.maximum(s2c, tinyL)))
+        log_sum  = at.logaddexp(log_sum,  m + atools.safe_log(at.maximum(s1c, tinyL)))
+        log_sum2 = at.logaddexp(log_sum2, 2.0*m + atools.safe_log(at.maximum(s2c, tinyL)))
 
     Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
-    log_mu  = log_sum  - at.log(Ndraw_t)
-    logs2   = log_sum2 - at.log(Ndraw_t)
-    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    log_mu  = log_sum  - atools.safe_log(Ndraw_t)
+    logs2   = log_sum2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
     Neff    = at.exp(logNeff)
-    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
 
     return log_mu, Neff, var_log_lik_u
 
@@ -949,8 +949,8 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     if use_dp:
         McK, qK = atools.Mcq_from_m1m2_at(m1SrcK, m2SrcK)
-        m1useK  = at.log(at.maximum(McK, tiny) )
-        #mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
+        m1useK  = atools.safe_log(at.maximum(McK, tiny) )
+        #mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
         m2useK  = atools.logitat(qK)
     else:
         m1useK, m2useK = m1SrcK, m2SrcK
@@ -967,8 +967,8 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     if use_dp:
         lpK = (lpK
-               - at.log(at.maximum(m2SrcK, tiny))
-               - at.log(at.maximum(m1SrcK - m2SrcK, tiny))
+               - atools.safe_log(at.maximum(m2SrcK, tiny))
+               - atools.safe_log(at.maximum(m1SrcK - m2SrcK, tiny))
                - at.log1p(zK))
 
     # ---- stable batched reduction ----
@@ -984,17 +984,17 @@ def sel_bias_with_uncertainty_at_0_batched(
     m2_global = 2.0 * m_global
     S2 = at.sum(s2 * at.exp(2.0 * m_chunks - m2_global))
 
-    logsumexp1 = m_global  + at.log(at.maximum(S1, tinyL))
-    logsumexp2 = m2_global + at.log(at.maximum(S2, tinyL))
+    logsumexp1 = m_global  + atools.safe_log(at.maximum(S1, tinyL))
+    logsumexp2 = m2_global + atools.safe_log(at.maximum(S2, tinyL))
 
     # ---- outputs ----
     Ndraw_t = _as_at(Ndraw).astype(work_dtype)
-    log_mu  = logsumexp1 - at.log(Ndraw_t)
-    logs2   = logsumexp2 - at.log(Ndraw_t)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
 
-    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
     Neff    = at.exp(logNeff)
-    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
 
     return log_mu, Neff, var_log_lik_u
 
@@ -1052,9 +1052,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
     if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-        #log_Mc_src_inj = at.log(Mc_src_inj)
+        #log_Mc_src_inj = atools.safe_log(Mc_src_inj)
         eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
-        log_Mc_src_inj = at.log(at.maximum(Mc_src_inj, eps))
+        log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
         logit_q_inj = atools.logitat(q_inj)      
         mass_1_use = log_Mc_src_inj
         mass_2_use = logit_q_inj
@@ -1075,8 +1075,8 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
-        log_p_pop += (- at.log(m2Src) 
-                      - at.log(at.maximum(m1Src - m2Src, eps)) #at.log(m1Src-m2Src) 
+        log_p_pop += (- atools.safe_log(m2Src) 
+                      - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
                       - at.log1p(zinj) )
 
     log_sel_b = log_p_pop-log_p_draw
@@ -1084,9 +1084,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     # Ndraw must be a symbolic tensor with a floating dtype for logs
     Ndraw_t = at.as_tensor_variable(Ndraw).astype(m1inj.dtype)
     
-    log_mu = at.logsumexp(log_sel_b) - at.log(Ndraw_t)
+    log_mu = at.logsumexp(log_sel_b) - atools.safe_log(Ndraw_t)
     
-    logs2 = at.logsumexp(2.0*log_sel_b) - at.log(Ndraw_t)
+    logs2 = at.logsumexp(2.0*log_sel_b) - atools.safe_log(Ndraw_t)
 
 
     #####################################
@@ -1103,7 +1103,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     #print("sel_bias_at_vec logs2-2*log_mu " )
     #print((logs2-2*log_mu).eval())
     
-    #logNeff = -atools.logdiffexp( logs2-2*log_mu, -at.log(Ndraw) )
+    #logNeff = -atools.logdiffexp( logs2-2*log_mu, -atools.safe_log(Ndraw) )
 
 
     #####################################
@@ -1111,13 +1111,13 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     # Difference between the two is ~1/N_draw , so negligible for large injection sets
     #####################################
 
-    logNeff = 2*log_mu - logs2 + at.log(Ndraw_t)
+    logNeff = 2*log_mu - logs2 + atools.safe_log(Ndraw_t)
 
     #####################################
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw_t-1)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - atools.safe_log(Ndraw_t-1)
 
     Neff = at.exp(logNeff)
     
@@ -1138,6 +1138,7 @@ def make_model(  priors,
                  GWData,
                  InjData,
                  ivals={},
+                 eps_init = 0.01,
                  sampling_GW = 'gmm',
                  rate_model = 'MD',
                  mass_model = 'PLP',
@@ -1185,7 +1186,10 @@ def make_model(  priors,
                  save_thetas=False,
                  wrap_logp=False,
                  interp_inj=True,
-                 param='vanilla'
+                 param='vanilla',
+                 DP_prior='SB',
+                 sigma_softmax=0.75,
+                 gamma_DP_params = (4, 0.8),
                 ):
 
     ################################################
@@ -1590,76 +1594,85 @@ def make_model(  priors,
         elif mass_model in ('DPUC', 'DP'):
 
             print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
+
+            if DP_prior=='SB':
+
+                print("Prior for the process is stick-breaking")
+                #### Stick Breaking Prior
+                alpha_inv_init = alpha_inv_params[0] / alpha_inv_params[1]
+                alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
+                print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
+                alpha = 1/alpha_inv
+    
+                beta_init = np.full(N_DP_comp_max_np, 1e-02)
+                beta_init[0] = 0.99
+    
+                beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
+                w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
+
+            elif DP_prior=='dirichelet':
+                print("Prior for the process is dirichelet")
+
+                print("alpha_total prior is Gamma with parameters %s"%str(gamma_DP_params))
                 
-            #alpha_inv_params = (1., 1.)
-            alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1] )
-            print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
+                ### Dirichelet Prior
+                alpha_total = pm.Gamma("alpha_total", alpha=gamma_DP_params[0], beta=gamma_DP_params[1])  # mean ≈ 5
+                a = alpha_total / N_DP_comp_max
+                w = pm.Dirichlet("w", a=at.ones(N_DP_comp_max) * a, dims="component")
+
+            elif DP_prior=='softmax':
+                print("Prior for the process is softmax")
+                print("sigma_w sampled from halfnormal with std=%s"%sigma_softmax)
+                
+                ### Uniform Prior
+                sigma_w = pm.HalfNormal("sigma_w", sigma=sigma_softmax)
+                raw_w = pm.Normal("raw_w", 0, sigma_w, dims="component")  # small variance
+                w = pm.Deterministic("w", pm.math.softmax(raw_w), dims="component")
+
+            else:
+                raise ValueError()
+
             
-            alpha = 1/alpha_inv
-            beta = pm.Beta("beta", 1.0, alpha, dims="component" )
-            w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
-            logw = at.log(w)
+            logw = atools.safe_log(w)
         
 
-            #### Mean prior limits
-
-            # upmu1 = 3.8
-            # upmu2 =  4.6
-            # lowmu1 = 1.83
-            # lowmu2 =  -0.44
+            #### Mean prior 
 
             # DPLDP 1k
             lowmu1 = 1.5
-            upmu1 = 5.6
-            
+            upmu1 = 5.5
             lowmu2 =  -1.2
             upmu2 =  10.
 
             U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim 
 
+            mu1_center = (lowmu1 + upmu1) / 2.0  # 3.55
+            mu2_center = (lowmu2 + upmu2) / 2.0 
             
      
-            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ))
-            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ))
+            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center) )
+            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center))
             
 
             mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
                       dims=("GMMdimension", "component"))
 
-            #### Sigma prior limits
             
-
-            # ----- PC-low prior: penalize tiny sigma  -----
-
-            # ell_min = 0.06
-            # print("ell_min=%s"%ell_min)
-
-            # c1 = 2. #0.8
-            # c2 = 2. #0.8
+            #### Sigma prior 
             
-            # # Choose L_small = lower threshold in z-units, and alpha_small = tail probability
-            # L_small_1 = c1 * ell_min     # "too small" std in z-units (tunable but principled)
-            # L_small_2 = c2 * ell_min     # "too small" std in z-units (tunable but principled)
-            # #alpha_small = 0.01     # P( sigma < L_small ) = alpha_small
-
-            
-            #print("Adding PC penalty on small variance")
             print("L_small_1 = %s "%L_small_1)
             print("L_small_2 = %s "%L_small_2)
 
             print("U1 = %s "%U1)
             print("U2 = %s "%U2)
 
-            
-            #print("P( sigma < L_small ) = %s "%alpha_small)
 
-            # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
-            #alpha_shape = 0.5
+            # # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
+            # print("P( sigma < L_small ) = %s "%alpha_small)
 
-            #lambda_ell_1 = -at.log(alpha_small) * L_small_1**(alpha_shape) # small scale
-            #lambda_ell_2 = -at.log(alpha_small) * L_small_2**(alpha_shape) # small scale
-            
-
+            # alpha_shape = 0.5
+            #lambda_ell_1 = -atools.safe_log(alpha_small) * L_small_1**(alpha_shape) # small scale
+            #lambda_ell_2 = -atools.safe_log(alpha_small) * L_small_2**(alpha_shape) # small scale
             
             # tau1 = pm.CustomDist("tau1", lambda_ell_1, 1,
             #               logp=atools.frechet_logp_full,
@@ -1671,31 +1684,25 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2,  )
-            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2,  )
+            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2, ) #initval=U1 / 4.0   )
+            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2, ) #initval=U2 / 4.0   )
 
+            print("s_local = %s "%s_local)
 
-            #s_local = .5
             # eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
             # eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
 
-            print("s_local = %s "%s_local)
-            
-            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",))
-            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",))
+            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np) )
+            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np))
 
-            #eps1 = pm.Deterministic("eps1", at.zeros(N_DP_comp_max_np) )
-            #eps2 = pm.Deterministic("eps2", at.zeros(N_DP_comp_max_np) )
 
-            # * at.exp(eps2)
-            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   # dims: ("component",)
-            sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")   # dims: ("component",)
+            sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   
+            sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")  
 
             if alpha_tail!=-1:
 
                 # ----- Penalize large sigma -----
                 
-                #alpha_tail = penalty_tail #0.2      # P(tau_j > Uj) = alpha_tail
                 
                 print("P(tau_1,2 > U_1,2) = %s "%alpha_tail)
                 
@@ -1705,8 +1712,6 @@ def make_model(  priors,
     
                 _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * tau1,  )
                 _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * tau2, )
-    
-
 
             
             if mass_model=='DPUC':
@@ -1735,7 +1740,7 @@ def make_model(  priors,
                 # rho = pm.Uniform("rho", lower=-rho_max, upper=rho_max, dims="component")
                 # pm.Potential(
                 #     "lkj_corr_prior",
-                #     (eta - 1.0) * at.log(1.0 - rho**2).sum()
+                #     (eta - 1.0) * atools.safe_log(1.0 - rho**2).sum()
                 # )
     
                 # # Useful terms
@@ -1755,7 +1760,7 @@ def make_model(  priors,
                 # log |Σ^{-1}| = - log det Σ
                 ldets_inv = pm.Deterministic(
                     "ldets_inv",
-                    -2.0 * at.log(sig1) - 2.0 * at.log(sig2) - at.log(one_minus_r2),
+                    -2.0 * atools.safe_log(sig1) - 2.0 * atools.safe_log(sig2) - atools.safe_log(one_minus_r2),
                     dims="component",
                 )
                 
@@ -1815,7 +1820,7 @@ def make_model(  priors,
             R0 = pm.Uniform('R0', lower=priors['R0'][0], upper=priors['R0'][1])
         else:
             R0 = at.as_tensor_variable(1.)    
-        lR0 = at.log(R0)
+        lR0 = atools.safe_log(R0)
 
 
         if zres=='low':
@@ -1839,9 +1844,10 @@ def make_model(  priors,
         if not pop_only:
             ################################################
             # Individual event mass and distance
-            ################################################
+            ###############################################
+
     
-            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ) )
+            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = np.random.randn(N, nd) * eps_init )
 
 
             if 'gauss' not in sampling_GW:
@@ -1853,8 +1859,8 @@ def make_model(  priors,
                     if sampling_GW=='gmm_cat':
                         ###################################
                         # categorical way
-                        
-                        ig = pm.Categorical('idx', p=wts_l, dims= "event_index" )
+    
+                        ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1).astype(int) )
     
                     elif sampling_GW=='gmm':
                         ###################################
@@ -1880,7 +1886,7 @@ def make_model(  priors,
                     
                     #tau = pm.MutableData("tau_gmm", 0.5)  # (note: if grads feel weak, raise to ~0.3–0.7)
                     tau=0.5
-                    logits = at.log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
+                    logits = atools.safe_log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
                     g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
                     y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
                     
@@ -1947,8 +1953,8 @@ def make_model(  priors,
                 
                 # logp = log p(x) - log|L|
                 # d = x.shape[1]
-                log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * at.log(2.0 * np.pi)    # (N,)
-                log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
+                log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * atools.safe_log(2.0 * np.pi)    # (N,)
+                log_det_L = at.sum(atools.safe_log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
                 pilik = log_px - log_det_L                                               # (N,)
                 
                 # unpack coordinates:
@@ -1995,7 +2001,7 @@ def make_model(  priors,
 
                 
                 # Component logpdfs (Multivariate Normal)
-                log_norm = -0.5 * d_int * at.log(2.0 * np.pi)     # scalar
+                log_norm = -0.5 * d_int * atools.safe_log(2.0 * np.pi)     # scalar
                 logp_components = (
                     -0.5 * quad
                     + log_norm
@@ -2050,7 +2056,7 @@ def make_model(  priors,
             m1src = m1det/(1+zs)
             m2src = m2det/(1+zs)
             
-            logd = at.log(d)
+            logd = atools.safe_log(d)
         
         
         ################################################
@@ -2096,7 +2102,7 @@ def make_model(  priors,
             log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
             eps = at.as_tensor_variable(1e-30, dtype=m2src.dtype)
-            log_p_pop -=  at.log(m2src) + at.log(at.maximum(m1src - m2src, eps)) + at.log1p(zs) 
+            log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) + at.log1p(zs) 
 
             #print("Nans in  log_p_pop:")
             #print( np.isnan(log_p_pop.eval()).sum() )
@@ -2175,14 +2181,14 @@ def make_model(  priors,
             # Compute only where there are samples
             log_p_pop_to_marg = log_p_pop[:, :allNsamples[0]]
             
-            log_p_pop_marg = at.logsumexp( log_p_pop_to_marg, axis=1 ) - at.log(allNsamples)
+            log_p_pop_marg = at.logsumexp( log_p_pop_to_marg, axis=1 ) - atools.safe_log(allNsamples)
             
 
             # then sum log likelihoods
             likelihood_val = at.sum( log_p_pop_marg )  
 
             # Check number of effective samples for computing MC integral 
-            logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*at.log(allNsamples)
+            logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*atools.safe_log(allNsamples)
             
             Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) # this has len = n. of observations
             
@@ -2201,7 +2207,7 @@ def make_model(  priors,
             # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = at.sum(Nevs*at.log(allTobs))+N*lR0
+            poiss_term = at.sum(Nevs*atools.safe_log(allTobs))+N*lR0
             likelihood_val += poiss_term
         else:
             print("Will marginalise over R0 with flat-in-log prior.")
@@ -2405,10 +2411,10 @@ def make_model(  priors,
                 if not marginal_R0:
                     # Sum number of expected events in the two observing runs
                     # p_pop does not contain R_0*Tobs . Add it here
-                    sel_effect = -at.sum(at.exp(log_mu_+lR0+at.log(Tobs)))
+                    sel_effect = -at.sum(at.exp(log_mu_+lR0+atools.safe_log(Tobs)))
                 else:
                     if sel_method=='Tobs':
-                        sel_effect = -N*at.logsumexp( at.log(Tobs/Ttot)+log_mu_ )
+                        sel_effect = -N*at.logsumexp( atools.safe_log(Tobs/Ttot)+log_mu_ )
                         print('Using sel function with weighted obs time average. Obs times: %s'%str(Tobs))
                     elif sel_method=='Nevs':
                         # This is technically wrong, but I leave it here
@@ -2424,9 +2430,9 @@ def make_model(  priors,
             Neff = pm.Deterministic('Neff', Neff_ )
 
             if marginal_R0:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*at.log(N)) )
+                log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*atools.safe_log(N)) )
             else:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+                log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*atools.safe_log( R0*Ttot ) + 2*log_mu_ ) )
             
      
 
@@ -2465,14 +2471,14 @@ def make_model(  priors,
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
                         
-                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
+                        selection_bias = sel_effect + atools.logdiffexp( atools.safe_log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
 
                     
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
 
                         
-                        #selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
+                        #selection_bias = sel_effect + atools.logdiffexp( atools.safe_log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
 
                         selection_bias = sel_effect
                         _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var, deltam=0.01, ml=-0.01))
