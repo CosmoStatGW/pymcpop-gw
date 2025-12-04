@@ -451,6 +451,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     log_ddL_dz_grid=None,       # UNUSED in this variant
     *,
     chunk_size=4096,
+    param='vanilla',
     **kwargs
 ):
     """Scan version that only interpolates z(dL) from (dL_grid,z_grid) and
@@ -703,6 +704,7 @@ def sel_bias_with_uncertainty_at_loop(
     *,
     chunk_size=4096,
     N_inj_py=None,
+    param='vanilla',
     **kwargs
 ):
     """
@@ -845,6 +847,7 @@ def sel_bias_with_uncertainty_at_0_batched(
     log_ddL_dz_grid=None,   # UNUSED in this variant
     *,
     chunk_size=4096,
+    param='vanilla',
     **kwargs
 ):
     """Vectorized + batched reduction, only z(dL) interpolated from grids.
@@ -1011,6 +1014,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                     log_ddL_dz_inj = None,
                                     zinj = None,
                                     dcinj = None,
+                                   param='vanilla',
                                     **kwargs):
 
 
