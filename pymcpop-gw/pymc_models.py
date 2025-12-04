@@ -1966,7 +1966,7 @@ def make_model(  priors,
                 if spin_model == 'none' :
                     
                     X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                    d_int  = at.as_tensor_variable(3, dtype=X.dtype)
+                    d_int  = at.as_tensor_variable(3, dtype=int)
 
 
                 elif spin_model == 'default' or spin_model == 'default_gauss':
@@ -1978,7 +1978,7 @@ def make_model(  priors,
                     cost2 = atools.inv_flogitat(samples[:,6])
 
                     X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                    d_int  = at.as_tensor_variable(7, dtype=X.dtype)
+                    d_int  = at.as_tensor_variable(7, dtype=int)
 
 
             
@@ -1990,11 +1990,13 @@ def make_model(  priors,
                 
                 # Broadcast X against component-wise parameters
                 # diff: (N, ngmm, d)
-                diff = X[:, None, :] - mus_l                  # (N, 1, d) - (N, ngmm, d)
+                diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
+   
                 
                 # Quadratic form using precision F = Σ^{-1}
                 # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-                tmp = at.matmul(icovs_l, diff[..., None])[..., 0]   # (N, ngmm, d)
+
+                tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
                 
                 # r^T F r for each (obs, comp)
                 quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
