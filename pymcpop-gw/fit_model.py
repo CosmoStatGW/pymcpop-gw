@@ -330,16 +330,16 @@ def main():
         # allNgm = at.as_tensor_variable(data['allNgm'])
         # Nevents = at.as_tensor_variable(data['Nevents'])
 
-        samples_means_at = data['samples_means']
-        samples_cho_covs_at = data['samples_cho_covs']*FLAGS.cho_dil
+        samples_means_at = data['samples_means'].astype(X)
+        samples_cho_covs_at = (data['samples_cho_covs']*FLAGS.cho_dil).astype(X)
     
-        gmm_log_wts = data['gmm_log_wts']
-        gmm_means = data['gmm_means']
-        gmm_icovs =  data['gmm_icovs']
-        gmm_cho_covs =  data['gmm_cho_covs']
-        gmm_log_dets =  data['gmm_log_dets']
-        allNgm =  data['allNgm']
-        Nevents =  data['Nevents']
+        gmm_log_wts = data['gmm_log_wts'].astype(X)
+        gmm_means = data['gmm_means'].astype(X)
+        gmm_icovs =  data['gmm_icovs'].astype(X)
+        gmm_cho_covs =  data['gmm_cho_covs'].astype(X)
+        gmm_log_dets =  data['gmm_log_dets'].astype(X)
+        allNgm =  data['allNgm'].astype(X)
+        Nevents =  data['Nevents'].astype(X)
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
@@ -440,6 +440,15 @@ def main():
 
     injections = dt.load_injections(FLAGS.fin_injections, allPercUse=FLAGS.n_inj_use)
 
+    if FLAGS.use_float32:
+        XI = X
+    else:
+        if FLAGS.use_float32_bias:
+            XI = np.float32
+        else:
+            XI = np.float64
+    
+
 
     if FLAGS.spin_model=='none':
         # InjData = [ at.as_tensor_variable(injections['dL']), 
@@ -449,12 +458,12 @@ def main():
         #         at.as_tensor_variable(injections['Ngen']), 
         #         at.as_tensor_variable(injections['Ndet']), 
         #           ]
-        InjData = [ injections['dL'], 
-                injections['m1d'], 
-                injections['m2d'], 
-                 injections['log_wt'], 
-                 injections['Ngen'], 
-                 injections['Ndet'], 
+        InjData = [ injections['dL'].astype(XI), 
+                injections['m1d'].astype(XI), 
+                injections['m2d'].astype(XI), 
+                 injections['log_wt'].astype(XI), 
+                 injections['Ngen'].astype(XI), 
+                 injections['Ndet'].astype(XI), 
                   ]
     else:
         
@@ -468,14 +477,14 @@ def main():
             #     at.as_tensor_variable(injections['Ngen']), 
             #     at.as_tensor_variable(injections['Ndet']), 
             #       ]
-            InjData = [ injections['dL'], 
-                 injections['m1d'], 
-                 injections['m2d'], 
-                 injections['chieff'], 
-                 injections['chip'], 
-                 injections['log_wt'], 
-                 injections['Ngen'], 
-                injections['Ndet'], 
+            InjData = [ injections['dL'].astype(XI), 
+                 injections['m1d'].astype(XI), 
+                 injections['m2d'].astype(XI), 
+                 injections['chieff'].astype(XI), 
+                 injections['chip'].astype(XI), 
+                 injections['log_wt'].astype(XI), 
+                 injections['Ngen'].astype(XI), 
+                injections['Ndet'].astype(XI), 
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
 
@@ -500,16 +509,16 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'], 
-                     injections['m1d'], 
-                     injections['m2d'], 
-                     chi1Inj, 
-                     chi2Inj,
-                     cost1Inj,
-                     cost2Inj,
-                     injections['log_wt'], 
-                     injections['Ngen'], 
-                     injections['Ndet'], 
+                InjData = [ injections['dL'].astype(XI), 
+                     injections['m1d'].astype(XI), 
+                     injections['m2d'].astype(XI), 
+                     chi1Inj.astype(XI), 
+                     chi2Inj.astype(XI),
+                     cost1Inj.astype(XI),
+                     cost2Inj.astype(XI),
+                     injections['log_wt'].astype(XI), 
+                     injections['Ngen'].astype(XI), 
+                     injections['Ndet'].astype(XI), 
                       ]
 
             elif FLAGS.spin_model=='none':
@@ -523,12 +532,12 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'], 
-                    injections['m1d'], 
-                    injections['m2d'], 
-                    injections['log_wt'], 
-                    injections['Ngen'], 
-                    injections['Ndet'], 
+                InjData = [ injections['dL'].astype(XI), 
+                    injections['m1d'].astype(XI), 
+                    injections['m2d'].astype(XI), 
+                    injections['log_wt'].astype(XI), 
+                    injections['Ngen'].astype(XI), 
+                    injections['Ndet'].astype(XI), 
                       ]
                 
         elif FLAGS.spin_inj=='default' or FLAGS.spin_inj=='default_gauss':
@@ -544,16 +553,16 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'], 
-                     injections['m1d'], 
-                     injections['m2d'], 
-                     injections['chi1'], 
-                     injections['chi2'],
-                     injections['cost1'],
-                     injections['cost2'],
-                    injections['log_wt'], 
-                     injections['Ngen'], 
-                     injections['Ndet'], 
+                InjData = [ injections['dL'].astype(XI), 
+                     injections['m1d'].astype(XI), 
+                     injections['m2d'].astype(XI), 
+                     injections['chi1'].astype(XI), 
+                     injections['chi2'].astype(XI),
+                     injections['cost1'].astype(XI),
+                     injections['cost2'].astype(XI),
+                    injections['log_wt'].astype(XI), 
+                     injections['Ngen'].astype(XI), 
+                     injections['Ndet'].astype(XI), 
                       ]
         else:
             raise ValueError('Enter valid spin model.')
@@ -564,20 +573,20 @@ def main():
     
         if 'gmm' in FLAGS.sampling_gw or 'gumbel' in FLAGS.sampling_gw:
             GWData =  [
-                       onp.exp(gmm_log_wts), 
-                       gmm_means, 
-                       gmm_cho_covs, 
-                       injections['Tobs'],
+                       onp.exp(gmm_log_wts).astype(X), 
+                       gmm_means.astype(X), 
+                       gmm_cho_covs.astype(X), 
+                       injections['Tobs'].astype(X),
                         Nevents
                       ]
         elif FLAGS.sampling_gw=='gauss':
-            GWData =  [samples_means_at, 
-                       samples_cho_covs_at, 
-                       gmm_log_wts, 
-                       gmm_means, 
-                       gmm_icovs, 
-                       gmm_log_dets, 
-                       injections['Tobs'],
+            GWData =  [samples_means_at.astype(X), 
+                       samples_cho_covs_at.astype(X), 
+                       gmm_log_wts.astype(X), 
+                       gmm_means.astype(X), 
+                       gmm_icovs.astype(X), 
+                       gmm_log_dets.astype(X), 
+                       injections['Tobs'].astype(X),
                        Nevents, 
                       ]
             

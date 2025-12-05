@@ -343,23 +343,39 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         w, mu, sd, logw  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3] #Lambda[-5:-1]
         Nmax = Lambda[istart_spin+4]
 
+        m1 = m1s[None, :]          # (1, N)
+        m2 = m2s[None, :]          # (1, N)
+    
+        mu1 = mu[0][:, None]       # (K, 1)
+        mu2 = mu[1][:, None]       # (K, 1)
+    
+        sd1 = sd[0][:, None]       # (K, 1)
+        sd2 = sd[1][:, None]       # (K, 1)
+       
+        # Avoid exactly zero / denormals in the variance
+        eps = at.as_tensor_variable(1e-6, dtype=sd1.dtype)
+    
+        var1 = at.clip(sd1**2, eps**2, np.inf)  # (K,1)
+        var2 = at.clip(sd2**2, eps**2, np.inf)  # (K,1)
+
+
+        diff1 = m1 - mu1                         # (K,N)
+        diff2 = m2 - mu2                         # (K,N)
+
         
-        # Broadcast to (n_comp, n_obs)
-        diff1 = m1s[None, :] - mu[0][:, None]
-        diff2 = m2s[None, :] - mu[1][:, None]
-        
-        sd1 = sd[0][:, None]
-        sd2 = sd[1][:, None]
-        
-        # Per-dimension log-Normal pdfs, broadcasted
-        logp1 = -0.5 * (diff1**2 / (sd1**2)) - 0.5 * atools.safe_log(2 * atools.PI) - atools.safe_log(sd1)
-        logp2 = -0.5 * (diff2**2 / (sd2**2)) - 0.5 * atools.safe_log(2 * atools.PI) - atools.safe_log(sd2)
-        
-        # Sum the two independent dimensions → (n_comp, n_obs)
-        logp_components = logp1 + logp2
+        # 1D Gaussian logpdfs
+        const = -0.5 * atools.safe_log(2.0 * atools.PI)
+    
+        logp1 = const - 0.5 * atools.safe_log(var1) - 0.5 * (diff1**2 / var1)
+        logp2 = const - 0.5 * atools.safe_log(var2) - 0.5 * (diff2**2 / var2)
+    
+        logp_components = logp1 + logp2                      # (K,N)
+
         
         # Mixture over components → (n_obs,)
-        lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+        #lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+        lpmass = atools.safe_logsumexp(logp_components + logw[:, None], axis=0)
+
     
     elif mass_model=='DP':
 
@@ -1001,8 +1017,300 @@ def sel_bias_with_uncertainty_at_0_batched(
 
     return log_mu, Neff, var_log_lik_u
 
+######################
+
+def sel_bias_with_uncertainty_at_0_debug(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
+                                    Lambda,  Ndraw, 
+                                    rate_model, mass_model, spin_model, 
+                                    smoothing, 
+                                    has_m2_break, 
+                                    interp, 
+                                    wrap_logp=False, 
+                                    log_ddL_dz_inj = None,
+                                    zinj = None,
+                                    dcinj = None,
+                                    param='vanilla',
+                                    **kwargs):
+    work_dtype = getattr(m1inj, "dtype", "float64")
+
+    # ignore everything and just return constants
+    log_mu = at.as_tensor_variable(0.0, dtype=work_dtype)
+    Neff   = at.as_tensor_variable(100000.0, dtype=work_dtype)
+    var_log_lik_u = at.as_tensor_variable(0.5, dtype=work_dtype)
+    return log_mu, Neff, var_log_lik_u
 
 
+
+def sel_bias_with_uncertainty_at_0_test(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
+                                    Lambda,  Ndraw, 
+                                    rate_model, mass_model, spin_model, 
+                                    smoothing, 
+                                    has_m2_break, 
+                                    interp, 
+                                    wrap_logp=False, 
+                                    log_ddL_dz_inj = None,
+                                    zinj = None,
+                                    dcinj = None,
+                                    param='vanilla',
+                                    **kwargs):
+
+    work_dtype = getattr(m1inj, "dtype", "float64")
+
+    if work_dtype == "float32":
+        eps      = at.as_tensor_variable(1e-20, dtype=work_dtype)
+        tinyL    = at.as_tensor_variable(1e-30, dtype=work_dtype)
+        big_neg  = at.as_tensor_variable(-1e6,  dtype=work_dtype)
+        big_pos  = at.as_tensor_variable(1e6,   dtype=work_dtype)
+        tiny_sum = at.as_tensor_variable(1e-20, dtype=work_dtype)
+    else:
+        eps      = at.as_tensor_variable(1e-30,  dtype=work_dtype)
+        tinyL    = at.as_tensor_variable(1e-300, dtype=work_dtype)
+        big_neg  = at.as_tensor_variable(-1e12, dtype=work_dtype)
+        big_pos  = at.as_tensor_variable(1e12,  dtype=work_dtype)
+        tiny_sum = at.as_tensor_variable(1e-300, dtype=work_dtype)
+
+    #H0, Om, w0, Xi0, n  = Lambda[:5]
+    H0  = Lambda[0]
+    Om  = Lambda[1]
+    w0  = Lambda[2]
+    Xi0 = Lambda[3]
+    n   = Lambda[4]
+
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
+
+    if (spin_model == 'default') or (spin_model == 'default_gauss'):
+        spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
+    elif spin_model == 'none':
+        spinsInj_sel = []
+
+    if zinj is None:
+        print("Sel bias is recomputing zinj!")
+        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp, param=param) 
+    if dcinj is None:
+        print("Sel bias is recomputing dcinj!")
+        dcinj = atools.dcfun_at(zinj, H0, Om, w0, interp=interp)        
+    if log_ddL_dz_inj is None:
+        print("Sel bias is recomputing log_ddL_dz_inj!")
+        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n,
+                                           dc=dcinj, interp=interp, param=param)
+    
+    one_p_z = 1.0 + zinj
+    m1Src   = m1inj / one_p_z
+    m2Src   = m2inj / one_p_z
+
+    if mass_model in ('DP', 'DPUC'):
+        Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+        log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
+        logit_q_inj    = atools.logitat(q_inj)
+        mass_1_use     = log_Mc_src_inj
+        mass_2_use     = logit_q_inj
+    else:
+        mass_1_use = m1Src
+        mass_2_use = m2Src
+
+    log_p_pop = log_p_pop_fun(
+        mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel,
+        Lambda,
+        rate_model, mass_model, spin_model,
+        smoothing=smoothing,
+        has_m2_break=has_m2_break,
+        log_ddL_dz_pre=log_ddL_dz_inj,
+        dc=dcinj,
+    )
+
+    # If you want the Jacobian back, you can re-enable this block later:
+    # if mass_model in ('DP', 'DPUC'):
+    #     log_p_pop += (
+    #         - atools.safe_log(m2Src)
+    #         - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+    #         - at.log1p(zinj)
+    #     )
+
+    # ------------------------------------------------------
+    # SANITIZE log_p_pop: NaNs → big_neg, clip to [big_neg, big_pos]
+    # NaN detection: x != x is True only for NaN
+    # ------------------------------------------------------
+    nan_mask = at.neq(log_p_pop, log_p_pop)
+    print(at.sum(nan_mask).eval())
+    log_p_pop_clean = at.where(nan_mask, big_neg, log_p_pop)
+    log_p_pop_clean = at.clip(log_p_pop_clean, big_neg, big_pos)
+
+    # selection-bias log-weights
+    log_sel_b = log_p_pop_clean - log_p_draw
+    log_sel_b = at.clip(log_sel_b, big_neg, big_pos)
+
+    # very safe logsumexp over a 1D vector
+    def safe_logsumexp(x):
+        x = at.as_tensor_variable(x)
+        m = at.max(x)
+        y = at.exp(x - m)
+        s = at.sum(y)
+        s_safe = at.maximum(s, tiny_sum)   # avoid log(0)
+        return m + at.log(s_safe)
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+
+    # mean log selection-bias term
+    log_mu = safe_logsumexp(log_sel_b) - atools.safe_log(Ndraw_t)
+
+    # keep Neff and var simple/safe to avoid NaNs
+    Neff = Ndraw_t
+    var_log_lik_u = at.zeros_like(log_mu)
+
+    return log_mu, Neff, var_log_lik_u
+
+
+
+
+def sel_bias_with_uncertainty_at_0_safe(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
+                                    Lambda,  Ndraw, 
+                                    rate_model, mass_model, spin_model, 
+                                    smoothing, 
+                                    has_m2_break, 
+                                    interp, 
+                                    wrap_logp=False, 
+                                    log_ddL_dz_inj = None,
+                                    zinj = None,
+                                    dcinj = None,
+                                    param='vanilla',
+                                    **kwargs):
+
+    work_dtype = getattr(m1inj, "dtype", "float64")
+
+    if work_dtype == "float32":
+        # reasonable tiny values in float32
+        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
+        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    else:
+        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
+        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+
+    #H0, Om, w0, Xi0, n  = Lambda[:5]
+    H0  = Lambda[0]
+    Om  = Lambda[1]
+    w0  = Lambda[2]
+    Xi0 = Lambda[3]
+    n   = Lambda[4]
+
+    if wrap_logp:
+        log_p_pop_fun = log_p_pop_at_wrap
+        print("Using wrapped p_pop for inj")
+    else:
+        log_p_pop_fun = log_p_pop_at
+        print("Using regular p_pop for inj")
+
+    if (spin_model=='default') or (spin_model=='default_gauss'):
+        spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
+    elif spin_model=='none':
+        spinsInj_sel = []
+
+    if zinj is None:
+        print("Sel bias is recomputing zinj!")
+        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp, param=param) 
+    if dcinj is None:
+        print("Sel bias is recomputing dcinj!")
+        dcinj = atools.dcfun_at(zinj, H0, Om, w0, interp=interp)        
+    if log_ddL_dz_inj is None:
+        print("Sel bias is recomputing log_ddL_dz_inj!")
+        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n, dc=dcinj, interp=interp, param=param)
+    
+    one_p_z = 1.0 + zinj
+    m1Src  = m1inj/one_p_z
+    m2Src  = m2inj/one_p_z
+
+    if mass_model in ('DP', 'DPUC'):
+        Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+        #log_Mc_src_inj = atools.safe_log(Mc_src_inj)
+        log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
+        logit_q_inj = atools.logitat(q_inj)      
+        mass_1_use = log_Mc_src_inj
+        mass_2_use = logit_q_inj
+    else:
+        mass_1_use = m1Src
+        mass_2_use = m2Src
+
+    log_p_pop = log_p_pop_fun(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, 
+                              Lambda, 
+                              rate_model, mass_model, spin_model, 
+                              smoothing=smoothing, 
+                              has_m2_break=has_m2_break, 
+                              log_ddL_dz_pre = log_ddL_dz_inj,
+                              dc = dcinj
+                             )
+
+    if mass_model in ('DP', 'DPUC'):
+        # remove jacobian m1, m2 --> log(Mc), logit(q)
+        log_p_pop += (- atools.safe_log(m2Src) 
+                      - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
+                      - at.log1p(zinj) )
+
+    log_sel_b = log_p_pop - log_p_draw
+
+    # ----------------------------------------------------------------------
+    # SAFETY 1: guard against NaNs in log_sel_b itself
+    # Any injection with NaN log weight is treated as having negligible weight
+    # ----------------------------------------------------------------------
+    if work_dtype == "float32":
+        big_neg = at.as_tensor_variable(-1e6).astype(work_dtype)
+    else:
+        big_neg = at.as_tensor_variable(-1e12).astype(work_dtype)
+
+    log_sel_b = at.where(at.isnan(log_sel_b), big_neg, log_sel_b)
+
+    # Ndraw must be a symbolic tensor with a floating dtype for logs
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_Ndraw = atools.safe_log(Ndraw_t)
+
+    # raw log-mean and log-second-moment
+    log_mu_raw = at.logsumexp(log_sel_b)         - log_Ndraw
+    logs2_raw  = at.logsumexp(2.0 * log_sel_b)   - log_Ndraw
+
+    # ----------------------------------------------------------------------
+    # SAFETY 2: avoid inf - inf in Neff / variance
+    # ----------------------------------------------------------------------
+    if work_dtype == "float32":
+        tiny_log = at.as_tensor_variable(-1e6).astype(work_dtype)
+    else:
+        tiny_log = at.as_tensor_variable(-1e12).astype(work_dtype)
+
+    too_tiny = at.or_(log_mu_raw < tiny_log, logs2_raw < tiny_log)
+
+    # safe versions used inside arithmetic
+    log_mu_safe = at.where(too_tiny, at.zeros_like(log_mu_raw), log_mu_raw)
+    logs2_safe  = at.where(too_tiny, at.zeros_like(logs2_raw),  logs2_raw)
+
+    #####################################
+    # N_eff as in Talbot & Golomb (2023)
+    #####################################
+    logNeff_raw = 2.0 * log_mu_safe - logs2_safe + log_Ndraw
+
+    logNeff = at.where(
+        too_tiny,
+        at.as_tensor_variable(-np.inf).astype(work_dtype),
+        logNeff_raw,
+    )
+
+    #####################################
+    # Variance of log l per unit obs (Talbot & Golomb 2023)
+    #####################################
+    delta_safe = logs2_safe - 2.0 * log_mu_safe
+    var_finite = atools.logdiffexp(delta_safe, 1.) - atools.safe_log(Ndraw_t - 1)
+
+    var_inf = at.as_tensor_variable(np.inf).astype(work_dtype)
+    var_log_lik_u = at.where(too_tiny, var_inf, var_finite)
+
+    Neff   = at.exp(logNeff)
+    log_mu = log_mu_raw  # original log_mu as return value
+
+    return log_mu, Neff, var_log_lik_u
+
+
+    
     
 def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
                                     Lambda,  Ndraw, 
@@ -1017,6 +1325,15 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                    param='vanilla',
                                     **kwargs):
 
+    work_dtype = getattr(m1inj, "dtype", "float64")
+
+    if work_dtype == "float32":
+        # reasonable tiny values in float32
+        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
+        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    else:
+        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
+        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
 
     #H0, Om, w0, Xi0, n  = Lambda[:5]
     H0  = Lambda[0]
@@ -1057,7 +1374,6 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     if mass_model in ('DP', 'DPUC'):
         Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
         #log_Mc_src_inj = atools.safe_log(Mc_src_inj)
-        eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
         log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
         logit_q_inj = atools.logitat(q_inj)      
         mass_1_use = log_Mc_src_inj
@@ -1078,7 +1394,6 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
     if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
-        eps = at.as_tensor_variable(1e-30, dtype=Mc_src_inj.dtype)
         log_p_pop += (- atools.safe_log(m2Src) 
                       - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
                       - at.log1p(zinj) )
@@ -1334,8 +1649,17 @@ def make_model(  priors,
         params_fix=PLPeakO3params
 
 
-    X = np.float32 if pytensor.config.floatX == "float32" else np.float64  # model dtype
+    X = np.float32 if use_float32 else np.float64  # model dtype
+    
+    if use_float32_bias:
+        if not use_float32:
+            XI = np.float32
+        else:
+            XI = X
+    else:
+        XI = X
     print("Model dtype will be %s"%X)
+    print("Injections dtype will be %s"%XI)
 
     if False:
         print("Casting injections as shared tensors...")
@@ -1361,8 +1685,10 @@ def make_model(  priors,
 
 
         if sampling_GW=='gauss' :
+            
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
+            
         elif 'gmm' in sampling_GW:
             # we sample single-event parameters from the actual single-event posteriors
             wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
@@ -1608,8 +1934,8 @@ def make_model(  priors,
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
     
-                beta_init = np.full(N_DP_comp_max_np, 1e-02)
-                beta_init[0] = 0.99
+                beta_init = np.full(N_DP_comp_max_np, 1e-02).astype(X)
+                #beta_init[0] = 0.99
     
                 beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
                 w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
@@ -1654,8 +1980,8 @@ def make_model(  priors,
             mu2_center = (lowmu2 + upmu2) / 2.0 
             
      
-            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center) )
-            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center))
+            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center).astype(X) )
+            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center).astype(X))
             
 
             mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
@@ -1688,16 +2014,16 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2, ) #initval=U1 / 4.0   )
-            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2, ) #initval=U2 / 4.0   )
+            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2, ) #initval= (U1 / 4.0 ).astype(X)  )
+            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2, ) #initval= (U2 / 4.0 ).astype(X)  )
 
             print("s_local = %s "%s_local)
 
             # eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
             # eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
 
-            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np) )
-            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np))
+            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X) )
+            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
 
 
             sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   
@@ -1851,7 +2177,7 @@ def make_model(  priors,
             ###############################################
 
     
-            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = np.random.randn(N, nd) * eps_init )
+            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )
 
 
             if 'gauss' not in sampling_GW:
@@ -2107,11 +2433,11 @@ def make_model(  priors,
             
             log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
             # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-            eps = at.as_tensor_variable(1e-30, dtype=m2src.dtype)
+            eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
             log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) + at.log1p(zs) 
 
-            #print("Nans in  log_p_pop:")
-            #print( np.isnan(log_p_pop.eval()).sum() )
+            print("Nans in  log_p_pop:")
+            print( np.isnan(log_p_pop.eval()).sum() )
             
         else:    
         

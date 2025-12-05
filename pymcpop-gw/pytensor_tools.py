@@ -207,8 +207,46 @@ def uniform_unconstrained(name, low, high, init=None):
 #    """`log(exp(x)-exp(y))` """
 #    return x + at.log1p(-at.exp(y-x))
 
-# 1) Real-only version: returns -inf when x <= y
+
 def logdiffexp(x, y, neg_inf=-np.inf):
+    """
+    log(exp(x) - exp(y)) for real x,y.,
+    Returns neg_inf when x <= y.
+    Numerically robust even if x,y are very small or -inf.
+    """
+    x = at.as_tensor_variable(x)
+    y = at.as_tensor_variable(y)
+
+    # mask where the expression is actually defined
+    mask = x > y  # for x <= y we return neg_inf
+
+    # Safe versions of x,y used *inside* the numerics:
+    # For x <= y, we just use (0,0) so no inf-inf or nan arises.
+    x_safe = at.where(mask, x, at.as_tensor_variable(0.0).astype(x.dtype))
+    y_safe = at.where(mask, y, at.as_tensor_variable(0.0).astype(y.dtype))
+
+    m = at.maximum(x_safe, y_safe)
+    d = at.abs(x_safe - y_safe)
+
+    # dtype-aware epsilon so d is never exactly 0
+    if m.dtype == "float32":
+        tiny = at.as_tensor_variable(1e-20).astype(m.dtype)
+    else:
+        tiny = at.as_tensor_variable(1e-300).astype(m.dtype)
+
+    d = at.maximum(d, tiny)
+
+    # log|exp(x)-exp(y)| = max(x,y) + log(1 - exp(-|x-y|))
+    logabs = m + at.log1p(-at.exp(-d))
+
+    res_valid   = logabs
+    res_neg_inf = at.as_tensor_variable(neg_inf).astype(m.dtype)
+
+    return at.where(mask, res_valid, res_neg_inf)
+
+
+# 1) Real-only version: returns -inf when x <= y
+def logdiffexp_work(x, y, neg_inf=-np.inf):
     x = at.as_tensor_variable(x); y = at.as_tensor_variable(y)
     m = at.maximum(x, y)
     d = at.abs(x - y)
@@ -228,6 +266,75 @@ def logsumexp(x, y):
     """`log(exp(x)+exp(y))` """
     #return x + at.log1p(at.exp(y-x))
     return at.logaddexp(x, y)
+
+
+def safe_logsumexp(x, axis=None, keepdims=False, eps=1e-30):
+    """
+    Numerically stable logsumexp for PyTensor/JAX backend.
+    - clips extreme values
+    - masks NaNs/Infs
+    - avoids log(0)
+    """
+
+    # Work dtype detection
+    dtype = getattr(x, "dtype", "float64")
+    if dtype == "float32":
+        tiny = 1e-10
+        big  = 1e10
+    else:
+        tiny = 1e-30
+        big  = 1e30
+
+    tiny = at.as_tensor_variable(tiny, dtype=dtype)
+    eps  = at.as_tensor_variable(eps,  dtype=dtype)
+
+    # Replace NaNs/Infs before reduction
+    x = at.where(at.isinf(x), at.sign(x) * big, x)      # +inf → huge, -inf → very negative
+    x = at.where(at.isnan(x), -big, x)                 # NaNs → huge negative weight
+
+    # Standard stabilization shift
+    xmax = at.max(x, axis=axis, keepdims=True)
+
+    # In extremely negative cases xmax can be -big → correct it
+    xmax = at.where(at.isinf(xmax), -big, xmax)
+    xmax = at.where(at.isnan(xmax), -big, xmax)
+
+    # exp(x - xmax), but clipped
+    shifted = x - xmax
+    shifted = at.clip(shifted, -big, 0.0)               # never allow huge positive exp()
+
+    sumexp = at.sum(at.exp(shifted), axis=axis, keepdims=keepdims)
+
+    # prevent log(0)
+    sumexp = at.maximum(sumexp, eps)
+
+    out = xmax + at.log(sumexp)
+
+    if not keepdims and axis is not None:
+        out = at.squeeze(out, axis=axis)
+
+    return out
+
+def safe_logsumexp3(a, b, c, work_dtype):
+    # choose reasonable ranges depending on dtype
+    if work_dtype == "float32":
+        big_neg  = at.as_tensor_variable(-1e12,  dtype=work_dtype)
+        big_pos  = at.as_tensor_variable(1e12,   dtype=work_dtype)
+        tiny_sum = at.as_tensor_variable(1e-20, dtype=work_dtype)
+    else:
+        big_neg  = at.as_tensor_variable(-1e30,  dtype=work_dtype)
+        big_pos  = at.as_tensor_variable(1e30,   dtype=work_dtype)
+        tiny_sum = at.as_tensor_variable(1e-300, dtype=work_dtype)
+
+    v = at.stack([a, b, c], axis=0)
+    v = at.clip(v, big_neg, big_pos)  # avoid extreme values
+
+    m = at.max(v)                      # finite by construction
+    y = at.exp(v - m)
+    s = at.sum(y)
+    s_safe = at.maximum(s, tiny_sum)   # avoids log(0)
+
+    return m + at.log(s_safe)
 
 def logitat(p, eps=1e-12):
     #return safe_log(p) - safe_log(1. - p)
@@ -444,7 +551,18 @@ def softplus(x):
     # log(1 + exp(x)) with good numerical stability
     return at.maximum(x, 0) + at.log1p(at.exp(-at.abs(x)))
 
-def safe_log(x, eps=1e-12):
+
+def safe_log(x ):
+
+    # Work dtype detection
+    dtype = getattr(x, "dtype", "float64")
+    if dtype == "float32":
+        eps = 1e-12
+        big  = 1e10
+    else:
+        eps = 1e-30
+        big  = 1e30
+        
     return at.log(at.clip(x, eps, np.inf))
 
 
@@ -1778,25 +1896,45 @@ def logpdfm1_DPLDP(
     Log of the mixture model. Assumes other components return log-probabilities.
     """
     
+    # log_lambda0 = safe_log(lambda0)
+    # log_lambda1 = safe_log(lambda1)
+    # log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
+
+    work_dtype = getattr(m1, "dtype", "float64")
+
+    if work_dtype == "float32":
+        eps_w = at.as_tensor_variable(1e-6, dtype=work_dtype)
+    else:
+        eps_w = at.as_tensor_variable(1e-12, dtype=work_dtype)
+    
     log_lambda0 = safe_log(lambda0)
     log_lambda1 = safe_log(lambda1)
-    log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
+    
+    lambda2_raw  = 1.0 - lambda0 - lambda1
+    lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0)  # enforce (eps_w, 1]
+    log_lambda2  = safe_log(lambda2_safe)
 
     log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
-    
     log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) # low-mass peak
     log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)   # mid-mass peak
+
     
     if smoothing=='LVK':
         log_S = logS_PLP_LVK(m1, delta_m1, m1_low,)
     else:
         log_S = logS_PLP(m1, delta_m1, m1_low,)
 
-    # logsumexp of the weighted logs
-    log_mix = logsumexp(
-        logsumexp(log_lambda0 + log_ppl, log_lambda1 + log_pnorm1),
-        log_lambda2 + log_pnorm2
-    )
+    # # logsumexp of the weighted logs
+    # log_mix = logsumexp(
+    #     logsumexp(log_lambda0 + log_ppl, log_lambda1 + log_pnorm1),
+    #     log_lambda2 + log_pnorm2
+    # )
+
+    term0 = log_lambda0 + log_ppl
+    term1 = log_lambda1 + log_pnorm1
+    term2 = log_lambda2 + log_pnorm2
+    
+    log_mix = safe_logsumexp3(term0, term1, term2, work_dtype)
 
     return log_S + log_mix 
 
@@ -1815,10 +1953,6 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
    
         ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, res=resN)
 
-        # print(lC.ndim)
-        # print(lC.shape.eval())
-        # assert lC.ndim == 1
-        # assert ln.ndim == 0
 
         lpdf = lpdfm1 + lpdfm2 -lC -ln
     
