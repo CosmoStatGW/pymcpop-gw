@@ -62,6 +62,7 @@ def main():
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
     parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
+    parser.add_argument("--interp_mass", default=0, type=int, required=False)
     
     parser.add_argument("--N_DP_comp_max", default=100, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
@@ -638,6 +639,7 @@ def main():
                                     mass_model = FLAGS.mass_model,
                                     smoothing=FLAGS.smoothing,
                                     has_m2_break=FLAGS.has_m2_break,
+                                    interp_mass = FLAGS.interp_mass,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,

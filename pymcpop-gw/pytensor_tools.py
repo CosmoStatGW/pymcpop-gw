@@ -162,6 +162,9 @@ def _get_mass_grid():
 _tgrid  = onp.linspace(0.0, 1.0, 500)
 _tgrid_at = stop_grad(at.as_tensor_variable(_tgrid))
 
+_tgrid_1000  = onp.linspace(0.0, 1.0, 1000)
+_tgrid_at_1000 = stop_grad(at.as_tensor_variable(_tgrid_1000))
+
 _tgrid_100  = onp.linspace(0.0, 1.0, 100)
 _tgrid_at_100 = stop_grad(at.as_tensor_variable(_tgrid_100))
 
@@ -170,6 +173,9 @@ def _get_t_grid():
 
 def _get_t_grid_100():
     return _tgrid_at_100
+
+def _get_t_grid_1000():
+    return _tgrid_at_1000
     
 
 
@@ -268,7 +274,38 @@ def logsumexp(x, y):
     return at.logaddexp(x, y)
 
 
-def safe_logsumexp(x, axis=None, keepdims=False, eps=1e-30):
+def safe_logsumexp(x, axis=None, keepdims=False):
+    """
+    Numerically stable logsumexp for PyTensor/JAX.
+    Uses standard max-shift trick and avoids log(0) with a tiny floor.
+    """
+    x = at.as_tensor_variable(x)
+    dtype = getattr(x, "dtype", "float64")
+
+    if dtype == "float32":
+        tiny = at.as_tensor_variable(1e-20, dtype=dtype)
+    else:
+        tiny = at.as_tensor_variable(1e-300, dtype=dtype)
+
+    # max over the axis for stability
+    xmax = at.max(x, axis=axis, keepdims=True)
+
+    # subtract max (so at least one element is 0 → exp(0)=1)
+    shifted = x - xmax
+
+    # compute sum of exponentials
+    sumexp = at.sum(at.exp(shifted), axis=axis, keepdims=keepdims)
+
+    # avoid log(0) just in case (e.g. all -inf, or extreme underflow)
+    sumexp_safe = at.maximum(sumexp, tiny)
+
+    out = xmax + at.log(sumexp_safe)
+    if not keepdims and axis is not None:
+        out = at.squeeze(out, axis=axis)
+
+    return out
+
+def safe_logsumexp_strong(x, axis=None, keepdims=False, eps=1e-30):
     """
     Numerically stable logsumexp for PyTensor/JAX backend.
     - clips extreme values
@@ -1939,17 +1976,42 @@ def logpdfm1_DPLDP(
     return log_S + log_mix 
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500 ):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None ):
     
         m1, m2 = theta
         alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
                 
 
-        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
-    
-        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
+        if interp_vals is None:
+            
+            lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
         
-        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
+            lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
+            
+            lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
+            
+        else:
+
+            m1_grid = interp_grids[0]
+            m2_grid = interp_grids[1]
+            
+            x0_1 = m1_grid[0]
+            x1_1 = m1_grid[-1]
+            nU_1 = m1_grid.shape[0] - 1
+        
+            lpdfm1 = atinterp_uniform(m1, x0_1, x1_1, nU_1, interp_vals[0])
+
+
+            x0_2 = m2_grid[0]
+            x1_2 = m2_grid[-1]
+            nU_2 = m2_grid.shape[0] - 1
+        
+            lpdfm2 = atinterp_uniform(m2, x0_2, x1_2, nU_2, interp_vals[1])
+
+
+            lC = atinterp_uniform(m1, x0_1, x1_1, nU_1, interp_vals[2])
+
+            
    
         ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, res=resN)
 

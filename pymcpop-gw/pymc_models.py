@@ -197,7 +197,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  has_m2_break=False, 
                  dc=None, 
                  log_ddL_dz_pre=None,
-                 param='vanilla'
+                 param='vanilla',
+                 interp_vals_mass = None,
+                 interp_grids_mass = None
                 ):
 
 
@@ -325,7 +327,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
 
         lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
       
-        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing )
+        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=interp_vals_mass, interp_grids = interp_grids_mass )
         
         
     ### BNS
@@ -1323,6 +1325,8 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                     zinj = None,
                                     dcinj = None,
                                    param='vanilla',
+                                   interp_vals_mass = None,
+                                    interp_grids_mass = None,
                                     **kwargs):
 
     work_dtype = getattr(m1inj, "dtype", "float64")
@@ -1388,7 +1392,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                               smoothing=smoothing, 
                               has_m2_break=has_m2_break, 
                               log_ddL_dz_pre = log_ddL_dz_inj,
-                              dc = dcinj
+                              dc = dcinj,
+                              interp_vals_mass = interp_vals_mass,
+                             interp_grids_mass = interp_grids_mass
                              )
 
 
@@ -1462,6 +1468,7 @@ def make_model(  priors,
                  rate_model = 'MD',
                  mass_model = 'PLP',
                  smoothing='LVK',
+                 interp_mass = False,
                  has_m2_break = False,
                  spin_model = 'none',
                  spin_inj = 'none',
@@ -1675,6 +1682,9 @@ def make_model(  priors,
 
 
 
+    tgrid_m1 = atools._get_t_grid_1000()
+    tgrid_m2 = atools._get_t_grid()
+    
 
     
     ################################################
@@ -2169,6 +2179,51 @@ def make_model(  priors,
         log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade, param=param)
 
 
+        # Precompute mass function pieces 
+
+        if interp_mass:
+            
+            print("Pre-computing mass function on grid for later interpolation...")
+            
+            if mass_model=='DPLDP':
+
+                # Parameters: 
+                # alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
+
+                m1_grid_ = m1_low_ + (m_high_ - m1_low_) * tgrid_m1
+                m2_grid_ = m2_low_ + (m_high_ - m2_low_) * tgrid_m2
+                
+                lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
+
+                # m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing
+                lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
+
+                # m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC
+                lC_of_m1 = atools.logC_DPLDP( m1_grid_, beta_, delta_m2_,  m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_ , sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing, res=100) 
+
+
+                interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1]
+                interp_grids_mass = [ m1_grid_, m2_grid_] 
+
+            
+
+            else:
+                raise NotImplementedError()
+        
+        else:
+            interp_vals_mass = None
+            interp_grids_mass = None
+            
+
+        
+        ## Precompute rate function pieces
+        # To implement
+
+
+        
+        ## Precompute spin function pieces
+        # To implement
+
 
 
         if not pop_only:
@@ -2451,7 +2506,9 @@ def make_model(  priors,
                                        smoothing=smoothing, 
                                        has_m2_break=has_m2_break, 
                                        dc=dc, 
-                                       log_ddL_dz_pre=log_ddL_dz
+                                       log_ddL_dz_pre=log_ddL_dz,
+                                       interp_vals_mass = interp_vals_mass,
+                                       interp_grids_mass = interp_grids_mass
                                      )
 
         
@@ -2643,7 +2700,9 @@ def make_model(  priors,
                                                           log_ddL_dz_inj = log_ddL_dz_inj,
                                                             zinj = zinj,
                                                             dcinj = dcinj,
-                                                          param=param
+                                                          param=param,
+                                                          interp_vals_mass = interp_vals_mass,
+                                                           interp_grids_mass = interp_grids_mass
                                                         )
 
                 
