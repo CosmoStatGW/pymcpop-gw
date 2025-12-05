@@ -1024,16 +1024,6 @@ def min_max_inverse_transform(X_scaled, data_range, feature_range=(0, 1)):
 
 
 
-U = at.as_tensor_variable( 10. ) #2.5)         # upper bound for σ with high probability
-alpha = at.as_tensor_variable(0.01)    # small tail probability
-lambda_ = at.log(1 / alpha) / U
-
-alpha_ell = at.as_tensor_variable(0.005)
-alpha_large = at.as_tensor_variable(0.01)
-#L = at.as_tensor_variable(0.01)
-
-d_GP = at.as_tensor_variable(1)
-
 
 
 def frechet_logp_full(value, lambda_ell, d):

@@ -110,6 +110,7 @@ def main():
     parser.add_argument("--GP_zero_point", default='y', type=str, required=False)
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
     parser.add_argument("--dense_grad", default=0, type=int, required=False)
+    parser.add_argument("--U", default=0, type=float, required=False)
     
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
@@ -217,7 +218,23 @@ def main():
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
-    
+
+        if FLAGS.is_GP_dL:
+            try:
+                Uprior = priors['U']
+                if FLAGS.U != 0:
+                    print("Prior for U is present in priors, but input U=%s was given. This will override the prior"%FLAGS.U)
+                    Uprior = FLAGS.U
+                else:
+                    print("Prior for from priors. U=%s"%Uprior)
+            except:
+                if FLAGS.U == 0:
+                    raise ValueError("Insert U in prior for Gaussian Process or pass U as input arg")
+                else:
+                    print("Prior for from input U=%s"%FLAGS.U)
+                    Uprior = FLAGS.U
+
+                
     # save input params for memory
     with open(os.path.join(FLAGS.fout, 'input_args.json' ), 'w') as fp:
         json.dump(vars(FLAGS), fp)
@@ -619,7 +636,8 @@ def main():
                                     dil_factor=FLAGS.dil_factor,
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
                                     params_fix=params_fix,
-                                      allTobs=FLAGS.allTobs
+                                      allTobs=FLAGS.allTobs,
+                                    U = Uprior
                                 )
 
     print('Done.')

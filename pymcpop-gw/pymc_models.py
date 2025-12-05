@@ -405,7 +405,8 @@ def make_model(  priors,
                alpha_beta_prior='poly',
                dil_factor=1,
                use_log_alpha_beta=False ,
-               allTobs=None
+               allTobs=None,
+                 U = 10.
                 ):
 
     ################################################
@@ -534,6 +535,17 @@ def make_model(  priors,
         params_fix=PLPeakO3params
 
     if is_GP_dL:
+
+        
+        U = at.as_tensor_variable( U ) #2.5)         # upper bound for σ with high probability
+        
+        alpha = at.as_tensor_variable(0.01)    # small tail probability
+        lambda_ = at.log(1 / alpha) / U
+        
+        alpha_ell = at.as_tensor_variable(0.005)
+        alpha_large = at.as_tensor_variable(0.01)
+        
+        d_GP = at.as_tensor_variable(1)
 
         if find_GP_L:
             rng = np.random.default_rng(123)
@@ -736,40 +748,40 @@ def make_model(  priors,
         #print(f"Mean length scale: {2 / beta:.4f}")
         
         #if True:
-        lambda_ell = -at.log(atools.alpha_ell) * ell_min**(atools.d_GP / 2)
+        lambda_ell = -at.log(alpha_ell) * ell_min**(d_GP / 2)
         print('lambda_ell is %s'%lambda_ell.eval())
 
-        lambda_large = -np.log(atools.alpha_large) / ell_max
+        lambda_large = -np.log(alpha_large) / ell_max
         print('lambda_large is %s'%lambda_large.eval())
 
         z_max_mono =  stats["z_max_mono"]
         print('z_max_mono is %s'%z_max_mono)
 
-        import matplotlib.pyplot as plt
-        from scipy.stats import gamma
-        from scipy.stats import halfnorm
-        from scipy.stats import invgamma
-        ℓ_vals = at.geomspace(1e-05, 100, 1000)
-        logp_vals = atools.frechet_logp_full(ℓ_vals, lambda_ell, atools.d_GP) 
-        pdf_gamma = gamma.pdf(ℓ_vals.eval(), a=2., scale=1/beta)
-        pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=1/10 )
-        pdf_l = halfnorm(scale=1).pdf(ℓ_vals.eval())
-        plt.plot(ℓ_vals.eval(), at.exp(logp_vals).eval(), label='frechet')
-        plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
-        plt.plot(ℓ_vals.eval(), pdf_l, label='halfnorm')
-        plt.plot(ℓ_vals.eval(), pdf_gamma_inv, label='inv gamma')
-        plt.xlabel("ℓ")
-        plt.ylabel("Prior density")
-        plt.title("PC prior on ℓ")
-        plt.yscale("log")
-        plt.xscale("log")
-        plt.ylim(1e-05,10)
-        plt.axvline(ell_min, ls='--', color='k')
-        plt.legend()
-        plt.grid()
-        #plt.show()
-        plt.savefig( os.path.join(fout, 'ell_prior.pdf'), bbox_inches='tight')
-        plt.close()
+        # import matplotlib.pyplot as plt
+        # from scipy.stats import gamma
+        # from scipy.stats import halfnorm
+        # from scipy.stats import invgamma
+        # ℓ_vals = at.geomspace(1e-05, 100, 1000)
+        # logp_vals = atools.frechet_logp_full(ℓ_vals, lambda_ell, d_GP) 
+        # pdf_gamma = gamma.pdf(ℓ_vals.eval(), a=2., scale=1/beta)
+        # pdf_gamma_inv = invgamma.pdf( ℓ_vals.eval(), a=al, scale=1/10 )
+        # pdf_l = halfnorm(scale=1).pdf(ℓ_vals.eval())
+        # plt.plot(ℓ_vals.eval(), at.exp(logp_vals).eval(), label='frechet')
+        # plt.plot(ℓ_vals.eval(), pdf_gamma, label='gamma')
+        # plt.plot(ℓ_vals.eval(), pdf_l, label='halfnorm')
+        # plt.plot(ℓ_vals.eval(), pdf_gamma_inv, label='inv gamma')
+        # plt.xlabel("ℓ")
+        # plt.ylabel("Prior density")
+        # plt.title("PC prior on ℓ")
+        # plt.yscale("log")
+        # plt.xscale("log")
+        # plt.ylim(1e-05,10)
+        # plt.axvline(ell_min, ls='--', color='k')
+        # plt.legend()
+        # plt.grid()
+        # #plt.show()
+        # plt.savefig( os.path.join(fout, 'ell_prior.pdf'), bbox_inches='tight')
+        # plt.close()
 
         
     ################################################
@@ -843,7 +855,7 @@ def make_model(  priors,
             if GP_prior=='frechet':
                 ℓ = pm.CustomDist( "ℓ", 
                                   lambda_ell,
-                                  atools.d_GP,
+                                  d_GP,
                                   logp=atools.frechet_logp_full,
                                    transform=tr.log,    # enforces ℓ > 0 via log-transform
                                    initval=1,
@@ -865,8 +877,8 @@ def make_model(  priors,
             else:
                 raise ValueError()
             
-            η = pm.Exponential("η", lam = atools.lambda_)
-            print('η prior is Exponential with lambda=%s, from scale U=%s'%(atools.lambda_.eval(), atools.U.eval()))
+            η = pm.Exponential("η", lam = lambda_)
+            print('η prior is Exponential with lambda=%s, from scale U=%s'%(lambda_.eval(), U.eval()))
 
             cov = η**2 * pm.gp.cov.Matern52( input_dim=1, ls=ℓ ) + pm.gp.cov.WhiteNoise(1e-4)
             gp = pm.gp.Latent(cov_func=cov)
