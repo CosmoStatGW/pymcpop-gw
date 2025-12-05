@@ -1468,7 +1468,7 @@ def make_model(  priors,
                  rate_model = 'MD',
                  mass_model = 'PLP',
                  smoothing='LVK',
-                 interp_mass = False,
+                 interp_mass = 0,
                  has_m2_break = False,
                  spin_model = 'none',
                  spin_inj = 'none',
@@ -1681,9 +1681,9 @@ def make_model(  priors,
         print("Done.")
 
 
-
-    tgrid_m1 = atools._get_t_grid_1000()
-    tgrid_m2 = atools._get_t_grid()
+    if interp_mass!=0:
+        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
+        tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
     
 
     
@@ -2181,10 +2181,13 @@ def make_model(  priors,
 
         # Precompute mass function pieces 
 
-        if interp_mass:
+        if interp_mass!=0:
             
-            print("Pre-computing mass function on grid for later interpolation...")
-            
+            print("Pre-computing mass function on grid for later interpolation. Grid resolution: %s"%interp_mass)
+
+            if interp_mass<100:
+                raise ValueError("Use finer grid for accurate mass function.")
+                
             if mass_model=='DPLDP':
 
                 # Parameters: 
@@ -2195,14 +2198,20 @@ def make_model(  priors,
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
 
-                # m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing
+
                 lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
 
-                # m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC
-                lC_of_m1 = atools.logC_DPLDP( m1_grid_, beta_, delta_m2_,  m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_ , sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing, res=100) 
+                cdf_m2 = atools.atcumtrapz( at.exp(lp_m2_grid), m2_grid_, )
+                x0 = m2_grid_[1]                 
+                x1 = m2_grid_[-1]
+                nU = m2_grid_.shape[0] - 1  
+                lC_of_m1 = atools.atinterp_uniform(m1_grid_, x0, x1, nU, atools.safe_log(cdf_m2))
 
+                #lC_of_m1 = atools.logC_DPLDP( m1_grid_, beta_, delta_m2_,  m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_ , sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing, res=100) 
 
-                interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1]
+                ln = atools.logNorm_DPLDP( alpha1_ , alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_, smoothing=smoothing, res=500 )
+
+                interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
                 interp_grids_mass = [ m1_grid_, m2_grid_] 
 
             
