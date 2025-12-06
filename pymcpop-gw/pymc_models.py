@@ -326,8 +326,12 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
 
         lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
-      
-        lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=interp_vals_mass, interp_grids = interp_grids_mass )
+
+        if interp_vals_mass is not None:
+            print("Log p pop will use pre-computed mass function grid")
+            lpmass = atools.logpdf_DPLDP_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
+        else:
+            lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=None, interp_grids = None )
         
         
     ### BNS
@@ -1657,6 +1661,9 @@ def make_model(  priors,
 
 
     X = np.float32 if use_float32 else np.float64  # model dtype
+
+    X_name = "float32" if use_float32 else "float64"  # model dtype
+
     
     if use_float32_bias:
         if not use_float32:
@@ -2201,18 +2208,42 @@ def make_model(  priors,
 
                 lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
 
-                cdf_m2 = atools.atcumtrapz( at.exp(lp_m2_grid), m2_grid_, )
-                x0 = m2_grid_[1]                 
+                # cdf_m2 = atools.atcumtrapz( at.exp(lp_m2_grid), m2_grid_, )
+                # x0 = m2_grid_[1]                 
+                # x1 = m2_grid_[-1]
+                # nU = m2_grid_.shape[0] - 1  
+                # lC_of_m1 = atools.atinterp_uniform(m1_grid_, x0, x1, nU, atools.safe_log(cdf_m2))
+
+                # p1 = at.exp(lp_m1_grid)
+                # ln = atools.safe_log( atools.attrapzvec(p1, m1_grid_) )
+
+                # interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                # interp_grids_mass = [ m1_grid_, m2_grid_] 
+
+                # CDF over m2
+                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+                
+                # cdf_m2 has length m2_grid_.shape[0] - 1
+                # grid for cdf_m2 is m2_grid_[1:]
+                x0 = m2_grid_[1]
                 x1 = m2_grid_[-1]
-                nU = m2_grid_.shape[0] - 1  
-                lC_of_m1 = atools.atinterp_uniform(m1_grid_, x0, x1, nU, atools.safe_log(cdf_m2))
-
-                #lC_of_m1 = atools.logC_DPLDP( m1_grid_, beta_, delta_m2_,  m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_ , sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing, res=100) 
-
-                ln = atools.logNorm_DPLDP( alpha1_ , alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_, smoothing=smoothing, res=500 )
-
-                interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
-                interp_grids_mass = [ m1_grid_, m2_grid_] 
+                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
+                
+                lC_of_m1 = atools.atinterp_uniform(
+                    m1_grid_,
+                    x0,
+                    x1,
+                    nU,
+                    atools.safe_log(cdf_m2),
+                )
+                
+                # Normalization for m1
+                p1 = at.exp(lp_m1_grid)
+                ln = atools.safe_log(atools.attrapzvec(p1, m1_grid_))
+                
+                # Pack for later use
+                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                interp_grids_mass = [m1_grid_, m2_grid_]
 
             
 

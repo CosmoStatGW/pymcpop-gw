@@ -1352,7 +1352,7 @@ def main():
     print("\nMaking summary plots...")
 
 
-    vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx')]
+    vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx', 'lambda')]
 
     try:
         print("Plotting trace...")
