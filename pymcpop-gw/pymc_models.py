@@ -1496,7 +1496,9 @@ def make_model(  priors,
                fix_w0 = True,
                  fix_Xi0n = True,
                pade=False,
-               zres='low',
+               zres=150,
+                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
+                 find_z_bounds = False,
                params_fix=None,
                  Neff_min=4,
                 Neff_min_lik=1,
@@ -1691,8 +1693,82 @@ def make_model(  priors,
     if interp_mass!=0:
         tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
         tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
-    
 
+    if find_z_bounds:
+        ## Find extrema of redshift grid 
+        print("Finding optimal points for redshift interpolation...")
+    
+    
+    
+        rng = np.random.default_rng(123)
+        
+    
+        # --- Compile once: z_from_dL and midpoint derivative ---
+        z_sym      = at.dvector('z_nodes')    # if you need it
+        d_sym      = at.dvector('dL_nodes')
+        H0_sym     = at.dscalar('H0')
+        Om_sym     = at.dscalar('Om')
+        w0_sym     = at.dscalar('w0')
+        Xi0_sym     = at.dscalar('Xi0')
+        n_sym     = at.dscalar('nXi0')
+
+        print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
+        # your existing functions but returning NODE arrays
+        z_from_dL_sym = atools.z_from_dL_at(d_sym, H0_sym, Om_sym, w0_sym, Xi0_sym, n_sym, interp=pade, param=param)
+        #dc_nodes_sym  = atools.dcfun_at(z_sym, H0_sym, Om_sym, w0_const, interp=False)
+        #d_log_dLEM_dz_sym = atools.ddL_dz_EM(z_sym, H0_sym, Om_sym, w0_const)
+        #lb_mid_fn = pytensor.function([z_sym, H0_sym, Om_sym, ], d_log_dLEM_dz_sym)
+        z_from_dL_fn = pytensor.function([d_sym, H0_sym, Om_sym, w0_sym, Xi0_sym, n_sym], z_from_dL_sym)
+
+        
+        if fix_H0:
+            priors['H0'] = ( params_fix['H0'], params_fix['H0'])
+        if fix_Om:
+            priors['Om'] = ( params_fix['Om'], params_fix['Om'])
+        if fix_w0:
+            priors['w0'] = ( -1, -1)
+        if fix_Xi0n:
+            priors['Xi0'] = ( 1, 1)
+            priors['nXi0'] = ( 0, 0)
+
+
+        if 'gmm' in sampling_GW:
+            mus_l_ = mus_l
+            wts_l_ = wts_l
+            cho_covs_l_ = cho_covs_l
+        
+        elif sampling_GW=='gauss':
+            mus_l_ = mus_s
+            wts_l_ = None
+            cho_covs_l_ = cho_s
+        
+        min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l_, mus_l_, cho_covs_l_,
+                                      priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                      int(N), int(nd),
+                                    dLinj,
+                                    z_from_dL_fn,
+                                      sampling_GW,
+                                      trials=500, 
+                                      s0=0.10
+                                     )
+
+        
+        
+        zmin_b = max(min_z, z_min_data)
+
+        zmin_a = min( zmin_a, min(min_z, z_min_data))
+        
+        zmid_b = z_max_data
+        zmax_c = max(z_max_data, max_z)*(1+0.05)
+
+        print("values found, overwriting default:")
+        print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+        
+
+        
+
+
+    
     
     ################################################
     # Build model
@@ -2170,13 +2246,19 @@ def make_model(  priors,
         lR0 = atools.safe_log(R0)
 
 
-        if zres=='low':
-            print('Using z grid with 150 points')
-            zgrid_ = atools.zGridGlobals_at_low
-        elif zres=='high':
-            print('Using z grid with 1000 points')
-            zgrid_ = atools.zGridGlobals_at_high
+        # if zres=='low':
+        #     print('Using z grid with 150 points')
+        #     zgrid_ = atools.zGridGlobals_at_low
+        # elif zres=='high':
+        #     print('Using z grid with 1000 points')
+        #     zgrid_ = atools.zGridGlobals_at_high
 
+        
+        zgrid_ = stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
+        print("z grid for interpolation built. Resolution: %s"%zres)
+        print("z min: %s , z max: %s"%(zmin_a, zmax_c))
+        #print("Fraction of points between %s and %s: %s"%(zmid_b, zmax_c, hi_boost))
+        #print("Remaining points are split %s / 45% / 45% between %s, %s, %s."%(zmin_a, zmin_b, zmid_b))
 
         
         # Precompute cosmology pieces 

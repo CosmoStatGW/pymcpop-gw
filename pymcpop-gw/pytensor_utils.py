@@ -12,6 +12,147 @@ from pytensor.graph.basic import io_toposort
 from pytensor.printing import debugprint
 from pytensor import shared
 import numpy as onp
+from tqdm import tqdm
+
+
+
+# --- Helper to draw from the GMM in NumPy only ---
+def sample_from_per_event_gmm(wts, mus, chol_covs, Xwhite, rng=onp.random.default_rng(123)):
+    """
+    wts : (N, K)
+    mus : (N, K, D)
+    chol_covs : (N, K, D, D) lower-tri
+    Xwhite : (N, D) standard normals
+    """
+    N, K = wts.shape
+    u = rng.random((N, 1))
+    cdf = onp.cumsum(wts, axis=1)
+    k = (u < cdf).argmax(axis=1)            # (N,)
+    rows = onp.arange(N)
+    # draw one component per event with provided white noise Xwhite
+    return mus[rows, k, :] + (chol_covs[rows, k, :, :] @ Xwhite[..., None]).squeeze(-1)  # (N, D)
+
+def robust_stat(x, trim=0.05):
+    """Trimmed median absolute for stability."""
+    x = onp.asarray(x, dtype=onp.float64).ravel()
+    a, b = onp.quantile(x, [trim, 1-trim])
+    x = x[(x>=a) & (x<=b)]
+    return onp.median(x)
+
+
+
+
+
+
+def find_zgrid_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
+                          H0_range, Om_range, w0_range,Xi0_range, nXi0_range,
+                          N, nd, 
+                          dLinj,
+                          z_from_dL_fn,
+                          sampling_GW,
+                          trials=50, 
+                      s0=0.10  ,
+                      rng=onp.random.default_rng(123)
+                         ):
+
+
+    H0_max = H0_range[1]
+    H0_min = H0_range[0]
+
+    Om_max = Om_range[1]
+    Om_min = Om_range[0]
+
+    w0_max = w0_range[1]
+    w0_min = w0_range[0]
+
+    Xi0_max = Xi0_range[1]
+    Xi0_min = Xi0_range[0]
+
+    nXi0_max = nXi0_range[1]
+    nXi0_min = nXi0_range[0]
+
+    # max injection redshift
+    max_dL = onp.max(dLinj)
+    min_dL = onp.min(dLinj)
+        
+        
+        
+    z_max_inj = 0
+    z_min_inj = 1e10
+    for H0_ in (H0_max, H0_min):
+        for Om_ in (Om_min, Om_max):
+            for w0_ in (w0_min, w0_max):
+                for Xi0_ in (Xi0_min, Xi0_max):
+                    for nXi0_ in (nXi0_min, nXi0_max):
+                
+                        z_max_inj_ = onp.max( z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )   )
+
+                        z_min_inj_ = onp.min( z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )   )
+                        #print("H0=%s, Om=%s, w0=%s, Xi0=%s, n=%s"%(H0_, Om_, w0_, Xi0_, nXi0_))
+                        #print("zmin: %s, zmax:%s"%(z_min_inj_, z_max_inj_))
+
+                        if z_max_inj_>z_max_inj:
+                            z_max_inj = z_max_inj_
+
+                        if z_min_inj_<z_min_inj:
+                            z_min_inj = z_min_inj_
+
+    print("min, max injection distance: %s, %s Gpc"%(min_dL,max_dL))
+    print("min, max injection redshift: %s, %s "%(z_min_inj,z_max_inj))
+
+    print("Finding data redshift range...")
+    z_maxs = []
+    z_mins = []
+    for _ in tqdm(range(trials)):
+        Xwhite = rng.standard_normal((N, nd))
+
+        if 'gmm' in sampling_GW:
+            samples = sample_from_per_event_gmm(wts_l_np, mus_l_np, cho_covs_l_np, Xwhite)
+        elif sampling_GW=='gauss':
+            samples = mus_l_np + (cho_covs_l_np @ Xwhite[..., None])[..., 0]  
+            # mus_s + at.matmul(cho_s, x[..., None])[..., 0]  
+
+        d_nodes = onp.exp(samples[:, 2])            
+
+        if H0_range[0]!=H0_range[1]:
+            H0 = rng.uniform(*H0_range)
+        else:
+            H0 = H0_range[0]
+        if Om_range[0]!=Om_range[1]:
+            Om = rng.uniform(*Om_range)
+        else:
+            Om = Om_range[0]
+        if w0_range[0]!=w0_range[1]:
+            w0 = rng.uniform(*w0_range)
+        else:
+            w0=w0_range[0]
+
+        if Xi0_range[0]!=Xi0_range[1]:
+            Xi0 = rng.uniform(*Xi0_range)
+        else:
+            Xi0=Xi0_range[0]
+        if nXi0_range[0]!=nXi0_range[1]:
+            nXi0 = rng.uniform(*nXi0_range)
+        else:
+            nXi0=nXi0_range[0]
+                
+                  
+
+        # data redshifts
+        z_nodes = z_from_dL_fn(d_nodes, float(H0), float(Om), float(w0), float(Xi0), float(nXi0), )         
+        z_data = onp.asarray(z_nodes, dtype=onp.float64)
+
+        z_data_max = onp.quantile(z_data, 0.99)
+        z_data_min = onp.quantile(z_data, 0.01)
+
+        z_maxs.append(z_data_max)
+        z_mins.append(z_data_min)
+    
+    z_max_data = max(z_maxs)
+    z_min_data = max(z_mins)
+    print("min, max data redshift: %s, %s "%(z_min_data,z_max_data))
+    
+    return z_min_inj, z_max_inj, z_min_data, z_max_data
 
 
 

@@ -143,7 +143,17 @@ def main():
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
-    parser.add_argument("--zres", default='low', type=str, required=False)
+    parser.add_argument("--zres", default=150, type=int, required=False)
+    parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
+    parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
+    parser.add_argument("--zmid_b", default=3., type=float, required=False)
+    parser.add_argument("--zmax_c", default=10., type=float, required=False)
+    parser.add_argument("--hi_boost", default=.2, type=float, required=False)
+    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
+
+    
+
+    
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
@@ -257,7 +267,9 @@ def main():
         import multiprocessing as mp
         try:
             mp.set_start_method("spawn", force=True)
+            print("Spawn set for multiprocessing")
         except RuntimeError:
+            print("No spawn set")
             pass
 
 
@@ -662,6 +674,12 @@ def main():
                                     fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
                                     zres = FLAGS.zres,
+                                    zmin_a=FLAGS.zmin_a, 
+                                    zmin_b=FLAGS.zmin_b, 
+                                    zmid_b=FLAGS.zmid_b, 
+                                    zmax_c=FLAGS.zmax_c, 
+                                    hi_boost=FLAGS.hi_boost,
+                                    find_z_bounds = FLAGS.find_z_bounds,
                                     pade=FLAGS.pade,
                                     Neff_min=FLAGS.min_Neff,
                                     Neff_min_lik = FLAGS.Neff_min_lik,

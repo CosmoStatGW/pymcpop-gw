@@ -101,29 +101,31 @@ def log_cheb(a, b, N):
     logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
     return 10 ** logz
 
-def make_z_grid(total=150, hi_boost=0.20):
+def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15):
     """
     Generic grid builder:
       total   : total number of points (e.g., 150, 500)
-      hi_boost: fraction of points allocated to (3,10]; default 20%
-    Remaining points are split 10% / 45% / 45% across the first three bands.
+      hi_boost: fraction of points allocated to (3,10]; default 15%
+      low_boost: fraction of points allocated to (1e-05,1e-03]; default 15%  
+      Remaining points are in 1e-03, 3
     """
     total = int(total)
-    zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
+    #zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
 
     # allocate counts
     N3  = int(round(total * hi_boost))
     rem = total - N3
-    N1  = int(round(rem * 0.10))
-    N2a = int(round(rem * 0.45))
-    N2b = rem - N1 - N2a  # remainder
+    N1  = int(round(rem * low_boost))
+    #N2a = int(round(rem * 0.45))
+    N2 = rem - N1 #- N2a  # remainder
+    print("z grid built. N1=%s, N2=%s, N3=%s"%(N1, N2, N3))
 
     g1  = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), max(N1,1), endpoint=False)
-    g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
-    g2b = log_cheb(1e-1, zmid_b,          max(N2b,1))
+    #g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
+    g2 = log_cheb(zmin_b, zmid_b,          max(N2,1))
     g3  = onp.logspace(onp.log10(zmid_b), onp.log10(zmax_c), max(N3,1))
 
-    z = onp.unique(onp.concatenate([g1, g2a, g2b, g3]))
+    z = onp.unique(onp.concatenate([g1, g2, g3]))
     z.sort()
     return z
 
