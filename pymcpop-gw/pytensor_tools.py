@@ -13,6 +13,7 @@ from pytensor.graph import Apply, Op
 import pytensor
 from pytensor.gradient import grad
 from pymc.distributions.dist_math import check_parameters
+from pytensor.gradient import disconnected_grad as stop_grad
 
 
 from jax.numpy import array
@@ -44,30 +45,18 @@ LOG_10_ZMIN = -5
 
  
 
-# try:
-#         zGridGlobals_at = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
-#                      #at.linspace(start=1.1e-03, end=10, steps=50),
-#                      at.logspace(start=-4, stop=1, base=10, steps=1000), 
-#                      at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
+try:
+        zGridGlobals_at_long = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, stop=-15, base=10, steps=50), at.logspace(start=-30, stop=-4, base=10, steps=100), 
+                     #at.linspace(start=1.1e-03, end=10, steps=50),
+                     at.logspace(start=-4, stop=1, base=10, steps=1000), 
+                     at.logspace(start=1, stop=2, base=10, steps=100), at.logspace(start=2, stop=5, base=10, steps=50) ])))
 
-
-# except:
+except:
     
-
-    # zGridGlobals_at = at.sort(at.unique(at.concatenate([ #[0.0], 
-    #     at.logspace(start=LOG_10_ZMIN, end=-4, base=10, steps=5 ), 
-    #                  at.logspace(start=-4, end=1, base=10, steps=100), 
-    #                  #at.logspace(start=1, end=2, base=10, steps=5 ), 
-        
-    # ])))
-
-    # zGridGlobals_at_dense = at.sort(at.unique(at.concatenate([ #[0.0], 
-    #     at.logspace(start=LOG_10_ZMIN, end=-4, base=10, steps=10 ), 
-    #                  at.logspace(start=-4, end=1, base=10, steps=1000), 
-    #                  #at.logspace(start=1, end=2, base=10, steps=10 ), 
-        
-    # ])))
-
+    zGridGlobals_at_long = at.sort(at.unique(at.concatenate([ at.logspace(start=-100, end=-15, base=10, steps=50), at.logspace(start=-30, end=-4, base=10, steps=100), 
+                     #at.linspace(start=1.1e-03, end=10, steps=50),
+                     at.logspace(start=-4, end=1, base=10, steps=1000), 
+                     at.logspace(start=1, end=2, base=10, steps=100), at.logspace(start=2, end=5, base=10, steps=50) ])))
 
 
 
@@ -88,29 +77,31 @@ def log_cheb(a, b, N):
     logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
     return 10 ** logz
 
-def make_z_grid(total=150, hi_boost=0.20):
+def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15):
     """
     Generic grid builder:
       total   : total number of points (e.g., 150, 500)
-      hi_boost: fraction of points allocated to (3,10]; default 20%
-    Remaining points are split 10% / 45% / 45% across the first three bands.
+      hi_boost: fraction of points allocated to (3,10]; default 15%
+      low_boost: fraction of points allocated to (1e-05,1e-03]; default 15%  
+      Remaining points are in 1e-03, 3
     """
     total = int(total)
-    zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
+    #zmin_a, zmin_b, zmid_b, zmax_c = 1e-5, 1e-3, 3.0, 10.0
 
     # allocate counts
     N3  = int(round(total * hi_boost))
     rem = total - N3
-    N1  = int(round(rem * 0.10))
-    N2a = int(round(rem * 0.45))
-    N2b = rem - N1 - N2a  # remainder
+    N1  = int(round(rem * low_boost))
+    #N2a = int(round(rem * 0.45))
+    N2 = rem - N1 #- N2a  # remainder
+    print("z grid built. N1=%s, N2=%s, N3=%s"%(N1, N2, N3))
 
     g1  = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), max(N1,1), endpoint=False)
-    g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
-    g2b = log_cheb(1e-1, zmid_b,          max(N2b,1))
+    #g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
+    g2 = log_cheb(zmin_b, zmid_b,          max(N2,1))
     g3  = onp.logspace(onp.log10(zmid_b), onp.log10(zmax_c), max(N3,1))
 
-    z = onp.unique(onp.concatenate([g1, g2a, g2b, g3]))
+    z = onp.unique(onp.concatenate([g1, g2, g3]))
     z.sort()
     return z
 
@@ -770,21 +761,21 @@ def z_from_dL_at_softplus(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs):
     return dLGrid_at, logXi_nodes, g_nodes
 
 
-def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs ): #data_range=None, res=1000, GP_zero_point=False):
+def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, **kwargs ): #data_range=None, res=1000, GP_zero_point=False):
     
     if not is_GP_dL:
         Xi0, n = Lambda_MG
-        dLGrid_at = at.concatenate([ at.constant([0.0]), dLfun_at( zGridGlobals_at, H0, Om, w0, Xi0, n )])
-        return atinterp( r, dLGrid_at, at.concatenate([ at.constant([0.0]), zGridGlobals_at]) )  
+        dLGrid_at = dLfun_at( z_grid, H0, Om, w0, Xi0, n )
+        return atinterp( r, dLGrid_at, z_grid)   
     
     else:
         gp = Lambda_MG[0]
 
-        dCGrid_at  = dcfun_at( zGridGlobals_at, H0, Om, w0 )
+        dCGrid_at  = dcfun_at( z_grid, H0, Om, w0 )
         
-        dLGrid_EM_at = dCGrid_at*(1+zGridGlobals_at)
+        dLGrid_EM_at = dCGrid_at*(1+z_grid)
 
-        Z_nodes      = zGridGlobals_at         # coarse, used for the GP
+        Z_nodes      = z_grid         # coarse, used for the GP
         z_grid_fine  = zGrid500_at         # fine, used for integration/inversion
     
 

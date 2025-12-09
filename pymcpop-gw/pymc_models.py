@@ -14,7 +14,8 @@ from pytensor.gradient import grad, DisconnectedInputError
 from pytensor.gradient import disconnected_grad
 from pymc.distributions.dist_math import check_parameters
 from pymc.distributions import transforms as tr  # for positivity
-
+import pytensor_utils as putils
+from pytensor.gradient import disconnected_grad as stop_grad
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
@@ -378,6 +379,9 @@ def make_model(  priors,
                monotonicity = 'poly',
                  monotonicity_scale = 1. ,
                  zmin_mono = 0, 
+                 zres=150,
+                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
+                 find_z_bounds = False,
                 nu = 0.25,
                  lam = 10,
                  clip_low = -500,
@@ -419,7 +423,8 @@ def make_model(  priors,
         # gw data are interpolants of single-event posteriors
         if sampling_GW=='gauss' :
             # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs = GWData
+            wts_l = np.exp(log_wts_l)
         
         elif 'gmm' in sampling_GW :
 
@@ -534,7 +539,7 @@ def make_model(  priors,
         print(PLPeakO3params)
         params_fix=PLPeakO3params
 
-    if is_GP_dL:
+    if is_GP_dL and find_z_bounds:
 
         
         U = at.as_tensor_variable( U ) #2.5)         # upper bound for σ with high probability
@@ -547,205 +552,97 @@ def make_model(  priors,
         
         d_GP = at.as_tensor_variable(1)
 
-        if find_GP_L:
-            rng = np.random.default_rng(123)
-            print("Finding min prior lengthscale for GP...")
-            allL = []
-            allM = []
-
-            # --- Compile once: z_from_dL and midpoint derivative ---
-            z_sym      = at.dvector('z_nodes')    # if you need it
-            d_sym      = at.dvector('dL_nodes')
-            H0_sym     = at.dscalar('H0')
-            Om_sym     = at.dscalar('Om')
-            #w0_sym     = at.dscalar('w0')
-            w0_const = at.as_tensor_variable(-1.0)
-            
-            # your existing functions but returning NODE arrays
-            z_from_dL_sym = atools.z_from_dL_at(d_sym, H0_sym, Om_sym, w0_const, [1, 0.], False, data_range=None)
-            dc_nodes_sym  = atools.dcfun_at(z_sym, H0_sym, Om_sym, w0_const, interp=False)
-            d_log_dLEM_dz_sym = atools.ddL_dz_EM(z_sym, H0_sym, Om_sym, w0_const)
-            #d_log_dLEM_dz(z_sym, H0_sym, Om_sym, w0_const)
-
-            lb_mid_fn = pytensor.function([z_sym, H0_sym, Om_sym, ], d_log_dLEM_dz_sym)
-            z_from_dL_fn = pytensor.function([d_sym, H0_sym, Om_sym, ], z_from_dL_sym)
-
-            # --- Helper to draw from the GMM in NumPy only ---
-            def sample_from_per_event_gmm(wts, mus, chol_covs, Xwhite):
-                """
-                wts : (N, K)
-                mus : (N, K, D)
-                chol_covs : (N, K, D, D) lower-tri
-                Xwhite : (N, D) standard normals
-                """
-                N, K = wts.shape
-                u = rng.random((N, 1))
-                cdf = np.cumsum(wts, axis=1)
-                k = (u < cdf).argmax(axis=1)            # (N,)
-                rows = np.arange(N)
-                # draw one component per event with provided white noise Xwhite
-                return mus[rows, k, :] + (chol_covs[rows, k, :, :] @ Xwhite[..., None]).squeeze(-1)  # (N, D)
-
-            def robust_stat(x, trim=0.05):
-                """Trimmed median absolute for stability."""
-                x = np.asarray(x, dtype=np.float64).ravel()
-                a, b = np.quantile(x, [trim, 1-trim])
-                x = x[(x>=a) & (x<=b)]
-                return np.median(x)
-
-
-            def find_init_hyperparams(wts_l_np, mus_l_np, cho_covs_l_np,
-                                      H0_range, Om_range,
-                                      N, nd, rescale_GP=False, dmin=None, dmax=None,
-                                      trials=50, s0=0.10):
-                L_list = []
-                M_list = []
-                ell_list = []
-                dz_all = [] 
-                ell_maxs = []
-                zmaxs = []
-            
-                for _ in tqdm(range(trials)):
-                    Xwhite = rng.standard_normal((N, nd))
-
-                    if 'gmm' in sampling_GW:
-                        samples = sample_from_per_event_gmm(wts_l_np, mus_l_np, cho_covs_l_np, Xwhite)
-                    elif sampling_GW=='gauss':
-                        samples = mus_l_np + (cho_covs_l_np @ Xwhite[..., None]).squeeze(-1)
-            
-                    d_nodes = np.exp(samples[:, 2])             # your distance column
-                    if rescale_GP:
-                        # min-max to provided data_range
-                        d_nodes = ( (d_nodes - d_nodes.min()) / (d_nodes.max() - d_nodes.min() + 1e-12) ) * (dmax - dmin) + dmin
-            
-                    H0 = rng.uniform(*H0_range)
-                    Om = rng.uniform(*Om_range)
-                    w0 = -1.
-            
-                    # z from dL via compiled function (returns NumPy)
-                    z_nodes = z_from_dL_fn(d_nodes.astype(np.float64), float(H0), float(Om), )
-
-                    z_max_mon_ = np.quantile( z_from_dL_fn( np.squeeze(dLinj).astype(np.float64), float(H0), float(Om), ), 0.99 )
-                    
-                    z_nodes = np.asarray(z_nodes, dtype=np.float64)
-                    z_nodes.sort()
-                    # enforce strictly increasing
-                    z_nodes = z_nodes[np.insert(np.diff(z_nodes) > 0, 0, True)]
-            
-                    if z_nodes.size < 3:
-                        continue
-            
-                    # characteristic spacing (robust)
-                    L_list.append( np.mean(np.diff(z_nodes)))  #robust_stat(np.diff(z_nodes)))
-            
-                    # midpoint derivative magnitude
-                    lb_mid_pos = lb_mid_fn(z_nodes, float(H0), float(Om), )  # (N-1,)
-                    lb_mid = np.asarray(lb_mid_pos, dtype=np.float64)
-                    M_list.append(robust_stat(np.abs(lb_mid)))
-
-                    z = z_nodes
-                    # Drop (near-)duplicates to avoid zero spacings
-                    tol = 1e-12
-                    z = z[np.insert(np.diff(z) > tol, 0, True)]
-                    
-                    dz = np.diff(z)
-                    dz_pos = dz[dz > tol]
-                    dz_all.append(dz_pos)
-                    
-                    # Pick a conservative floor (1.5–3× min spacing). You can also use a small percentile.
-                    c = 2.0
-                    ell_min = float(c * np.min(dz_pos))
-                    ell_list.append(ell_min)
-                    
-
-                    
-                    z_span = np.quantile(z_nodes, 0.95) - np.quantile(z_nodes, 0.05)  # from the same mocks; ~2
-                    #print(z_span)
-                    ell_max = z_span    # or ell_max = 1.5 * z_span if you want a bit of extra room
-                    ell_maxs.append(ell_max)
-
-                    zmaxs.append(max(z_max_mon_, np.quantile(z_nodes, 0.99)))
-                    
-                if not L_list or not M_list:
-                    raise RuntimeError("Could not gather stats for ℓ and ν; check data or ranges.")
-            
-                L = np.max(L_list)                # conservative min-lengthscale driver
-                M = np.max(M_list)                # conservative slope scale
-                #ell_min = np.max(ell_list)
-                
-                # ν so that ν * softplus(g) adds ~5% of typical |lb| when softplus(g)≈s0
-                nu0 = float(np.clip(0.05 * M / s0, 1e-3, 0.2))
-                # reasonable ℓ0 from spacing (use 5× median gap, or 0.2 of span)
-                ell0 = float(max(5.0 * robust_stat(L_list), 0.2 * (np.max(z_nodes) - np.min(z_nodes))))
-                # amplitude η0 moderate
-                eta0 = 0.2
-
-                dz_all = np.concatenate(dz_all)
-                q_small = 0.95      # 50% quantile
-                ell_min_data = np.quantile(dz_all, q_small)
-                ell_min = 2.0 * ell_min_data   # even more conservative
-                ell_max = 2*max(ell_maxs)
-
-                z_max_mono = max(zmaxs)                     # or your z_max, e.g. max detected z
-
-
-                
-
-            
-                return dict(L=L, M=M, nu0=nu0, ell0=ell0, eta0=eta0, ell_min=ell_min, ell_max=ell_max, z_max_mono=z_max_mono)
-
-
-            # ---- call it (convert your shareds to NumPy once) ----
-            if 'gmm' in sampling_GW:
-                wts_np = np.asarray(wts_l, dtype=np.float64)
-                mus_np = np.asarray(mus_l, dtype=np.float64)
-                chol_np = np.asarray(cho_covs_l, dtype=np.float64)
-            else:
-                wts_np = None
-                mus_np = np.asarray(mus_s, dtype=np.float64)
-                chol_np = np.asarray(cho_s, dtype=np.float64)
-                
-            
-            stats = find_init_hyperparams(wts_np, mus_np, chol_np,
-                                          H0_range=priors['H0'], Om_range=priors['Om'], 
-                                          N=int(N), nd=int(nd),
-                                          rescale_GP=False, dmin=None, dmax=None,
-                                          trials=500, s0=0.10)
-            
-            nu0  = stats["nu0"]
-            ell0 = stats["ell0"]
-            eta0 = stats["eta0"]
-            ell_min = stats["ell_min"]
-            ell_max = stats["ell_max"]
-            
-            #print(f"L (max spacing proxy): {stats['L']:.6g}")
-            #print(f"M (max |lb| proxy):    {stats['M']:.6g}")
-            #print(f"nu0:                   {nu0:.6g}")
-            #print(f"ell0:                  {ell0:.6g}")
-            #print(f"eta0:                  {eta0:.6g}")
-            print(f"ell_min:                  {ell_min:.6g}")
-            print(f"ell_max:                  {ell_max:.6g}")
-
-            #L = stats["L"]
-            #M = stats["M"]
-            #ell_min = stats["ell_min"]
 
     
-            beta = atools.find_beta(stats["L"], 2., p0=0.01)
-            al = atools.find_al(stats["L"], 10., p0=0.01)
+        rng = np.random.default_rng()
+
+        print("\nFinding optimal points for redshift interpolation and min prior lengthscale for GP...")
+        
+        print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at_long.eval().min(), atools.zGridGlobals_at_long.eval().max()))
+        
+    
+        # --- Compile once: z_from_dL and midpoint derivative ---
+        z_sym      = at.dvector('z_nodes')    # if you need it
+        d_sym      = at.dvector('dL_nodes')
+        H0_sym     = at.dscalar('H0')
+        Om_sym     = at.dscalar('Om')
+        w0_sym     = at.dscalar('w0')
+        Xi0_sym     = at.dscalar('Xi0')
+        n_sym     = at.dscalar('nXi0')
+
+        
+        # your existing functions but returning NODE arrays
+        # r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid
+        z_from_dL_sym = atools.z_from_dL_at(d_sym, H0_sym, Om_sym, w0_sym, [Xi0_sym, n_sym], False, atools.zGridGlobals_at_long )
+        #dc_nodes_sym  = atools.dcfun_at(z_sym, H0_sym, Om_sym, w0_const, interp=False)
+        #d_log_dLEM_dz_sym = atools.ddL_dz_EM(z_sym, H0_sym, Om_sym, w0_const)
+        #lb_mid_fn = pytensor.function([z_sym, H0_sym, Om_sym, ], d_log_dLEM_dz_sym)
+        z_from_dL_fn = pytensor.function([d_sym, H0_sym, Om_sym, w0_sym, Xi0_sym, n_sym], z_from_dL_sym)
+
+
+        print("Priors grid for search")
+        if fix_H0:
+            priors['H0'] = ( params_fix['H0'], params_fix['H0'])
+        if fix_Om:
+            priors['Om'] = ( params_fix['Om'], params_fix['Om'])
+        if fix_w0:
+            priors['w0'] = ( -1, -1)
+
+        print('H0')
+        print(priors['H0'])
+        print('Om')
+        print(priors['Om'])
+        print('w0')
+        print(priors['w0'])
+        print('Xi0')
+        print(priors['Xi0'])
+        print('n')
+        print(priors['nXi0'])
+        
+        #priors['Xi0'] = ( 0.05, 10)
+        #priors['nXi0'] = ( 0.05, 10)
+
+        
+
 
             
-        else:
-            raise ValueError()
+        
+    
+        min_z, max_z, z_min_data, z_max_data, z_diff, z_span = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
+                                      priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                      int(N), int(nd),
+                                    dLinj,
+                                    z_from_dL_fn,
+                                      sampling_GW,
+                                      trials=1000, 
+                                        return_diff=True                                     
+                                     )
+
         
         
+        zmin_b = max(min_z, z_min_data)
+
+        zmin_a = min( zmin_a, min(min_z, z_min_data))
         
-        #print('L is %s'%stats["L"].eval())
-        #print('M is %s'%stats["M"].eval())
-        #print(f"Found beta: {beta:.4f}")
-        #print(f"Found alpha: {al:.4f}")
-        #cprint(f"Found nu0: {nu0:.4f}")
-        #print(f"Mean length scale: {2 / beta:.4f}")
+        zmid_b = z_max_data
+        zmax_c = max(z_max_data, max_z)*(1+0.05)
+
+        print("Redshift values found, overwriting default:")
+        print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+
+
+        z_max_mono = max(z_max_data, max_z)
+
+        ell_min = z_diff
+        ell_max = z_span
+    
+        print(f"ell_min:                  {ell_min:.6g}")
+        print(f"z_max_mono:                  {z_max_mono:.6g}")
+        
+        beta = 0.1 #atools.find_beta(ell_min, 2., p0=0.01)
+        al = 0.05 #atools.find_al(ell_min, 10., p0=0.01)
+
+       
         
         #if True:
         lambda_ell = -at.log(alpha_ell) * ell_min**(d_GP / 2)
@@ -754,7 +651,6 @@ def make_model(  priors,
         lambda_large = -np.log(alpha_large) / ell_max
         print('lambda_large is %s'%lambda_large.eval())
 
-        z_max_mono =  stats["z_max_mono"]
         print('z_max_mono is %s'%z_max_mono)
 
         # import matplotlib.pyplot as plt
@@ -1507,24 +1403,29 @@ def make_model(  priors,
                     #     Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( ddL_dz_mon / ν, -10, 10)))
                     #     # Binary likelihood: all 1s (indicating positive slope)
                     #     monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
-                    
+
+
+                    zgrid_ = stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
+                    print("z grid for interpolation built. Resolution: %s"%zres)
+                    print("z min: %s , z max: %s"%(zmin_a, zmax_c))
 
                     # Precompute cosmology pieces (symbolic)
-                    dc_grid      = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_, w0_, interp=False)
-                    dLem_grid    = (1.0 + atools.zGridGlobals_at) * dc_grid
-                    ddLem_dz_grid= atools.ddL_dz_EM(atools.zGridGlobals_at, H0_, Om_, w0_, dc=dc_grid)
-                    b_full       = atools.d_log_dLEM_dz(atools.zGridGlobals_at, H0_, Om_, w0_, dc=dc_grid, safe=False)
+                    dc_grid      = atools.dcfun_at(zgrid_, H0_, Om_, w0_, interp=False)
+                    dLem_grid    = (1.0 + zgrid_) * dc_grid
+                    ddLem_dz_grid= atools.ddL_dz_EM(zgrid_, H0_, Om_, w0_, dc=dc_grid)
+                    b_full       = atools.d_log_dLEM_dz(zgrid_, H0_, Om_, w0_, dc=dc_grid, safe=False)
                     
                     # GP log-ratio & its derivative on the grid
                     dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(
                         None, H0_, Om_, w0_, Lambda_MG_,
                         is_GP_dL=True,
+                        z_grid = zgrid_
                         # data_range=data_range, GP_zero_point=GP_zero_point,
                         # dense_grad=dense_grad, eta=η, ell=ℓ, b_full=b_full,
                     )
                     
                     # Event-level z
-                    zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, atools.zGridGlobals_at), dims="event_index")
+                    zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_), dims="event_index")
                     
                     # Event-level dc
                     dc = pm.Deterministic("dc", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims="event_index")
@@ -1540,15 +1441,15 @@ def make_model(  priors,
                     
 
                     
-                    log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
+                    log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid )
                     
                     # Interpolate what you need at zs
-                    log_dratio_at_z  = atools.atinterp(zs, atools.zGridGlobals_at, log_distance_ratio_grid)
-                    grad_log_dr_at_z = atools.atinterp(zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid)
+                    log_dratio_at_z  = atools.atinterp(zs, zgrid_, log_distance_ratio_grid)
+                    grad_log_dr_at_z = atools.atinterp(zs, zgrid_, grad_log_distance_ratio_grid)
 
 
 
-                    log_ddL_dz_at_z  = atools.atinterp(zs, atools.zGridGlobals_at, log_ddL_dz_grid)
+                    log_ddL_dz_at_z  = atools.atinterp(zs, zgrid_, log_ddL_dz_grid)
                     
                     distance_ratio = pm.Deterministic("d_ratio", at.exp(log_dratio_at_z), dims="event_index")
                     d_ratio_d_z    = pm.Deterministic("d_ratio_d_z", distance_ratio * grad_log_dr_at_z, dims="event_index")
@@ -1587,11 +1488,11 @@ def make_model(  priors,
                             # dimensionless monotonicity condition
                             q_grid = g_grid + b_full
 
-                            mask = (atools.zGridGlobals_at <= z_max_mono)  # boolean mask on the grid
+                            mask = (zgrid_ <= z_max_mono)  # boolean mask on the grid
 
                             if zmin_mono!=0:
                                 print("Lower lim for monotonicity penalty at z=%s"%zmin_mono)
-                                mask &= (atools.zGridGlobals_at >= zmin_mono)
+                                mask &= (zgrid_ >= zmin_mono)
 
                             if monotonicity_scale==0:
                                 q_mono = q_grid[mask]
@@ -1660,13 +1561,13 @@ def make_model(  priors,
 
                     # this is log(distance ratio) and its derivative computed on the grid
                     # zGridGlobals_at
-                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( atools.zGridGlobals_at, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, dense_grad = dense_grad )
+                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( zgrid_, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, dense_grad = dense_grad )
                     
                     # now compute distance ratio at the actual events redshifts
-                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio )))
+                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, zgrid_, log_distance_ratio )))
 
                     # ... and its derivative
-                    d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio ) 
+                    d_log_distance_ratio_d_z = atools.atinterp( zs, zgrid_, grad_log_distance_ratio ) 
                     d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio)
 
                     dc = atools.dcfun_at(zs, H0_, Om_, w0_)
@@ -1957,12 +1858,12 @@ def make_model(  priors,
 
                 if is_GP_dL:
                     
-                    zinj = atools.atinterp( dLinj[0], dLGrid_at, atools.zGridGlobals_at )
+                    zinj = atools.atinterp( dLinj[0], dLGrid_at, zgrid_ )
                    
                     dc_inj = atools.dcfun_at(zinj, H0_, Om_,  w0_, interp=False)
                     
 
-                    log_ddL_dz_inj   = atools.atinterp(zinj, atools.zGridGlobals_at, log_ddL_dz_grid)
+                    log_ddL_dz_inj   = atools.atinterp(zinj, zgrid_, log_ddL_dz_grid)
           
                 else:
                     zinj, log_ddL_dz_inj, dc_inj = None, None, None

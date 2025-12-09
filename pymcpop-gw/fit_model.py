@@ -102,6 +102,14 @@ def main():
     parser.add_argument("--monotonicity", default='poly', type=str, required=False)
     parser.add_argument("--monotonicity_scale", default=0., type=float, required=False)
     parser.add_argument("--zmin_mono", default=0., type=float, required=False)
+    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
+    parser.add_argument("--zres", default=150, type=int, required=False)
+    parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
+    parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
+    parser.add_argument("--zmid_b", default=3., type=float, required=False)
+    parser.add_argument("--zmax_c", default=10., type=float, required=False)
+    parser.add_argument("--hi_boost", default=.2, type=float, required=False)
+    
     parser.add_argument("--nu", default=0.5, type=float, required=False)
     parser.add_argument("--lam", default=10, type=float, required=False)
     parser.add_argument("--clip_high", default=500, type=float, required=False)
@@ -551,6 +559,7 @@ def main():
                        gmm_means, 
                        gmm_icovs, 
                        gmm_log_dets, 
+                       gmm_cho_covs,
                        injections['Tobs'],
                        Nevents, 
                       ]
@@ -609,6 +618,13 @@ def main():
                                     monotonicity=FLAGS.monotonicity,
                                     monotonicity_scale=FLAGS.monotonicity_scale,
                                     zmin_mono=FLAGS.zmin_mono,
+                                find_z_bounds = FLAGS.find_z_bounds,
+                                zres = FLAGS.zres,
+                                    zmin_a=FLAGS.zmin_a, 
+                                    zmin_b=FLAGS.zmin_b, 
+                                    zmid_b=FLAGS.zmid_b, 
+                                    zmax_c=FLAGS.zmax_c, 
+                                    hi_boost=FLAGS.hi_boost,
                                     nu = FLAGS.nu,
                                      lam = FLAGS.lam,
                                      clip_low = FLAGS.clip_low,
