@@ -2469,8 +2469,8 @@ def make_model(  priors,
                 logJ_Mc = 2.0 * log_Mc_grid
                 logJ_q = (2.0 / 5.0) * atools.safe_log(1.0 + q_safe) - (1.0 / 5.0) * atools.safe_log(q_safe) + atools.safe_log(1.0 - q_safe)
 
-                lp_Mc_grid = lp_Mc_grid + logJ_Mc
-                lp_q_grid  = lp_q_grid  + logJ_q
+                lp_Mc_grid = lp_Mc_grid - logJ_Mc
+                lp_q_grid  = lp_q_grid  - logJ_q
 
 
                 interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
