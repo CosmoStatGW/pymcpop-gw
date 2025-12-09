@@ -453,6 +453,7 @@ def Mcq_from_m1m2_at(m1, m2):
     return Mc, q
 
 
+
 def get_sample_from_cho_lMclqld(x, mu, L):
     
     
@@ -468,7 +469,7 @@ def get_sample_from_cho_lMclqld(x, mu, L):
     # Log probability of standard normal x
     logp = (
     -0.5 * at.sum(x**2)   # instead of at.dot(x.T, x)
-    - 0.5 * mu.shape[0] * at.log(2 * atools.PI)
+    - 0.5 * mu.shape[0] * at.log(2 * PI)
     - at.sum(at.log(at.diagonal(L)))  # log determinant of L
     )
     return sample, logp
@@ -1175,10 +1176,10 @@ def dLfun_at(z, H0, Om, w0, Xi0, n, interp=False, dc=None, param='vanilla'):
     
     if param=='vanilla':
         Xi = Xifun_at(z, Xi0, n)
-        print("In dLfun_at, using vanilla")
+        #print("In dLfun_at, using vanilla")
     elif param=='polexp':
         Xi = Xifun_at_polexp(z, Xi0, n)
-        print("In dLfun_at, using polexp")
+        #print("In dLfun_at, using polexp")
     
     if dc is not None:
         return Xi*(z+1.0)*dc
@@ -1450,7 +1451,7 @@ def logpdf_multivariate_trunc_2D(x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2):
     Fd    = at.dot(Cinv, delta.T)                      # (2,n)
     quad  = at.sum(delta * Fd.T, axis=1)               # (n,)
 
-    logpdf = -0.5 * (2.0 * at.log(2.0 * atools.PI) + logdetC + quad)  # (n,)
+    logpdf = -0.5 * (2.0 * at.log(2.0 * PI) + logdetC + quad)  # (n,)
 
     return at.where(where_inf, MIN, logpdf)
 
@@ -1593,6 +1594,89 @@ def logpdf_gauss_cond(theta, lambdaBBHmass):
 
 
 
+def gaussian_logpdf_pair(m1s, m2s, mu, sd):
+    """
+    Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
+    means mu and std-devs sd.
+
+    Parameters
+    ----------
+    m1s : tensor, shape (N,)
+    m2s : tensor, shape (N,)
+    mu  : sequence/tuple/list of two tensors, each shape (K,)
+          mu[0] for m1, mu[1] for m2
+    sd  : sequence/tuple/list of two tensors, each shape (K,)
+          sd[0] for m1, sd[1] for m2
+
+    Returns
+    -------
+    logp1 : tensor, shape (K, N)
+        Log-density of m1 under each of K Gaussians.
+    logp2 : tensor, shape (K, N)
+        Log-density of m2 under each of K Gaussians.
+    """
+
+    m1 = m1s[None, :]          # (1, N)
+    m2 = m2s[None, :]          # (1, N)
+    
+    mu1 = mu[0][:, None]       # (K, 1)
+    mu2 = mu[1][:, None]       # (K, 1)
+    
+    sd1 = sd[0][:, None]       # (K, 1)
+    sd2 = sd[1][:, None]       # (K, 1)
+       
+    # Avoid exactly zero / denormals in the variance
+    eps = at.as_tensor_variable(1e-6, dtype=sd1.dtype)
+    
+    var1 = at.clip(sd1**2, eps**2, np.inf)  # (K,1)
+    var2 = at.clip(sd2**2, eps**2, np.inf)  # (K,1)
+
+    diff1 = m1 - mu1                         # (K,N)
+    diff2 = m2 - mu2                         # (K,N)
+
+    # 1D Gaussian logpdfs
+    const = -0.5 * safe_log(2.0 * PI)
+    
+    logp1 = const - 0.5 * safe_log(var1) - 0.5 * (diff1**2 / var1)
+    logp2 = const - 0.5 * safe_log(var2) - 0.5 * (diff2**2 / var2)
+
+    return logp1, logp2
+
+
+
+def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids):
+
+        m1, m2 = theta
+    
+        m1_grid = interp_grids[0]
+        m2_grid = interp_grids[1]
+        lp_m1_grid, lp_m2_grid = interp_vals
+
+        # # ----- M1 interpolation indices computed once -----
+        x0_1 = m1_grid[0]
+        x1_1 = m1_grid[-1]
+        nU_1 = m1_grid.shape[0]
+        
+        j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
+        
+        # interpolate logpdf(m1)
+        lpdfm1 = (1 - r1) * lp_m1_grid[j1] + r1 * lp_m1_grid[j1 + 1]
+        
+        
+        # ----- M2 interpolation indices computed once -----
+        x0_2 = m2_grid[0]
+        x1_2 = m2_grid[-1]
+        nU_2 = m2_grid.shape[0]
+        
+        j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
+        
+        # interpolate logpdf(m2)
+        lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
+
+        
+        return lpdfm1, lpdfm2
+
+    
 ####### Power Law + Peak ########
 
 

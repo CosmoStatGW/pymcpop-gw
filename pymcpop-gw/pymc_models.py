@@ -211,7 +211,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
 
     if dc is None:
-        Xi = atools.Xifun_at(z, Xi0, n)
+        if param=='vanilla':
+            Xi = atools.Xifun_at(z, Xi0, n)
+        elif param=='polexp':
+            Xi = atools.Xifun_at_polexp(z, Xi0, n)
         dc = dL/(1+z)/Xi #atools.dcfun_at(z, H0, Om, w0, interp=False)
 
 
@@ -349,37 +352,44 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         w, mu, sd, logw  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3] #Lambda[-5:-1]
         Nmax = Lambda[istart_spin+4]
 
-        m1 = m1s[None, :]          # (1, N)
-        m2 = m2s[None, :]          # (1, N)
+        if interp_vals_mass is None:
+            logp1, logp2 = atools.gaussian_logpdf_pair(m1s, m2s, mu, sd)
     
-        mu1 = mu[0][:, None]       # (K, 1)
-        mu2 = mu[1][:, None]       # (K, 1)
-    
-        sd1 = sd[0][:, None]       # (K, 1)
-        sd2 = sd[1][:, None]       # (K, 1)
-       
-        # Avoid exactly zero / denormals in the variance
-        eps = at.as_tensor_variable(1e-6, dtype=sd1.dtype)
-    
-        var1 = at.clip(sd1**2, eps**2, np.inf)  # (K,1)
-        var2 = at.clip(sd2**2, eps**2, np.inf)  # (K,1)
-
-
-        diff1 = m1 - mu1                         # (K,N)
-        diff2 = m2 - mu2                         # (K,N)
-
+            # m1 = m1s[None, :]          # (1, N)
+            # m2 = m2s[None, :]          # (1, N)
         
-        # 1D Gaussian logpdfs
-        const = -0.5 * atools.safe_log(2.0 * atools.PI)
+            # mu1 = mu[0][:, None]       # (K, 1)
+            # mu2 = mu[1][:, None]       # (K, 1)
+        
+            # sd1 = sd[0][:, None]       # (K, 1)
+            # sd2 = sd[1][:, None]       # (K, 1)
+           
+            # # Avoid exactly zero / denormals in the variance
+            # eps = at.as_tensor_variable(1e-6, dtype=sd1.dtype)
+        
+            # var1 = at.clip(sd1**2, eps**2, np.inf)  # (K,1)
+            # var2 = at.clip(sd2**2, eps**2, np.inf)  # (K,1)
     
-        logp1 = const - 0.5 * atools.safe_log(var1) - 0.5 * (diff1**2 / var1)
-        logp2 = const - 0.5 * atools.safe_log(var2) - 0.5 * (diff2**2 / var2)
+    
+            # diff1 = m1 - mu1                         # (K,N)
+            # diff2 = m2 - mu2                         # (K,N)
+    
+            
+            # # 1D Gaussian logpdfs
+            # const = -0.5 * atools.safe_log(2.0 * atools.PI)
+        
+            # logp1 = const - 0.5 * atools.safe_log(var1) - 0.5 * (diff1**2 / var1)
+            # logp2 = const - 0.5 * atools.safe_log(var2) - 0.5 * (diff2**2 / var2)
+
+        else:
+            logp1, logp2 = atools.gaussian_logpdf_pair_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
     
         logp_components = logp1 + logp2                      # (K,N)
 
         
         # Mixture over components → (n_obs,)
         #lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+        
         lpmass = atools.safe_logsumexp(logp_components + logw[:, None], axis=0)
 
     
@@ -1253,7 +1263,8 @@ def sel_bias_with_uncertainty_at_0_safe(m1inj, m2inj, dLinj, spinsInj, log_p_dra
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- atools.safe_log(m2Src) 
                       - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
-                      - at.log1p(zinj) )
+                      #- at.log1p(zinj) 
+                     )
 
     log_sel_b = log_p_pop - log_p_draw
 
@@ -1398,15 +1409,16 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                               log_ddL_dz_pre = log_ddL_dz_inj,
                               dc = dcinj,
                               interp_vals_mass = interp_vals_mass,
-                             interp_grids_mass = interp_grids_mass
+                             interp_grids_mass = interp_grids_mass,
                              )
 
 
-    if mass_model in ('DP', 'DPUC'):
+    if mass_model in ('DP', 'DPUC') and interp_vals_mass is None:
+        print("Sel. bias: removing jacobian m1, m2 --> log(Mc), logit(q) ")
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- atools.safe_log(m2Src) 
-                      - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
-                      - at.log1p(zinj) )
+                      - atools.safe_log(at.maximum(m1Src - m2Src, eps))) #atools.safe_log(m1Src-m2Src) 
+                      #- at.log1p(zinj) )
 
     log_sel_b = log_p_pop-log_p_draw
 
@@ -1490,6 +1502,7 @@ def make_model(  priors,
                  L_small_1 = 0.05,
                  L_small_2 = 0.1,
                  s_local = 0.5,
+                 find_m_bounds = False,
                  alpha_inv_params = (1, 1),
                  fix_H0 = True,
                 fix_Om = True,
@@ -1533,7 +1546,9 @@ def make_model(  priors,
         # gw data are interpolants of single-event posteriors
         if sampling_GW=='gauss':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, Tobs, Nevs = GWData
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs = GWData
+            wts_l = np.exp(log_wts_l)
+            
         elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
             # we sample single-event parameters from the actual single-event posteriors
             wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
@@ -1690,17 +1705,11 @@ def make_model(  priors,
         print("Done.")
 
 
-    if interp_mass!=0:
-        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
-        tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
+    
+    if ( find_z_bounds or (mass_model in ('DPUC', 'DP') and find_m_bounds) ):
 
-    if find_z_bounds:
-        ## Find extrema of redshift grid 
-        print("Finding optimal points for redshift interpolation...")
     
-    
-    
-        rng = np.random.default_rng(123)
+        rng = np.random.default_rng()
         
     
         # --- Compile once: z_from_dL and midpoint derivative ---
@@ -1712,7 +1721,7 @@ def make_model(  priors,
         Xi0_sym     = at.dscalar('Xi0')
         n_sym     = at.dscalar('nXi0')
 
-        print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
+        
         # your existing functions but returning NODE arrays
         z_from_dL_sym = atools.z_from_dL_at(d_sym, H0_sym, Om_sym, w0_sym, Xi0_sym, n_sym, interp=pade, param=param)
         #dc_nodes_sym  = atools.dcfun_at(z_sym, H0_sym, Om_sym, w0_const, interp=False)
@@ -1732,43 +1741,158 @@ def make_model(  priors,
             priors['nXi0'] = ( 0, 0)
 
 
-        if 'gmm' in sampling_GW:
-            mus_l_ = mus_l
-            wts_l_ = wts_l
-            cho_covs_l_ = cho_covs_l
+        # if 'gmm' in sampling_GW:
+        #     mus_l_ = mus_l
+        #     wts_l_ = wts_l
+        #     cho_covs_l_ = cho_covs_l
         
-        elif sampling_GW=='gauss':
-            mus_l_ = mus_s
-            wts_l_ = None
-            cho_covs_l_ = cho_s
-        
-        min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l_, mus_l_, cho_covs_l_,
-                                      priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
-                                      int(N), int(nd),
-                                    dLinj,
-                                    z_from_dL_fn,
-                                      sampling_GW,
-                                      trials=500, 
-                                      s0=0.10
-                                     )
+        # elif sampling_GW=='gauss':
+        #     mus_l_ = mus_s
+        #     wts_l_ = None
+        #     cho_covs_l_ = cho_s
 
-        
-        
-        zmin_b = max(min_z, z_min_data)
 
-        zmin_a = min( zmin_a, min(min_z, z_min_data))
-        
-        zmid_b = z_max_data
-        zmax_c = max(z_max_data, max_z)*(1+0.05)
 
-        print("values found, overwriting default:")
-        print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+        if find_z_bounds:
+            print("\nFinding optimal points for redshift interpolation...")
+            print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
         
+            min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
+                                          priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                          int(N), int(nd),
+                                        dLinj,
+                                        z_from_dL_fn,
+                                          sampling_GW,
+                                          trials=1000, 
+                                         )
+    
+            
+            
+            zmin_b = max(min_z, z_min_data)
+    
+            zmin_a = min( zmin_a, min(min_z, z_min_data))
+            
+            zmid_b = z_max_data
+            zmax_c = max(z_max_data, max_z)*(1+0.05)
+    
+            print("Redshift values found, overwriting default:")
+            print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
 
+
+        if (mass_model in ('DPUC', 'DP') and find_m_bounds):
+
+            print("\nFinding prior range for DP-GMM. This will overwrite input arguments.")
+       
+            scales = putils.find_mass_redshift_bounds(wts_l, mus_l, cho_covs_l,
+                                          priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                          int(N), int(nd),
+                                        dLinj,
+                            m1inj,
+                            m2inj,
+                              z_from_dL_fn,
+                              sampling_GW,
+                              trials=1000, 
+                          #rng=onp.random.default_rng(123)
+                             )
+    
+            lowmu1 = scales['lMc_min_data'].astype(X)
+            upmu1 = scales['lMc_max_data'].astype(X)
+    
+            lowmu2 = scales['lq_min_data'].astype(X)
+            upmu2 = scales['lq_max_data'].astype(X)
+
+
+            lowmu1_inj = scales['lMc_min_inj'].astype(X)
+            upmu1_inj = scales['lMc_max_inj'].astype(X)
+    
+            lowmu2_inj = scales['lq_min_inj'].astype(X)
+            upmu2_inj = scales['lq_max_inj'].astype(X)
+    
+            L_small_1 = scales['lMc_diff'].astype(X)
+            L_small_2 = scales['lq_diff'].astype(X)
+
+            L_small_m1 = scales['m1_diff'].astype(X)
+            L_small_m2 = scales['m2_diff'].astype(X)
+    
+            L_small_3 = scales['z_diff'].astype(X)
+
+            print("Mass/redshift DP-GMM prior values found, overwriting default:")
+            print("lowmu1=%s, upmu1=%s, lowmu2=%s, upmu2=%s"%(lowmu1, upmu1, lowmu2, upmu2))
+            print("L_small_1=%s, L_small_2=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
+            print("L_small_m1=%s, L_small_m2=%s"%(L_small_m1, L_small_m2, ))
         
-
 
     
+    if interp_mass!=0:
+
+        print("\nPre-computing mass function on grid for later interpolation. Grid resolution: %s"%interp_mass)
+
+        if interp_mass<100:
+                raise ValueError("Use finer grid for accurate mass function.")
+        
+        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
+        tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
+
+        if mass_model in ('DPLDP'):
+            sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
+            MMIN_GRID = 2.
+
+            m1_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m1).astype(X)
+            m2_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m2).astype(X)
+
+            dx_min_test = np.min(np.diff(m1_grid_))
+
+            if dx_min_test >= 0.5*sigma_min:
+                raise ValueError(
+                f"Spacing on mass interpolation grid ({dx_min_test:.3g}) is larger than or "
+                f"comparable to min prior scale for sigma ({sigma_min:.3g}). "
+                "Increase interp_mass or change priors."
+            )
+
+        
+        
+        elif mass_model in ('DPUC', 'DP'):  
+
+            if sel_method=='skip':
+            
+                MMIN_GRID = lowmu1 #*(1-0.1)
+                MMAX_GRID = upmu1*(1+0.1)
+
+                MMIN_GRID_1 = lowmu2 #*(1-0.1)
+                MMAX_GRID_1 = upmu2*(1+0.1)
+            else:
+                MMIN_GRID = min(lowmu1_inj, lowmu1) #*(1-0.1)
+                MMAX_GRID = max(upmu1, upmu1_inj)*(1+0.1)
+
+                MMIN_GRID_1 = min(lowmu2_inj, lowmu2) #*(1-0.1)
+                MMAX_GRID_1 = max(upmu2, upmu2_inj)*(1+0.1)
+
+            
+            print("Grid in log(Mc) source between %s and %s"%(MMIN_GRID, MMAX_GRID))
+            print("Grid in logit(q) source between %s and %s"%(MMIN_GRID_1, MMAX_GRID_1))
+
+            log_Mc_grid = np.asarray((MMIN_GRID + (MMAX_GRID - MMIN_GRID) * tgrid_m1)).astype(X)
+            logit_q_grid = np.asarray((MMIN_GRID_1 + (MMAX_GRID_1 - MMIN_GRID_1) * tgrid_m1)).astype(X)
+                    
+            dx1_min_test = np.min(np.diff(log_Mc_grid))
+            dx2_min_test = np.min(np.diff(logit_q_grid))
+
+
+            if dx1_min_test >= L_small_m1:
+                raise ValueError(
+                f"Spacing on log_Mc interpolation grid ({dx1_min_test:.3g}) is larger than or "
+                f"comparable to min prior scale for sigma ({L_small_m1:.3g}). "
+                "Increase interp_mass or change priors."
+            )
+
+            if dx2_min_test >= L_small_m2:
+                raise ValueError(
+                f"Spacing on logit_q interpolation grid ({dx2_min_test:.3g}) is larger than or "
+                f"comparable to min prior scale for sigma ({L_small_m2:.3g}). "
+                "Increase interp_mass or change priors."
+            )
+
+                  
     
     ################################################
     # Build model
@@ -1781,6 +1905,7 @@ def make_model(  priors,
             
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
+
             
         elif 'gmm' in sampling_GW:
             # we sample single-event parameters from the actual single-event posteriors
@@ -1817,6 +1942,7 @@ def make_model(  priors,
             nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
 
             print("For Xi0-n, we use the %s parameterization"%param)
+
 
         Lambda_ = [H0_, Om_, w0_, Xi0_, nXi0_]
 
@@ -2062,10 +2188,10 @@ def make_model(  priors,
             #### Mean prior 
 
             # DPLDP 1k
-            lowmu1 = 1.5
-            upmu1 = 5.5
-            lowmu2 =  -1.2
-            upmu2 =  10.
+            # lowmu1 = 1.5
+            # upmu1 = 5.5
+            # lowmu2 =  -1.2
+            # upmu2 =  10.
 
             U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim 
 
@@ -2257,9 +2383,6 @@ def make_model(  priors,
         zgrid_ = stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
         print("z grid for interpolation built. Resolution: %s"%zres)
         print("z min: %s , z max: %s"%(zmin_a, zmax_c))
-        #print("Fraction of points between %s and %s: %s"%(zmid_b, zmax_c, hi_boost))
-        #print("Remaining points are split %s / 45% / 45% between %s, %s, %s."%(zmin_a, zmin_b, zmid_b))
-
         
         # Precompute cosmology pieces 
         # One grid build to interpolate later
@@ -2271,19 +2394,24 @@ def make_model(  priors,
         # Precompute mass function pieces 
 
         if interp_mass!=0:
-            
-            print("Pre-computing mass function on grid for later interpolation. Grid resolution: %s"%interp_mass)
-
-            if interp_mass<100:
-                raise ValueError("Use finer grid for accurate mass function.")
                 
             if mass_model=='DPLDP':
 
                 # Parameters: 
                 # alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
 
-                m1_grid_ = m1_low_ + (m_high_ - m1_low_) * tgrid_m1
-                m2_grid_ = m2_low_ + (m_high_ - m2_low_) * tgrid_m2
+                #m1_grid_ = m1_low_ + (m_high_ - m1_low_) * tgrid_m1
+
+                # dx_min = at.min(at.diff(m1_grid_))
+                # sigma_min = at.minimum(priors["sigma1"][0], priors["sigma2"][0])
+                
+                # _ = pm.Potential(
+                #     "interp_resolution_ok",
+                #     at.switch(dx_min <= sigma_min, 0.0, -1e12)
+                # )
+
+                
+                #m2_grid_ = m2_low_ + (m_high_ - m2_low_) * tgrid_m2
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
 
@@ -2328,7 +2456,27 @@ def make_model(  priors,
                 interp_grids_mass = [m1_grid_, m2_grid_]
 
             
+            elif mass_model in ('DPUC', 'DP'):
 
+                lp_Mc_grid, lp_q_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
+
+
+                q_grid = atools.inv_logitat(logit_q_grid)
+
+                eps_q = at.as_tensor_variable(1e-6, dtype=q_grid.dtype)
+                q_safe  = at.clip(q_grid, eps_q, 1.0 - eps_q)
+
+                logJ_Mc = 2.0 * log_Mc_grid
+                logJ_q = (2.0 / 5.0) * atools.safe_log(1.0 + q_safe) - (1.0 / 5.0) * atools.safe_log(q_safe) + atools.safe_log(1.0 - q_safe)
+
+                lp_Mc_grid = lp_Mc_grid + logJ_Mc
+                lp_q_grid  = lp_q_grid  + logJ_q
+
+
+                interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
+                interp_grids_mass = [log_Mc_grid, logit_q_grid]
+                
+                
             else:
                 raise NotImplementedError()
         
@@ -2609,12 +2757,17 @@ def make_model(  priors,
             logMc_src =  log_Mc_det - at.log1p(zs)
             
             log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
-            # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-            eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
-            log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) + at.log1p(zs) 
+            
+            
+            if not interp_mass:
+                print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
+                # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
+                # if using interpolation, the jacobian is already included in the grid.
+                eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
+                log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) #+ at.log1p(zs) 
 
-            print("Nans in  log_p_pop:")
-            print( np.isnan(log_p_pop.eval()).sum() )
+            # print("Nans in  log_p_pop:")
+            # print( np.isnan(log_p_pop.eval()).sum() )
             
         else:    
         

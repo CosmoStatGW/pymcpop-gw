@@ -70,6 +70,8 @@ def main():
     parser.add_argument("--L_small_1", default=0.05, type=float, required=False)
     parser.add_argument("--L_small_2", default=0.1, type=float, required=False)
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
+    parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
+
     parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
     parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
     parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
@@ -599,6 +601,7 @@ def main():
                        gmm_means.astype(X), 
                        gmm_icovs.astype(X), 
                        gmm_log_dets.astype(X), 
+                       gmm_cho_covs.astype(X),
                        injections['Tobs'].astype(X),
                        Nevents, 
                       ]
@@ -669,6 +672,7 @@ def main():
                                     L_small_2 = FLAGS.L_small_2,
                                     alpha_inv_params = FLAGS.alpha_inv_params,
                                     s_local = FLAGS.s_local,
+                                    find_m_bounds = FLAGS.find_m_bounds,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
