@@ -1546,6 +1546,30 @@ def make_model(  priors,
                             print('No monotonicity constraint.')
 
  
+                if z_tail!=0:
+
+                    mask_tail = zgrid_ > z_tail
+                    
+                    g_tail = g_grid[mask_tail]             # (N_tail,) PyTensor
+                    
+                    sigma_tail = 0.05   # prior std for g(z) at high z (tune this!)
+                    
+                    # pm.Normal(
+                    #     "highz_g_prior",
+                    #     mu=g_tail,
+                    #     sigma=sigma_tail,
+                    #     observed=at.zeros_like(g_tail),
+                    # )
+
+                    # weights that increase with z, e.g. linearly
+                    w = (zgrid_[mask_tail] / zgrid_[mask_tail].max())
+                    
+                    pm.Potential(
+                        "highz_g_prior_weighted",
+                        -0.5 * at.sum((w * g_tail / sigma_tail)**2)
+                    )
+                
+                
                 else:
 
                     # we sample z from the pop prior. no need to invert the dL-z relation
