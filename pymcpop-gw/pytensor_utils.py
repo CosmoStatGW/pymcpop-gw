@@ -161,8 +161,8 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     lq_min_inj = onp.min(logit_q)
     lq_max_inj = onp.max(logit_q)
         
-    z_max_inj = 0
-    z_min_inj = 1e10
+    logz_max_inj = 0
+    logz_min_inj = 1e10
 
     lMc_max_inj = 0
     lMc_min_inj = 1e10
@@ -174,17 +174,18 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                     for nXi0_ in (nXi0_min, nXi0_max):
 
                         zinj = z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )
-                
-                        z_max_inj_ = onp.max(  zinj  )
-                        z_min_inj_ = onp.min( zinj   )
+
+                        log_zinj = onp.log1p(zinj)
+                        logz_max_inj_ = onp.max(  log_zinj  )
+                        logz_min_inj_ = onp.min( log_zinj   )
                         #print("H0=%s, Om=%s, w0=%s, Xi0=%s, n=%s"%(H0_, Om_, w0_, Xi0_, nXi0_))
                         #print("zmin: %s, zmax:%s"%(z_min_inj_, z_max_inj_))
 
-                        if z_max_inj_>z_max_inj:
-                            z_max_inj = z_max_inj_
+                        if logz_max_inj_>logz_max_inj:
+                            logz_max_inj = logz_max_inj_
 
-                        if z_min_inj_<z_min_inj:
-                            z_min_inj = z_min_inj_
+                        if logz_min_inj_<logz_min_inj:
+                            logz_min_inj = logz_min_inj_
 
                         log_Mc_src = onp.log(Mc_det) - onp.log1p(zinj)
 
@@ -200,14 +201,14 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                        
 
     print("min, max injection distance: %s, %s Gpc"%(min_dL,max_dL))
-    print("min, max injection redshift: %s, %s "%(z_min_inj,z_max_inj))
+    print("min, max injection log(1+redshift): %s, %s "%(logz_min_inj,logz_max_inj))
     print("min, max injection log(Mc_src): %s, %s "%(lMc_min_inj,lMc_max_inj))
     print("min, max injection logit(q): %s, %s "%(lq_min_inj,lq_max_inj))
 
     print("Finding data redshift and mass range...")
     
-    z_maxs = []
-    z_mins = []
+    logz_maxs = []
+    logz_mins = []
     
     lMc_maxs = []
     lqs_maxs = []
@@ -215,7 +216,7 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     lMc_mins = []
     lqs_mins = []
 
-    z_diffs = []
+    logz_diffs = []
     lqs_diffs = []
     lMc_diffs = []
 
@@ -269,11 +270,14 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         # data redshifts
         z_nodes = z_from_dL_fn(d_nodes, float(H0), float(Om), float(w0), float(Xi0), float(nXi0), )         
         z_data = onp.asarray(z_nodes, dtype=onp.float64)
+
+        logz_data = onp.log1p(z_data)
+        
         log_Mc_src = samples[:, 0]/(1+z_data)
         logit_q = samples[:, 1]
 
-        z_data_max = onp.max(z_data) #onp.quantile(z_data, 0.99)
-        z_data_min = onp.min(z_data) #onp.quantile(z_data, 0.01)
+        logz_data_max = onp.max(logz_data) #onp.quantile(z_data, 0.99)
+        logz_data_min = onp.min(logz_data) #onp.quantile(z_data, 0.01)
 
         lMc_data_max = onp.max(log_Mc_src) #onp.quantile(log_Mc_src, 0.99)
         lMc_data_min = onp.min(log_Mc_src) #onp.quantile(log_Mc_src, 0.01)
@@ -300,23 +304,23 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         lMc_mins.append(lMc_data_min)
         lqs_mins.append(lq_data_min)
     
-        z_maxs.append(z_data_max)
-        z_mins.append(z_data_min)
+        logz_maxs.append(logz_data_max)
+        logz_mins.append(logz_data_min)
 
         m1_mins.append(m1_data_min)
         m2_mins.append(m2_data_min)
         m1_maxs.append(m1_data_max)
         m2_maxs.append(m2_data_max)
 
-        z_diffs.append(onp.mean(onp.diff(z_data)))
+        logz_diffs.append(onp.mean(onp.diff(logz_data)))
         lMc_diffs.append(onp.mean(onp.diff(log_Mc_src)))
         lqs_diffs.append(onp.mean(onp.diff(logit_q)))
 
         m1_diffs.append(onp.mean(onp.diff(m1_src)))
         m2_diffs.append(onp.mean(onp.diff(m2_src)))
     
-    z_max_data = max(z_maxs)
-    z_min_data = min(z_mins)
+    logz_max_data = max(logz_maxs)
+    logz_min_data = min(logz_mins)
 
     lMc_max_data = max(lMc_maxs)
     lMc_min_data = min(lMc_mins)
@@ -330,26 +334,26 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     m2_max_data = max(m2_maxs)
     m2_min_data = min(m2_mins)
 
-    z_diff = max(z_diffs)
+    logz_diff = max(logz_diffs)
     lMc_diff = max(lMc_diffs)
     lq_diff = max(lqs_diffs)
     m1_diff = max(m1_diffs)
     m2_diff = max(m2_diffs)
     
-    print("min, max data redshift: %s, %s "%(z_min_data,z_max_data))
+    print("min, max data log(1+redshift): %s, %s "%(logz_min_data,logz_max_data))
     print("min, max data log(Mc)_src: %s, %s "%(lMc_min_data,lMc_max_data))
     print("min, max data logit(q): %s, %s "%(lq_min_data,lq_max_data))
     print("min, max data m1: %s, %s "%(m1_min_data,m1_max_data))
     print("min, max data m2: %s, %s "%(m2_min_data,m2_max_data))
 
-    print("min redshift scale: %s "%(z_diff))
+    print("min log(1+redshift) scale: %s "%(logz_diff))
     print("min log(Mc)_src scale: %s "%(lMc_diff))
     print("min logit(q) scale: %s "%(lq_diff))
 
     print("min m1 src scale: %s "%(m1_diff))
     print("min m2 src scale: %s "%(m2_diff))
     
-    return dict(z_min_data=z_min_data, z_max_data=z_max_data,  lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data, lq_min_data=lq_min_data, lq_max_data=lq_max_data, z_diff=z_diff, lMc_diff=lMc_diff,  lq_diff=lq_diff, z_min_inj=z_min_inj, z_max_inj=z_max_inj, m1_diff=m1_diff, m2_diff=m2_diff, lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj, lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj )
+    return dict(logz_min_data=logz_min_data, logz_max_data=logz_max_data,  lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data, lq_min_data=lq_min_data, lq_max_data=lq_max_data, logz_diff=logz_diff, lMc_diff=lMc_diff,  lq_diff=lq_diff, logz_min_inj=logz_min_inj, logz_max_inj=logz_max_inj, m1_diff=m1_diff, m2_diff=m2_diff, lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj, lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj )
     
 
 

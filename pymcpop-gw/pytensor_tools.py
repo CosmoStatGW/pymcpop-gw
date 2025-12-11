@@ -1594,7 +1594,7 @@ def logpdf_gauss_cond(theta, lambdaBBHmass):
 
 
 
-def gaussian_logpdf_pair(m1s, m2s, mu, sd):
+def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None):
     """
     Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
     means mu and std-devs sd.
@@ -1617,7 +1617,7 @@ def gaussian_logpdf_pair(m1s, m2s, mu, sd):
     """
 
     m1 = m1s[None, :]          # (1, N)
-    m2 = m2s[None, :]          # (1, N)
+    m2 = m2s[None, :]          # (1, N)        
     
     mu1 = mu[0][:, None]       # (K, 1)
     mu2 = mu[1][:, None]       # (K, 1)
@@ -1640,41 +1640,90 @@ def gaussian_logpdf_pair(m1s, m2s, mu, sd):
     logp1 = const - 0.5 * safe_log(var1) - 0.5 * (diff1**2 / var1)
     logp2 = const - 0.5 * safe_log(var2) - 0.5 * (diff2**2 / var2)
 
-    return logp1, logp2
-
-
-
-def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids):
-
-        m1, m2 = theta
+    if z is not None:
+        z = z[None, :] 
+        muz = mu[2][:, None]       # (K, 1)
+        sdz = sd[2][:, None]
+        varz = at.clip(sdz**2, eps**2, np.inf)  # (K,1)
+        diffz = z - muz 
+        logpz = const - 0.5 * safe_log(varz) - 0.5 * (diffz**2 / varz)
+    else:
+        logpz = at.zeros(logp1.shape)
     
-        m1_grid = interp_grids[0]
-        m2_grid = interp_grids[1]
-        lp_m1_grid, lp_m2_grid = interp_vals
+    return logp1, logp2, logpz
 
-        # # ----- M1 interpolation indices computed once -----
-        x0_1 = m1_grid[0]
-        x1_1 = m1_grid[-1]
-        nU_1 = m1_grid.shape[0]
+
+
+# def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids):
+
+#         m1, m2 = theta
+    
+#         m1_grid = interp_grids[0]
+#         m2_grid = interp_grids[1]
+#         lp_m1_grid, lp_m2_grid = interp_vals
+
+#         # # ----- M1 interpolation indices computed once -----
+#         x0_1 = m1_grid[0]
+#         x1_1 = m1_grid[-1]
+#         nU_1 = m1_grid.shape[0]
         
-        j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
+#         j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
         
-        # interpolate logpdf(m1)
-        lpdfm1 = (1 - r1) * lp_m1_grid[j1] + r1 * lp_m1_grid[j1 + 1]
+#         # interpolate logpdf(m1)
+#         lpdfm1 = (1 - r1) * lp_m1_grid[j1] + r1 * lp_m1_grid[j1 + 1]
         
         
-        # ----- M2 interpolation indices computed once -----
-        x0_2 = m2_grid[0]
-        x1_2 = m2_grid[-1]
-        nU_2 = m2_grid.shape[0]
+#         # ----- M2 interpolation indices computed once -----
+#         x0_2 = m2_grid[0]
+#         x1_2 = m2_grid[-1]
+#         nU_2 = m2_grid.shape[0]
         
-        j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
+#         j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
         
-        # interpolate logpdf(m2)
-        lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
+#         # interpolate logpdf(m2)
+#         lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
 
         
-        return lpdfm1, lpdfm2
+#         return lpdfm1, lpdfm2
+
+def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
+
+    m1, m2 = theta
+    
+    m1_grid = interp_grids[0]         # (n_Mc,)
+    m2_grid = interp_grids[1]         # (n_q,)
+    lp_m1_grid, lp_m2_grid = interp_vals  # (K, n_Mc), (K, n_q)
+
+    # ----- M1 / logMc -----
+    x0_1 = m1_grid[0]
+    x1_1 = m1_grid[-1]
+    nU_1 = m1_grid.shape[0]
+    
+    j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)  # j1,r1: (N,)
+
+    yl1 = lp_m1_grid[:, j1]        # (K, N)
+    yh1 = lp_m1_grid[:, j1 + 1]    # (K, N)
+    r1b = r1[None, :]              # (1, N)
+
+    lpdfm1 = (1.0 - r1b) * yl1 + r1b * yh1   # (K, N)
+
+    # ----- M2 / logitq -----
+    x0_2 = m2_grid[0]
+    x1_2 = m2_grid[-1]
+    nU_2 = m2_grid.shape[0]
+    
+    j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)  # (N,)
+
+    yl2 = lp_m2_grid[:, j2]        # (K, N)
+    yh2 = lp_m2_grid[:, j2 + 1]    # (K, N)
+    r2b = r2[None, :]
+
+    lpdfm2 = (1.0 - r2b) * yl2 + r2b * yh2   # (K, N)
+
+    if z is None:
+        lpdf3 = at.zeros(lpdfm2.shape)
+        
+    return lpdfm1, lpdfm2, lpdf3
 
     
 ####### Power Law + Peak ########
@@ -2403,7 +2452,7 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     
     xx = m2_low + (max_m - m2_low) * _tgrid 
         
-    p2 = at.exp( logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
+    p2 = at.exp( logpdfm2_PLP_reg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
     
     cdf = atcumtrapz( p2, xx, )
 

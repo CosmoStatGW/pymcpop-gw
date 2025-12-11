@@ -225,13 +225,22 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         
         gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7] #Lambda[5:8]
         lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=dc )
+        z_dpuc = None
         istart = 8
         
     elif rate_model=='PL':
         
         gamma = Lambda[5]
         lpz = atools.log_p_z_PL_unnorm(z, gamma, H0, Om, w0, dc=dc )
+        z_dpuc = None
         istart = 6
+
+    if rate_model=='DPUC':
+        
+        lpz = at.zeros( z.shape )
+        z_dpuc = at.log1p(z)
+        istart = 5
+        
 
     # ##################################
     # spin
@@ -350,41 +359,17 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     elif mass_model=='DPUC':
 
         w, mu, sd, logw  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3] #Lambda[-5:-1]
+            
+        
         Nmax = Lambda[istart_spin+4]
 
         if interp_vals_mass is None:
-            logp1, logp2 = atools.gaussian_logpdf_pair(m1s, m2s, mu, sd)
-    
-            # m1 = m1s[None, :]          # (1, N)
-            # m2 = m2s[None, :]          # (1, N)
-        
-            # mu1 = mu[0][:, None]       # (K, 1)
-            # mu2 = mu[1][:, None]       # (K, 1)
-        
-            # sd1 = sd[0][:, None]       # (K, 1)
-            # sd2 = sd[1][:, None]       # (K, 1)
-           
-            # # Avoid exactly zero / denormals in the variance
-            # eps = at.as_tensor_variable(1e-6, dtype=sd1.dtype)
-        
-            # var1 = at.clip(sd1**2, eps**2, np.inf)  # (K,1)
-            # var2 = at.clip(sd2**2, eps**2, np.inf)  # (K,1)
-    
-    
-            # diff1 = m1 - mu1                         # (K,N)
-            # diff2 = m2 - mu2                         # (K,N)
-    
-            
-            # # 1D Gaussian logpdfs
-            # const = -0.5 * atools.safe_log(2.0 * atools.PI)
-        
-            # logp1 = const - 0.5 * atools.safe_log(var1) - 0.5 * (diff1**2 / var1)
-            # logp2 = const - 0.5 * atools.safe_log(var2) - 0.5 * (diff2**2 / var2)
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair(m1s, m2s, mu, sd, z=z_dpuc)
 
         else:
-            logp1, logp2 = atools.gaussian_logpdf_pair_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass, z= z_dpuc )
     
-        logp_components = logp1 + logp2                      # (K,N)
+        logp_components = logp1 + logp2 + logp3                     # (K,N)
 
         
         # Mixture over components → (n_obs,)
@@ -1413,12 +1398,14 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                              )
 
 
-    if mass_model in ('DP', 'DPUC') and interp_vals_mass is None:
+    if mass_model in ('DP', 'DPUC'): #and interp_vals_mass is None:
         print("Sel. bias: removing jacobian m1, m2 --> log(Mc), logit(q) ")
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- atools.safe_log(m2Src) 
                       - atools.safe_log(at.maximum(m1Src - m2Src, eps))) #atools.safe_log(m1Src-m2Src) 
                       #- at.log1p(zinj) )
+        if rate_model=='DPUC':
+                log_p_pop -= at.log1p(zinj) 
 
     log_sel_b = log_p_pop-log_p_draw
 
@@ -1658,10 +1645,16 @@ def make_model(  priors,
 
     if mass_model in ('DP', 'DPUC'):
         coords['component'] = np.arange(N_DP_comp_max_np, dtype=int)
-        coords['GMMdimension'] = np.arange(2, dtype=int)
-        coords['GMMdimension_1'] = np.arange(2, dtype=int)
-        coords['GMMdimension_2'] = np.arange(2, dtype=int)
-        p = 2*(2+1)//2  # packed length = 3 for n=2
+        
+        if rate_model=='DPUC':
+            ndim_GMM = 3
+        else:
+            ndim_GMM = 2
+        
+        coords['GMMdimension'] = np.arange(ndim_GMM, dtype=int)
+        coords['GMMdimension_1'] = np.arange(ndim_GMM, dtype=int)
+        coords['GMMdimension_2'] = np.arange(ndim_GMM, dtype=int)
+        p = ndim_GMM*(ndim_GMM+1)//2  # packed length = 3 for n=2
         
         coords["packed_cholesky"] = np.arange(p)
 
@@ -1801,12 +1794,18 @@ def make_model(  priors,
             lowmu2 = scales['lq_min_data'].astype(X)
             upmu2 = scales['lq_max_data'].astype(X)
 
+            lowmu3 = scales['logz_min_data'].astype(X)
+            upmu3 = scales['logz_max_data'].astype(X)
+
 
             lowmu1_inj = scales['lMc_min_inj'].astype(X)
             upmu1_inj = scales['lMc_max_inj'].astype(X)
     
             lowmu2_inj = scales['lq_min_inj'].astype(X)
             upmu2_inj = scales['lq_max_inj'].astype(X)
+
+            lowmu3_inj = scales['logz_min_inj'].astype(X)
+            upmu3_inj = scales['logz_max_inj'].astype(X)
     
             L_small_1 = scales['lMc_diff'].astype(X)
             L_small_2 = scales['lq_diff'].astype(X)
@@ -1814,7 +1813,7 @@ def make_model(  priors,
             L_small_m1 = scales['m1_diff'].astype(X)
             L_small_m2 = scales['m2_diff'].astype(X)
     
-            L_small_3 = scales['z_diff'].astype(X)
+            L_small_3 = scales['logz_diff'].astype(X)
 
             print("Mass/redshift DP-GMM prior values found, overwriting default:")
             print("lowmu1=%s, upmu1=%s, lowmu2=%s, upmu2=%s"%(lowmu1, upmu1, lowmu2, upmu2))
@@ -1969,6 +1968,11 @@ def make_model(  priors,
             gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))
 
             Lambda_ += [gamma_]
+
+        elif rate_model=='DPUC':
+
+            assert mass_model in ('DP', 'DPUC')
+            print('Modeling evolution of merger rate with a DP-GMM together with mass')
 
         ################################################
         # Spin
@@ -2196,15 +2200,23 @@ def make_model(  priors,
             U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim 
 
             mu1_center = (lowmu1 + upmu1) / 2.0  # 3.55
-            mu2_center = (lowmu2 + upmu2) / 2.0 
+            mu2_center = (lowmu2 + upmu2) / 2.0
+            
             
      
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center).astype(X) )
             mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center).astype(X))
+
+            if rate_model=='DPUC':
+                mu3_center = ( lowmu3+ upmu3) / 2.0
+                mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center).astype(X))
+                mus = at.stack([mu1, mu2, mu3], axis=0)
+            else:
+                mus = at.stack([mu1, mu2], axis=0)             
+                
             
 
-            mu = pm.Deterministic("mu", at.stack([mu1, mu2], axis=0),  # (2,K)
-                      dims=("GMMdimension", "component"))
+            mu = pm.Deterministic("mu", mus, dims=("GMMdimension", "component") )
 
             
             #### Sigma prior 
@@ -2248,6 +2260,23 @@ def make_model(  priors,
             sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   
             sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")  
 
+            
+            if rate_model=='DPUC':
+
+                
+                U3 = (upmu3-lowmu3)
+
+                print("L_small_3 = %s "%L_small_3)
+                print("U3 = %s "%U3)
+
+                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3/2, )
+                eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+                sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
+                
+                sigs = at.stack([sig1, sig2, sig3], axis=0)
+            else:
+                sigs = at.stack([sig1, sig2], axis=0)
+
             if alpha_tail!=-1:
 
                 # ----- Penalize large sigma -----
@@ -2266,8 +2295,7 @@ def make_model(  priors,
             if mass_model=='DPUC':
                 print("No m1-m2 correlation.")
                 
-                sd = pm.Deterministic("sig", at.stack([sig1, sig2], axis=0),  # (2,K)
-                      dims=("GMMdimension", "component"))
+                sd = pm.Deterministic("sig", sigs, dims=("GMMdimension", "component"))
 
                 Lambda_ += [ w, mu, sd, logw ]
 
@@ -2458,20 +2486,22 @@ def make_model(  priors,
             
             elif mass_model in ('DPUC', 'DP'):
 
-                lp_Mc_grid, lp_q_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
+                lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
 
 
-                q_grid = atools.inv_logitat(logit_q_grid)
+                # q_grid = atools.inv_logitat(logit_q_grid)
+                # Mc_grid = at.exp(lp_Mc_grid)
 
-                eps_q = at.as_tensor_variable(1e-6, dtype=q_grid.dtype)
-                q_safe  = at.clip(q_grid, eps_q, 1.0 - eps_q)
+                # m1_grid, m2_grid = m1m2_from_Mcq_at(Mc_grid, q_grid)
 
-                logJ_Mc = 2.0 * log_Mc_grid
-                logJ_q = (2.0 / 5.0) * atools.safe_log(1.0 + q_safe) - (1.0 / 5.0) * atools.safe_log(q_safe) + atools.safe_log(1.0 - q_safe)
+                # eps_q = at.as_tensor_variable(1e-6, dtype=q_grid.dtype)
+                # q_safe  = q_grid #at.clip(q_grid, eps_q, 1.0 - eps_q)
 
-                lp_Mc_grid = lp_Mc_grid - logJ_Mc
-                lp_q_grid  = lp_q_grid  - logJ_q
+                # logJ_Mc = 2.0 * log_Mc_grid
+                # logJ_q = (2.0 / 5.0) * at.log1p(q_safe) - (1.0 / 5.0) * at.log(q_safe) + at.log1p(- q_safe)
 
+                # lp_Mc_grid = lp_Mc_grid - logJ_Mc
+                # lp_q_grid  = lp_q_grid  - logJ_q
 
                 interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
                 interp_grids_mass = [log_Mc_grid, logit_q_grid]
@@ -2759,12 +2789,24 @@ def make_model(  priors,
             log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
             
             
-            if not interp_mass:
-                print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
-                # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-                # if using interpolation, the jacobian is already included in the grid.
-                eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
-                log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) #+ at.log1p(zs) 
+        #if interp_mass==0:
+            print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
+            # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
+            # if using interpolation, the jacobian is already included in the grid.
+            
+            eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
+            log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) #+ at.log1p(zs) 
+
+            if rate_model=='DPUC':
+                log_p_pop -= at.log1p(zs) 
+                
+                # logJ_Mc = 2.0 * logMc_src
+                # logJ_q = (2.0 / 5.0) * atools.safe_log(1.0 + q) - (1.0 / 5.0) * atools.safe_log(q) + atools.safe_log(1.0 - q)
+
+                # log_p_pop -= logJ_Mc+logJ_q
+                
+            #else:
+            #     print("Likelihood: NO jacobian m1, m2 --> log(Mc), logit(q) ")
 
             # print("Nans in  log_p_pop:")
             # print( np.isnan(log_p_pop.eval()).sum() )
