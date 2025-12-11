@@ -386,7 +386,8 @@ def make_model(  priors,
                  lam = 10,
                  clip_low = -500,
                  clip_high=500,
-               GP_prior = 'gammainv',
+               GP_prior = 'frechet',
+                 large_ell_penalty=False,
                GP_zero_point = 'y',
                rescale_GP=False,
                invert_dL_GP = True,
@@ -758,11 +759,14 @@ def make_model(  priors,
                                   random=atools.frechet_random,
                                  )
                 print('ℓ prior is frechet')
-                print('Add large ℓ penalty')
-                _ = pm.Potential(
-                    "pc_large_ell",
-                    -lambda_large * ℓ
-                            )
+                
+                if large_ell_penalty:
+                
+                    print('Add large ℓ penalty')
+                    _ = pm.Potential(
+                        "pc_large_ell",
+                        -lambda_large * ℓ
+                                )
             
             elif GP_prior=='gamma':
                 ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)

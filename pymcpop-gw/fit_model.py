@@ -114,7 +114,9 @@ def main():
     parser.add_argument("--lam", default=10, type=float, required=False)
     parser.add_argument("--clip_high", default=500, type=float, required=False)
     parser.add_argument("--clip_low", default=-500, type=float, required=False)
-    parser.add_argument("--GP_prior", default='gamma', type=str, required=False)
+    parser.add_argument("--GP_prior", default='frechet', type=str, required=False)
+    parser.add_argument("--large_ell_penalty", default=1, type=int, required=False)
+    
     parser.add_argument("--GP_zero_point", default='y', type=str, required=False)
     parser.add_argument("--invert_dL_GP", default=1, type=int, required=False)
     parser.add_argument("--dense_grad", default=0, type=int, required=False)
@@ -630,6 +632,7 @@ def main():
                                      clip_low = FLAGS.clip_low,
                                      clip_high=FLAGS.clip_high,
                                     GP_prior=FLAGS.GP_prior,
+                                    large_ell_penalty=FLAGS.large_ell_penalty,
                                     GP_zero_point=FLAGS.GP_zero_point,
                                     invert_dL_GP=FLAGS.invert_dL_GP,
                                     dense_grad = FLAGS.dense_grad,
