@@ -2687,3 +2687,90 @@ def logpdf_FP(theta, lambdaBBHmass, norm=True, norm_p1=False, res=1000, force_m2
     else:
         return joint
 
+
+class GridInterpolator_at:
+    '''
+    points :: n x n tensor with points where to evaluate the grid
+    grid :: the grid on which we want to interpolate, size m x m
+    values :: values of function to interpolate evaluated at grid
+    '''
+    def __init__(self, grid, values, verbose=False):
+        self.grid = grid # tuple of len(2) first element is first variable, second element second variale
+        self.values = values
+        self.verbose = verbose
+    def __call__(self, points, verbose=None):
+        indices, norm_distances, out_of_bounds = self._find_indices(points, verbose=self.verbose)
+        result = self._evaluate_linear(indices, norm_distances, out_of_bounds, verbose=self.verbose)
+        return result
+    def _i_nd_from_xi_grid(self, x, g):
+        i = at.searchsorted(g, x) - 1
+        i = at.where(i < 0, 0, i)
+        i = at.where(i > g.size - 2, g.size - 2, i)
+        return i, (x - g[i]) / (g[i + 1] - g[i])
+    def _find_indices(self, xi, verbose=False):
+        indices = []
+        norm_distances = []
+        out_of_bounds = at.zeros((xi.shape[1]), dtype=bool)
+         # iterate through dimensions
+        indices=[]
+        norm_distances=[]
+        for ix in range(len(self.grid)):
+            idx_, nd_ = self._i_nd_from_xi_grid( xi[ix], self.grid[ix])
+            indices.append(idx_)
+            norm_distances.append(nd_)
+        return indices, norm_distances, out_of_bounds
+    def _evaluate_linear(self, indices, norm_distances, out_of_bounds, verbose=False):
+        from itertools import product
+        vslice = (slice(None),) + (None,)*(self.values.ndim - len(indices))
+        if verbose:
+            print('indices in eval_lin')
+            print(len(indices))
+            print(indices[0].eval())
+            print(indices[1].eval())
+        # find relevant values
+        # each i and i+1 represents a edge
+        edges = product(*[[i, i + 1] for i in indices])
+        values = at.as_tensor_variable(0.)
+        for edge_indices in edges:
+            weight = at.as_tensor_variable(1.)
+            for ei, i, yi in zip(edge_indices, indices, norm_distances):
+                weight = weight*at.switch(at.eq(ei,i), 1 - yi, yi)
+            values = values+ self.values[edge_indices[1], edge_indices[0]]* weight[vslice]
+        return values
+
+def Pdet(file, m1det, m2det, dL, Theta, thresh,
+         sigma=1., rand_noise=False, rng = None, seed = 42):
+    """
+    file: mass grid and related optimal snr values
+    m1det: detector-frame mass 1
+    m2det: detector-frame mass 2
+    dL: luminosity distance in Gpc
+    Theta: combination of anterna pattern functions
+    osnr_interp: 2D interpolant
+    ref_dist_Gpc: the reference distance at which osnr_interp was calculated
+    rand_noise: add random N(0,1)
+    """
+    # load interpolant
+    with h5py.File(file,'r') as f:
+        m_grid_at = at.as_tensor_variable(np.array(f['ms']))
+        osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']))
+        ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.))
+    grid_at = (m_grid_at, m_grid_at)
+    osnr_interp_at = GridInterpolator_at(grid_at, osnrs_grid_at)
+    # evaluate the interpolant
+    pts_at = at.stack([m1det, at.full_like(m1det, m2det)], axis=0)
+    osnr_at = osnr_interp_at(pts_at)
+    #print(osnr_at.eval().shape)
+    # add noise (eventually)
+    if rand_noise:
+        rng = np.random.default_rng(seed)
+        rs = rng.normal(0.0, 1.0, size = m1det.eval().shape)
+    else:
+        rs = 0.0
+    rs_at = at.as_tensor_variable(rs)
+    # compute true snr
+    snr_at = osnr_at * ref_dist_Gpc_at / dL * Theta + rs_at
+    #result = 0.5 * (1 + at.erf((snr_at - thresh) / sigma))
+    result = 0.5 * (1 + at.erf((snr_at - thresh)))
+    return result
+
