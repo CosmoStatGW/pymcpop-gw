@@ -2334,8 +2334,8 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1/2, ) #initval= (U1 / 4.0 ).astype(X)  )
-            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2/2, ) #initval= (U2 / 4.0 ).astype(X)  )
+            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, ) #initval= (U1 / 4.0 ).astype(X)  )
+            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, ) #initval= (U2 / 4.0 ).astype(X)  )
 
             print("s_local = %s "%s_local)
 
@@ -2358,7 +2358,7 @@ def make_model(  priors,
                 print("L_small_3 = %s "%L_small_3)
                 print("U3 = %s "%U3)
 
-                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3/2, )
+                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3, )
                 eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
 
