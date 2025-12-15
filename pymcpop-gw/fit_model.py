@@ -100,6 +100,8 @@ def main():
     parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default='poly', type=str, required=False)
+    parser.add_argument("--eps_DE", default=-1, type=float, required=False)
+    
     parser.add_argument("--monotonicity_scale", default=0., type=float, required=False)
     parser.add_argument("--zmin_mono", default=0., type=float, required=False)
     parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
@@ -618,6 +620,7 @@ def main():
                                     is_GP_dL = FLAGS.is_GP_dL,
                                     find_GP_L = FLAGS.find_GP_L,
                                     monotonicity=FLAGS.monotonicity,
+                                    eps_DE = FLAGS.eps_DE,
                                     monotonicity_scale=FLAGS.monotonicity_scale,
                                     zmin_mono=FLAGS.zmin_mono,
                                 find_z_bounds = FLAGS.find_z_bounds,

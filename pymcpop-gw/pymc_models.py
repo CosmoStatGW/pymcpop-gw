@@ -377,6 +377,7 @@ def make_model(  priors,
                find_GP_L = True,
                fout=None,
                monotonicity = 'poly',
+                 eps_DE = -1,
                  monotonicity_scale = 1. ,
                  zmin_mono = 0, 
                  zres=150,
@@ -1545,29 +1546,32 @@ def make_model(  priors,
                     else:
                             print('No monotonicity constraint.')
 
+
+                    if eps_DE != -1:
+
+                        print("Imposing large-z constraint on alphaM...")
+
+                        Ode0 = 1.0 - Om_
+
+                        ratio = (eps_DE / (1.0 - eps_DE)) * (Om_ / Ode0)
+                        ratio = at.clip(ratio, 1e-12, 1e12)
+                        
+                        z_eps = pm.Deterministic(
+                            "z_eps_DE",
+                            at.power(ratio, 1.0 / (3.0 * w0_)) - 1.0
+                        )
+
+                        delta_z = 0.2   # smoothness of transition
+                        w = pm.math.sigmoid((zgrid_ - z_eps) / delta_z)
+
+                        sigma_tail = pm.HalfNormal("sigma_tail", sigma=0.1)
+
+                        _ = pm.Potential(
+                            "highz_turnoff",
+                            -0.5 * at.sum((w * g_grid / sigma_tail) ** 2)
+                        )
+
  
-                if z_tail!=0:
-
-                    mask_tail = zgrid_ > z_tail
-                    
-                    g_tail = g_grid[mask_tail]             # (N_tail,) PyTensor
-                    
-                    sigma_tail = 0.05   # prior std for g(z) at high z (tune this!)
-                    
-                    # pm.Normal(
-                    #     "highz_g_prior",
-                    #     mu=g_tail,
-                    #     sigma=sigma_tail,
-                    #     observed=at.zeros_like(g_tail),
-                    # )
-
-                    # weights that increase with z, e.g. linearly
-                    w = (zgrid_[mask_tail] / zgrid_[mask_tail].max())
-                    
-                    pm.Potential(
-                        "highz_g_prior_weighted",
-                        -0.5 * at.sum((w * g_tail / sigma_tail)**2)
-                    )
                 
                 
                 else:
