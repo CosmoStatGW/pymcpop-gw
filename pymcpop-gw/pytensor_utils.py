@@ -132,6 +132,7 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                           sampling_GW,
                           trials=1000, 
                       s0=0.10  ,
+                              is_observed=False,
                       rng=onp.random.default_rng()
                          ):
 
@@ -173,8 +174,11 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                 for Xi0_ in (Xi0_min, Xi0_max):
                     for nXi0_ in (nXi0_min, nXi0_max):
 
-                        zinj = z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )
-
+                        if not is_observed:   
+                            zinj = z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )
+                        else:
+                            zinj = onp.squeeze(dLinj)
+                        
                         log_zinj = onp.log1p(zinj)
                         logz_max_inj_ = onp.max(  log_zinj  )
                         logz_min_inj_ = onp.min( log_zinj   )
@@ -187,7 +191,11 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                         if logz_min_inj_<logz_min_inj:
                             logz_min_inj = logz_min_inj_
 
-                        log_Mc_src = onp.log(Mc_det) - onp.log1p(zinj)
+                        if not is_observed:    
+                            log_Mc_src = onp.log(Mc_det) - onp.log1p(zinj)
+                        else:
+                            log_Mc_src = onp.log(Mc_det)
+                        
 
                         log_Mc_src_min_ = onp.min(log_Mc_src)
                         log_Mc_src_max_ = onp.max(log_Mc_src)
@@ -201,8 +209,12 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                        
 
     print("min, max injection distance: %s, %s Gpc"%(min_dL,max_dL))
-    print("min, max injection log(1+redshift): %s, %s "%(logz_min_inj,logz_max_inj))
-    print("min, max injection log(Mc_src): %s, %s "%(lMc_min_inj,lMc_max_inj))
+    if not is_observed:  
+        print("min, max injection log(1+redshift): %s, %s "%(logz_min_inj,logz_max_inj))
+        print("min, max injection log(Mc_src): %s, %s "%(lMc_min_inj,lMc_max_inj))
+    else:
+        print("min, max injection log(1+distance): %s, %s "%(logz_min_inj,logz_max_inj))
+        print("min, max injection log(Mc_det): %s, %s "%(lMc_min_inj,lMc_max_inj))
     print("min, max injection logit(q): %s, %s "%(lq_min_inj,lq_max_inj))
 
     print("Finding data redshift and mass range...")
@@ -268,22 +280,42 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                   
 
         # data redshifts
-        z_nodes = z_from_dL_fn(d_nodes, float(H0), float(Om), float(w0), float(Xi0), float(nXi0), )         
+        if not is_observed:  
+            z_nodes = z_from_dL_fn(d_nodes, float(H0), float(Om), float(w0), float(Xi0), float(nXi0), )         
+        else:
+            z_nodes = d_nodes   
+        
         z_data = onp.asarray(z_nodes, dtype=onp.float64)
 
-        logz_data = onp.log1p(z_data)
         
-        log_Mc_src = samples[:, 0]/(1+z_data)
+        logz_data = onp.log1p(z_data)
+
+        if not is_observed:  
+            log_Mc_src = samples[:, 0]-logz_data
+        else:
+            log_Mc_src = samples[:, 0]
+
+        #print(log_Mc_src.max())
+        
         logit_q = samples[:, 1]
 
-        logz_data_max = onp.max(logz_data) #onp.quantile(z_data, 0.99)
-        logz_data_min = onp.min(logz_data) #onp.quantile(z_data, 0.01)
+        logz_data_max = onp.max(logz_data) 
+        logz_data_min = onp.min(logz_data) 
 
-        lMc_data_max = onp.max(log_Mc_src) #onp.quantile(log_Mc_src, 0.99)
-        lMc_data_min = onp.min(log_Mc_src) #onp.quantile(log_Mc_src, 0.01)
+        lMc_data_max = onp.max(log_Mc_src) 
+        lMc_data_min = onp.min(log_Mc_src) 
 
-        lq_data_max = onp.max(logit_q) #onp.quantile(logit_q, 0.99)
-        lq_data_min = onp.min(logit_q) #onp.quantile(logit_q, 0.01)
+        lq_data_max = onp.max(logit_q) 
+        lq_data_min = onp.min(logit_q) 
+
+        # logz_data_max = onp.quantile(z_data, 0.99)
+        # logz_data_min = onp.quantile(z_data, 0.01)
+
+        # lMc_data_max = onp.quantile(log_Mc_src, 0.99)
+        # lMc_data_min = onp.quantile(log_Mc_src, 0.01)
+
+        # lq_data_max = onp.quantile(logit_q, 0.99)
+        # lq_data_min = onp.quantile(logit_q, 0.01)
 
 
         m1_src, m2_src = atools.m1m2_from_Mcq_at( onp.exp(log_Mc_src), atools.inv_logit(logit_q) )
@@ -312,12 +344,48 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         m1_maxs.append(m1_data_max)
         m2_maxs.append(m2_data_max)
 
-        logz_diffs.append(onp.mean(onp.diff(logz_data)))
-        lMc_diffs.append(onp.mean(onp.diff(log_Mc_src)))
-        lqs_diffs.append(onp.mean(onp.diff(logit_q)))
 
-        m1_diffs.append(onp.mean(onp.diff(m1_src)))
-        m2_diffs.append(onp.mean(onp.diff(m2_src)))
+        logz_data.sort()
+        log_Mc_src.sort()
+        logit_q.sort()
+        m1_src.sort()
+        m2_src.sort()
+        
+        tol = 1e-12
+        logz_data = logz_data[onp.insert(onp.diff(logz_data) > tol, 0, True)]
+        log_Mc_src = log_Mc_src[onp.insert(onp.diff(log_Mc_src) > tol, 0, True)]
+        logit_q = logit_q[onp.insert(onp.diff(logit_q) > tol, 0, True)]
+        m1_src = m1_src[onp.insert(onp.diff(m1_src) > tol, 0, True)]
+        m2_src = m2_src[onp.insert(onp.diff(m2_src) > tol, 0, True)]
+            
+        dz = onp.diff(logz_data)
+        dz_pos = dz[dz > tol]
+        
+        dMc = onp.diff(log_Mc_src)
+        dMc_pos = dMc[dMc > tol]
+        
+        dq = onp.diff(logit_q)
+        dq_pos = dq[dq > tol]
+
+        dm1 = onp.diff(m1_src)
+        dm1_pos = dm1[dm1 > tol]
+
+        dm2 = onp.diff(m2_src)
+        dm2_pos = dm2[dm2 > tol]
+
+        # logz_diffs.append( onp.quantile(dz_pos, 0.01) ) #onp.min(dz_pos))
+        # lMc_diffs.append( onp.quantile(dMc_pos, 0.01) )  #onp.min(dMc_pos))
+        # lqs_diffs.append( onp.quantile(dq_pos, 0.01) )  #onp.min(dq_pos))
+
+        # m1_diffs.append(onp.quantile(dm1_pos, 0.01))
+        # m2_diffs.append(onp.quantile(dm2_pos, 0.01))
+
+        logz_diffs.append(onp.mean(dz_pos))
+        lMc_diffs.append( onp.min(dMc_pos))
+        lqs_diffs.append( onp.min(dq_pos))
+
+        m1_diffs.append( onp.min(dm1_pos))
+        m2_diffs.append( onp.min(dm2_pos))
     
     logz_max_data = max(logz_maxs)
     logz_min_data = min(logz_mins)
@@ -339,19 +407,34 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     lq_diff = max(lqs_diffs)
     m1_diff = max(m1_diffs)
     m2_diff = max(m2_diffs)
+
+    if not is_observed:
+        print("min, max data log(1+redshift): %s, %s "%(logz_min_data,logz_max_data))
+        print("min, max data log(Mc)_src: %s, %s "%(lMc_min_data,lMc_max_data))
+        print("min, max data logit(q): %s, %s "%(lq_min_data,lq_max_data))
+        print("min, max data m1: %s, %s "%(m1_min_data,m1_max_data))
+        print("min, max data m2: %s, %s "%(m2_min_data,m2_max_data))
     
-    print("min, max data log(1+redshift): %s, %s "%(logz_min_data,logz_max_data))
-    print("min, max data log(Mc)_src: %s, %s "%(lMc_min_data,lMc_max_data))
-    print("min, max data logit(q): %s, %s "%(lq_min_data,lq_max_data))
-    print("min, max data m1: %s, %s "%(m1_min_data,m1_max_data))
-    print("min, max data m2: %s, %s "%(m2_min_data,m2_max_data))
+        print("min log(1+redshift) scale: %s "%(logz_diff))
+        print("min log(Mc)_src scale: %s "%(lMc_diff))
+        print("min logit(q) scale: %s "%(lq_diff))
+    
+        print("min m1 src scale: %s "%(m1_diff))
+        print("min m2 src scale: %s "%(m2_diff))
 
-    print("min log(1+redshift) scale: %s "%(logz_diff))
-    print("min log(Mc)_src scale: %s "%(lMc_diff))
-    print("min logit(q) scale: %s "%(lq_diff))
-
-    print("min m1 src scale: %s "%(m1_diff))
-    print("min m2 src scale: %s "%(m2_diff))
+    else:
+        print("min, max data log(1+dL): %s, %s "%(logz_min_data,logz_max_data))
+        print("min, max data log(Mc_D): %s, %s "%(lMc_min_data,lMc_max_data))
+        print("min, max data logit(q): %s, %s "%(lq_min_data,lq_max_data))
+        print("min, max data m1_D: %s, %s "%(m1_min_data,m1_max_data))
+        print("min, max data m2_D: %s, %s "%(m2_min_data,m2_max_data))
+    
+        print("min log(1+dL) scale: %s "%(logz_diff))
+        print("min log(Mc_D) scale: %s "%(lMc_diff))
+        print("min logit(q) scale: %s "%(lq_diff))
+    
+        print("min m1_D scale: %s "%(m1_diff))
+        print("min m2_D scale: %s "%(m2_diff))
     
     return dict(logz_min_data=logz_min_data, logz_max_data=logz_max_data,  lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data, lq_min_data=lq_min_data, lq_max_data=lq_max_data, logz_diff=logz_diff, lMc_diff=lMc_diff,  lq_diff=lq_diff, logz_min_inj=logz_min_inj, logz_max_inj=logz_max_inj, m1_diff=m1_diff, m2_diff=m2_diff, lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj, lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj )
     

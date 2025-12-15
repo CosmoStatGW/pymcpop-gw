@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
     parser.add_argument("--interp_mass", default=0, type=int, required=False)
+    parser.add_argument("--interp_z", default=0, type=int, required=False)
     
     parser.add_argument("--N_DP_comp_max", default=100, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
@@ -152,6 +153,10 @@ def main():
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
     parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
+    parser.add_argument("--is_observed", default=0, type=int, required=False)
+    parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
+    
+    
 
     
 
@@ -655,6 +660,7 @@ def main():
                                     smoothing=FLAGS.smoothing,
                                     has_m2_break=FLAGS.has_m2_break,
                                     interp_mass = FLAGS.interp_mass,
+                                interp_z = FLAGS.interp_z,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
@@ -707,7 +713,9 @@ def main():
                                 param=FLAGS.param,
                                 DP_prior=FLAGS.DP_prior,
                                 sigma_softmax=FLAGS.sigma_softmax,
-                                gamma_DP_params=FLAGS.gamma_DP_params
+                                gamma_DP_params=FLAGS.gamma_DP_params,
+                                is_observed = FLAGS.is_observed,
+                                sample_from_pop = FLAGS.sample_from_pop
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

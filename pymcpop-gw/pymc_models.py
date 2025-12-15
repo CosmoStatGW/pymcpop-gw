@@ -15,6 +15,7 @@ from pytensor.compile.mode import get_default_mode
 from pymc.distributions import transforms as tr
 #from pymc.pytensorf import collect_default_updates
 from pytensor import config
+import h5py
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
@@ -199,7 +200,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  log_ddL_dz_pre=None,
                  param='vanilla',
                  interp_vals_mass = None,
-                 interp_grids_mass = None
+                 interp_grids_mass = None,
+                 is_observed = False,
+                 z_grid = None
                 ):
 
 
@@ -235,10 +238,20 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         z_dpuc = None
         istart = 6
 
-    if rate_model=='DPUC':
-        
-        lpz = at.zeros( z.shape )
+    elif rate_model=='DPUC':
+
         z_dpuc = at.log1p(z)
+        
+        lpz = at.zeros(z.shape) #atools.log_dV_dz_at(z, H0, Om, w0, dc=dc ) #-z_dpuc
+        
+        istart = 5
+
+    elif rate_model=='DPUC-vol':
+
+        z_dpuc = at.log1p(z)
+        
+        lpz = atools.log_dV_dz_at(z, H0, Om, w0, dc=dc ) - z_dpuc
+        
         istart = 5
         
 
@@ -364,18 +377,36 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         Nmax = Lambda[istart_spin+4]
 
         if interp_vals_mass is None:
-            logp1, logp2, logp3 = atools.gaussian_logpdf_pair(m1s, m2s, mu, sd, z=z_dpuc)
-
+            
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=z_dpuc )
+                
         else:
-            logp1, logp2, logp3 = atools.gaussian_logpdf_pair_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass, z= z_dpuc )
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair_from_interp( [m1s, m2s], interp_vals_mass, interp_grids_mass, z = z_dpuc )
     
-        logp_components = logp1 + logp2 + logp3                     # (K,N)
+        
+        if rate_model in ('PL', 'MD'):
+            logp_components = logp1 + logp2                    # (K,N)
+        else:
+            logp_components = logp1 + logp2 + logp3                   # (K,N)
 
         
         # Mixture over components → (n_obs,)
         #lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+
         
         lpmass = atools.safe_logsumexp(logp_components + logw[:, None], axis=0)
+
+        if rate_model=='DPUC-vol' and is_observed:
+            print("Normalize GMM x p(z)")
+            log_Nz = atools.redshift_mixture_log_norm( mu=mu, sd=sd, logw=logw, y_min=at.log(1.+at.min(z_grid)), y_max=at.log(1.+at.max(z_grid)),  H0=H0, Om=Om, w0=w0, Ny=2000 )
+        elif rate_model=='MD' and is_observed:
+            log_Nz = atools.N_per_year( gamma, kappa, zp, H0, Om, w0, R0=1., dc=None, z_max = 100, res=1000)
+        elif rate_model=='PL' and is_observed:
+            raise NotImplementedError()
+        else:
+             log_Nz = at.zeros(m1s.shape)
+
+        lpmass -= log_Nz 
 
     
     elif mass_model=='DP':
@@ -430,19 +461,24 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         
     ###################################
     # jacobian  
-    #log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc)
-    
-    if log_ddL_dz_pre is None:
-        log_ddL_dz = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n, dc=dc, param=param)
-    else:
-        log_ddL_dz = log_ddL_dz_pre
 
+    #if rate_model in ('MD', 'PL'):
+        
+    if log_ddL_dz_pre is None:
+        log_dthD_dth = atools.log_ddL_dz( z, H0, Om, w0, Xi0, n, dc=dc, param=param )
+    else:
+        log_dthD_dth = log_ddL_dz_pre
+        
+    log_dthD_dth += 2*at.log1p(z)
+        
+    #else:
+    #    log_dthD_dth = at.zeros(z.shape)
     
     ###################################
     # return log pdf
     ####################################
     
-    lp =  lpz - log_ddL_dz - 2*at.log1p(z) + lpmass + lpspin
+    lp =  lpz - log_dthD_dth  + lpmass + lpspin
 
     return lp
 
@@ -1404,7 +1440,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
         log_p_pop += (- atools.safe_log(m2Src) 
                       - atools.safe_log(at.maximum(m1Src - m2Src, eps))) #atools.safe_log(m1Src-m2Src) 
                       #- at.log1p(zinj) )
-        if rate_model=='DPUC':
+        if rate_model in ('DPUC','DPUC-vol'):
                 log_p_pop -= at.log1p(zinj) 
 
     log_sel_b = log_p_pop-log_p_draw
@@ -1472,6 +1508,7 @@ def make_model(  priors,
                  mass_model = 'PLP',
                  smoothing='LVK',
                  interp_mass = 0,
+                 interp_z = 0,
                  has_m2_break = False,
                  spin_model = 'none',
                  spin_inj = 'none',
@@ -1522,6 +1559,8 @@ def make_model(  priors,
                  DP_prior='SB',
                  sigma_softmax=0.75,
                  gamma_DP_params = (4, 0.8),
+                 is_observed = False,
+                 sample_from_pop = False
                 ):
 
     ################################################
@@ -1646,10 +1685,12 @@ def make_model(  priors,
     if mass_model in ('DP', 'DPUC'):
         coords['component'] = np.arange(N_DP_comp_max_np, dtype=int)
         
-        if rate_model=='DPUC':
+        if rate_model in ('DPUC','DPUC-vol'):
             ndim_GMM = 3
         else:
             ndim_GMM = 2
+
+        print('GMM dimension is %s'%ndim_GMM)
         
         coords['GMMdimension'] = np.arange(ndim_GMM, dtype=int)
         coords['GMMdimension_1'] = np.arange(ndim_GMM, dtype=int)
@@ -1785,6 +1826,7 @@ def make_model(  priors,
                               z_from_dL_fn,
                               sampling_GW,
                               trials=1000, 
+                            is_observed = False #is_observed
                           #rng=onp.random.default_rng(123)
                              )
     
@@ -1832,6 +1874,10 @@ def make_model(  priors,
         tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
         tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
 
+        if interp_z!=0:
+            tgrid_z = np.linspace(0.0, 1.0, interp_z ).astype(X)
+            print("Pre-computing rate evolution on grid for later interpolation. Grid resolution: %s"%interp_z)
+
         if mass_model in ('DPLDP'):
             sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
             MMIN_GRID = 2.
@@ -1854,27 +1900,37 @@ def make_model(  priors,
 
             if sel_method=='skip':
             
-                MMIN_GRID = lowmu1 #*(1-0.1)
+                MMIN_GRID = lowmu1*(1-0.1)
                 MMAX_GRID = upmu1*(1+0.1)
 
                 MMIN_GRID_1 = lowmu2 #*(1-0.1)
                 MMAX_GRID_1 = upmu2*(1+0.1)
+
+                MMIN_GRID_2 = lowmu3*(1-0.1)
+                MMAX_GRID_2 = upmu3*(1+0.1)
+                
             else:
-                MMIN_GRID = min(lowmu1_inj, lowmu1) #*(1-0.1)
+                MMIN_GRID = min(lowmu1_inj, lowmu1)*(1-0.1)
                 MMAX_GRID = max(upmu1, upmu1_inj)*(1+0.1)
 
                 MMIN_GRID_1 = min(lowmu2_inj, lowmu2) #*(1-0.1)
                 MMAX_GRID_1 = max(upmu2, upmu2_inj)*(1+0.1)
 
+                MMIN_GRID_2 = min(lowmu3_inj, lowmu3)*(1-0.1)
+                MMAX_GRID_2 = max(upmu3, upmu3_inj)*(1+0.1)
+
             
             print("Grid in log(Mc) source between %s and %s"%(MMIN_GRID, MMAX_GRID))
             print("Grid in logit(q) source between %s and %s"%(MMIN_GRID_1, MMAX_GRID_1))
+            print("Grid in log(1+z) source between %s and %s"%(MMIN_GRID_2, MMAX_GRID_2))
 
             log_Mc_grid = np.asarray((MMIN_GRID + (MMAX_GRID - MMIN_GRID) * tgrid_m1)).astype(X)
             logit_q_grid = np.asarray((MMIN_GRID_1 + (MMAX_GRID_1 - MMIN_GRID_1) * tgrid_m1)).astype(X)
+            log_1pz_grid = np.asarray((MMIN_GRID_2 + (MMAX_GRID_2 - MMIN_GRID_2) * tgrid_z)).astype(X)
                     
             dx1_min_test = np.min(np.diff(log_Mc_grid))
             dx2_min_test = np.min(np.diff(logit_q_grid))
+            dx3_min_test = np.min(np.diff(log_1pz_grid))
 
 
             if dx1_min_test >= L_small_m1:
@@ -1891,8 +1947,39 @@ def make_model(  priors,
                 "Increase interp_mass or change priors."
             )
 
+            if dx3_min_test >= L_small_3:
+                raise ValueError(
+                f"Spacing on log(1+z) interpolation grid ({dx3_min_test:.3g}) is larger than or "
+                f"comparable to min prior scale for sigma ({L_small_3:.3g}). "
+                "Increase interp_mass or change priors."
+            )
+
+    if is_observed:
+        print("Building optimal SNR interpolant...")
+
+        # load interpolant
+        with h5py.File('../tables/optimal_snr_aplus_design_05.h5','r') as f:
+            m_grid_at = at.as_tensor_variable(np.array(f['ms']))
+            osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']))
+            ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.))
+        grid_at = (m_grid_at, m_grid_at)
+        osnr_interp_at = atools.GridInterpolator_at(grid_at, osnrs_grid_at)
                   
-    
+    if sample_from_pop:
+        print("Finding init vals for individual event params...")
+
+        rng = np.random.default_rng()
+        x = rng.standard_normal(size=(N, nd))
+        samples_init = putils.sample_from_per_event_gmm(wts_l, mus_l, cho_covs_l, x, rng=None)
+
+        log_Mc_det_init = samples_init[:, 0]
+        logit_q_init = samples_init[:, 1].astype(X)
+        logd_init = samples_init[:, 2]
+
+        z_init = (atools.z_from_dL_at(at.exp(logd_init), 67.7, 0.31, -1, 1, 0)).eval().astype(X)
+        log_onepz_init = np.log1p(z_init).astype(X)
+        log_Mc_src_init = (log_Mc_det_init - log_onepz_init).astype(X)
+        
     ################################################
     # Build model
     ################################################
@@ -1900,7 +1987,7 @@ def make_model(  priors,
     with pm.Model(coords=coords) as model:
 
 
-        if sampling_GW=='gauss' :
+        if sampling_GW=='gauss':
             
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
@@ -1969,7 +2056,7 @@ def make_model(  priors,
 
             Lambda_ += [gamma_]
 
-        elif rate_model=='DPUC':
+        elif rate_model in ('DPUC', 'DPUC-vol'):
 
             assert mass_model in ('DP', 'DPUC')
             print('Modeling evolution of merger rate with a DP-GMM together with mass')
@@ -2207,10 +2294,12 @@ def make_model(  priors,
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center).astype(X) )
             mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center).astype(X))
 
-            if rate_model=='DPUC':
+            if rate_model in ('DPUC','DPUC-vol' ):
                 mu3_center = ( lowmu3+ upmu3) / 2.0
                 mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center).astype(X))
+
                 mus = at.stack([mu1, mu2, mu3], axis=0)
+                
             else:
                 mus = at.stack([mu1, mu2], axis=0)             
                 
@@ -2261,7 +2350,7 @@ def make_model(  priors,
             sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")  
 
             
-            if rate_model=='DPUC':
+            if rate_model in ('DPUC', 'DPUC-vol'):
 
                 
                 U3 = (upmu3-lowmu3)
@@ -2272,8 +2361,9 @@ def make_model(  priors,
                 tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3/2, )
                 eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
-                
+
                 sigs = at.stack([sig1, sig2, sig3], axis=0)
+                
             else:
                 sigs = at.stack([sig1, sig2], axis=0)
 
@@ -2486,25 +2576,21 @@ def make_model(  priors,
             
             elif mass_model in ('DPUC', 'DP'):
 
-                lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
+                if rate_model in ('MD', 'PL'):
+                    lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
 
 
-                # q_grid = atools.inv_logitat(logit_q_grid)
-                # Mc_grid = at.exp(lp_Mc_grid)
+                    interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
+                    interp_grids_mass = [log_Mc_grid, logit_q_grid]
 
-                # m1_grid, m2_grid = m1m2_from_Mcq_at(Mc_grid, q_grid)
+                else:
 
-                # eps_q = at.as_tensor_variable(1e-6, dtype=q_grid.dtype)
-                # q_safe  = q_grid #at.clip(q_grid, eps_q, 1.0 - eps_q)
+           
+                    lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd, z=log_1pz_grid)
 
-                # logJ_Mc = 2.0 * log_Mc_grid
-                # logJ_q = (2.0 / 5.0) * at.log1p(q_safe) - (1.0 / 5.0) * at.log(q_safe) + at.log1p(- q_safe)
 
-                # lp_Mc_grid = lp_Mc_grid - logJ_Mc
-                # lp_q_grid  = lp_q_grid  - logJ_q
-
-                interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
-                interp_grids_mass = [log_Mc_grid, logit_q_grid]
+                    interp_vals_mass  = [lp_Mc_grid, lp_q_grid, lp_z_grid]
+                    interp_grids_mass = [log_Mc_grid, logit_q_grid, log_1pz_grid]
                 
                 
             else:
@@ -2525,310 +2611,388 @@ def make_model(  priors,
         # To implement
 
 
-
-        if not pop_only:
+        if not sample_from_pop:
+            
+            if not pop_only:
             ################################################
             # Individual event mass and distance
             ###############################################
-
     
-            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )
-
-
-            if 'gauss' not in sampling_GW:
-                
-                if 'gmm' in sampling_GW:
-        
-                    print('Sampling m1d, m2d, dL from GMM')
+                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )
     
-                    if sampling_GW=='gmm_cat':
-                        ###################################
-                        # categorical way
     
-                        ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1).astype(int) )
-    
-                    elif sampling_GW=='gmm':
-                        ###################################
-                        # continuous way
-        
-                        u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
-                        v_gmm = at.clip( atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
-    
-                        cdf_w = at.cumsum(wts_l, axis=1)                                          
-                        ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
-
+                if 'gauss' not in sampling_GW:
                     
-                    # Select means and Cholesky factors per batch
-                    mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-                    L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-                     
-                    # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                    Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
-
+                    if 'gmm' in sampling_GW:
             
-                else:
-                    print('Sampling m1d, m2d, dL from gumbel soft assignment, tau=0.5')
-                    
-                    #tau = pm.MutableData("tau_gmm", 0.5)  # (note: if grads feel weak, raise to ~0.3–0.7)
-                    tau=0.5
-                    logits = atools.safe_log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
-                    g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
-                    y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
-                    
-                    # hard label for inspection (unchanged)
-                    ig = pm.Deterministic("idx", at.argmax(y_soft, axis=1), dims="event_index")  # (N,)
-                    
-                    # --- Straight-Through gate (hard forward, soft gradient) ---
-                    # get K from your tensors (N, K, D)
-                    K = mus_l.shape[1]
-                    topk = at.argmax((logits + g) / tau, axis=1)                                     # (N,)
-                    one_hot = at.eq(at.arange(K)[None, :], topk[:, None]).astype(y_soft.dtype)       # (N, K)
-                    s_soft_hard = stop_grad(one_hot - y_soft) + y_soft                         # (N, K)
-
-                    # --- Soft selection, but with ST gating in forward ---
-                    # mu_selected: (N, D)
-                    mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
-                    
-                    # L_selected: (N, D, D)
-                    L_selected = at.sum(cho_covs_l * s_soft_hard[:, :, None, None], axis=1)
-                    
-                    # Lx: (N, D)  [ (N,D,D) * (N,1,D) → (N,D,D); sum over last axis → (N,D) ]
-                    Lx = at.sum(L_selected * x[:, None, :], axis=2)
-                
-                
-                # Final transformed sample
-                samples = mu_selected + Lx                # shape (N, D)
-    
-                
-                log_Mc_det = samples[:,0]/dil_factor
-                logit_q = samples[:,1]
-                logd = samples[:,2]
-                
-    
-                if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
+                        print('Sampling m1d, m2d, dL from GMM')
         
-                    chieff = atools.inv_flogitat(samples[:,3])
-                    chip = atools.inv_logitat(samples[:,4])
+                        if sampling_GW=='gmm_cat':
+                            ###################################
+                            # categorical way
         
-                elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                    # we have chi1, chi2, cost1, cost2
-                    if save_thetas:
-                        chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
-                        chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
+                            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1).astype(int) )
+        
+                        elif sampling_GW=='gmm':
+                            ###################################
+                            # continuous way
             
-                        cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
-                        cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
+                            u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
+                            v_gmm = at.clip( atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
+        
+                            cdf_w = at.cumsum(wts_l, axis=1)                                          
+                            ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
+    
+                        
+                        # Select means and Cholesky factors per batch
+                        mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                        L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
+                         
+                        # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                        Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+    
+                
                     else:
+                        print('Sampling m1d, m2d, dL from gumbel soft assignment, tau=0.5')
+                        
+                        #tau = pm.MutableData("tau_gmm", 0.5)  # (note: if grads feel weak, raise to ~0.3–0.7)
+                        tau=0.5
+                        logits = atools.safe_log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
+                        g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
+                        y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
+                        
+                        # hard label for inspection (unchanged)
+                        ig = pm.Deterministic("idx", at.argmax(y_soft, axis=1), dims="event_index")  # (N,)
+                        
+                        # --- Straight-Through gate (hard forward, soft gradient) ---
+                        # get K from your tensors (N, K, D)
+                        K = mus_l.shape[1]
+                        topk = at.argmax((logits + g) / tau, axis=1)                                     # (N,)
+                        one_hot = at.eq(at.arange(K)[None, :], topk[:, None]).astype(y_soft.dtype)       # (N, K)
+                        s_soft_hard = stop_grad(one_hot - y_soft) + y_soft                         # (N, K)
+    
+                        # --- Soft selection, but with ST gating in forward ---
+                        # mu_selected: (N, D)
+                        mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
+                        
+                        # L_selected: (N, D, D)
+                        L_selected = at.sum(cho_covs_l * s_soft_hard[:, :, None, None], axis=1)
+                        
+                        # Lx: (N, D)  [ (N,D,D) * (N,1,D) → (N,D,D); sum over last axis → (N,D) ]
+                        Lx = at.sum(L_selected * x[:, None, :], axis=2)
+                    
+                    
+                    # Final transformed sample
+                    samples = mu_selected + Lx                # shape (N, D)
+        
+                    
+                    log_Mc_det = samples[:,0]/dil_factor
+                    logit_q = samples[:,1]
+                    logd = samples[:,2]
+                    
+        
+                    if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
+            
+                        chieff = atools.inv_flogitat(samples[:,3])
+                        chip = atools.inv_logitat(samples[:,4])
+            
+                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+                        # we have chi1, chi2, cost1, cost2
+                        if save_thetas:
+                            chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
+                            chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
+                
+                            cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
+                            cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
+                        else:
+                            chi1 = atools.inv_logitat(samples[:,3])
+                            chi2 = atools.inv_logitat(samples[:,4])
+                            cost1 =atools.inv_flogitat(samples[:,5])
+                            cost2 =atools.inv_flogitat(samples[:,6])
+                            
+                    else:
+                        print("No spins computed")
+                
+    
+                
+                elif sampling_GW=='gauss' : # to be tested with spins
+                    
+                    print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
+    
+                    # sample = mu + L @ x   (batched)
+                    samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+                    
+                    # logp = log p(x) - log|L|
+                    # d = x.shape[1]
+                    log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * atools.safe_log(2.0 * np.pi)    # (N,)
+                    log_det_L = at.sum(atools.safe_log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
+                    pilik = log_px - log_det_L                                               # (N,)
+                    
+                    # unpack coordinates:
+                    log_Mc_det = samples[:, 0]
+                    logit_q    = samples[:, 1]
+                    logd       = samples[:, 2]
+                    
+    
+                    if spin_model == 'none' :
+                        
+                        X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
+                        d_int  = at.as_tensor_variable(3, dtype=int)
+    
+    
+                    elif spin_model == 'default' or spin_model == 'default_gauss':
+    
                         chi1 = atools.inv_logitat(samples[:,3])
                         chi2 = atools.inv_logitat(samples[:,4])
-                        cost1 =atools.inv_flogitat(samples[:,5])
-                        cost2 =atools.inv_flogitat(samples[:,6])
-                        
-                else:
-                    print("No spins computed")
             
-
-            
-            elif sampling_GW=='gauss' : # to be tested with spins
+                        cost1 = atools.inv_flogitat(samples[:,5])
+                        cost2 = atools.inv_flogitat(samples[:,6])
+    
+                        X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
+                        d_int  = at.as_tensor_variable(7, dtype=int)
+    
+    
                 
-                print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
-
-                # sample = mu + L @ x   (batched)
-                samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
-                
-                # logp = log p(x) - log|L|
-                # d = x.shape[1]
-                log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * atools.safe_log(2.0 * np.pi)    # (N,)
-                log_det_L = at.sum(atools.safe_log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
-                pilik = log_px - log_det_L                                               # (N,)
-                
-                # unpack coordinates:
-                log_Mc_det = samples[:, 0]
-                logit_q    = samples[:, 1]
-                logd       = samples[:, 2]
-                
-
-                if spin_model == 'none' :
+    
+                    # X as (N, d)
+                    #X = vals.T                                   # (N, d)
+                    #print("X shape is %s"%(X[:, None, :].shape.eval()))
+                    #print("mus_l shape is %s"%(mus_l.shape.eval()))
                     
-                    X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                    d_int  = at.as_tensor_variable(3, dtype=int)
-
-
-                elif spin_model == 'default' or spin_model == 'default_gauss':
-
-                    chi1 = atools.inv_logitat(samples[:,3])
-                    chi2 = atools.inv_logitat(samples[:,4])
-        
-                    cost1 = atools.inv_flogitat(samples[:,5])
-                    cost2 = atools.inv_flogitat(samples[:,6])
-
-                    X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                    d_int  = at.as_tensor_variable(7, dtype=int)
-
-
+                    # Broadcast X against component-wise parameters
+                    # diff: (N, ngmm, d)
+                    diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
+       
+                    
+                    # Quadratic form using precision F = Σ^{-1}
+                    # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
+    
+                    tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
+                    
+                    # r^T F r for each (obs, comp)
+                    quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
+    
+                    
+                    # Component logpdfs (Multivariate Normal)
+                    log_norm = -0.5 * d_int * atools.safe_log(2.0 * np.pi)     # scalar
+                    logp_components = (
+                        -0.5 * quad
+                        + log_norm
+                        - 0.5 * log_dets_l
+                        + log_wts_l
+                    )                                             # (N, ngmm)
+                    
+                    # Mixture log-likelihood per observation: logsumexp over components
+                    gwl = at.logsumexp(logp_components, axis=1)   # (N,)
+    
+    
             
-
-                # X as (N, d)
-                #X = vals.T                                   # (N, d)
-                #print("X shape is %s"%(X[:, None, :].shape.eval()))
-                #print("mus_l shape is %s"%(mus_l.shape.eval()))
                 
-                # Broadcast X against component-wise parameters
-                # diff: (N, ngmm, d)
-                diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
-   
+                else:
+                    raise NotImplementedError()
+    
+    
+                Mc = at.exp(log_Mc_det)            
+                q = atools.inv_logitat(logit_q)
+                m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
+                d = at.exp(logd)
+    
+                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+                zs = atools.atinterp(d, dL_grid, zgrid_)
+                one_plus_zs = 1+zs
+                m1src = m1det/one_plus_zs 
+                m2src = m2det/one_plus_zs  
+    
+                log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid) 
+                dc = atools.atinterp( zs, zgrid_, dc_grid) 
                 
-                # Quadratic form using precision F = Σ^{-1}
-                # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-
-                tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
-                
-                # r^T F r for each (obs, comp)
-                quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
-
-                
-                # Component logpdfs (Multivariate Normal)
-                log_norm = -0.5 * d_int * atools.safe_log(2.0 * np.pi)     # scalar
-                logp_components = (
-                    -0.5 * quad
-                    + log_norm
-                    - 0.5 * log_dets_l
-                    + log_wts_l
-                )                                             # (N, ngmm)
-                
-                # Mixture log-likelihood per observation: logsumexp over components
-                gwl = at.logsumexp(logp_components, axis=1)   # (N,)
-
-
-        
-            
+                if save_thetas:
+                    d = pm.Deterministic('dL', d , dims="event_index")
+                    zs = pm.Deterministic('z', zs, dims= "event_index" ) 
+                    m1src = pm.Deterministic('m1src', m1src, dims="event_index")
+                    m2src = pm.Deterministic('m2src', m2src , dims="event_index")      
+             
+                    
             else:
-                raise NotImplementedError()
-
-
-            Mc = at.exp(log_Mc_det)            
-            q = atools.inv_logitat(logit_q)
-            m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-            d = at.exp(logd)
-
-            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            zs = atools.atinterp(d, dL_grid, zgrid_)
-            one_plus_zs = 1+zs
-            m1src = m1det/one_plus_zs 
-            m2src = m2det/one_plus_zs  
-
-            log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid) 
-            dc = atools.atinterp( zs, zgrid_, dc_grid) 
-            
-            if save_thetas:
-                d = pm.Deterministic('dL', d , dims="event_index")
-                zs = pm.Deterministic('z', zs, dims= "event_index" ) 
-                m1src = pm.Deterministic('m1src', m1src, dims="event_index")
-                m2src = pm.Deterministic('m2src', m2src , dims="event_index")      
-         
+                # we are sampling the usual marginalise likelihood, with "only" pop parameters
+                print('We are running inference only on population parameters.')
+    
+    
+                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+                # AND for each sample! 
                 
+                d_stacked  = at.flatten(d)
+                zs_stacked = atools.atinterp(d_stacked, dL_grid, zgrid_)
+    
+                
+                zs = at.reshape( zs_stacked, (N, Nsamples) )
+                m1src = m1det/(1+zs)
+                m2src = m2det/(1+zs)
+                
+                logd = atools.safe_log(d)
+            
+            
+            ################################################
+            # Population prior
+            ################################################
+    
+    
+            if wrap_logp:
+                log_p_pop_fun = log_p_pop_at_wrap
+                print("Using wrapped p_pop")
+            else:
+                log_p_pop_fun = log_p_pop_at
+                print("Using regular p_pop")
+    
+            
+            if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
+    
+                spins = [ chieff, chip  ]
+    
+            elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+    
+                spins = [chi1, chi2, cost1, cost2]
+    
+            elif spin_model == 'none':
+                
+                spins = []
+    
+            if mass_model not in ('DP', 'DPUC'):
+                Lambda_ = at.stack(Lambda_, axis=0)
+    
+    
+            # # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 
+            # Xi_ = atools.Xifun_at(zs, Xi0_, nXi0_)
+            # dc = d/(1+zs)/Xi_, 
+    
+            
+            # Population prior of all events, without the term T_obs*R0
+            if mass_model in ('DP', 'DPUC'):
+    
+                # dirichelet processs will be for log(Mc_src), logit(q) ...
+                logMc_src =  log_Mc_det - at.log1p(zs)
+                
+                log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz, z_grid = zgrid_ )
+                
+                
+                # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
+                # if using interpolation, the jacobian is already included in the grid.
+                print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
+                
+                eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
+                log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps))
+    
+                if rate_model in ('DPUC','DPUC-vol' ):
+                    # also remove jacobian for log(1+z)
+                    log_p_pop -= at.log1p(zs) 
+                    
+                
+            else:    
+            
+                log_p_pop = log_p_pop_fun( m1src, 
+                                           m2src, 
+                                           zs, 
+                                           d, 
+                                           spins, 
+                                           Lambda_, 
+                                           rate_model, mass_model, spin_model, 
+                                           smoothing=smoothing, 
+                                           has_m2_break=has_m2_break, 
+                                           dc=dc, 
+                                           log_ddL_dz_pre=log_ddL_dz,
+                                           interp_vals_mass = interp_vals_mass,
+                                           interp_grids_mass = interp_grids_mass,
+                                           is_observed = is_observed,
+                                           z_grid = zgrid_
+                                         )
+    
+            
+            
+            
+        
+        
         else:
-            # we are sampling the usual marginalise likelihood, with "only" pop parameters
-            print('We are running inference only on population parameters.')
+            # sampling from GMM and then computing GW likelihood in det space
+            print("\nWill sample from population then compute GW likelihood.")
 
 
-            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            # AND for each sample! 
-            
-            d_stacked  = at.flatten(d)
-            zs_stacked = atools.atinterp(d_stacked, dL_grid, zgrid_)
+            # k = pm.Categorical( "k", p=w, dims="event_index" )
+            # logMc  = pm.Normal("logMc",  mu=mu[0, k], sigma=sd[0, k], dims="event_index")
+            # logit_q = pm.Normal("logitq", mu=mu[1, k], sigma=sd[1, k], dims="event_index")
+            # y      = pm.Normal("y",      mu=mu[2, k], sigma=sd[2, k], dims="event_index")   # y=log(1+z)
+            # _ = pm.Potential("vol_weight", atools.log_dV_dz_at(z, H0_, Om_, w0_, dc=dc).sum()) # or add non-summed version to total logp befor summing
+
+
+                        
+            logMc = pm.Uniform( "logMc_src", lowmu1, upmu1,  dims="event_index", initval=log_Mc_src_init)
+            logit_q = pm.Uniform( "logit_q", lowmu2, upmu2,  dims="event_index", initval=logit_q_init)
+            y = pm.Uniform("log1pz", lowmu3, upmu3, dims="event_index", initval=log_onepz_init )
+
+            q  = atools.inv_logitat(logit_q)
+            z = at.exp(y)-1
+            Mc = at.exp(logMc)
+            m1s, m2s = atools.m1m2_from_Mcq_at(Mc, q)
+
+            m1det = m1s*(1+z)
+            m2det = m2s*(1+z)
+
+            dc = atools.atinterp( z, zgrid_, dc_grid) 
 
             
-            zs = at.reshape( zs_stacked, (N, Nsamples) )
-            m1src = m1det/(1+zs)
-            m2src = m2det/(1+zs)
+            # Compute p_pop
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=y )        
+            logp_components = logp1 + logp2 + logp3                     # (K,N)
+            lpmass = atools.safe_logsumexp(logp_components + logw[:, None], axis=0)
+
+
+            # compute GW likelihood in det. frame
+
+            log_Mc_det = logMc+y
+            d = atools.dLfun_at(z, H0_, Om_, w0_, Xi0_, nXi0_, param=param)
+            logd = at.log( d )
+
+
+            X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
+            d_int  = at.as_tensor_variable(3, dtype=int)
+
+
+            diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
+ 
+            tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
             
-            logd = atools.safe_log(d)
+            quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
+            
+            log_norm = -0.5 * d_int * atools.safe_log(2.0 * np.pi)     # scalar
+            logp_components = (
+                -0.5 * quad
+                + log_norm
+                - 0.5 * log_dets_l
+                + log_wts_l
+            )                                             # (N, ngmm)
+            
+            gwl = at.logsumexp(logp_components, axis=1)   # (N,)
+
+            # jacobian
+            log_jac_q = -at.log(q) - at.log1p(-q)
+
+            # all
+            log_p_pop = lpmass + gwl - log_Mc_det - logd - log_jac_q
         
-        
-        ################################################
-        # Population prior
-        ################################################
 
 
-        if wrap_logp:
-            log_p_pop_fun = log_p_pop_at_wrap
-            print("Using wrapped p_pop")
-        else:
-            log_p_pop_fun = log_p_pop_at
-            print("Using regular p_pop")
 
-        
-        if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
+        if is_observed:
+    
+            print("Fitting for observed population. Removing factor 1/Pdet")
 
-            spins = [ chieff, chip  ]
+            Theta = at.ones(d.shape)
+          
+            log_P_det = atools.safe_log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8.) )
+                                       )
+            log_p_pop -= log_P_det
 
-        elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-
-            spins = [chi1, chi2, cost1, cost2]
-
-        elif spin_model == 'none':
             
-            spins = []
-
-        if mass_model not in ('DP', 'DPUC'):
-            Lambda_ = at.stack(Lambda_, axis=0)
-
-
-        # # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 
-        # Xi_ = atools.Xifun_at(zs, Xi0_, nXi0_)
-        # dc = d/(1+zs)/Xi_, 
-
-        
-        # Population prior of all events, without the term T_obs*R0
-        if mass_model in ('DP', 'DPUC'):
-
-            # dirichelet processs will be for log(Mc_src), logit(q) ...
-            logMc_src =  log_Mc_det - at.log1p(zs)
-            
-            log_p_pop = log_p_pop_fun( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz)
-            
-            
-        #if interp_mass==0:
-            print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
-            # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-            # if using interpolation, the jacobian is already included in the grid.
-            
-            eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
-            log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps)) #+ at.log1p(zs) 
-
-            if rate_model=='DPUC':
-                log_p_pop -= at.log1p(zs) 
                 
-                # logJ_Mc = 2.0 * logMc_src
-                # logJ_q = (2.0 / 5.0) * atools.safe_log(1.0 + q) - (1.0 / 5.0) * atools.safe_log(q) + atools.safe_log(1.0 - q)
-
-                # log_p_pop -= logJ_Mc+logJ_q
-                
-            #else:
-            #     print("Likelihood: NO jacobian m1, m2 --> log(Mc), logit(q) ")
-
-            # print("Nans in  log_p_pop:")
-            # print( np.isnan(log_p_pop.eval()).sum() )
-            
-        else:    
-        
-            log_p_pop = log_p_pop_fun( m1src, 
-                                       m2src, 
-                                       zs, 
-                                       d, 
-                                       spins, 
-                                       Lambda_, 
-                                       rate_model, mass_model, spin_model, 
-                                       smoothing=smoothing, 
-                                       has_m2_break=has_m2_break, 
-                                       dc=dc, 
-                                       log_ddL_dz_pre=log_ddL_dz,
-                                       interp_vals_mass = interp_vals_mass,
-                                       interp_grids_mass = interp_grids_mass
-                                     )
-
-        
         if dLprior=='dLsq':
             # Remove \pi(d)~dL^2 prior on distance 
             log_p_pop -= 2*logd
@@ -2868,13 +3032,11 @@ def make_model(  priors,
 
 
         if not pop_only:
-            if sampling_GW=='gauss' :
+            if sampling_GW=='gauss' and not sample_from_pop:
                 # Add gw likelihood and correct for sampling prior pdf
                 log_p_pop -= pilik
                 log_p_pop += gwl
         
-        # Put it all together
-        if not pop_only:
             
             # just sum log likelihoods
             likelihood_val = at.sum( log_p_pop ) #pm.Deterministic("lik", at.sum( log_p_pop ) ) 

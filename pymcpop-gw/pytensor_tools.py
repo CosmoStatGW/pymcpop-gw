@@ -1692,7 +1692,7 @@ def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
     
     m1_grid = interp_grids[0]         # (n_Mc,)
     m2_grid = interp_grids[1]         # (n_q,)
-    lp_m1_grid, lp_m2_grid = interp_vals  # (K, n_Mc), (K, n_q)
+    lp_m1_grid, lp_m2_grid = interp_vals[0], interp_vals[1]  # (K, n_Mc), (K, n_q)
 
     # ----- M1 / logMc -----
     x0_1 = m1_grid[0]
@@ -1722,10 +1722,76 @@ def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
 
     if z is None:
         lpdf3 = at.zeros(lpdfm2.shape)
+
+    else:
+        # ----- log(1+z) -----
+        
+        z_grid = interp_grids[2]  
+        lp_z_grid = interp_vals[2]
+        
+        x0_3 = z_grid[0]
+        x1_3 = z_grid[-1]
+        nU_3 = z_grid.shape[0]
+        
+        j3, r3 = uniform_interp_indices(z, x0_3, x1_3, nU_3)  # (N,)
+    
+        yl3 = lp_z_grid[:, j3]        # (K, N)
+        yh3 = lp_z_grid[:, j3 + 1]    # (K, N)
+        r3b = r3[None, :]
+    
+        lpdf3 = (1.0 - r3b) * yl3 + r3b * yh3   # (K, N)
         
     return lpdfm1, lpdfm2, lpdf3
 
-    
+
+
+def redshift_mixture_log_norm(mu, sd, logw, 
+                              y_min, y_max,  H0, Om, w0, Ny=512):
+    """
+    log normalization for:
+        N = ∫ dy [ Σ_k w_k p_k(y) * dV/dz(z(y)) ]
+    where y = log(1+z), z(y)=exp(y)-1.
+    """
+
+    # grid in y = log(1+z)
+    y_grid = at.linspace(y_min, y_max, Ny).astype(mu[2].dtype)  # (Ny,)
+    yg = y_grid[None, :]                                        # (1, Ny)
+
+    # component params for y
+    muy = mu[2][:, None]           # (K, 1)
+    sdy = sd[2][:, None]           # (K, 1)
+
+    eps = at.as_tensor_variable(1e-6, dtype=sdy.dtype)
+    vary = at.clip(sdy**2, eps**2, np.inf)
+
+    const = -0.5 * safe_log(2.0 * PI)
+    logpy = const - 0.5 * safe_log(vary) - 0.5 * ((yg - muy) ** 2 / vary)  # (K, Ny)
+    py = at.exp(logpy)                                                     # (K, Ny)
+
+    # weights
+    w = at.exp(logw)
+    w = w / at.sum(w)
+
+    mix_y = at.sum(w[:, None] * py, axis=0)  # (Ny,)
+
+    # selection factor dV/dz evaluated at z = exp(y)-1
+    z_grid = at.exp(y_grid) - 1.0            # (Ny,)
+    dVdz = at.exp(log_dV_dz_at(z_grid, H0, Om, w0))
+
+    integrand = mix_y * dVdz #/(1.+z_grid)                # (Ny,)
+
+    # trapezoid over y
+    #dy = (y_max - y_min) / at.as_tensor_variable(Ny - 1, dtype=y_grid.dtype)
+    #N_val = at.sum(0.5 * (integrand[1:] + integrand[:-1])) * dy
+
+    N_val = attrapzvec(integrand, y_grid,  )
+
+    return safe_log(N_val)
+
+
+
+
+
 ####### Power Law + Peak ########
 
 
@@ -2122,37 +2188,6 @@ def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.
     return log_mix_val - log_N + s1 + s2
 
 
-def log_broken_power_law_DPLDP_pdf_or(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl=0.05, epsilon=0.01):
-    """
-    Log of the broken power-law PDF 
-    """    
-    
-    # Compute log normalization constant
-    norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
-    norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
-    log_N = at.log(norm1 + norm2)
-
-
-    # log(pdf) in each regime
-    log_val1 = -alpha1 * at.log(m1 / mb)
-    log_val2 = -alpha2 * at.log(m1 / mb)
-
-  
-    # Smooth weight function (sigmoid transition)
-    w = safe_sigmoid( -m1, -mb, epsilon)
-
-    # Use log-sum-exp to compute:
-    # log(w * exp(log_val1) + (1-w) * exp(log_val2))
-    log_mix_val = logsumexp(
-        at.log(w) + log_val1,
-        at.log1p(-w) + log_val2
-    )
-
-    
-    s1 = at.log1p(-safe_sigmoid(m1, m_high, sh))
-    s2 = at.log(safe_sigmoid(m1, m1_low, sl))
-
-    return log_mix_val - log_N + s1 + s2
 
 
 def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
@@ -2197,60 +2232,6 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     return log_S + log_mix
 
     
-def logpdfm1_DPLDP_or(
-    m1, alpha1, alpha2, mb,
-    mu1, sigma1, mu2, sigma2,
-    m1_low, m_high, delta_m1,
-    lambda0, lambda1,
-    epsilon, 
-    smoothing='LVK'
-    ):
-    """
-    Log of the mixture model. Assumes other components return log-probabilities.
-    """
-    
-    # log_lambda0 = at.log(lambda0)
-    # log_lambda1 = at.log(lambda1)
-    # log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
-
-    work_dtype = getattr(m1, "dtype", "float64")
-
-    if work_dtype == "float32":
-        eps_w = at.as_tensor_variable(1e-6, dtype=work_dtype)
-    else:
-        eps_w = at.as_tensor_variable(1e-12, dtype=work_dtype)
-    
-    log_lambda0 = at.log(lambda0)
-    log_lambda1 = at.log(lambda1)
-    
-    lambda2_raw  = 1.0 - lambda0 - lambda1
-    lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0)  # enforce (eps_w, 1]
-    log_lambda2  = at.log(lambda2_safe)
-
-    log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
-    log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) # low-mass peak
-    log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)   # mid-mass peak
-
-    
-    if smoothing=='LVK':
-        log_S = logS_PLP_LVK(m1, delta_m1, m1_low,)
-    else:
-        log_S = logS_PLP(m1, delta_m1, m1_low,)
-
-    # # logsumexp of the weighted logs
-    # log_mix = logsumexp(
-    #     logsumexp(log_lambda0 + log_ppl, log_lambda1 + log_pnorm1),
-    #     log_lambda2 + log_pnorm2
-    # )
-
-    term0 = log_lambda0 + log_ppl
-    term1 = log_lambda1 + log_pnorm1
-    term2 = log_lambda2 + log_pnorm2
-    
-    log_mix = safe_logsumexp3(term0, term1, term2, work_dtype)
-
-    return log_S + log_mix 
-
 
 
 
@@ -2337,64 +2318,6 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
             m1_grid = interp_grids[0]
             m2_grid = interp_grids[1]
             lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
-
-
-            ########### my v1
-            
-            # x0_1 = m1_grid[0]
-            # x1_1 = m1_grid[-1]
-            # nU_1 = m1_grid.shape[0] - 1
-        
-            # lpdfm1 = atinterp_uniform(m1, x0_1, x1_1, nU_1, lp_m1_grid)
-
-
-            # x0_2 = m2_grid[0]
-            # x1_2 = m2_grid[-1]
-            # nU_2 = m2_grid.shape[0] - 1
-        
-            # lpdfm2 = atinterp_uniform(m2, x0_2, x1_2, nU_2, lp_m2_grid)
-
-
-            # lC = atinterp_uniform(m1, x0_1, x1_1, nU_1, lC_of_m1)
-
-
-            ########### coorected v2
-            
-            
-            # # --- m1 log-pdf ---
-            # x0_1 = m1_grid[0]
-            # x1_1 = m1_grid[-1]
-            # nU_1 = m1_grid.shape[0]      # NOTE: no "- 1"
-            
-            # lpdfm1 = atinterp_uniform(
-            #     m1,
-            #     x0_1,
-            #     x1_1,
-            #     nU_1,
-            #     lp_m1_grid,
-            # )
-            
-            # # --- m2 log-pdf ---
-            # x0_2 = m2_grid[0]
-            # x1_2 = m2_grid[-1]
-            # nU_2 = m2_grid.shape[0]      # NOTE: no "- 1"
-            
-            # lpdfm2 = atinterp_uniform(
-            #     m2,
-            #     x0_2,
-            #     x1_2,
-            #     nU_2,
-            #     lp_m2_grid,
-            # )
-            
-            # # --- C(m1) ---
-            # lC = atinterp_uniform(
-            #     m1,
-            #     x0_1,
-            #     x1_1,
-            #     nU_1,
-            #     lC_of_m1,
-            # )
 
 
             ############ Faster, v3
@@ -2688,6 +2611,209 @@ def logpdf_FP(theta, lambdaBBHmass, norm=True, norm_p1=False, res=1000, force_m2
         return joint
 
 
+
+
+def theta_of_z(z, theta_0, theta_inf, z_t, delta_z):
+    """
+    Generic redshift evolution for a hyperparameter, in the spirit of Eq. (2):
+        θ(z) = θ0 + (θ_inf - θ0) * s(z; z_t, Δz),
+
+    where s is a smooth sigmoid between 0 and 1.
+    Works with scalar or array z (broadcasts).
+    """
+    x = (z - z_t) / delta_z
+    # tanh-based sigmoid: smoothly goes from 0 to 1 around z_t
+    s = 0.5 * (1.0 + at.tanh(x))
+    return theta_0 + (theta_inf - theta_0) * s
+
+
+
+def logpdfm1_DPLDP_z(
+    m1, z,
+    # low-z hyperparameters (your current λ_BBHmass pieces)
+    alpha1_0, alpha2_0, mb_0,
+    mu1_0, sigma1_0, mu2_0, sigma2_0,
+    m1_low, m_high, delta_m1,
+    lambda0_0, lambda1_0,
+    epsilon,
+    # evolution hyperparameters for each θ in {alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, lambda0, lambda1}
+    alpha1_inf, z_alpha1, dz_alpha1,
+    alpha2_inf, z_alpha2, dz_alpha2,
+    mb_inf,    z_mb,     dz_mb,
+    mu1_inf,   z_mu1,    dz_mu1,
+    sigma1_inf,z_sigma1, dz_sigma1,
+    mu2_inf,   z_mu2,    dz_mu2,
+    sigma2_inf,z_sigma2, dz_sigma2,
+    lambda0_inf, z_lambda0, dz_lambda0,
+    lambda1_inf, z_lambda1, dz_lambda1,
+    smoothing='LVK',
+):
+    """
+    Redshift-evolving version of logpdfm1_DPLDP.
+    All heavy lifting still done by your original logpdfm1_DPLDP;
+    this function only constructs θ(z).
+    """
+
+    # --- build z-dependent hyperparameters using Eq.(2)-style evolution ---
+    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
+    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
+    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
+    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
+    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
+    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
+    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
+    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
+    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
+
+    # --- now call your original m1 logpdf with these z-dependent quantities ---
+    return logpdfm1_DPLDP(
+        m1,
+        alpha1, alpha2, mb,
+        mu1, sigma1, mu2, sigma2,
+        m1_low, m_high, delta_m1,
+        lambda0, lambda1,
+        epsilon,
+        smoothing=smoothing,
+    )
+
+
+
+def logpdf_DPLDP_z(
+    theta, z,
+    lambdaBBHmass_lowz,
+    evo_params,
+    force_m2_less_than_m1=False,
+    has_m2_break=False,
+    smoothing='LVK',
+    resC=100, resN=500,
+    interp_vals=None, interp_grids=None,
+):
+    """
+    Redshift-evolving wrapper around your original logpdf_DPLDP.
+
+    Parameters
+    ----------
+    theta : (m1, m2)
+    z     : redshift (scalar or array broadcasting with m1, m2)
+    lambdaBBHmass_lowz :
+        Same vector you currently pass to logpdf_DPLDP, interpreted as
+        the z≈0 values of the hyperparameters.
+    evo_params :
+        A flat tuple/array of the *evolution* hyperparameters, ordered as:
+          (alpha1_inf, z_alpha1, dz_alpha1,
+           alpha2_inf, z_alpha2, dz_alpha2,
+           mb_inf,    z_mb,     dz_mb,
+           mu1_inf,   z_mu1,    dz_mu1,
+           sigma1_inf,z_sigma1, dz_sigma1,
+           mu2_inf,   z_mu2,    dz_mu2,
+           sigma2_inf,z_sigma2, dz_sigma2,
+           lambda0_inf, z_lambda0, dz_lambda0,
+           lambda1_inf, z_lambda1, dz_lambda1)
+    Other arguments are passed straight through to your original logpdf_DPLDP.
+    """
+
+    m1, m2 = theta
+
+    # unpack low-z hyperparameters (exactly your current order)
+    (alpha1_0, alpha2_0, mb_0,
+     mu1_0, sigma1_0, mu2_0, sigma2_0,
+     m1_low, m_high, delta_m1,
+     lambda0_0, lambda1_0,
+     beta, m2_low, delta_m2,
+     epsilon, m_g, w_g, sig_g_low, sig_g_high) = lambdaBBHmass_lowz
+
+    # unpack evolution parameters
+    (alpha1_inf, z_alpha1, dz_alpha1,
+     alpha2_inf, z_alpha2, dz_alpha2,
+     mb_inf,     z_mb,     dz_mb,
+     mu1_inf,    z_mu1,    dz_mu1,
+     sigma1_inf, z_sigma1, dz_sigma1,
+     mu2_inf,    z_mu2,    dz_mu2,
+     sigma2_inf, z_sigma2, dz_sigma2,
+     lambda0_inf, z_lambda0, dz_lambda0,
+     lambda1_inf, z_lambda1, dz_lambda1) = evo_params
+
+    # --- build z-dependent hyperparameters ---
+    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
+    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
+    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
+    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
+    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
+    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
+    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
+    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
+    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
+
+    # rebuild a z-dependent mass-parameter vector for the downstream calls
+    lambdaBBHmass_z = (
+        alpha1, alpha2, mb,
+        mu1, sigma1, mu2, sigma2,
+        m1_low, m_high, delta_m1,
+        lambda0, lambda1,
+        beta, m2_low, delta_m2,
+        epsilon, m_g, w_g, sig_g_low, sig_g_high
+    )
+
+    # now just call your original logpdf_DPLDP
+    return logpdf_DPLDP(
+        theta,
+        lambdaBBHmass_z,
+        force_m2_less_than_m1=force_m2_less_than_m1,
+        has_m2_break=has_m2_break,
+        smoothing=smoothing,
+        resC=resC, resN=resN,
+        interp_vals=interp_vals,
+        interp_grids=interp_grids,
+    )
+
+
+
+def logNorm_DPLDP_z(
+    z,
+    # same low-z params as before
+    alpha1_0, alpha2_0, mb_0,
+    mu1_0, sigma1_0, mu2_0, sigma2_0,
+    m1_low, m_high, delta_m1,
+    lambda0_0, lambda1_0,
+    epsilon,
+    # evolution params
+    alpha1_inf, z_alpha1, dz_alpha1,
+    alpha2_inf, z_alpha2, dz_alpha2,
+    mb_inf,    z_mb,     dz_mb,
+    mu1_inf,   z_mu1,    dz_mu1,
+    sigma1_inf,z_sigma1, dz_sigma1,
+    mu2_inf,   z_mu2,    dz_mu2,
+    sigma2_inf,z_sigma2, dz_sigma2,
+    lambda0_inf, z_lambda0, dz_lambda0,
+    lambda1_inf, z_lambda1, dz_lambda1,
+    res=500,
+    smoothing='LVK',
+):
+    # build θ(z)
+    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
+    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
+    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
+    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
+    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
+    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
+    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
+    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
+    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
+
+    # call your original mass-only normalization
+    return logNorm_DPLDP(
+        alpha1, alpha2, mb,
+        mu1, sigma1, mu2, sigma2,
+        m1_low, m_high, delta_m1,
+        lambda0, lambda1,
+        epsilon,
+        res=res,
+        smoothing=smoothing,
+    )
+
+
+
+#####################################
 class GridInterpolator_at:
     '''
     points :: n x n tensor with points where to evaluate the grid
@@ -2738,8 +2864,8 @@ class GridInterpolator_at:
             values = values+ self.values[edge_indices[1], edge_indices[0]]* weight[vslice]
         return values
 
-def Pdet(file, m1det, m2det, dL, Theta, thresh,
-         sigma=1., rand_noise=False, rng = None, seed = 42):
+def Pdet( osnr_interp_at, m1det, m2det, dL, Theta, thresh,
+         sigma=1., rand_noise=False, rng = None, seed = 42, ref_dist_Gpc_at=1.):
     """
     file: mass grid and related optimal snr values
     m1det: detector-frame mass 1
@@ -2750,13 +2876,7 @@ def Pdet(file, m1det, m2det, dL, Theta, thresh,
     ref_dist_Gpc: the reference distance at which osnr_interp was calculated
     rand_noise: add random N(0,1)
     """
-    # load interpolant
-    with h5py.File(file,'r') as f:
-        m_grid_at = at.as_tensor_variable(np.array(f['ms']))
-        osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']))
-        ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.))
-    grid_at = (m_grid_at, m_grid_at)
-    osnr_interp_at = GridInterpolator_at(grid_at, osnrs_grid_at)
+    
     # evaluate the interpolant
     pts_at = at.stack([m1det, at.full_like(m1det, m2det)], axis=0)
     osnr_at = osnr_interp_at(pts_at)
