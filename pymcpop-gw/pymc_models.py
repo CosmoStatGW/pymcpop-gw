@@ -195,6 +195,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  Lambda, 
                  rate_model, mass_model, spin_model, 
                  smoothing='LVK', 
+                 simplex_repair=False,
                  has_m2_break=False, 
                  dc=None, 
                  log_ddL_dz_pre=None,
@@ -426,7 +427,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 has_m2_break=has_m2_break,
                 smoothing=smoothing,
                 interp_vals=None,
-                interp_grids=None
+                interp_grids=None,
+                simplex_repair=simplex_repair
             )
             
         
@@ -1425,6 +1427,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                     Lambda,  Ndraw, 
                                     rate_model, mass_model, spin_model, 
                                     smoothing, 
+                                   simplex_repair,
                                     has_m2_break, 
                                     interp, 
                                     wrap_logp=False, 
@@ -1497,6 +1500,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                               Lambda, 
                               rate_model, mass_model, spin_model, 
                               smoothing=smoothing, 
+                              simplex_repair=simplex_repair,
                               has_m2_break=has_m2_break, 
                               log_ddL_dz_pre = log_ddL_dz_inj,
                               dc = dcinj,
@@ -1578,6 +1582,7 @@ def make_model(  priors,
                  rate_model = 'MD',
                  mass_model = 'PLP',
                  smoothing='LVK',
+                 simplex_repair=False,
                  interp_mass = 0,
                  interp_z = 0,
                  has_m2_break = False,
@@ -2325,12 +2330,7 @@ def make_model(  priors,
             m2_low_  = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
             m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X))
             
-            # mixture weights at z≈0
-            lambda_vec0 = pm.Dirichlet("lambda0_vec", a=np.asarray([1, 1, 1], dtype=X),
-                                       initval=np.asarray(ivals.get("lambda"), dtype=X))
-            lambda0_0 = pm.Deterministic("lambda0_0", lambda_vec0[0])
-            lambda1_0 = pm.Deterministic("lambda1_0", lambda_vec0[1])
-            lambda2_0 = pm.Deterministic("lambda2_0", lambda_vec0[2])
+
             
             # secondary-mass hyperparams (unchanged unless you also evolve them)
             beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
@@ -2349,6 +2349,21 @@ def make_model(  priors,
                 sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
                 sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
 
+
+
+            # # mixture weights at z≈0
+            eps_w = at.as_tensor_variable(1e-12).astype(X)
+            # endpoints
+            lambda_vec0 = pm.Dirichlet(
+                "lambda0_vec",
+                a=np.asarray([1, 1, 1], dtype=X),
+                initval=np.asarray(ivals.get("lambda"), dtype=X)
+            )
+
+            lambda0_0 = pm.Deterministic("lambda0_0", lambda_vec0[0])
+            lambda1_0 = pm.Deterministic("lambda1_0", lambda_vec0[1])
+            lambda2_0 = pm.Deterministic("lambda2_0", lambda_vec0[2])
+            
             # -------------------------
             # Redshift evolution hyperparameters for each θ in:
             # {alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, lambda0, lambda1}
@@ -2357,8 +2372,8 @@ def make_model(  priors,
             # -------------------------
             
             # helper: choose priors for (z_t, Δz); you can swap these for your own
-            z_t_prior = priors.get("z_t", (0.0, 2.5))
-            dz_prior  = priors.get("dz",  (0.05, 2.0))   # Δz > 0; adjust as you like
+            z_t_prior = priors.get("z_t", (0.05, 2.5))
+            dz_prior  = priors.get("dz",  (0.01, 2.0))   # Δz > 0; adjust as you like
 
 
             # pick priors for the high-z asymptotes; by default reuse the low-z prior ranges
@@ -2383,8 +2398,10 @@ def make_model(  priors,
             lambda0_inf_ = pm.Deterministic("lambda0_inf", lambda_vec_inf[0])
             lambda1_inf_ = pm.Deterministic("lambda1_inf", lambda_vec_inf[1])
             lambda2_inf_ = pm.Deterministic("lambda2_inf", lambda_vec_inf[2])
+
+
             
-            # Allow separate (z_t, Δz) for lambda0 and lambda1 (as you requested)
+            # Allow separate (z_t, Δz) for lambda0 and lambda1 
             z_lambda0_  = pm.Uniform("z_lambda0",  lower=z_t_prior[0], upper=z_t_prior[1],
                                      initval=ivals.get("z_lambda0", None))
             dz_lambda0_ = pm.Uniform("dz_lambda0", lower=dz_prior[0],  upper=dz_prior[1],
@@ -2393,6 +2410,9 @@ def make_model(  priors,
                                      initval=ivals.get("z_lambda1", None))
             dz_lambda1_ = pm.Uniform("dz_lambda1", lower=dz_prior[0],  upper=dz_prior[1],
                                      initval=ivals.get("dz_lambda1", None))
+            
+            if simplex_repair:
+                print("Will enforce lambda0(z), lambda1(z), lambda2(z) on the simplex")
             
             # -------------------------
             # Pack hyperparameters for your logpdf_DPLDP_z wrapper
@@ -2794,7 +2814,8 @@ def make_model(  priors,
                     lambda0_0, lambda1_0,
                     epsilon_,
                     *evo_params_,
-                    smoothing=smoothing
+                    smoothing=smoothing,
+                    simplex_repair=simplex_repair
                 )
                 lp_m1_bank = lp_flat.reshape((K, N1))  # (K,N1)
                 
@@ -3134,7 +3155,8 @@ def make_model(  priors,
                                            spins, 
                                            Lambda_, 
                                            rate_model, mass_model, spin_model, 
-                                           smoothing=smoothing, 
+                                           smoothing=smoothing,
+                                           simplex_repair=simplex_repair,
                                            has_m2_break=has_m2_break, 
                                            dc=dc, 
                                            log_ddL_dz_pre=log_ddL_dz,
@@ -3403,6 +3425,7 @@ def make_model(  priors,
                                                           Ndraw, 
                                                           rate_model, mass_model, spin_model_name, 
                                                           smoothing, 
+                                                          simplex_repair,
                                                           has_m2_break, 
                                                           interp=pade, 
                                                          dL_grid=dL_grid_inj,             
@@ -3419,7 +3442,8 @@ def make_model(  priors,
                                                             dcinj = dcinj,
                                                           param=param,
                                                           interp_vals_mass = interp_vals_mass,
-                                                           interp_grids_mass = interp_grids_mass
+                                                           interp_grids_mass = interp_grids_mass,
+                                                        
                                                         )
 
                 

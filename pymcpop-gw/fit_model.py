@@ -83,6 +83,8 @@ def main():
     
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
+    parser.add_argument("--simplex_repair", default=1, type=int, required=False)
+
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
     
     
@@ -666,9 +668,10 @@ def main():
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
                                     smoothing=FLAGS.smoothing,
+                                    simplex_repair=FLAGS.simplex_repair,
                                     has_m2_break=FLAGS.has_m2_break,
                                     interp_mass = FLAGS.interp_mass,
-                                interp_z = FLAGS.interp_z,
+                                    interp_z = FLAGS.interp_z,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
@@ -738,12 +741,6 @@ def main():
     if FLAGS.backend=='disk':
         backend=None
     elif FLAGS.backend=='ztrace':
-        # # for saving see https://discourse.pymc.io/t/saving-intermediate-results-using-mcmc-in-pymc4/9938
-        # # Not well tested
-        # import clickhouse_driver
-        # import mcbackend
-        # ch_client = clickhouse_driver.Client("localhost")
-        # backend = mcbackend.ClickHouseBackend(ch_client)
         import zarr, numcodecs
         
         from pymc.backends.zarr import ZarrTrace
@@ -752,7 +749,6 @@ def main():
         backend = ZarrTrace(store=spath)
         print("Intermediate trace will be stored at %s"%spath)
         print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
-        #print("Has ZarrTrace:", ZarrTrace is not None)
     else:
         raise ValueError("backend can be disk or ztrace, got %s"%FLAGS.backend)
 

@@ -2195,19 +2195,42 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     m1_low, m_high, delta_m1,
     lambda0, lambda1,
     epsilon, 
-    smoothing='LVK'):
+    smoothing='LVK', simplex_repair=False):
     
     work_dtype = getattr(m1, "dtype", "float64")
     
     eps_w = at.as_tensor_variable(1e-6 if work_dtype == "float32" else 1e-12,
                                   dtype=work_dtype)
 
-    log_lambda0 = at.log(lambda0)
-    log_lambda1 = at.log(lambda1)
+    
+    if not simplex_repair:
+        log_lambda0 = at.log(lambda0)
+        log_lambda1 = at.log(lambda1)
+    
+        lambda2_raw  = 1.0 - lambda0 - lambda1
+        lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0)
+        log_lambda2  = at.log(lambda2_safe)
 
-    lambda2_raw  = 1.0 - lambda0 - lambda1
-    lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0)
-    log_lambda2  = at.log(lambda2_safe)
+    else:
+        # ---- Simplex repair (minimal deviation from original) ----
+        lam0 = at.clip(lambda0, eps_w, 1.0)
+        lam1 = at.clip(lambda1, eps_w, 1.0)
+        lam2_raw = 1.0 - lam0 - lam1
+    
+        # smooth floor for lam2: equals lam2_raw when lam2_raw >> eps_w, but never < eps_w
+        # (softplus(x) ~ x for x>>0, ~0 for x<<0)
+        lam2 = eps_w + at.softplus(lam2_raw - eps_w)
+    
+        # renormalize so lam0+lam1+lam2 = 1 exactly
+        denom = lam0 + lam1 + lam2
+        lam0 = lam0 / denom
+        lam1 = lam1 / denom
+        lam2 = lam2 / denom
+
+        log_lambda0 = at.log(lam0)
+        log_lambda1 = at.log(lam1)
+        log_lambda2 = at.log(lam2)
+
 
     log_ppl    = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
     log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high)
@@ -2297,7 +2320,7 @@ def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_tha
     
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None, norm=True):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None, norm=True, simplex_repair=False):
     
         m1, m2 = theta
         alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
@@ -2305,7 +2328,7 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
 
         if interp_vals is None:
             
-            lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
+            lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, simplex_repair=simplex_repair)
         
             lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
             
@@ -2394,7 +2417,7 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
 
 
 
-def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=500, smoothing='LVK'):
+def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=500, smoothing='LVK', simplex_repair=False):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
@@ -2407,7 +2430,7 @@ def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
     
     ms = m1_low + (m_high - m1_low) * _tgrid 
             
-    lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing  )
+    lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, simplex_repair=simplex_repair  )
     ps = at.exp( lpdf)
     
     return at.log( attrapzvec(ps, ms) )
@@ -2648,6 +2671,8 @@ def logpdfm1_DPLDP_z(
     lambda0_inf, z_lambda0, dz_lambda0,
     lambda1_inf, z_lambda1, dz_lambda1,
     smoothing='LVK',
+    simplex_repair=False
+    
 ):
     """
     Redshift-evolving version of logpdfm1_DPLDP.
@@ -2666,6 +2691,7 @@ def logpdfm1_DPLDP_z(
     lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
     lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
 
+
     # --- now call your original m1 logpdf with these z-dependent quantities ---
     return logpdfm1_DPLDP(
         m1,
@@ -2675,6 +2701,7 @@ def logpdfm1_DPLDP_z(
         lambda0, lambda1,
         epsilon,
         smoothing=smoothing,
+        simplex_repair=simplex_repair
     )
 
 
@@ -2688,6 +2715,7 @@ def logpdf_DPLDP_z(
     smoothing='LVK',
     resC=100, resN=500,
     interp_vals=None, interp_grids=None,
+    simplex_repair=False
 ):
     """
     Redshift-evolving wrapper around your original logpdf_DPLDP.
@@ -2745,6 +2773,8 @@ def logpdf_DPLDP_z(
     lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
     lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
 
+
+
     # rebuild a z-dependent mass-parameter vector for the downstream calls
     lambdaBBHmass_z = (
         alpha1, alpha2, mb,
@@ -2765,8 +2795,10 @@ def logpdf_DPLDP_z(
         resC=resC, resN=resN,
         interp_vals=interp_vals,
         interp_grids=interp_grids,
-        norm=False
+        norm=False,
+        simplex_repair=simplex_repair
     )
+    
     ln = logNorm_DPLDP_z(
         z,
         alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
@@ -2781,9 +2813,77 @@ def logpdf_DPLDP_z(
         lambda0_inf, z_lambda0, dz_lambda0,
         lambda1_inf, z_lambda1, dz_lambda1,
         res=resN, smoothing=smoothing,
+        simplex_repair=simplex_repair
     )
 
     return lpdf_ - ln
+
+
+
+def logNorm_DPLDP_z(
+    z, 
+    alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
+    m1_low, m_high, delta_m1, lambda0_0, lambda1_0, epsilon,
+    alpha1_inf, z_alpha1, dz_alpha1,
+    alpha2_inf, z_alpha2, dz_alpha2,
+    mb_inf,    z_mb,     dz_mb,
+    mu1_inf,   z_mu1,    dz_mu1,
+    sigma1_inf,z_sigma1, dz_sigma1,
+    mu2_inf,   z_mu2,    dz_mu2,
+    sigma2_inf,z_sigma2, dz_sigma2,
+    lambda0_inf, z_lambda0, dz_lambda0,
+    lambda1_inf, z_lambda1, dz_lambda1,
+    smoothing="LVK",
+    res=500,
+    simplex_repair=False
+):
+    """
+    All hyperparameters are scalars. z is vector (Nevt,).
+    m1_grid is the exact grid you want to integrate over.
+    Returns ln(z) vector (Nevt,).
+    """
+
+    if res!=500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+    
+    m1_grid = m1_low + (m_high - m1_low) * _tgrid 
+
+    z = at.atleast_1d(z)
+    
+    K  = z.shape[0]
+    N1 = m1_grid.shape[0]
+    
+    M = at.broadcast_to(m1_grid[None, :], (K, N1))
+    Z = at.broadcast_to(z[:, None],   (K, N1))
+    
+    lp_flat = logpdfm1_DPLDP_z(
+        M.reshape((K * N1,)),
+        Z.reshape((K * N1,)),
+        alpha1_0, alpha2_0, mb_0,
+        mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1,
+        lambda0_0, lambda1_0,
+        epsilon,
+        alpha1_inf, z_alpha1, dz_alpha1,
+        alpha2_inf, z_alpha2, dz_alpha2,
+        mb_inf,    z_mb,     dz_mb,
+        mu1_inf,   z_mu1,    dz_mu1,
+        sigma1_inf,z_sigma1, dz_sigma1,
+        mu2_inf,   z_mu2,    dz_mu2,
+        sigma2_inf,z_sigma2, dz_sigma2,
+        lambda0_inf, z_lambda0, dz_lambda0,
+        lambda1_inf, z_lambda1, dz_lambda1,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair
+    )
+    logp = lp_flat.reshape((K, N1))  # (K,N1)
+
+    return at.log(attrapzvec(at.exp(logp), m1_grid, axis=1))  # (Nevt,)
+
+
+
 
 
 def logNorm_DPLDP_z_scalar(
@@ -2829,73 +2929,6 @@ def logNorm_DPLDP_z_scalar(
         smoothing=smoothing,
         
     )
-
-
-def logNorm_DPLDP_z(
-    z,
-    alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
-    m1_low, m_high, delta_m1, lambda0_0, lambda1_0, epsilon,
-    alpha1_inf, z_alpha1, dz_alpha1,
-    alpha2_inf, z_alpha2, dz_alpha2,
-    mb_inf,    z_mb,     dz_mb,
-    mu1_inf,   z_mu1,    dz_mu1,
-    sigma1_inf,z_sigma1, dz_sigma1,
-    mu2_inf,   z_mu2,    dz_mu2,
-    sigma2_inf,z_sigma2, dz_sigma2,
-    lambda0_inf, z_lambda0, dz_lambda0,
-    lambda1_inf, z_lambda1, dz_lambda1,
-    res=500, smoothing="LVK",
-):
-    """
-    All inputs are scalars except z (vector). Returns ln(z) as a vector.
-    """
-
-    z = at.as_tensor_variable(z)
-    ones = at.ones_like(z)
-
-    # evolve these -> vectors (N,)
-    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
-    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
-    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
-    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
-    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
-    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
-    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
-    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
-    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
-
-    # broadcast all non-evolving scalars -> vectors (N,)
-    m1_low_v   = ones * m1_low
-    m_high_v   = ones * m_high
-    delta_m1_v = ones * delta_m1
-    eps_v      = ones * epsilon
-
-    # integration grid in t (shared)
-    t = at.linspace(0.0, 1.0, res).astype(m_high.dtype)           # (res,)
-    dt = 1.0 / (res - 1)
-    w  = at.ones((res,), dtype=t.dtype) * dt
-    w  = at.set_subtensor(w[0],  0.5 * dt)
-    w  = at.set_subtensor(w[-1], 0.5 * dt)
-
-    # ms per event: (N,res)
-    ms = m1_low_v[:, None] + (m_high_v[:, None] - m1_low_v[:, None]) * t[None, :]
-
-    # evaluate logpdf(m1|z) on the (N,res) grid
-    lpdf = logpdfm1_DPLDP(
-        ms,
-        alpha1[:, None], alpha2[:, None], mb[:, None],
-        mu1[:, None], sigma1[:, None], mu2[:, None], sigma2[:, None],
-        m1_low_v[:, None], m_high_v[:, None], delta_m1_v[:, None],
-        lambda0[:, None], lambda1[:, None],
-        eps_v[:, None],
-        smoothing=smoothing
-    )  # (N,res)
-
-    p = at.exp(lpdf)
-
-    # ∫ p(m) dm = (m_high-m1_low) * ∫ p(t) dt
-    integral = (m_high_v - m1_low_v) * at.sum(p * w[None, :], axis=1)  # (N,)
-    return at.log(at.clip(integral, 1e-300, 1e300))
 
 
 def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
