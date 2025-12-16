@@ -2781,7 +2781,7 @@ def logpdf_DPLDP_z(
         lambda0_inf, z_lambda0, dz_lambda0,
         lambda1_inf, z_lambda1, dz_lambda1,
         res=resN, smoothing=smoothing,
-    ):
+    )
 
     return lpdf_ - ln
 
