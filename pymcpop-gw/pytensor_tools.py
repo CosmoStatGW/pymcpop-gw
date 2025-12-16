@@ -2297,7 +2297,7 @@ def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_tha
     
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None, ):
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None, norm=True):
     
         m1, m2 = theta
         alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
@@ -2310,9 +2310,10 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
             lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
             
             lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
-
-            ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, res=resN)
-            
+            if norm:
+                ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing, res=resN)
+            else:
+                ln=0.
         else:
 
             m1_grid = interp_grids[0]
@@ -2755,7 +2756,7 @@ def logpdf_DPLDP_z(
     )
 
     # now just call your original logpdf_DPLDP
-    return logpdf_DPLDP(
+    lpdf_ =  logpdf_DPLDP(
         theta,
         lambdaBBHmass_z,
         force_m2_less_than_m1=force_m2_less_than_m1,
@@ -2764,11 +2765,28 @@ def logpdf_DPLDP_z(
         resC=resC, resN=resN,
         interp_vals=interp_vals,
         interp_grids=interp_grids,
+        norm=False
     )
+    ln = logNorm_DPLDP_z(
+        z,
+        alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1, lambda0_0, lambda1_0, epsilon,
+        alpha1_inf, z_alpha1, dz_alpha1,
+        alpha2_inf, z_alpha2, dz_alpha2,
+        mb_inf,    z_mb,     dz_mb,
+        mu1_inf,   z_mu1,    dz_mu1,
+        sigma1_inf,z_sigma1, dz_sigma1,
+        mu2_inf,   z_mu2,    dz_mu2,
+        sigma2_inf,z_sigma2, dz_sigma2,
+        lambda0_inf, z_lambda0, dz_lambda0,
+        lambda1_inf, z_lambda1, dz_lambda1,
+        res=resN, smoothing=smoothing,
+    ):
+
+    return lpdf_ - ln
 
 
-
-def logNorm_DPLDP_z(
+def logNorm_DPLDP_z_scalar(
     z,
     # same low-z params as before
     alpha1_0, alpha2_0, mb_0,
@@ -2809,10 +2827,145 @@ def logNorm_DPLDP_z(
         epsilon,
         res=res,
         smoothing=smoothing,
+        
     )
 
 
+def logNorm_DPLDP_z(
+    z,
+    alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
+    m1_low, m_high, delta_m1, lambda0_0, lambda1_0, epsilon,
+    alpha1_inf, z_alpha1, dz_alpha1,
+    alpha2_inf, z_alpha2, dz_alpha2,
+    mb_inf,    z_mb,     dz_mb,
+    mu1_inf,   z_mu1,    dz_mu1,
+    sigma1_inf,z_sigma1, dz_sigma1,
+    mu2_inf,   z_mu2,    dz_mu2,
+    sigma2_inf,z_sigma2, dz_sigma2,
+    lambda0_inf, z_lambda0, dz_lambda0,
+    lambda1_inf, z_lambda1, dz_lambda1,
+    res=500, smoothing="LVK",
+):
+    """
+    All inputs are scalars except z (vector). Returns ln(z) as a vector.
+    """
 
+    z = at.as_tensor_variable(z)
+    ones = at.ones_like(z)
+
+    # evolve these -> vectors (N,)
+    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
+    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
+    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
+    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
+    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
+    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
+    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
+    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
+    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
+
+    # broadcast all non-evolving scalars -> vectors (N,)
+    m1_low_v   = ones * m1_low
+    m_high_v   = ones * m_high
+    delta_m1_v = ones * delta_m1
+    eps_v      = ones * epsilon
+
+    # integration grid in t (shared)
+    t = at.linspace(0.0, 1.0, res).astype(m_high.dtype)           # (res,)
+    dt = 1.0 / (res - 1)
+    w  = at.ones((res,), dtype=t.dtype) * dt
+    w  = at.set_subtensor(w[0],  0.5 * dt)
+    w  = at.set_subtensor(w[-1], 0.5 * dt)
+
+    # ms per event: (N,res)
+    ms = m1_low_v[:, None] + (m_high_v[:, None] - m1_low_v[:, None]) * t[None, :]
+
+    # evaluate logpdf(m1|z) on the (N,res) grid
+    lpdf = logpdfm1_DPLDP(
+        ms,
+        alpha1[:, None], alpha2[:, None], mb[:, None],
+        mu1[:, None], sigma1[:, None], mu2[:, None], sigma2[:, None],
+        m1_low_v[:, None], m_high_v[:, None], delta_m1_v[:, None],
+        lambda0[:, None], lambda1[:, None],
+        eps_v[:, None],
+        smoothing=smoothing
+    )  # (N,res)
+
+    p = at.exp(lpdf)
+
+    # ∫ p(m) dm = (m_high-m1_low) * ∫ p(t) dt
+    integral = (m_high_v - m1_low_v) * at.sum(p * w[None, :], axis=1)  # (N,)
+    return at.log(at.clip(integral, 1e-300, 1e300))
+
+
+def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    """
+    Interpolation-only evaluator for the redshift-evolving DPLDP model.
+
+    interp_grids = [m1_grid, m2_grid, z_bank]   (all assumed UNIFORM grids)
+    interp_vals  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank]
+
+      lp_m1_bank: shape (K, N1)  with K=len(z_bank), N1=len(m1_grid)
+      lp_m2_grid: shape (N2,)
+      lC_of_m1:   shape (N1,)     (log C(m1)), z-independent
+      ln_bank:    shape (K,)      (logNorm(z_k))
+
+    Returns log p(m1,m2 | z) via:
+      - interpolate in z between bank slices k and k+1
+      - within each slice, interpolate in m1 and m2 as usual
+    """
+    m1, m2 = theta
+
+    m1_grid = interp_grids[0]
+    m2_grid = interp_grids[1]
+    z_bank  = interp_grids[2]
+
+    lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals  # note: ln_bank is vector now
+
+    # ----- Z interpolation indices (uniform bank) -----
+    z0 = z_bank[0]
+    z1 = z_bank[-1]
+    K  = z_bank.shape[0]
+    kz, rz = uniform_interp_indices(z, z0, z1, K)  # kz in [0, K-2]
+
+    # ----- M1 interpolation indices computed once -----
+    x0_1 = m1_grid[0]
+    x1_1 = m1_grid[-1]
+    nU_1 = m1_grid.shape[0]
+    j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
+
+    # interpolate logpdf(m1|z_k) and logpdf(m1|z_{k+1})
+    lpdfm1_k  = (1 - r1) * lp_m1_bank[kz,     j1] + r1 * lp_m1_bank[kz,     j1 + 1]
+    lpdfm1_k1 = (1 - r1) * lp_m1_bank[kz + 1, j1] + r1 * lp_m1_bank[kz + 1, j1 + 1]
+
+    # interpolate ln(z_k) and ln(z_{k+1})
+    ln_k  = ln_bank[kz]
+    ln_k1 = ln_bank[kz + 1]
+
+    # interpolate logC(m1) (z-independent)
+    lC = (1 - r1) * lC_of_m1[j1] + r1 * lC_of_m1[j1 + 1]
+
+    # ----- M2 interpolation indices computed once -----
+    x0_2 = m2_grid[0]
+    x1_2 = m2_grid[-1]
+    nU_2 = m2_grid.shape[0]
+    j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
+
+    # interpolate logpdf(m2) (z-independent)
+    lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
+
+    # assemble slice logpdfs and interpolate in z
+    lp_k  = lpdfm1_k  + lpdfm2 - lC - ln_k
+    lp_k1 = lpdfm1_k1 + lpdfm2 - lC - ln_k1
+    lpdf  = (1 - rz) * lp_k + rz * lp_k1
+
+    if force_m2_less_than_m1:
+        ok = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
+        return at.where(ok, lpdf, MIN)
+    else:
+        return lpdf
+
+        
 #####################################
 class GridInterpolator_at:
     '''

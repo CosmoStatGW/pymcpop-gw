@@ -14,7 +14,14 @@ from pytensor import shared
 import numpy as onp
 from tqdm import tqdm
 
+
+import xarray as xr
+import arviz as az
+import zarr
+
 import pytensor_tools as atools
+
+import pymc as pm
 
 
 
@@ -77,7 +84,7 @@ def sample_from_per_event_gmm(wts_l, mus_l, cho_covs_l, x, rng=None):
     mus_l      : (N, K, D) means
     cho_covs_l : (N, K, D, D) Cholesky factors
     x          : (N, D) standard normal draws (or any external reparam vector)
-    rng        : np.random.Generator or None
+    rng        : onp.random.Generator or None
     
     Returns
     -------
@@ -119,6 +126,31 @@ def robust_stat(x, trim=0.05):
     a, b = onp.quantile(x, [trim, 1-trim])
     x = x[(x>=a) & (x<=b)]
     return onp.median(x)
+
+
+
+def evo_triplet(name, ivals, z_t_prior=None, dz_prior=None, theta0_init=None, theta_inf_prior=None):
+    """
+    Create (theta_inf, z_t, dz) random variables.
+    - theta_inf_prior defaults to theta0 prior if not provided.
+    """
+    if theta_inf_prior is None:
+        # fall back to same prior range as theta0 if possible
+        # expected to be provided in priors[name_root]
+        pass
+
+    theta_inf = pm.Uniform(f"{name}_inf",
+                           lower=theta_inf_prior[0], upper=theta_inf_prior[1],
+                           initval=(ivals.get(f"{name}_inf", theta0_init)))
+
+    z_t = pm.Uniform(f"z_{name}",
+                     lower=z_t_prior[0], upper=z_t_prior[1],
+                     initval=ivals.get(f"z_{name}", None))
+
+    dz = pm.Uniform(f"dz_{name}",
+                    lower=dz_prior[0], upper=dz_prior[1],
+                    initval=ivals.get(f"dz_{name}", None))
+    return theta_inf, z_t, dz
 
 
 
@@ -243,7 +275,7 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     for _ in tqdm(range(trials)):
         #Xwhite = rng.standard_normal((N, nd))
         # N = number of events, D = dimension
-        #rng = np.random.default_rng()
+        #rng = onp.random.default_rng()
 
         Xwhite = rng.standard_normal(size=(N, nd))
 
@@ -900,6 +932,137 @@ def make_tqdm_callback_frequent(pbar):
 
 
 
+
+def _group_keys_list(g):
+    # zarr>=2.18 returns generator; normalize to list
+    return list(g.group_keys()) if hasattr(g, "group_keys") else []
+
+def _array_keys_list(g):
+    return list(g.array_keys()) if hasattr(g, "array_keys") else []
+
+def _infer_chain_draw_shape_from_group(grp):
+    """
+    Try to infer (n_chain, n_draw) from any array in the group.
+    Arrays are expected to be shaped (chain, draw, ...).
+    """
+    for name in _array_keys_list(grp):
+        arr = grp[name][...]
+        if arr.ndim >= 2:
+            return arr.shape[0], arr.shape[1]
+    # fallback: look for attrs the backend sometimes writes
+    attrs = getattr(grp, "attrs", {})
+    n_chain = attrs.get("n_chain") or attrs.get("chains")
+    n_draw  = attrs.get("n_draw")  or attrs.get("draws")
+    if n_chain and n_draw:
+        return int(n_chain), int(n_draw)
+    raise ValueError("Could not infer (chain, draw) from group arrays or attrs")
+
+def _mk_da(name, arr, chain_names=None, draw_names=None):
+    import numpy as np
+    import xarray as xr
+
+    arr = onp.asarray(arr)
+    # ensure at least (chain, draw)
+    if arr.ndim < 2:
+        if arr.ndim == 1:
+            arr = arr[None, :]  # (1, N)
+        else:
+            arr = arr[None, None]  # scalar -> (1,1)
+
+    n_chain, n_draw = arr.shape[:2]
+
+    # If provided names mismatch sizes, regenerate to match the *data*
+    if chain_names is None or len(chain_names) != n_chain:
+        chain_coords = onp.arange(n_chain)
+    else:
+        chain_coords = onp.asarray(chain_names)
+
+    if draw_names is None or len(draw_names) != n_draw:
+        draw_coords = onp.arange(n_draw)
+    else:
+        draw_coords = onp.asarray(draw_names)
+
+    dims = ["chain", "draw"] + [f"{name}_dim{i}" for i in range(arr.ndim - 2)]
+    coords = {"chain": chain_coords, "draw": draw_coords}
+    for i, L in enumerate(arr.shape[2:]):
+        coords[dims[2 + i]] = onp.arange(L)
+
+    return xr.DataArray(arr, dims=dims, coords=coords, name=name)
+
+def _load_group_as_dataset(grp, chain_names=None, draw_names=None):
+    import xarray as xr
+    if grp is None:
+        return None
+    keys = list(grp.array_keys()) if hasattr(grp, "array_keys") else []
+    if not keys:
+        return None
+
+    ds_vars = {}
+    for key in keys:
+        arr = grp[key][...]
+        # NOTE: _mk_da will *override* chain/draw coords if sizes don’t match
+        ds_vars[key] = _mk_da(key, arr, chain_names, draw_names)
+    return xr.Dataset(ds_vars)
+
+def load_pymc_zarr_trace_robust(store_path):
+    """
+    Returns an ArviZ InferenceData from a PyMC ZarrTrace directory.
+    Tries ArviZ's from_zarr first; if that fails, constructs by hand.
+    """
+    # 1) Fast path: ArviZ (works when store has CF-ish metadata)
+    try:
+        # consolidated=False avoids the “failed to open consolidated metadata” warning->fallback
+        return az.InferenceData.from_zarr(store_path)
+    except Exception as e_fast:
+        print("ArviZ.from_zarr path failed, falling back:", repr(e_fast))
+
+    # 2) Manual path
+    root = zarr.open_group(store_path, mode="r")
+    gkeys = _group_keys_list(root)
+    # infer chain/draw once from the richest group we can find
+    probe_grp = None
+    for candidate in ("posterior", "sample_stats", "warmup_posterior"):
+        if candidate in gkeys:
+            grp = root[candidate]
+            if _array_keys_list(grp):
+                probe_grp = grp
+                break
+    if probe_grp is None:
+        raise RuntimeError(f"No posterior/sample_stats arrays found in {store_path}")
+
+    n_chain, n_draw = _infer_chain_draw_shape_from_group(probe_grp)
+    chain_names = onp.arange(n_chain)
+    draw_names  = onp.arange(n_draw)
+
+    posterior         = _load_group_as_dataset(root["posterior"], chain_names, draw_names) \
+                        if "posterior" in gkeys else None
+    sample_stats      = _load_group_as_dataset(root["sample_stats"], chain_names, draw_names) \
+                        if "sample_stats" in gkeys else None
+    warmup_posterior  = _load_group_as_dataset(root.get("warmup_posterior"), chain_names, draw_names) \
+                        if "warmup_posterior" in gkeys else None
+    warmup_stats      = _load_group_as_dataset(root.get("warmup_sample_stats"), chain_names, draw_names) \
+                        if "warmup_sample_stats" in gkeys else None
+
+    return az.InferenceData(
+        posterior=posterior,
+        sample_stats=sample_stats,
+        warmup_posterior=warmup_posterior,
+        warmup_sample_stats=warmup_stats,
+    )
+
+
+
+def drop_object_vars(idata: az.InferenceData) -> az.InferenceData:
+    idata = idata.copy()
+    for grp in idata.groups():
+        ds = getattr(idata, grp, None)
+        if ds is None:
+            continue
+        bad = [v for v in ds.data_vars if ds[v].dtype == object]
+        if bad:
+            ds = ds.drop_vars(bad)
+            setattr(idata, grp, ds)
+    return idata
 
 
 # Writes output both on std output and on log file

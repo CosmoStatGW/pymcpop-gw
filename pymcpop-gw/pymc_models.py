@@ -357,7 +357,78 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
             lpmass = atools.logpdf_DPLDP_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
         else:
             lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=None, interp_grids = None )
-        
+
+
+    elif mass_model == "DPLDP-z":
+    
+        # ------------------------------------------------------------
+        # UNPACK low-z mass hyperparameters (same 20 as non-evolving)
+        # ------------------------------------------------------------
+        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+    
+        lambdaBBHmass_lowz = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
+                              x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
+    
+        # ------------------------------------------------------------
+        # UNPACK evolution hyperparameters (27 scalars):
+        #   (theta_inf, z_theta, dz_theta) for:
+        #    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
+        #    lambda0, lambda1
+        # ------------------------------------------------------------
+        j = istart_spin + 20
+    
+        alpha1_inf  = Lambda[j +  0]; z_alpha1  = Lambda[j +  1]; dz_alpha1  = Lambda[j +  2]
+        alpha2_inf  = Lambda[j +  3]; z_alpha2  = Lambda[j +  4]; dz_alpha2  = Lambda[j +  5]
+        mb_inf      = Lambda[j +  6]; z_mb      = Lambda[j +  7]; dz_mb      = Lambda[j +  8]
+        mu1_inf     = Lambda[j +  9]; z_mu1     = Lambda[j + 10]; dz_mu1     = Lambda[j + 11]
+        sigma1_inf  = Lambda[j + 12]; z_sigma1  = Lambda[j + 13]; dz_sigma1  = Lambda[j + 14]
+        mu2_inf     = Lambda[j + 15]; z_mu2     = Lambda[j + 16]; dz_mu2     = Lambda[j + 17]
+        sigma2_inf  = Lambda[j + 18]; z_sigma2  = Lambda[j + 19]; dz_sigma2  = Lambda[j + 20]
+        lambda0_inf = Lambda[j + 21]; z_lambda0 = Lambda[j + 22]; dz_lambda0 = Lambda[j + 23]
+        lambda1_inf = Lambda[j + 24]; z_lambda1 = Lambda[j + 25]; dz_lambda1 = Lambda[j + 26]
+    
+        evo_params = [
+            alpha1_inf,  z_alpha1,  dz_alpha1,
+            alpha2_inf,  z_alpha2,  dz_alpha2,
+            mb_inf,      z_mb,      dz_mb,
+            mu1_inf,     z_mu1,     dz_mu1,
+            sigma1_inf,  z_sigma1,  dz_sigma1,
+            mu2_inf,     z_mu2,     dz_mu2,
+            sigma2_inf,  z_sigma2,  dz_sigma2,
+            lambda0_inf, z_lambda0, dz_lambda0,
+            lambda1_inf, z_lambda1, dz_lambda1,
+        ]
+    
+        # ------------------------------------------------------------
+        # Call the redshift-evolving mass pdf
+        # ------------------------------------------------------------
+        if interp_vals_mass is not None:
+            lpmass = atools.logpdf_DPLDP_z_from_interp(
+                    (m1s, m2s), z,                 
+                    interp_vals_mass, interp_grids_mass,
+                    force_m2_less_than_m1=False
+                )
+        else:
+            lpmass = atools.logpdf_DPLDP_z(
+                (m1s, m2s), z,                     
+                lambdaBBHmass_lowz,
+                evo_params,
+                force_m2_less_than_m1=False,
+                has_m2_break=has_m2_break,
+                smoothing=smoothing,
+                interp_vals=None,
+                interp_grids=None
+            )
+            
         
     ### BNS
     elif mass_model=='BNSgauss':
@@ -1878,13 +1949,23 @@ def make_model(  priors,
             tgrid_z = np.linspace(0.0, 1.0, interp_z ).astype(X)
             print("Pre-computing rate evolution on grid for later interpolation. Grid resolution: %s"%interp_z)
 
-        if mass_model in ('DPLDP'):
-            sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
+
+        if mass_model in ('DPLDP', 'DPLDP-z'):
+            if mass_model =='DPLDP':
+                sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
+            else:
+                sigma_min = min(priors["sigma1_0"][0], priors["sigma2_0"][0])
             MMIN_GRID = 2.
 
             m1_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m1).astype(X)
             m2_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m2).astype(X)
-
+            
+            if mass_model =='DPLDP-z':
+                if find_z_bounds:
+                    z_bank = (zmin_a + (zmax_c - zmin_a) * tgrid_z).astype(X)
+                else:
+                    z_bank = (1e-05 + (10. - 1e-05) * tgrid_z).astype(X)
+                    
             dx_min_test = np.min(np.diff(m1_grid_))
 
             if dx_min_test >= 0.5*sigma_min:
@@ -1953,6 +2034,8 @@ def make_model(  priors,
                 f"comparable to min prior scale for sigma ({L_small_3:.3g}). "
                 "Increase interp_mass or change priors."
             )
+        else:
+            raise ValueError('Interpolation not available for this mass model.')
 
     if is_observed:
         print("Building optimal SNR interpolant...")
@@ -2216,6 +2299,133 @@ def make_model(  priors,
             
             Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
+        
+        
+        elif mass_model=='DPLDP-z':
+
+
+            print("Modeling mass distribution with DPLDP + redshift-evolving hyperparameters")
+
+            # -------------------------
+            # Low-z (z≈0) hyperparameters (same as before)
+            # -------------------------
+            alpha1_0  = pm.Uniform("alpha1_0",  lower=priors["alpha1_0"][0],  upper=priors["alpha1_0"][1],  initval=ivals.get("alpha1_0"))
+            alpha2_0  = pm.Uniform("alpha2_0",  lower=priors["alpha2_0"][0],  upper=priors["alpha2_0"][1],  initval=ivals.get("alpha2_0"))
+            mb_0      = pm.Uniform("mb_0",      lower=priors["mb_0"][0],      upper=priors["mb_0"][1],      initval=ivals.get("mb_0"))
+            mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
+            sigma1_0  = pm.Uniform("sigma1_0",  lower=priors["sigma1_0"][0],  upper=priors["sigma1_0"][1],  initval=ivals.get("sigma1_0"))
+            mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
+            sigma2_0  = pm.Uniform("sigma2_0",  lower=priors["sigma2_0"][0],  upper=priors["sigma2_0"][1],  initval=ivals.get("sigma2_0"))
+            delta_m1_ = pm.Uniform("delta_m1",  lower=priors["delta_m1"][0],upper=priors["delta_m1"][1],initval=ivals.get("delta_m1"))
+            
+            # m1_low, m2_low, m_high as in your original block
+            u        = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            m1_low_  = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            v        = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+            m2_low_  = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+            m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X))
+            
+            # mixture weights at z≈0
+            lambda_vec0 = pm.Dirichlet("lambda0_vec", a=np.asarray([1, 1, 1], dtype=X),
+                                       initval=np.asarray(ivals.get("lambda"), dtype=X))
+            lambda0_0 = pm.Deterministic("lambda0_0", lambda_vec0[0])
+            lambda1_0 = pm.Deterministic("lambda1_0", lambda_vec0[1])
+            lambda2_0 = pm.Deterministic("lambda2_0", lambda_vec0[2])
+            
+            # secondary-mass hyperparams (unchanged unless you also evolve them)
+            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01).astype(X))
+            
+            if has_m2_break:
+                print("Including gap for secondary mass")
+                m_g_     = pm.Uniform("m_g", lower=priors["m_g"][0], upper=priors["m_g"][1], initval=ivals.get("m_g"))
+                w_g_     = pm.Uniform("w_g", lower=priors["w_g"][0], upper=priors["w_g"][1], initval=ivals.get("w_g"))
+                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+            else:
+                m_g_     = at.as_tensor_variable(45.).astype(X)
+                w_g_     = at.as_tensor_variable(70.).astype(X)
+                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+
+            # -------------------------
+            # Redshift evolution hyperparameters for each θ in:
+            # {alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, lambda0, lambda1}
+            #
+            # Each θ has (θ_inf, z_t, Δz) with θ(z) = θ0 + (θ_inf-θ0)*S((z-z_t)/Δz)
+            # -------------------------
+            
+            # helper: choose priors for (z_t, Δz); you can swap these for your own
+            z_t_prior = priors.get("z_t", (0.0, 2.5))
+            dz_prior  = priors.get("dz",  (0.05, 2.0))   # Δz > 0; adjust as you like
+
+
+            # pick priors for the high-z asymptotes; by default reuse the low-z prior ranges
+            alpha1_inf_,  z_alpha1_,  dz_alpha1_  = putils.evo_triplet("alpha1", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("alpha1_0"),
+                                                                theta_inf_prior=priors["alpha1_0"])
+            alpha2_inf_,  z_alpha2_,  dz_alpha2_  = putils.evo_triplet("alpha2", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("alpha2_0"),
+                                                                theta_inf_prior=priors["alpha2_0"])
+            mb_inf_,      z_mb_,      dz_mb_      = putils.evo_triplet("mb",  ivals, z_t_prior=z_t_prior, dz_prior=dz_prior,    theta0_init=ivals.get("mb_0"),
+                                                                theta_inf_prior=priors["mb_0"])
+            mu1_inf_,     z_mu1_,     dz_mu1_     = putils.evo_triplet("mu1",  ivals, z_t_prior=z_t_prior, dz_prior=dz_prior,   theta0_init=ivals.get("mu1_0"),
+                                                                theta_inf_prior=priors["mu1_0"])
+            sigma1_inf_,  z_sigma1_,  dz_sigma1_  = putils.evo_triplet("sigma1", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("sigma1_0"),
+                                                                theta_inf_prior=priors["sigma1_0"])
+            mu2_inf_,     z_mu2_,     dz_mu2_     = putils.evo_triplet("mu2",  ivals,  z_t_prior=z_t_prior, dz_prior=dz_prior,  theta0_init=ivals.get("mu2_0"),
+                                                                theta_inf_prior=priors["mu2_0"])
+            sigma2_inf_,  z_sigma2_,  dz_sigma2_  = putils.evo_triplet("sigma2", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("sigma2_0"),
+                                                                theta_inf_prior=priors["sigma2_0"])
+            
+            # Mixture weights at high z: use a Dirichlet, then map to (lambda0_inf, lambda1_inf)
+            lambda_vec_inf = pm.Dirichlet("lambda_inf_vec", a=np.asarray([1, 1, 1], dtype=X),
+                                          initval=np.asarray(ivals.get("lambda_inf_vec", [1/3, 1/3, 1/3]), dtype=X))
+            lambda0_inf_ = pm.Deterministic("lambda0_inf", lambda_vec_inf[0])
+            lambda1_inf_ = pm.Deterministic("lambda1_inf", lambda_vec_inf[1])
+            lambda2_inf_ = pm.Deterministic("lambda2_inf", lambda_vec_inf[2])
+            
+            # Allow separate (z_t, Δz) for lambda0 and lambda1 (as you requested)
+            z_lambda0_  = pm.Uniform("z_lambda0",  lower=z_t_prior[0], upper=z_t_prior[1],
+                                     initval=ivals.get("z_lambda0", None))
+            dz_lambda0_ = pm.Uniform("dz_lambda0", lower=dz_prior[0],  upper=dz_prior[1],
+                                     initval=ivals.get("dz_lambda0", None))
+            z_lambda1_  = pm.Uniform("z_lambda1",  lower=z_t_prior[0], upper=z_t_prior[1],
+                                     initval=ivals.get("z_lambda1", None))
+            dz_lambda1_ = pm.Uniform("dz_lambda1", lower=dz_prior[0],  upper=dz_prior[1],
+                                     initval=ivals.get("dz_lambda1", None))
+            
+            # -------------------------
+            # Pack hyperparameters for your logpdf_DPLDP_z wrapper
+            #   - low-z vector: same order you used before, but with *_0 values
+            #   - evolution params: (theta_inf, z_theta, dz_theta) for each evolving parameter
+            # -------------------------
+            lambdaBBHmass_lowz_ = [
+                alpha1_0, alpha2_0, mb_0,
+                mu1_0, sigma1_0, mu2_0, sigma2_0,
+                m1_low_, m_high_, delta_m1_,
+                lambda0_0, lambda1_0,
+                beta_, m2_low_, delta_m2_,
+                epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
+            ]
+            
+            evo_params_ = [
+                alpha1_inf_,  z_alpha1_,  dz_alpha1_,
+                alpha2_inf_,  z_alpha2_,  dz_alpha2_,
+                mb_inf_,      z_mb_,      dz_mb_,
+                mu1_inf_,     z_mu1_,     dz_mu1_,
+                sigma1_inf_,  z_sigma1_,  dz_sigma1_,
+                mu2_inf_,     z_mu2_,     dz_mu2_,
+                sigma2_inf_,  z_sigma2_,  dz_sigma2_,
+                lambda0_inf_, z_lambda0_, dz_lambda0_,
+                lambda1_inf_, z_lambda1_, dz_lambda1_,
+            ]
+            
+            # If your code expects a single list Lambda_, append both
+            Lambda_ += [*lambdaBBHmass_lowz_, *evo_params_]
+            
+        
+        
+        
         ### BNS
         elif 'BNSgauss' in mass_model:
 
@@ -2514,39 +2724,12 @@ def make_model(  priors,
         if interp_mass!=0:
                 
             if mass_model=='DPLDP':
-
-                # Parameters: 
-                # alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
-
-                #m1_grid_ = m1_low_ + (m_high_ - m1_low_) * tgrid_m1
-
-                # dx_min = at.min(at.diff(m1_grid_))
-                # sigma_min = at.minimum(priors["sigma1"][0], priors["sigma2"][0])
-                
-                # _ = pm.Potential(
-                #     "interp_resolution_ok",
-                #     at.switch(dx_min <= sigma_min, 0.0, -1e12)
-                # )
-
-                
-                #m2_grid_ = m2_low_ + (m_high_ - m2_low_) * tgrid_m2
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
 
 
                 lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
 
-                # cdf_m2 = atools.atcumtrapz( at.exp(lp_m2_grid), m2_grid_, )
-                # x0 = m2_grid_[1]                 
-                # x1 = m2_grid_[-1]
-                # nU = m2_grid_.shape[0] - 1  
-                # lC_of_m1 = atools.atinterp_uniform(m1_grid_, x0, x1, nU, atools.safe_log(cdf_m2))
-
-                # p1 = at.exp(lp_m1_grid)
-                # ln = atools.safe_log( atools.attrapzvec(p1, m1_grid_) )
-
-                # interp_vals_mass = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
-                # interp_grids_mass = [ m1_grid_, m2_grid_] 
 
                 # CDF over m2
                 cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
@@ -2573,7 +2756,62 @@ def make_model(  priors,
                 interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
                 interp_grids_mass = [m1_grid_, m2_grid_]
 
+            elif mass_model=='DPLDP-z':
+
+                # ---------
+                # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
+                # ---------
+                lp_m2_grid = atools.logpdfm2_PLP_reg(
+                    m2_grid_, beta_, delta_m2_, m2_low_,
+                    m_g=m_g_, w_g=w_g_, sig_g_low=sig_g_l_, sig_g_high=sig_g_h_,
+                    has_m2_break=has_m2_break, smoothing=smoothing
+                )  # shape (N2,)
             
+                # lC_grid evaluated on m1_grid (shape (N1,))
+                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+
+                x0 = m2_grid_[1]
+                x1 = m2_grid_[-1]
+                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
+                
+                lC_of_m1 = atools.atinterp_uniform(m1_grid_,x0,x1,nU,atools.safe_log(cdf_m2),)
+
+                # ---------
+                # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
+                # ---------
+                K  = z_bank.shape[0]
+                N1 = m1_grid_.shape[0]
+                
+                M = at.broadcast_to(m1_grid_[None, :], (K, N1))
+                Z = at.broadcast_to(z_bank[:, None],   (K, N1))
+                
+                lp_flat = atools.logpdfm1_DPLDP_z(
+                    M.reshape((K * N1,)),
+                    Z.reshape((K * N1,)),
+                    alpha1_0, alpha2_0, mb_0,
+                    mu1_0, sigma1_0, mu2_0, sigma2_0,
+                    m1_low_, m_high_, delta_m1_,
+                    lambda0_0, lambda1_0,
+                    epsilon_,
+                    *evo_params_,
+                    smoothing=smoothing
+                )
+                lp_m1_bank = lp_flat.reshape((K, N1))  # (K,N1)
+                
+                # m1 trapz weights for normalization integral
+                dm1 = (m1_grid_[-1] - m1_grid_[0]) / (m1_grid_.shape[0] - 1)
+                w1  = at.ones_like(m1_grid_) * dm1
+                w1  = at.set_subtensor(w1[0], 0.5 * dm1)
+                w1  = at.set_subtensor(w1[-1], 0.5 * dm1)
+                
+                # ln(z_k) = log ∫ exp(lp_m1_bank[k,:]) dm1  (stable)
+                max_lp = at.max(lp_m1_bank, axis=1, keepdims=True)  # (K,1)
+                ln_bank = at.log(at.sum(at.exp(lp_m1_bank - max_lp) * w1[None, :], axis=1)) + max_lp[:, 0]  # (K,)
+                
+                # Pack for later use (include z_bank!)
+                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
+                interp_grids_mass = [m1_grid_, m2_grid_, z_bank]
+                
             elif mass_model in ('DPUC', 'DP'):
 
                 if rate_model in ('MD', 'PL'):
@@ -2857,7 +3095,7 @@ def make_model(  priors,
                 
                 spins = []
     
-            if mass_model not in ('DP', 'DPUC'):
+            if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
                 Lambda_ = at.stack(Lambda_, axis=0)
     
     

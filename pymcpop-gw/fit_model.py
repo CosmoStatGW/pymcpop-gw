@@ -52,7 +52,7 @@ def main():
     parser.add_argument("--fin_data", nargs='+', type=str, required=True)
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
-    parser.add_argument("--backend", default='disk', type=str, required=False)
+    parser.add_argument("--backend", default='ztrace', type=str, required=False)
     parser.add_argument("--nev_min", default=0, type=int, required=False)
     parser.add_argument("--nev_max", default=-1, type=int, required=False)
     
@@ -152,7 +152,7 @@ def main():
     parser.add_argument("--zmid_b", default=3., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
-    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
+    parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
     
@@ -166,6 +166,14 @@ def main():
 
 
     FLAGS = parser.parse_args()
+
+    if FLAGS.sampler in ('numpyro', 'blackjax') and FLAGS.backend=='ztrace':
+
+        print(
+            f"⚠️ Warning: backend ({FLAGS.backend}) asked, but sampler is {FLAGS.sampler}. "
+            "This sampler does not support ztrace. Setting backend to standard."
+        )
+        FLAGS.backend = 'disk'
 
     if FLAGS.chain_method == "vectorized" and FLAGS.ncores > 1:
         raise ValueError(
@@ -1367,14 +1375,24 @@ def main():
     # Save and exit
     ################################################
     
+
+    
     if FLAGS.backend=='disk':
         trace.to_netcdf( os.path.join(FLAGS.fout, "trace.nc"))
     else:
-        # Fetch the run from the database (downloads just metadata)
-        run = backend.get_run(trace.run_id)
-        idata = run.to_inferencedata()
+        # Fetch the run 
+        try:
+            idata = autils.load_pymc_zarr_trace_robust(spath)  # your working loader
+            print( "idata loaded." )
+            #idata_clean = autils.drop_object_vars(idata)
+            #print( "idata cleaned." )
+            az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+            print( "trace saved." )
 
-        az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+        except Exception as e:
+            print(e)
+            print( "No final trace saved." )
+
         
 
     #########
