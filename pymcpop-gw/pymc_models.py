@@ -210,6 +210,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     ###################################
     # get parameters and compute log p_pop
     ####################################
+
+    if 'BNS' not in mass_model:
+        in_support = (m1s >= 3.0) & (m2s >= 3.0) & (m2s <= m1s)
     
     #was: H0, Om, w0, Xi0, n = Lambda[:5] 
     H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
@@ -418,6 +421,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                     interp_vals_mass, interp_grids_mass,
                     force_m2_less_than_m1=False
                 )
+            print("lpmass from interp")
+            print(lpmass.eval())
         else:
             lpmass = atools.logpdf_DPLDP_z(
                 (m1s, m2s), z,                     
@@ -430,6 +435,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 interp_grids=None,
                 simplex_repair=simplex_repair
             )
+            
             
         
     ### BNS
@@ -553,7 +559,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     
     lp =  lpz - log_dthD_dth  + lpmass + lpspin
 
-    return lp
+    MIN = at.as_tensor_variable(-1e30,  dtype=z.dtype)
+    
+    return at.where(in_support, lp, MIN)
 
 
 #####################################################
@@ -1636,7 +1644,9 @@ def make_model(  priors,
                  sigma_softmax=0.75,
                  gamma_DP_params = (4, 0.8),
                  is_observed = False,
-                 sample_from_pop = False
+                 sample_from_pop = False,
+                 mmin_inj=-1,
+                 
                 ):
 
     ################################################
@@ -1816,7 +1826,7 @@ def make_model(  priors,
 
 
     
-    if ( find_z_bounds or (mass_model in ('DPUC', 'DP') and find_m_bounds) ):
+    if ( find_z_bounds or (mass_model in ('DPUC', 'DP') and find_m_bounds) or mmin_inj!=-1 ):
 
     
         rng = np.random.default_rng()
@@ -1938,7 +1948,29 @@ def make_model(  priors,
             print("L_small_1=%s, L_small_2=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
             print("L_small_m1=%s, L_small_m2=%s"%(L_small_m1, L_small_m2, ))
         
+        if mmin_inj!=-1:
+            if 'BNS' in mass_model:
+                raise ValueError()
+            print("Pre-filtering injections to exclude those with mass<%s solar masses."%mmin_inj)
 
+            dL_min, dL_max = dLinj[0].min(), dLinj[0].max()
+            
+            # 1) build envelope once 
+            dL_grid, zmax_grid = putils.build_zmax_envelope_from_corners(
+                z_from_dL_fn, dL_min, dL_max, priors, n_grid=4096
+            )
+            
+            # 2) apply safe filter once
+            keep = putils.safe_prefilter_injections_detector_frame(
+                m1inj[0], m2inj[0], dLinj[0],
+                dL_grid, zmax_grid,
+                mmin_src=mmin_inj,
+            )
+            ninj_or = m1inj.shape[1]
+            ninj_new = keep.sum()
+            print("Will keep %s injections out of %s"%(ninj_new, ninj_or))
+
+            
     
     if interp_mass!=0:
 
@@ -2531,7 +2563,7 @@ def make_model(  priors,
                 mus = at.stack([mu1, mu2, mu3], axis=0)
                 
             else:
-                mus = at.stack([mu1, mu2], axis=0)             
+                mus = at.stack([mu1, mu2], axis=0)     
                 
             
 
@@ -2818,16 +2850,23 @@ def make_model(  priors,
                     simplex_repair=simplex_repair
                 )
                 lp_m1_bank = lp_flat.reshape((K, N1))  # (K,N1)
+                print("lp_m1_bank for interp")
+                print(lp_m1_bank.eval())
                 
-                # m1 trapz weights for normalization integral
-                dm1 = (m1_grid_[-1] - m1_grid_[0]) / (m1_grid_.shape[0] - 1)
-                w1  = at.ones_like(m1_grid_) * dm1
-                w1  = at.set_subtensor(w1[0], 0.5 * dm1)
-                w1  = at.set_subtensor(w1[-1], 0.5 * dm1)
+                # # m1 trapz weights for normalization integral
+                # dm1 = (m1_grid_[-1] - m1_grid_[0]) / (m1_grid_.shape[0] - 1)
+                # w1  = at.ones_like(m1_grid_) * dm1
+                # w1  = at.set_subtensor(w1[0], 0.5 * dm1)
+                # w1  = at.set_subtensor(w1[-1], 0.5 * dm1)
                 
-                # ln(z_k) = log ∫ exp(lp_m1_bank[k,:]) dm1  (stable)
-                max_lp = at.max(lp_m1_bank, axis=1, keepdims=True)  # (K,1)
-                ln_bank = at.log(at.sum(at.exp(lp_m1_bank - max_lp) * w1[None, :], axis=1)) + max_lp[:, 0]  # (K,)
+                # # ln(z_k) = log ∫ exp(lp_m1_bank[k,:]) dm1  (stable)
+                # max_lp = at.max(lp_m1_bank, axis=1, keepdims=True)  # (K,1)
+                # ln_bank = at.log(at.sum(at.exp(lp_m1_bank - max_lp) * w1[None, :], axis=1)) + max_lp[:, 0]  # (K,)
+
+                ln_bank = atools.safe_log(atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
+
+                print("ln_bank for interp")
+                print(ln_bank.eval())
                 
                 # Pack for later use (include z_bank!)
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]

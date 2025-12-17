@@ -42,6 +42,17 @@ import pymc as pm
 #     return mus[rows, k, :] + (chol_covs[rows, k, :, :] @ Xwhite[..., None]).squeeze(-1)  # (N, D)
 
 
+def safe_prefilter_injections(m1_det, m2_det, dL_gpc, zmax_of_dL, mmin_src=3.0):
+    zmax = zmax_of_dL(dL_gpc)
+    thr = mmin_src * (1.0 + zmax)  # detector-frame threshold per injection
+    # discard if either component is guaranteed < mmin_src in source frame
+    discard = (m1_det < thr) | (m2_det < thr)
+    keep = ~discard
+    return keep
+
+
+
+
 def icovs_to_cholesky(icovs_l, jitter=0.0):
     """
     Convert per-event inverse covariances to Cholesky factors of covariances.
@@ -152,6 +163,77 @@ def evo_triplet(name, ivals, z_t_prior=None, dz_prior=None, theta0_init=None, th
                     initval=ivals.get(f"dz_{name}", None))
     return theta_inf, z_t, dz
 
+
+def safe_prefilter_injections_detector_frame(
+    m1_det, m2_det, dL_gpc,
+    dL_grid, zmax_grid,
+    mmin_src=3.0,
+):
+    """
+    Safe discard: if m_det/(1+z_max(dL)) < mmin_src then always out of support.
+    """
+    zmax = onp.interp(dL_gpc, dL_grid, zmax_grid)
+    thr = mmin_src * (1.0 + zmax)  # detector-frame threshold per injection
+
+    discard = (m1_det < thr) | (m2_det < thr)
+    keep = ~discard
+    return keep
+
+def build_zmax_envelope_from_corners(
+    z_from_dL_fn,
+    dL_min_gpc, dL_max_gpc,
+    priors,
+    n_grid=4096,
+    dtype= onp.float64,
+):
+    """
+    Build a conservative z_max(dL) envelope by scanning the corners of the cosmology prior.
+
+    Parameters
+    ----------
+    z_from_dL_fn : callable
+        Compiled function like:
+          z_from_dL_fn(dL, H0, Om, w0, Xi0, nXi0) -> z
+        Must accept vector dL.
+    dL_min_gpc, dL_max_gpc : float
+        Range of luminosity distances in Gpc.
+    priors : dict
+        Must contain ranges like priors['H0']=[min,max], etc.
+        Keys used: 'H0','Om','w0','Xi0','nXI0'  (note your key spelling)
+    n_grid : int
+        Resolution of the distance grid used to build the envelope.
+    """
+    # log-spaced distance grid (better coverage across many decades)
+    dL_grid = onp.geomspace(dL_min_gpc, dL_max_gpc, n_grid).astype(dtype)
+
+    H0_min, H0_max     = map(float, priors["H0"])
+    Om_min, Om_max     = map(float, priors["Om"])
+    w0_min, w0_max     = map(float, priors["w0"])
+    Xi0_min, Xi0_max   = map(float, priors["Xi0"])
+    nXi0_min, nXi0_max = map(float, priors["nXi0"])
+
+    corners = []
+    for H0_ in (H0_min, H0_max):
+        for Om_ in (Om_min, Om_max):
+            for w0_ in (w0_min, w0_max):
+                for Xi0_ in (Xi0_min, Xi0_max):
+                    for nXi0_ in (nXi0_min, nXi0_max):
+                        corners.append((H0_, Om_, w0_, Xi0_, nXi0_))
+
+    zmax_grid = onp.zeros_like(dL_grid)
+
+    # scan corners
+    for (H0_, Om_, w0_, Xi0_, nXi0_) in corners:
+        z = z_from_dL_fn(dL_grid, H0_, Om_, w0_, Xi0_, nXi0_)
+        z = onp.asarray(z, dtype=dtype)
+
+        # guard against any numerical weirdness
+        z = onp.where(onp.isfinite(z), z, 0.0)
+        z = onp.clip(z, 0.0, onp.inf)
+
+        zmax_grid = onp.maximum(zmax_grid, z)
+
+    return dL_grid, zmax_grid
 
 
 def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
@@ -412,7 +494,7 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         # m1_diffs.append(onp.quantile(dm1_pos, 0.01))
         # m2_diffs.append(onp.quantile(dm2_pos, 0.01))
 
-        logz_diffs.append(onp.mean(dz_pos))
+        logz_diffs.append( onp.mean(dz_pos))
         lMc_diffs.append( onp.min(dMc_pos))
         lqs_diffs.append( onp.min(dq_pos))
 
@@ -435,10 +517,10 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     m2_min_data = min(m2_mins)
 
     logz_diff = max(logz_diffs)
-    lMc_diff = max(lMc_diffs)
-    lq_diff = max(lqs_diffs)
-    m1_diff = max(m1_diffs)
-    m2_diff = max(m2_diffs)
+    lMc_diff = onp.mean(lMc_diffs)
+    lq_diff = onp.mean(lqs_diffs)
+    m1_diff = onp.mean(m1_diffs)
+    m2_diff = onp.mean(m2_diffs)
 
     if not is_observed:
         print("min, max data log(1+redshift): %s, %s "%(logz_min_data,logz_max_data))

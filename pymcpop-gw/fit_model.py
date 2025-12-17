@@ -157,6 +157,10 @@ def main():
     parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
+
+    parser.add_argument("--mmin_inj", default=3., type=float, required=False)
+
+    
     
     
 
@@ -480,6 +484,7 @@ def main():
     
 
 
+
     if FLAGS.spin_model=='none':
         # InjData = [ at.as_tensor_variable(injections['dL']), 
         #         at.as_tensor_variable(injections['m1d']), 
@@ -726,7 +731,8 @@ def main():
                                 sigma_softmax=FLAGS.sigma_softmax,
                                 gamma_DP_params=FLAGS.gamma_DP_params,
                                 is_observed = FLAGS.is_observed,
-                                sample_from_pop = FLAGS.sample_from_pop
+                                sample_from_pop = FLAGS.sample_from_pop,
+                                mmin_inj=FLAGS.mmin_inj
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
