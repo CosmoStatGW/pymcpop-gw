@@ -203,7 +203,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  interp_vals_mass = None,
                  interp_grids_mass = None,
                  is_observed = False,
-                 z_grid = None
+                 z_grid = None,
+                 verbose=False
                 ):
 
 
@@ -216,6 +217,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     
     #was: H0, Om, w0, Xi0, n = Lambda[:5] 
     H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
+
+    if verbose:
+        print(" H0, Om, w0, Xi0, n ")
+        print( H0.eval(), Om.eval(), w0.eval(), Xi0.eval(), n.eval() )
 
     if dc is None:
         if param=='vanilla':
@@ -234,6 +239,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         lpz = atools.log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=dc )
         z_dpuc = None
         istart = 8
+        if verbose:
+            print("  gamma, kappa, zp ")
+            print(  gamma.eval(), kappa.eval(), zp.eval() )
         
     elif rate_model=='PL':
         
@@ -311,6 +319,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         sigmat   = Lambda[istart + 3]
         lpspin = atools.logpdf_default_spin_gauss(spins, [muChi, sigmaChi, zeta, sigmat])
         istart_spin = istart+4
+
+        if verbose:
+            print(" muChi, sigmaChi, zeta, sigmat ")
+            print(  muChi.eval(), sigmaChi.eval(), zeta.eval(), sigmat.eval() )
    
     else:
         lpspin = at.zeros( z.shape )
@@ -361,6 +373,11 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
             lpmass = atools.logpdf_DPLDP_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
         else:
             lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=None, interp_grids = None )
+
+
+        if verbose:
+            print("alpha1","alpha2","mb","mu1","sigma1","mu2","sigma2", "m1_low","m_high","delta_m1", "lambda0","lambda1", "beta","m2_low","delta_m2","epsilon","mu_g","w_g", "sig_g_low","sig_g_high",)
+            print( [x_.eval() for x_ in lambdaBBHmass] )
 
 
     elif mass_model == "DPLDP-z":
@@ -1445,6 +1462,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                    param='vanilla',
                                    interp_vals_mass = None,
                                     interp_grids_mass = None,
+                                   verbose=False,
                                     **kwargs):
 
     work_dtype = getattr(m1inj, "dtype", "float64")
@@ -1514,7 +1532,9 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                               dc = dcinj,
                               interp_vals_mass = interp_vals_mass,
                              interp_grids_mass = interp_grids_mass,
+                              verbose=verbose
                              )
+    
 
 
     if mass_model in ('DP', 'DPUC'): #and interp_vals_mass is None:
@@ -1969,6 +1989,10 @@ def make_model(  priors,
             ninj_or = m1inj.shape[1]
             ninj_new = keep.sum()
             print("Will keep %s injections out of %s"%(ninj_new, ninj_or))
+
+            dLinj, m1inj, m2inj, lpdinj = [ d_[keep] for d_ in dLinj ], [ m_[keep] for m_ in m1inj], [ m_[keep] for m_ in m2inj], [l_[keep] for l_ in lpdinj ]
+            spinsInj = [sI[keep] for sI in spinsInj ]
+            Ndet[0] = ninj_new
 
             
     
