@@ -1455,6 +1455,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                    simplex_repair,
                                     has_m2_break, 
                                     interp, 
+                                   log_p_incl = None,
                                     wrap_logp=False, 
                                     log_ddL_dz_inj = None,
                                     zinj = None,
@@ -1546,7 +1547,16 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
         if rate_model in ('DPUC','DPUC-vol'):
                 log_p_pop -= at.log1p(zinj) 
 
-    log_sel_b = log_p_pop-log_p_draw
+
+    
+    log_sel_b = log_p_pop - log_p_draw
+
+    if log_p_incl is not None:
+        # print("check in selection bias: log_p_incl")
+        # print(log_p_incl)
+        # print(log_p_incl.shape)
+        # print(log_sel_b.shape.eval())
+        log_sel_b = log_sel_b - log_p_incl
 
     # Ndraw must be a symbolic tensor with a floating dtype for logs
     Ndraw_t = at.as_tensor_variable(Ndraw).astype(m1inj.dtype)
@@ -1666,7 +1676,7 @@ def make_model(  priors,
                  is_observed = False,
                  sample_from_pop = False,
                  mmin_inj=-1,
-                 
+                 is_compressed_inj=False
                 ):
 
     ################################################
@@ -1708,14 +1718,14 @@ def make_model(  priors,
 
     ## Injections data
     if spin_inj == 'none':
-        dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet = InjData
+        dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet, lp_incl_inj = InjData
     elif spin_inj == 'chieffchip':
-        dLinj, m1inj, m2inj, chiefffInj, chipInj, lpdinj, Ndraw, Ndet = InjData
+        dLinj, m1inj, m2inj, chiefffInj, chipInj, lpdinj, Ndraw, Ndet, lp_incl_inj = InjData
     elif (spin_inj == 'chi12xyz' or spin_inj == 'default'):
         if (spin_model=='default') or (spin_model=='default_gauss'):
-            dLinj, m1inj, m2inj, chi1Inj, chi2Inj, cost1Inj, cost2Inj, lpdinj, Ndraw, Ndet = InjData
+            dLinj, m1inj, m2inj, chi1Inj, chi2Inj, cost1Inj, cost2Inj, lpdinj, Ndraw, Ndet, lp_incl_inj = InjData
         elif spin_model == 'none':
-            dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet = InjData
+            dLinj, m1inj, m2inj, lpdinj, Ndraw, Ndet, lp_incl_inj = InjData
             
     ndata = m1inj.shape[0] # number of observing runs to combine
     ndata_np = ndata #ndata.eval()
@@ -1832,17 +1842,7 @@ def make_model(  priors,
     print("Model dtype will be %s"%X)
     print("Injections dtype will be %s"%XI)
 
-    if False:
-        print("Casting injections as shared tensors...")
-        
-        m1inj_t  = putils.pt_vec(m1inj[0], DT=X)
-        m2inj_t  = putils.pt_vec(m2inj[0], DT=X)
-        dLinj_t  = putils.pt_vec(dLinj[0], DT=X)
-        lpdinj_t = putils.pt_vec(lpdinj[0], DT=X)        
-        spinsInj_t = [putils.pt_vec(v, DT=X) for v in spinsInj]
-            
-        
-        print("Done.")
+
 
 
     
@@ -1994,6 +1994,8 @@ def make_model(  priors,
             spinsInj = [sI[keep] for sI in spinsInj ]
             Ndet[0] = ninj_new
 
+            if is_compressed_inj:
+                lp_incl_inj = [ l_[keep] for l_ in lp_incl_inj]
             
     
     if interp_mass!=0:
@@ -3491,6 +3493,7 @@ def make_model(  priors,
                                                           simplex_repair,
                                                           has_m2_break, 
                                                           interp=pade, 
+                                                          log_p_incl = lp_incl_inj[0],
                                                          dL_grid=dL_grid_inj,             
                                                         z_grid=z_grid_inj, 
                                                         dc_grid=dc_grid_inj, 

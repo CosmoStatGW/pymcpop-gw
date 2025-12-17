@@ -159,6 +159,7 @@ def main():
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
 
     parser.add_argument("--mmin_inj", default=3., type=float, required=False)
+    parser.add_argument("--is_compressed_inj", default=0, type=int, required=False)
 
     
     
@@ -482,7 +483,14 @@ def main():
         else:
             XI = np.float64
     
-
+    if FLAGS.is_compressed_inj:
+        print("Injections obtained with compression.")
+        log_p_incl = injections['log_p_incl'].astype(XI)
+    else:
+        log_p_incl = []#np.full(len(injections['dL']), None)
+        for i in range(len(injections['dL'])):
+            log_p_incl.append(None)
+        
 
 
     if FLAGS.spin_model=='none':
@@ -499,6 +507,7 @@ def main():
                  injections['log_wt'].astype(XI), 
                  injections['Ngen'].astype(XI), 
                  injections['Ndet'].astype(XI), 
+                    log_p_incl
                   ]
     else:
         
@@ -520,6 +529,7 @@ def main():
                  injections['log_wt'].astype(XI), 
                  injections['Ngen'].astype(XI), 
                 injections['Ndet'].astype(XI), 
+                        log_p_incl
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
 
@@ -554,6 +564,7 @@ def main():
                      injections['log_wt'].astype(XI), 
                      injections['Ngen'].astype(XI), 
                      injections['Ndet'].astype(XI), 
+                            log_p_incl
                       ]
 
             elif FLAGS.spin_model=='none':
@@ -573,6 +584,7 @@ def main():
                     injections['log_wt'].astype(XI), 
                     injections['Ngen'].astype(XI), 
                     injections['Ndet'].astype(XI), 
+                            log_p_incl
                       ]
                 
         elif FLAGS.spin_inj=='default' or FLAGS.spin_inj=='default_gauss':
@@ -598,6 +610,7 @@ def main():
                     injections['log_wt'].astype(XI), 
                      injections['Ngen'].astype(XI), 
                      injections['Ndet'].astype(XI), 
+                            log_p_incl
                       ]
         else:
             raise ValueError('Enter valid spin model.')
@@ -732,7 +745,8 @@ def main():
                                 gamma_DP_params=FLAGS.gamma_DP_params,
                                 is_observed = FLAGS.is_observed,
                                 sample_from_pop = FLAGS.sample_from_pop,
-                                mmin_inj=FLAGS.mmin_inj
+                                mmin_inj=FLAGS.mmin_inj,
+                                is_compressed_inj=FLAGS.is_compressed_inj
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

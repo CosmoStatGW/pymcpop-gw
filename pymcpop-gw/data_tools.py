@@ -228,6 +228,7 @@ def load_injections(fin_injections, allPercUse=None):
     allm1truesInj_dict = {}
     allm2truesInj_dict = {}
     logPdrawInj_dict = {}
+    logPinclInj_dict = {}
     ngenInj_dict = {}
     Tobs_dict = {}
     ndetInj_dict = {}
@@ -258,7 +259,12 @@ def load_injections(fin_injections, allPercUse=None):
         allm1truesInj_dict[fiinj] = onp.load( fiinj+'m1d.npy')
         allm2truesInj_dict[fiinj] = onp.load( fiinj+'m2d.npy')
         logPdrawInj_dict[fiinj] = onp.load(fiinj+'log_p_draw.npy')
-        
+        try:
+            logPinclInj_dict[fiinj] = onp.load(fiinj+'log_p_incl.npy')
+            logPincl = True
+        except:
+            print("No log_p_incl in injections.")
+            logPincl = False
         try:
             allchiefftruesInj_dict[fiinj] =  onp.load(fiinj+'chieff.npy')
             allchiptruesInj_dict[fiinj] =  onp.load(fiinj+'chip.npy')
@@ -329,6 +335,8 @@ def load_injections(fin_injections, allPercUse=None):
             allm1truesInj_dict[fiinj] = allm1truesInj_dict[fiinj][idxs][:Nuse]
             allm2truesInj_dict[fiinj] = allm2truesInj_dict[fiinj][idxs][:Nuse]
             logPdrawInj_dict[fiinj] = logPdrawInj_dict[fiinj][idxs][:Nuse]
+            if logPincl:
+                logPinclInj_dict[fiinj] = logPinclInj_dict[fiinj][idxs][:Nuse]
 
             ngenInj_dict[fiinj] = Ngen_new
 
@@ -376,6 +384,8 @@ def load_injections(fin_injections, allPercUse=None):
     allm1truesInj = onp.zeros( (ndatasets,  ndetInj_max))
     allm2truesInj = onp.zeros( (ndatasets,  ndetInj_max))
     logPdrawInj = onp.full( (ndatasets,  ndetInj_max), onp.inf)
+    if logPincl:
+        logPinclInj = onp.full( (ndatasets,  ndetInj_max), onp.inf)
     ngenInj = onp.zeros( ndatasets)
     TobsInj = onp.zeros( ndatasets)
     ndetInj = onp.zeros( ndatasets)
@@ -411,6 +421,8 @@ def load_injections(fin_injections, allPercUse=None):
         allm1truesInj[i, :nmax] = allm1truesInj_dict[fiinj]
         allm2truesInj[i, :nmax] = allm2truesInj_dict[fiinj]
         logPdrawInj[i, :nmax] = logPdrawInj_dict[fiinj]
+        if logPincl:
+            logPinclInj[i, :nmax] = logPinclInj_dict[fiinj]
         ngenInj[i] = ngenInj_dict[fiinj]
         TobsInj[i] = Tobs_dict[fiinj]
         ndetInj[i] = ndetInj_dict[fiinj]
@@ -441,6 +453,8 @@ def load_injections(fin_injections, allPercUse=None):
     inj['m1d'] = allm1truesInj
     inj['m2d'] = allm2truesInj
     inj['log_wt'] = logPdrawInj
+    if logPincl:
+        inj['log_p_incl'] = logPinclInj
     inj['Ngen'] = ngenInj
     inj['Tobs'] = TobsInj
     inj['Ndet'] = ndetInj.astype(int)
