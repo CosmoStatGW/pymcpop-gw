@@ -1469,19 +1469,6 @@ def main():
     
 if __name__=='__main__':
 
-
-
-    # ----------------------------------------------------
-    # Multiprocessing setup (only for parallel chains)
-    # ----------------------------------------------------
-    # if FLAGS.chain_method == "parallel":
-    #     import multiprocessing as mp
-    #     try:
-    #         mp.set_start_method("spawn", force=True)
-    #         print("Spawn set for multiprocessing")
-    #     except RuntimeError:
-    #         print("No spawn set")
-    #         pass
     import multiprocessing as mp
     try:
         mp.set_start_method("spawn")

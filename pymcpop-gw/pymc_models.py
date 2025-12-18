@@ -578,7 +578,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
 
     MIN = at.as_tensor_variable(-1e30,  dtype=z.dtype)
     
-    return at.where(in_support, lp, MIN)
+    return lp #at.where(in_support, lp, MIN)
 
 
 #####################################################
@@ -3235,8 +3235,7 @@ def make_model(  priors,
                                            is_observed = is_observed,
                                            z_grid = zgrid_
                                          )
-                print("log p pop")
-                print(log_p_pop.eval())
+
     
             
             
