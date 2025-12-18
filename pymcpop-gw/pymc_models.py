@@ -2942,11 +2942,7 @@ def make_model(  priors,
             # Individual event mass and distance
             ###############################################
     
-                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )
-
-                print("x has shape:")
-                print(x.shape.eval())
-    
+                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )    
     
                 if 'gauss' not in sampling_GW:
                     

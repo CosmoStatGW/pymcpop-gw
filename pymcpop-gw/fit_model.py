@@ -9,15 +9,23 @@
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")  # harmless on linux
+os.environ.setdefault("OMP_DYNAMIC", "FALSE")
+os.environ.setdefault("OMP_PROC_BIND", "FALSE")
+os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
+
+
 import argparse
 import json
 import sys
 import warnings
 import time
 import resource
-
-
-import sys
 
 
 
@@ -146,6 +154,8 @@ def main():
     FLAGS = parser.parse_args()
 
 
+
+
     from tqdm import tqdm 
     from tqdm.auto import tqdm
 
@@ -183,42 +193,41 @@ def main():
     # ----------------------------------------------------
     # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
     # ----------------------------------------------------
+
+    base = os.environ.get("PYTENSOR_FLAGS", "")
+    extra = "optimizer=fast_run"
+    if FLAGS.use_float32:
+        extra = "floatX=float32," + extra
+    os.environ["PYTENSOR_FLAGS"] = (base + "," + extra).strip(",")
+
+
+    
     uses_jax = FLAGS.sampler in ("numpyro", "blackjax")
     
     if uses_jax:
     
         if FLAGS.chain_method == "parallel":
             # Must set before importing numpyro/jax/pymc
-            os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+            #os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+            add = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+            os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " " + add).strip()
+
         os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
         os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
 
     
         if FLAGS.use_float32:
-            #try:
-            #    os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-            #except:
-            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
             os.environ.setdefault("JAX_ENABLE_X64", "False")
-        
         else:
-            #try:
-            #    os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-            #except:
-            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
             os.environ.setdefault("JAX_ENABLE_X64", "True")
             os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
-            #os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_compile,fast_run=0"
     
-    
-
 
         # ----------------------------------------------------
         # 2️⃣ Import libraries (now they see the environment)
         # ----------------------------------------------------
-    
-        
+      
         
         import numpyro
         
@@ -263,11 +272,7 @@ def main():
     # ----------------------------------------------------
     import pymc as pm
     import pytensor
-    if FLAGS.ncores > 1:
-        pytensor.config.openmp = False
-    else:
-        pytensor.config.openmp = True
-    
+    pytensor.config.openmp = False
     import numpy as onp
     
     
@@ -1465,6 +1470,7 @@ def main():
 if __name__=='__main__':
 
 
+
     # ----------------------------------------------------
     # Multiprocessing setup (only for parallel chains)
     # ----------------------------------------------------
@@ -1477,9 +1483,11 @@ if __name__=='__main__':
     #         print("No spawn set")
     #         pass
     import multiprocessing as mp
-    mp.set_start_method("spawn", force=True)
-    print("Spawn set")
-    
+    try:
+        mp.set_start_method("spawn")
+        print("Spawn set")
+    except RuntimeError:
+        pass  # already set
 
     main()
     
