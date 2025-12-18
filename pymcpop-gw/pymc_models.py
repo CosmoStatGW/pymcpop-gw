@@ -2943,6 +2943,9 @@ def make_model(  priors,
             ###############################################
     
                 x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )
+
+                print("x has shape:")
+                print(x.shape.eval())
     
     
                 if 'gauss' not in sampling_GW:
@@ -3042,16 +3045,19 @@ def make_model(  priors,
                 elif sampling_GW=='gauss' : # to be tested with spins
                     
                     print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
-    
+
+
+                    
                     # sample = mu + L @ x   (batched)
                     samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
-                    
+                
                     # logp = log p(x) - log|L|
                     # d = x.shape[1]
                     log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * x.shape[1] * atools.safe_log(2.0 * np.pi)    # (N,)
+
                     log_det_L = at.sum(atools.safe_log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
                     pilik = log_px - log_det_L                                               # (N,)
-                    
+
                     # unpack coordinates:
                     log_Mc_det = samples[:, 0]
                     logit_q    = samples[:, 1]
@@ -3090,8 +3096,11 @@ def make_model(  priors,
                     
                     # Quadratic form using precision F = Σ^{-1}
                     # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-    
+
+                    
                     tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
+
+
                     
                     # r^T F r for each (obs, comp)
                     quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
@@ -3105,11 +3114,11 @@ def make_model(  priors,
                         - 0.5 * log_dets_l
                         + log_wts_l
                     )                                             # (N, ngmm)
-                    
+
+
                     # Mixture log-likelihood per observation: logsumexp over components
                     gwl = at.logsumexp(logp_components, axis=1)   # (N,)
-    
-    
+
             
                 
                 else:
@@ -3230,6 +3239,8 @@ def make_model(  priors,
                                            is_observed = is_observed,
                                            z_grid = zgrid_
                                          )
+                print("log p pop")
+                print(log_p_pop.eval())
     
             
             
@@ -3361,10 +3372,11 @@ def make_model(  priors,
                 # Add gw likelihood and correct for sampling prior pdf
                 log_p_pop -= pilik
                 log_p_pop += gwl
-        
+
             
             # just sum log likelihoods
             likelihood_val = at.sum( log_p_pop ) #pm.Deterministic("lik", at.sum( log_p_pop ) ) 
+
         
         else:
             # marginalise over single events parameters first

@@ -9,38 +9,17 @@
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
-#os.environ.setdefault("JAX_ENABLE_X64", "True")   # enables float64 in all processes. done later
-
-
-#os.environ.setdefault("PYTENSOR_FLAGS", "optimizer_excluding=fusion")
-#os.environ.setdefault("PYTENSOR_FLAGS", "gcc__cxxflags=-fbracket-depth=2048")
-
-#os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-
-
 import argparse
 import json
 import sys
 import warnings
-import psutil
-
-from tqdm import tqdm 
-from tqdm.auto import tqdm
 import time
 import resource
 
-import arviz as az
-import matplotlib.pyplot as plt
-import corner
 
-import sys, multiprocessing as mp
+import sys
 
-_process = psutil.Process(os.getpid())
-def mem_gb():
-    return _process.memory_info().rss / (1024**3)  # Resident Set Size in GB
 
-def log_mem(tag):
-    print(f"[MEM] {tag}: {mem_gb():.2f} GB RSS")
 
 
 def main():
@@ -160,19 +139,23 @@ def main():
 
     parser.add_argument("--mmin_inj", default=3., type=float, required=False)
     parser.add_argument("--is_compressed_inj", default=0, type=int, required=False)
-
-    
-    
-    
-
-    
-
-    
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
 
     FLAGS = parser.parse_args()
+
+
+    from tqdm import tqdm 
+    from tqdm.auto import tqdm
+
+    import psutil
+    _process = psutil.Process(os.getpid())
+    def mem_gb():
+        return _process.memory_info().rss / (1024**3)  # Resident Set Size in GB
+    
+    def log_mem(tag):
+        print(f"[MEM] {tag}: {mem_gb():.2f} GB RSS")
 
     if FLAGS.sampler in ('numpyro', 'blackjax') and FLAGS.backend=='ztrace':
 
@@ -200,60 +183,79 @@ def main():
     # ----------------------------------------------------
     # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
     # ----------------------------------------------------
-    if FLAGS.chain_method == "parallel":
-        # Must set before importing numpyro/jax/pymc
-        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+    uses_jax = FLAGS.sampler in ("numpyro", "blackjax")
+    
+    if uses_jax:
+    
+        if FLAGS.chain_method == "parallel":
+            # Must set before importing numpyro/jax/pymc
+            os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
+        os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+        os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
 
     
-    if FLAGS.use_float32:
-        #try:
-        #    os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-        #except:
-        os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
-        os.environ.setdefault("JAX_ENABLE_X64", "False")
+        if FLAGS.use_float32:
+            #try:
+            #    os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+            #except:
+            os.environ["PYTENSOR_FLAGS"] = "floatX=float32,optimizer=fast_run"
+            os.environ.setdefault("JAX_ENABLE_X64", "False")
+        
+        else:
+            #try:
+            #    os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
+            #except:
+            os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
+            os.environ.setdefault("JAX_ENABLE_X64", "True")
+            os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
+            #os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_compile,fast_run=0"
     
+    
+
+
+        # ----------------------------------------------------
+        # 2️⃣ Import libraries (now they see the environment)
+        # ----------------------------------------------------
+    
+        
+        
+        import numpyro
+        
+        import jax
+        import jax.numpy as np
+        #jax.config.update("jax_disable_jit", True) # for debugging
+    
+        if FLAGS.use_float32:
+            jax.config.update("jax_enable_x64", False)
+        else:
+            jax.config.update("jax_enable_x64", True)
+    
+        if FLAGS.jax_debug_nans:
+            jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+        else:
+            jax.config.update("jax_debug_nans", False)
+        #jax.config.update("jax_default_matmul_precision", "tensorfloat32")
+        jax.config.update("jax_default_matmul_precision", "highest")
+
+        if FLAGS.chain_method == "parallel":
+            numpyro.set_host_device_count(device_count)
+
+        print("Available devices:", jax.devices())
+        print("Local device count:", jax.local_device_count())
+        print("Backend:", jax.default_backend())
+    
+        print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+    
+
     else:
-        #try:
-        #    os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run,gcc__cxxflags=-fbracket-depth=2048"
-        #except:
-        os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_run"
-        os.environ.setdefault("JAX_ENABLE_X64", "True")
-        os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
-        #os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_compile,fast_run=0"
-    
-    
-    os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
-    os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
+        import numpy as np
 
-
-    # ----------------------------------------------------
-    # 2️⃣ Import libraries (now they see the environment)
-    # ----------------------------------------------------
-    import numpyro
-    
-    import jax
-    import jax.numpy as np
-    #jax.config.update("jax_disable_jit", True) # for debugging
-    
-    if FLAGS.use_float32:
-        jax.config.update("jax_enable_x64", False)
-    else:
-        jax.config.update("jax_enable_x64", True)
-
-    if FLAGS.jax_debug_nans:
-        jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-    else:
-        jax.config.update("jax_debug_nans", False)
-    #jax.config.update("jax_default_matmul_precision", "tensorfloat32")
-    jax.config.update("jax_default_matmul_precision", "highest")
 
     from scipy.special import ndtr, ndtri, erfinv
     
     # Ensure correct device setup
     device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
-    if FLAGS.chain_method == "parallel":
-        numpyro.set_host_device_count(device_count)
     
 
     # ----------------------------------------------------
@@ -261,12 +263,14 @@ def main():
     # ----------------------------------------------------
     import pymc as pm
     import pytensor
-    pytensor.config.openmp = True   # parallelize elemwise/sum where possible
-    #import pytensor.tensor as at
-    import arviz as az
+    if FLAGS.ncores > 1:
+        pytensor.config.openmp = False
+    else:
+        pytensor.config.openmp = True
+    
     import numpy as onp
-    import matplotlib.pyplot as plt
-    import corner
+    
+    
 
     
     # Custom modules
@@ -282,18 +286,6 @@ def main():
     
     X = np.float32 if pytensor.config.floatX == "float32" else np.float64  # model dtype
 
-    # ----------------------------------------------------
-    # 4️⃣ Multiprocessing setup (only for parallel chains)
-    # ----------------------------------------------------
-    if FLAGS.chain_method == "parallel":
-        import multiprocessing as mp
-        try:
-            mp.set_start_method("spawn", force=True)
-            print("Spawn set for multiprocessing")
-        except RuntimeError:
-            print("No spawn set")
-            pass
-
 
     
 
@@ -303,12 +295,11 @@ def main():
     sys.stderr = myLog
 
 
-    print("Available devices:", jax.devices())
-    print("Local device count:", jax.local_device_count())
-    print("Backend:", jax.default_backend())
 
     print(f"Running on PyMC v{pm.__version__}")
-    print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+
+    
+    
     if FLAGS.use_float32:
         print("dtype test:", np.array(0., dtype=np.float32).dtype)
     else:
@@ -488,7 +479,7 @@ def main():
         log_p_incl = injections['log_p_incl'].astype(XI)
     else:
         log_p_incl = []#np.full(len(injections['dL']), None)
-        for i in range(len(injections['dL'])):
+        for _ in range(len(injections['dL'])):
             log_p_incl.append(None)
         
 
@@ -1392,6 +1383,7 @@ def main():
     ################################################
     
 
+    import arviz as az
     
     if FLAGS.backend=='disk':
         trace.to_netcdf( os.path.join(FLAGS.fout, "trace.nc"))
@@ -1415,6 +1407,8 @@ def main():
 
     print("\nMaking summary plots...")
 
+    
+    import matplotlib.pyplot as plt
 
     vplot = [v for v in vnames if v not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx', 'lambda')]
 
@@ -1427,6 +1421,7 @@ def main():
         print('No trace plot produced')
 
     try:
+        import corner
         print("Plotting corner...")
         _ = corner.corner(
             trace,
@@ -1468,7 +1463,23 @@ def main():
 
     
 if __name__=='__main__':
-        
+
+
+    # ----------------------------------------------------
+    # Multiprocessing setup (only for parallel chains)
+    # ----------------------------------------------------
+    # if FLAGS.chain_method == "parallel":
+    #     import multiprocessing as mp
+    #     try:
+    #         mp.set_start_method("spawn", force=True)
+    #         print("Spawn set for multiprocessing")
+    #     except RuntimeError:
+    #         print("No spawn set")
+    #         pass
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
+    print("Spawn set")
+    
 
     main()
     
