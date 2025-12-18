@@ -3149,6 +3149,7 @@ def _interp_indices_nonuniform(x, xs, eps=1e-9):
     
     # clip queries slightly inside the grid to avoid boundary issues
     xq = at.clip(x, x0 + eps, x1 - eps)
+    #xq = stop_grad(xq)
     
     # searchsorted on the non-uniform grid
     idxs = at.searchsorted(xs, xq, side="right")
@@ -3167,6 +3168,7 @@ def _interp_indices_nonuniform(x, xs, eps=1e-9):
     
     r = (xq - xl) / denom
     r = at.cast(r, x.dtype)
+    #r = stop_grad(r)
     
     return idxs, r
 
@@ -3267,8 +3269,218 @@ def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_les
         return lpdf
 
 
-
 def build_m1_grid_DPLDP_z(
+    z_bank,
+    # low-z hyperparameters
+    mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+    # high-z (asymptotic) hyperparameters
+    mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
+    # evolution hyperparameters
+    z_mu1, dz_mu1,
+    z_sigma1, dz_sigma1,
+    z_mu2, dz_mu2,
+    z_sigma2, dz_sigma2,
+    z_mb, dz_mb,
+    # support for m1
+    m1_low, m_high,
+    # grid resolution controls
+    n_peak=2500,      # points in the "interesting" band (peaks + break)
+    n_tail_low=400,   # points in low-mass tail
+    n_tail_high=400,  # points in high-mass tail
+    k_sigma=4.0,      # how many sigmas around each Gaussian to cover
+):
+    """
+    Symbolic non-uniform m1 grid for the DPLDP-z mass model (with redshift evolution).
+
+    Structure:
+      - low tail:   [m1_low, band_min)
+      - Gaussian 1 window over all z
+      - Gaussian 2 window over all z
+      - mid band:   [band_min, band_max] envelope over both peaks + break
+      - high tail:  [band_max, m_high]
+
+    n_peak is split into:
+      ~20% for Gaussian 1, ~20% for Gaussian 2, rest in the mid band.
+
+    All points are:
+      - inside (m1_low, m_high),
+      - sorted,
+      - deduplicated.
+    """
+
+    # ---- detach all hyperparameters for grid geometry (no grad through grid) ----
+    mu1_0_s      = stop_grad(mu1_0)
+    sigma1_0_s   = stop_grad(sigma1_0)
+    mu2_0_s      = stop_grad(mu2_0)
+    sigma2_0_s   = stop_grad(sigma2_0)
+    mb_0_s       = stop_grad(mb_0)
+
+    mu1_inf_s    = stop_grad(mu1_inf)
+    sigma1_inf_s = stop_grad(sigma1_inf)
+    mu2_inf_s    = stop_grad(mu2_inf)
+    sigma2_inf_s = stop_grad(sigma2_inf)
+    mb_inf_s     = stop_grad(mb_inf)
+
+    z_mu1_s      = stop_grad(z_mu1)
+    dz_mu1_s     = stop_grad(dz_mu1)
+    z_sigma1_s   = stop_grad(z_sigma1)
+    dz_sigma1_s  = stop_grad(dz_sigma1)
+    z_mu2_s      = stop_grad(z_mu2)
+    dz_mu2_s     = stop_grad(dz_mu2)
+    z_sigma2_s   = stop_grad(z_sigma2)
+    dz_sigma2_s  = stop_grad(dz_sigma2)
+    z_mb_s       = stop_grad(z_mb)
+    dz_mb_s      = stop_grad(dz_mb)
+
+    m1_low_s     = stop_grad(m1_low)
+    m_high_s     = stop_grad(m_high)
+
+    # dtype & tiny eps near boundaries
+    dtype = getattr(m1_low_s, "dtype", "float64")
+    eps   = at.as_tensor_variable(1e-4, dtype=dtype)
+
+    # ensure z_bank is a tensor (but treated as constant for geometry)
+    z_bank = at.as_tensor_variable(z_bank)
+
+    # global support (slightly shrunken to avoid exact boundaries)
+    xmin = m1_low_s + eps
+    xmax = m_high_s - eps
+    span = at.maximum(xmax - xmin, at.as_tensor_variable(1e-6, dtype=dtype))
+
+    # ---- evolve hyperparameters over z_bank (using detached params) ----
+    mu1_z = theta_of_z(z_bank, mu1_0_s,  mu1_inf_s,  z_mu1_s,    dz_mu1_s)
+    sigma1_z = theta_of_z(z_bank, sigma1_0_s, sigma1_inf_s, z_sigma1_s, dz_sigma1_s)
+
+    mu2_z = theta_of_z(z_bank, mu2_0_s,  mu2_inf_s,  z_mu2_s,    dz_mu2_s)
+    sigma2_z = theta_of_z(z_bank, sigma2_0_s, sigma2_inf_s, z_sigma2_s, dz_sigma2_s)
+
+    mb_z = theta_of_z(z_bank, mb_0_s, mb_inf_s, z_mb_s, dz_mb_s)
+
+    k_sigma_t = at.as_tensor_variable(k_sigma, dtype=dtype)
+
+    # ---- Gaussian windows over all z ----
+    # First for each z, then take global min/max over z.
+    g1_min_z = mu1_z - k_sigma_t * at.abs(sigma1_z)
+    g1_max_z = mu1_z + k_sigma_t * at.abs(sigma1_z)
+
+    g2_min_z = mu2_z - k_sigma_t * at.abs(sigma2_z)
+    g2_max_z = mu2_z + k_sigma_t * at.abs(sigma2_z)
+
+    # global windows (clipped to support)
+    g1_min = at.clip(at.min(g1_min_z), xmin, xmax)
+    g1_max = at.clip(at.max(g1_max_z), xmin, xmax)
+    g2_min = at.clip(at.min(g2_min_z), xmin, xmax)
+    g2_max = at.clip(at.max(g2_max_z), xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+
+    has_g1 = at.gt(g1_width, tiny)
+    has_g2 = at.gt(g2_width, tiny)
+
+    # ---- global "interesting" band over all z (both peaks + break) ----
+    peak_min_z = at.minimum(g1_min_z, g2_min_z)
+    peak_min_z = at.minimum(peak_min_z, mb_z)
+
+    peak_max_z = at.maximum(g1_max_z, g2_max_z)
+    peak_max_z = at.maximum(peak_max_z, mb_z)
+
+    band_min = at.clip(at.min(peak_min_z), xmin, xmax)
+    band_max = at.clip(at.max(peak_max_z), xmax, xmax)  # min/max then clip
+
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ---- split n_peak between Gaussians and the mid band ----
+    # use Python ints; n_peak is passed as plain int in your code
+    frac_gauss1 = 0.2
+    frac_gauss2 = 0.2
+
+    n_g1  = int(n_peak * float(frac_gauss1))
+    n_g2  = int(n_peak * float(frac_gauss2))
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak:
+        scale = float(n_peak) / float(n_g1 + n_g2)
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # ---- segments ----
+
+    # 1) low tail: [xmin, band_min)
+    if n_tail_low > 0:
+        denom_low = float(max(n_tail_low, 1))
+        t_low = at.arange(n_tail_low, dtype=dtype) / denom_low
+        m1_low_tail = xmin + (band_min - xmin) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) Gaussian 1: [g1_min, g1_max]
+    if n_g1 > 0:
+        if n_g1 > 1:
+            denom_g1 = float(n_g1 - 1)
+        else:
+            denom_g1 = 1.0
+        t_g1 = at.arange(n_g1, dtype=dtype) / denom_g1
+        m1_g1 = g1_min + g1_width * t_g1
+        # if the window is effectively degenerate, kill it
+        m1_g1 = at.switch(has_g1, m1_g1, at.zeros_like(m1_g1))
+    else:
+        m1_g1 = at.zeros((0,), dtype=dtype)
+
+    # 3) Gaussian 2: [g2_min, g2_max]
+    if n_g2 > 0:
+        if n_g2 > 1:
+            denom_g2 = float(n_g2 - 1)
+        else:
+            denom_g2 = 1.0
+        t_g2 = at.arange(n_g2, dtype=dtype) / denom_g2
+        m1_g2 = g2_min + g2_width * t_g2
+        m1_g2 = at.switch(has_g2, m1_g2, at.zeros_like(m1_g2))
+    else:
+        m1_g2 = at.zeros((0,), dtype=dtype)
+
+    # 4) mid band: [band_min, band_max]
+    if n_mid > 0:
+        if n_mid > 1:
+            denom_mid = float(n_mid - 1)
+        else:
+            denom_mid = 1.0
+        t_mid = at.arange(n_mid, dtype=dtype) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,), dtype=dtype)
+
+    # 5) high tail: [band_max, xmax]
+    if n_tail_high > 0:
+        if n_tail_high > 1:
+            denom_high = float(n_tail_high - 1)
+        else:
+            denom_high = 1.0
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    # ---- combine, clip, sort, deduplicate ----
+    m1_grid_raw = at.concatenate(
+        [m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+
+    # just in case anything nudged outside [xmin, xmax]
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+
+    # enforce monotonicity and remove duplicates
+    m1_grid_sorted = at.sort(m1_grid_clipped)
+    #m1_grid_unique = at.unique(m1_grid_sorted)
+
+    return m1_grid_sorted
+
+    
+
+def build_m1_grid_DPLDP_z_0(
     z_bank,
     # low-z hyperparameters
     mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
@@ -3409,96 +3621,362 @@ def build_m1_grid_DPLDP_z(
 
 
 
-def build_m1_grid_DPLDP(
+
+def build_m1_grid_DPLDP_off(
     alpha1, alpha2, mb,
     mu1, sigma1, mu2, sigma2,
-    m1_low, m_high, delta_m1,
-    n_peak=2500,      # points in the "interesting" band (peaks + break)
-    n_tail_low=400,   # points in low-mass tail
-    n_tail_high=400,  # points in high-mass tail
-    k_sigma=4.0,      # how many sigmas around each Gaussian to cover
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    k_sigma=4.0,
 ):
     """
-    Symbolic non-uniform m1 grid for the DPLDP mass model (no redshift evolution).
+    Adaptive non-uniform m1 grid for non-evolving DPLDP.
 
-    All inputs (alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
-    delta_m1) are PyTensor scalars (random variables allowed).
-
-    Returns
-    -------
-    m1_grid : TensorVariable, shape (N1,)
-        Monotonic, non-uniform grid spanning [m1_low, m_high], with:
-          - fine spacing where the Gaussians and break live,
-          - coarser spacing in the low/high tails.
+    - Uses current hyperparameters to decide where to put resolution
+      (around the Gaussian peaks and break mb).
+    - BUT all hyperparameters are passed through stop_grad(), so the
+      grid itself does not contribute to gradients.
+    - Gradients still flow through the *values* evaluated on this grid.
     """
 
-    # dtype: follow m1_low (or any of the floats).
-    dtype = getattr(m1_low, "dtype", "float64")
+    # ---- detach hyperparameters for grid construction ----
+    alpha1_sg   = stop_grad(alpha1)
+    alpha2_sg   = stop_grad(alpha2)
+    mb_sg       = stop_grad(mb)
+    mu1_sg      = stop_grad(mu1)
+    sigma1_sg   = stop_grad(sigma1)
+    mu2_sg      = stop_grad(mu2)
+    sigma2_sg   = stop_grad(sigma2)
+    m1_low_sg   = stop_grad(m1_low)
+    m_high_sg   = stop_grad(m_high)
+    delta_m1_sg = stop_grad(delta_m1)
 
-    # small safety margin to avoid exactly-on-boundary issues
-    eps = at.as_tensor_variable(1e-3, dtype=dtype)
+    dtype = getattr(m1_low_sg, "dtype", "float64")
 
-    # --- cover both Gaussian peaks with a k_sigma envelope ---
-    peak_min = at.minimum(mu1 - k_sigma * at.abs(sigma1),
-                          mu2 - k_sigma * at.abs(sigma2))
-    peak_max = at.maximum(mu1 + k_sigma * at.abs(sigma1),
-                          mu2 + k_sigma * at.abs(sigma2))
+    # base epsilon, but ensure we at least resolve a fraction of delta_m1
+    eps_base  = at.as_tensor_variable(1e-3, dtype=dtype)
+    eps_delta = 0.25 * at.abs(delta_m1_sg)
+    eps       = at.maximum(eps_base, eps_delta)
 
-    # include the power-law break mb in the "interesting" band
-    band_min = at.minimum(peak_min, mb)
-    band_max = at.maximum(peak_max, mb)
+    k_sigma_t = at.as_tensor_variable(k_sigma, dtype=dtype)
 
-    # clip band to support and add margin
-    band_min = at.maximum(band_min, m1_low + eps)
-    band_max = at.minimum(band_max, m_high - eps)
+    # ---- band covering both Gaussians ± k_sigma σ and the break mb ----
+    peak_min = at.minimum(
+        mu1_sg - k_sigma_t * at.abs(sigma1_sg),
+        mu2_sg - k_sigma_t * at.abs(sigma2_sg),
+    )
+    peak_max = at.maximum(
+        mu1_sg + k_sigma_t * at.abs(sigma1_sg),
+        mu2_sg + k_sigma_t * at.abs(sigma2_sg),
+    )
 
-    # -------------------------
-    # Build three segments:
-    #   1) low tail:   [m1_low, band_min)
-    #   2) peak band:  [band_min, band_max)
-    #   3) high tail:  [band_max, m_high]
-    # -------------------------
+    band_min = at.minimum(peak_min, mb_sg)
+    band_max = at.maximum(peak_max, mb_sg)
 
-    # 1) low tail: [m1_low, band_min), with n_tail_low points
-    #    use t in [0, 1) => endpoint excluded
+    # clip to [m1_low, m_high], with a margin tied to delta_m1
+    band_min = at.maximum(band_min, m1_low_sg + eps)
+    band_max = at.minimum(band_max, m_high_sg - eps)
+
+    # ---- 3 segments: low tail, central band, high tail ----
+    # 1) low tail [m1_low, band_min)
     if n_tail_low > 0:
-        t_low = at.arange(n_tail_low, dtype=dtype) / n_tail_low
-        m1_low_tail = m1_low + (band_min - m1_low) * t_low
+        t_low = at.arange(n_tail_low, dtype=dtype) / float(n_tail_low)
+        m1_low_tail = m1_low_sg + (band_min - m1_low_sg) * t_low
     else:
         m1_low_tail = at.zeros((0,), dtype=dtype)
 
-    # 2) peak band: [band_min, band_max), with n_peak points
+    # 2) central band [band_min, band_max)
     if n_peak > 0:
-        t_peak = at.arange(n_peak, dtype=dtype) / n_peak
+        t_peak = at.arange(n_peak, dtype=dtype) / float(n_peak)
         m1_peak_band = band_min + (band_max - band_min) * t_peak
     else:
         m1_peak_band = at.zeros((0,), dtype=dtype)
 
-    # 3) high tail: [band_max, m_high], with n_tail_high points
-    #    include endpoint by using denominator (n_tail_high - 1) if > 1
+    # 3) high tail [band_max, m_high]
     if n_tail_high > 1:
-        denom_high = n_tail_high - 1
+        denom_high = float(n_tail_high - 1)
         t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
     elif n_tail_high == 1:
-        # single point at band_max (or you could choose m_high)
         t_high = at.zeros((1,), dtype=dtype)
     else:
         t_high = at.zeros((0,), dtype=dtype)
 
     if n_tail_high > 0:
-        m1_high_tail = band_max + (m_high - band_max) * t_high
+        m1_high_tail = band_max + (m_high_sg - band_max) * t_high
     else:
         m1_high_tail = at.zeros((0,), dtype=dtype)
 
-    # -------------------------
-    # Concatenate segments
-    # -------------------------
-    # Shapes are static: n_tail_low + n_peak + n_tail_high
     m1_grid = at.concatenate([m1_low_tail, m1_peak_band, m1_high_tail], axis=0)
-
     return m1_grid
 
 
+
+def build_m1_grid_DPLDP_fix(
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    k_sigma=4.0,
+):
+    """
+    Adaptive non-uniform m1 grid for non-evolving DPLDP.
+
+    - Uses current hyperparameters to decide where to put resolution
+      (around the Gaussian peaks and break mb).
+    - BUT all hyperparameters are passed through stop_grad(), so the
+      grid itself does not contribute to gradients.
+    - Gradients still flow through the *values* evaluated on this grid.
+    """
+
+    # ---- detach hyperparameters for grid construction ----
+    alpha1_sg   = 3. #stop_grad(alpha1)
+    alpha2_sg   = 4. #stop_grad(alpha2)
+    mb_sg       = 35. #stop_grad(mb)
+    mu1_sg      = 10. #stop_grad(mu1)
+    sigma1_sg   = 2. #stop_grad(sigma1)
+    mu2_sg      = 35. #stop_grad(mu2)
+    sigma2_sg   = 5. #stop_grad(sigma2)
+    m1_low_sg   = 3.2 #stop_grad(m1_low)
+    m_high_sg   = 300. #stop_grad(m_high)
+    delta_m1_sg = 4. #stop_grad(delta_m1)
+
+    dtype = getattr(m1_low_sg, "dtype", "float64")
+
+    # base epsilon, but ensure we at least resolve a fraction of delta_m1
+    eps_base  = at.as_tensor_variable(1e-3, dtype=dtype)
+    eps_delta = 0.25 * at.abs(4.)
+    eps       = at.maximum(eps_base, eps_delta)
+
+    k_sigma_t = at.as_tensor_variable(k_sigma, dtype=dtype)
+
+    # ---- band covering both Gaussians ± k_sigma σ and the break mb ----
+    peak_min = at.minimum(
+        mu1_sg - k_sigma_t * at.abs(sigma1_sg),
+        mu2_sg - k_sigma_t * at.abs(sigma2_sg),
+    )
+    peak_max = at.maximum(
+        mu1_sg + k_sigma_t * at.abs(sigma1_sg),
+        mu2_sg + k_sigma_t * at.abs(sigma2_sg),
+    )
+
+    band_min = at.minimum(peak_min, mb_sg)
+    band_max = at.maximum(peak_max, mb_sg)
+
+    # clip to [m1_low, m_high], with a margin tied to delta_m1
+    band_min = at.maximum(band_min, m1_low_sg + eps)
+    band_max = at.minimum(band_max, m_high_sg - eps)
+
+    # ---- 3 segments: low tail, central band, high tail ----
+    # 1) low tail [m1_low, band_min)
+    if n_tail_low > 0:
+        t_low = at.arange(n_tail_low, dtype=dtype) / float(n_tail_low)
+        m1_low_tail = m1_low_sg + (band_min - m1_low_sg) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) central band [band_min, band_max)
+    if n_peak > 0:
+        t_peak = at.arange(n_peak, dtype=dtype) / float(n_peak)
+        m1_peak_band = band_min + (band_max - band_min) * t_peak
+    else:
+        m1_peak_band = at.zeros((0,), dtype=dtype)
+
+    # 3) high tail [band_max, m_high]
+    if n_tail_high > 1:
+        denom_high = float(n_tail_high - 1)
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+    elif n_tail_high == 1:
+        t_high = at.zeros((1,), dtype=dtype)
+    else:
+        t_high = at.zeros((0,), dtype=dtype)
+
+    if n_tail_high > 0:
+        m1_high_tail = band_max + (m_high_sg - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    m1_grid = at.concatenate([m1_low_tail, m1_peak_band, m1_high_tail], axis=0)
+    return m1_grid
+
+
+
+def build_m1_grid_DPLDP(
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss1=0.2,   # fraction of n_peak for Gaussian 1
+    frac_gauss2=0.2,   # fraction of n_peak for Gaussian 2
+    k_sigma_gauss=3.0, # ±kσ around each Gaussian
+    k_sigma_band=4.0,  # envelope band around both Gaussians + mb
+):
+    """
+    Adaptive non-uniform m1 grid for non-evolving DPLDP.
+
+    Structure:
+      - low tail:   [m1_low, band_min)
+      - Gaussian 1: [mu1 - kσ1, mu1 + kσ1]
+      - Gaussian 2: [mu2 - kσ2, mu2 + kσ2]
+      - mid band:   [band_min, band_max] (envelope over both peaks + mb)
+      - high tail:  [band_max, m_high]
+
+    n_peak is split into:
+      n_g1  = frac_gauss1 * n_peak  points for Gaussian 1
+      n_g2  = frac_gauss2 * n_peak  points for Gaussian 2
+      n_mid = remaining points in the envelope band
+
+    Guarantees:
+      - all points in (m1_low, m_high),
+      - grid is sorted and deduplicated,
+      - no aggressive low cut.
+    """
+
+    # ---- detach hyperparameters for grid construction (no gradient through geometry) ----
+    mb_sg       = stop_grad(mb)
+    mu1_sg      = stop_grad(mu1)
+    sigma1_sg   = stop_grad(sigma1)
+    mu2_sg      = stop_grad(mu2)
+    sigma2_sg   = stop_grad(sigma2)
+    m1_low_sg   = stop_grad(m1_low)
+    m_high_sg   = stop_grad(m_high)
+    delta_m1_sg = stop_grad(delta_m1)
+
+    # dtype
+    dtype = getattr(getattr(m1_low_sg, "dtype", None) or m_high_sg.dtype, "lower", lambda: "float64")()
+
+    # *** MUCH GENTLER EPS ***
+    # tiny fixed offset just to avoid exactly hitting the boundaries
+    eps = at.as_tensor_variable(1e-4, dtype=dtype)
+
+    # global support, with minimal safety margins
+    xmin = m1_low_sg + eps
+    xmax = m_high_sg - eps
+    span = at.maximum(xmax - xmin, at.as_tensor_variable(1e-6, dtype=dtype))
+
+    # ---- Gaussian windows ----
+    k_g = at.as_tensor_variable(k_sigma_gauss, dtype=dtype)
+    k_b = at.as_tensor_variable(k_sigma_band,  dtype=dtype)
+
+    # raw gaussian windows (before clipping)
+    g1_min_raw = mu1_sg - k_g * at.abs(sigma1_sg)
+    g1_max_raw = mu1_sg + k_g * at.abs(sigma1_sg)
+
+    g2_min_raw = mu2_sg - k_g * at.abs(sigma2_sg)
+    g2_max_raw = mu2_sg + k_g * at.abs(sigma2_sg)
+
+    # clip to [xmin, xmax]
+    g1_min = at.clip(g1_min_raw, xmin, xmax)
+    g1_max = at.clip(g1_max_raw, xmin, xmax)
+    g2_min = at.clip(g2_min_raw, xmin, xmax)
+    g2_max = at.clip(g2_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+
+    has_g1 = at.gt(g1_width, tiny)
+    has_g2 = at.gt(g2_width, tiny)
+
+    # ---- envelope band over both Gaussians + break mb ----
+    peak_min_raw = at.minimum(g1_min_raw, g2_min_raw)
+    peak_min_raw = at.minimum(peak_min_raw, mb_sg)
+
+    peak_max_raw = at.maximum(g1_max_raw, g2_max_raw)
+    peak_max_raw = at.maximum(peak_max_raw, mb_sg)
+
+    band_min = at.clip(peak_min_raw, xmin, xmax)
+    band_max = at.clip(peak_max_raw, xmin, xmax)
+
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ---- split n_peak between Gaussians + band (Python ints) ----
+    n_g1  = int(n_peak * float(frac_gauss1))
+    n_g2  = int(n_peak * float(frac_gauss2))
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak:
+        scale = float(n_peak) / float(n_g1 + n_g2)
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # 1) low tail: [xmin, band_min)
+    if n_tail_low > 0:
+        denom_low = float(max(n_tail_low, 1))
+        t_low = at.arange(n_tail_low, dtype=dtype) / denom_low
+        m1_low_tail = xmin + (band_min - xmin) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) Gaussian 1: [g1_min, g1_max]
+    if n_g1 > 0:
+        if n_g1 > 1:
+            denom_g1 = float(n_g1 - 1)
+        else:
+            denom_g1 = 1.0
+        t_g1 = at.arange(n_g1, dtype=dtype) / denom_g1
+        m1_g1 = g1_min + g1_width * t_g1
+        m1_g1 = at.switch(has_g1, m1_g1, at.zeros_like(m1_g1))
+    else:
+        m1_g1 = at.zeros((0,), dtype=dtype)
+
+    # 3) Gaussian 2: [g2_min, g2_max]
+    if n_g2 > 0:
+        if n_g2 > 1:
+            denom_g2 = float(n_g2 - 1)
+        else:
+            denom_g2 = 1.0
+        t_g2 = at.arange(n_g2, dtype=dtype) / denom_g2
+        m1_g2 = g2_min + g2_width * t_g2
+        m1_g2 = at.switch(has_g2, m1_g2, at.zeros_like(m1_g2))
+    else:
+        m1_g2 = at.zeros((0,), dtype=dtype)
+
+    # 4) mid band: [band_min, band_max]
+    if n_mid > 0:
+        if n_mid > 1:
+            denom_mid = float(n_mid - 1)
+        else:
+            denom_mid = 1.0
+        t_mid = at.arange(n_mid, dtype=dtype) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,), dtype=dtype)
+
+    # 5) high tail: [band_max, xmax]
+    if n_tail_high > 0:
+        if n_tail_high > 1:
+            denom_high = float(n_tail_high - 1)
+        else:
+            denom_high = 1.0
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    # ---- combine, clip, sort, deduplicate ----
+    m1_grid_raw = at.concatenate(
+        [m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+
+    # just in case anything slipped slightly out of bounds
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+
+    # sort & remove duplicates
+    m1_grid_sorted = at.sort(m1_grid_clipped)
+    #m1_grid_unique = stop_grad(at.unique(m1_grid_sorted))
+
+    return m1_grid_sorted
 
     
     

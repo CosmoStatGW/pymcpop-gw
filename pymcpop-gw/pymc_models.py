@@ -2807,14 +2807,18 @@ def make_model(  priors,
 
         if interp_mass!=0:
 
-            eps_m = at.as_tensor_variable(1e-5)
             
-            #m1_grid_ = ( m1_low_+eps_m + (300.0 - m1_low_ ) * tgrid_m1).astype(X)
-            m2_grid_ = ( m2_low_+eps_m + (300.0 - m2_low_ ) * tgrid_m2).astype(X)
 
             
                 
             if mass_model=='DPLDP':
+
+               
+            
+                eps_m = at.as_tensor_variable(1e-2, dtype=m2_low_.dtype)
+                m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2).astype(X)
+
+                #m1_grid_ = at.linspace(2., 300., interp_mass )
     
                 m1_grid_ = atools.build_m1_grid_DPLDP(
                                             alpha1=alpha1_,
@@ -2830,7 +2834,7 @@ def make_model(  priors,
                                             n_peak=interp_mass,      # or smaller if you want
                                             n_tail_low=interp_mass//5,
                                             n_tail_high=interp_mass//5,
-                                            k_sigma=4.0,
+                                            #k_sigma=4.0,
                                         )
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
@@ -2865,6 +2869,9 @@ def make_model(  priors,
                 interp_grids_mass = [m1_grid_, m2_grid_]
 
             elif mass_model=='DPLDP-z':
+
+                eps_m = at.as_tensor_variable(1e-5, dtype=m2_low_.dtype)
+                m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2).astype(X)
 
                 m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_,
                                 # low-z hyperparameters
