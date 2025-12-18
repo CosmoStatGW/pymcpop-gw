@@ -2071,35 +2071,35 @@ def make_model(  priors,
             print("Grid in logit(q) source between %s and %s"%(MMIN_GRID_1, MMAX_GRID_1))
             print("Grid in log(1+z) source between %s and %s"%(MMIN_GRID_2, MMAX_GRID_2))
 
-            log_Mc_grid = np.asarray((MMIN_GRID + (MMAX_GRID - MMIN_GRID) * tgrid_m1)).astype(X)
-            logit_q_grid = np.asarray((MMIN_GRID_1 + (MMAX_GRID_1 - MMIN_GRID_1) * tgrid_m1)).astype(X)
-            log_1pz_grid = np.asarray((MMIN_GRID_2 + (MMAX_GRID_2 - MMIN_GRID_2) * tgrid_z)).astype(X)
+            # log_Mc_grid = np.asarray((MMIN_GRID + (MMAX_GRID - MMIN_GRID) * tgrid_m1)).astype(X)
+            # logit_q_grid = np.asarray((MMIN_GRID_1 + (MMAX_GRID_1 - MMIN_GRID_1) * tgrid_m1)).astype(X)
+            # log_1pz_grid = np.asarray((MMIN_GRID_2 + (MMAX_GRID_2 - MMIN_GRID_2) * tgrid_z)).astype(X)
                     
-            dx1_min_test = np.min(np.diff(log_Mc_grid))
-            dx2_min_test = np.min(np.diff(logit_q_grid))
-            dx3_min_test = np.min(np.diff(log_1pz_grid))
+            # dx1_min_test = np.min(np.diff(log_Mc_grid))
+            # dx2_min_test = np.min(np.diff(logit_q_grid))
+            # dx3_min_test = np.min(np.diff(log_1pz_grid))
 
 
-            if dx1_min_test >= L_small_m1:
-                raise ValueError(
-                f"Spacing on log_Mc interpolation grid ({dx1_min_test:.3g}) is larger than or "
-                f"comparable to min prior scale for sigma ({L_small_m1:.3g}). "
-                "Increase interp_mass or change priors."
-            )
+            # if dx1_min_test >= L_small_m1:
+            #     raise ValueError(
+            #     f"Spacing on log_Mc interpolation grid ({dx1_min_test:.3g}) is larger than or "
+            #     f"comparable to min prior scale for sigma ({L_small_m1:.3g}). "
+            #     "Increase interp_mass or change priors."
+            # )
 
-            if dx2_min_test >= L_small_m2:
-                raise ValueError(
-                f"Spacing on logit_q interpolation grid ({dx2_min_test:.3g}) is larger than or "
-                f"comparable to min prior scale for sigma ({L_small_m2:.3g}). "
-                "Increase interp_mass or change priors."
-            )
+            # if dx2_min_test >= L_small_m2:
+            #     raise ValueError(
+            #     f"Spacing on logit_q interpolation grid ({dx2_min_test:.3g}) is larger than or "
+            #     f"comparable to min prior scale for sigma ({L_small_m2:.3g}). "
+            #     "Increase interp_mass or change priors."
+            # )
 
-            if dx3_min_test >= L_small_3:
-                raise ValueError(
-                f"Spacing on log(1+z) interpolation grid ({dx3_min_test:.3g}) is larger than or "
-                f"comparable to min prior scale for sigma ({L_small_3:.3g}). "
-                "Increase interp_mass or change priors."
-            )
+            # if dx3_min_test >= L_small_3:
+            #     raise ValueError(
+            #     f"Spacing on log(1+z) interpolation grid ({dx3_min_test:.3g}) is larger than or "
+            #     f"comparable to min prior scale for sigma ({L_small_3:.3g}). "
+            #     "Increase interp_mass or change priors."
+            # )
         else:
             raise ValueError('Interpolation not available for this mass model.')
 
@@ -2806,10 +2806,6 @@ def make_model(  priors,
         # Precompute mass function pieces 
 
         if interp_mass!=0:
-
-            
-
-            
                 
             if mass_model=='DPLDP':
 
@@ -2819,7 +2815,7 @@ def make_model(  priors,
                 m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2).astype(X)
 
                 #m1_grid_ = at.linspace(2., 300., interp_mass )
-    
+            
                 m1_grid_ = atools.build_m1_grid_DPLDP(
                                             alpha1=alpha1_,
                                             alpha2=alpha2_,
@@ -2957,6 +2953,39 @@ def make_model(  priors,
                 
             elif mass_model in ('DPUC', 'DP'):
 
+                n_total_min_mass = interp_mass
+                n_per_min = 20
+                n_per_max = 50
+                n_boundary_mass = 50
+                k_sigma = 4
+                sigma_floor=1e-4
+                
+
+                log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
+                                                mu1, sig1,
+                                                at.as_tensor_variable(MMIN_GRID),at.as_tensor_variable(MMAX_GRID),
+                                                n_total_min=n_total_min_mass,
+                                                n_per_min=n_per_min,
+                                                n_per_max=n_per_max,
+                                                n_boundary=n_boundary_mass,
+                                                k_sigma=k_sigma,
+                                                sigma_floor=sigma_floor,
+                                                K = N_DP_comp_max_np
+                                            )
+
+                logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
+                                                mu2, sig2,
+                                                at.as_tensor_variable(MMIN_GRID_1),at.as_tensor_variable(MMAX_GRID_1),
+                                                n_total_min=n_total_min_mass,
+                                                n_per_min=n_per_min,
+                                                n_per_max=n_per_max,
+                                                n_boundary=n_boundary_mass,
+                                                k_sigma=k_sigma,
+                                                sigma_floor=sigma_floor,
+                                                K = N_DP_comp_max_np
+                                            )
+                
+
                 if rate_model in ('MD', 'PL'):
                     lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
 
@@ -2965,6 +2994,18 @@ def make_model(  priors,
                     interp_grids_mass = [log_Mc_grid, logit_q_grid]
 
                 else:
+
+                    log_1pz_grid = atools.build_1d_gaussian_mixture_grid_components(
+                                                mu3, sig3,
+                                                at.as_tensor_variable(MMIN_GRID_2),at.as_tensor_variable(MMAX_GRID_2),
+                                                n_total_min=n_total_min_mass,
+                                                n_per_min=n_per_min,
+                                                n_per_max=n_per_max,
+                                                n_boundary=n_boundary_mass,
+                                                k_sigma=k_sigma,
+                                                sigma_floor=sigma_floor,
+                                                K = N_DP_comp_max_np
+                                            )
 
            
                     lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd, z=log_1pz_grid)

@@ -1689,7 +1689,105 @@ def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None):
         
 #         return lpdfm1, lpdfm2
 
+
+
 def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
+    """
+    Interpolate Gaussian-mixture logpdfs on *non-uniform* grids for:
+      - m1  (e.g. log Mc)
+      - m2  (e.g. logit q)
+      - optionally log(1+z)
+
+    Parameters
+    ----------
+    theta : tuple (m1, m2)
+        m1, m2 are 1D TensorVariables (N,) in the transformed coordinates.
+    interp_vals : list
+        [lp_m1_grid, lp_m2_grid] or [lp_m1_grid, lp_m2_grid, lp_z_grid]
+        where each lp_*_grid has shape (K, n_grid_dim),
+        K = number of mixture components.
+    interp_grids : list
+        [m1_grid, m2_grid] or [m1_grid, m2_grid, z_grid],
+        each a 1D non-uniform grid (n_grid_dim,).
+    z : TensorVariable or None
+        If provided, same length as m1/m2 and in the same transformed coord
+        as z_grid (e.g. log(1+z)).
+
+    Returns
+    -------
+    lpdfm1, lpdfm2, lpdf3 : TensorVariables
+        Each of shape (K, N), where N = number of evaluation points.
+    """
+    m1, m2 = theta
+
+    # unpack grids and banked logpdfs
+    m1_grid = interp_grids[0]               # (n_Mc,)
+    m2_grid = interp_grids[1]               # (n_q,)
+
+    lp_m1_grid = interp_vals[0]             # (K, n_Mc)
+    lp_m2_grid = interp_vals[1]             # (K, n_q)
+
+    K = lp_m1_grid.shape[0]                 # number of mixture components
+
+    # convenience: row indices for broadcasting (K,1)
+    row_idx = at.arange(K).reshape((K, 1))
+
+    # ==============================
+    # 1) M1 / logMc (non-uniform)
+    # ==============================
+    j1, r1 = _interp_indices_nonuniform(m1, m1_grid)  # j1,r1: (N,)
+
+    # columns for lower / upper grid points, shape (1, N)
+    col1_L = (j1 - 1).reshape((1, j1.shape[0]))
+    col1_R = j1.reshape((1, j1.shape[0]))
+
+    # pick logpdf values at neighbours: shapes (K, N)
+    yl1 = lp_m1_grid[row_idx, col1_L]
+    yh1 = lp_m1_grid[row_idx, col1_R]
+
+    r1b = r1.reshape((1, r1.shape[0]))      # (1, N) for broadcasting
+    lpdfm1 = (1.0 - r1b) * yl1 + r1b * yh1  # (K, N)
+
+    # ==============================
+    # 2) M2 / logit(q) (non-uniform)
+    # ==============================
+    j2, r2 = _interp_indices_nonuniform(m2, m2_grid)  # (N,)
+
+    col2_L = (j2 - 1).reshape((1, j2.shape[0]))
+    col2_R = j2.reshape((1, j2.shape[0]))
+
+    yl2 = lp_m2_grid[row_idx, col2_L]       # (K, N)
+    yh2 = lp_m2_grid[row_idx, col2_R]       # (K, N)
+
+    r2b = r2.reshape((1, r2.shape[0]))
+    lpdfm2 = (1.0 - r2b) * yl2 + r2b * yh2  # (K, N)
+
+    # ==============================
+    # 3) Optional z / log(1+z)
+    # ==============================
+    if z is None:
+        # same shape as lpdfm2, but zero (i.e. neutral factor)
+        lpdf3 = at.zeros_like(lpdfm2)
+    else:
+        z_grid = interp_grids[2]            # (n_z,)
+        lp_z_grid = interp_vals[2]          # (K, n_z)
+
+        j3, r3 = _interp_indices_nonuniform(z, z_grid)  # (N,)
+
+        col3_L = (j3 - 1).reshape((1, j3.shape[0]))
+        col3_R = j3.reshape((1, j3.shape[0]))
+
+        yl3 = lp_z_grid[row_idx, col3_L]    # (K, N)
+        yh3 = lp_z_grid[row_idx, col3_R]    # (K, N)
+
+        r3b = r3.reshape((1, r3.shape[0]))
+        lpdf3 = (1.0 - r3b) * yl3 + r3b * yh3  # (K, N)
+
+    return lpdfm1, lpdfm2, lpdf3
+
+
+    
+def gaussian_logpdf_pair_from_interp_lin(theta, interp_vals, interp_grids, z=None):
 
     m1, m2 = theta
     
@@ -1746,6 +1844,94 @@ def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
         
     return lpdfm1, lpdfm2, lpdf3
 
+
+
+
+
+def build_1d_gaussian_mixture_grid_components(
+    mu_d, sigma_d,
+    x_low, x_high,
+    n_total_min=2000,    # minimum total points you want overall
+    n_per_min=20,        # minimum points per Gaussian component
+    n_per_max=100,       # maximum points per component if few components
+    n_boundary=200,      # points in global uniform "background" grid
+    k_sigma=4.0,         # μ ± kσ window for each component
+    sigma_floor=1e-4,    # floor on σ for grid *only* (not for pdf)
+    K=30
+):
+    """
+    Build a 1D non-uniform grid for a Gaussian mixture in x,
+    assigning points per component in mu_k ± k_sigma * sigma_k,
+    plus a boundary grid over [x_low, x_high].
+    """
+
+    # Number of components (compile-time constant)
+    #K = mu_d.shape[0]
+    if K <= 0:
+        raise ValueError("K = len(mu_d) must be > 0")
+
+    # Decide how many points per component
+    base_per_comp = max(n_per_min, n_total_min // K)
+    n_per_comp = min(base_per_comp, n_per_max)
+
+    # Detach for geometry
+    mu_s      = stop_grad(mu_d)
+    sigma_s   = stop_grad(sigma_d)
+    x_low_s   = stop_grad(x_low)
+    x_high_s  = stop_grad(x_high)
+
+    dtype = getattr(x_low_s, "dtype", "float64")
+
+    eps         = at.as_tensor_variable(1e-5, dtype=dtype)
+    sigma_floor = at.as_tensor_variable(sigma_floor, dtype=dtype)
+    k_sigma_t   = at.as_tensor_variable(k_sigma, dtype=dtype)
+
+    xmin = x_low_s  + eps
+    xmax = x_high_s - eps
+    span = at.maximum(xmax - xmin, at.as_tensor_variable(1e-6, dtype=dtype))
+
+    sigma_eff = at.maximum(at.abs(sigma_s), sigma_floor)
+
+    win_min_raw = mu_s - k_sigma_t * sigma_eff
+    win_max_raw = mu_s + k_sigma_t * sigma_eff
+
+    win_min = at.clip(win_min_raw, xmin, xmax)
+    win_max = at.clip(win_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    win_width = at.maximum(win_max - win_min, tiny)
+
+    # per-component grid in each window
+    if n_per_comp > 1:
+        denom_c = float(n_per_comp - 1)
+        t_c = at.arange(n_per_comp, dtype=dtype) / denom_c
+    else:
+        t_c = at.zeros((1,), dtype=dtype)
+
+    win_min_2d   = win_min[:, None]       # (K,1)
+    win_width_2d = win_width[:, None]     # (K,1)
+    t_2d         = t_c[None, :]           # (1, n_per_comp)
+
+    x_comp_2d  = win_min_2d + win_width_2d * t_2d   # (K, n_per_comp)
+    x_comp_flat = x_comp_2d.flatten()               # (K * n_per_comp,)
+
+    # boundary grid
+    if n_boundary > 0:
+        if n_boundary > 1:
+            denom_b = float(n_boundary - 1)
+        else:
+            denom_b = 1.0
+        t_b = at.arange(n_boundary, dtype=dtype) / denom_b
+        x_boundary = xmin + (xmax - xmin) * t_b
+    else:
+        x_boundary = at.zeros((0,), dtype=dtype)
+
+    # combine and sort (no unique – duplicates are fine for interpolation)
+    x_all = at.concatenate([x_boundary, x_comp_flat], axis=0)
+    x_all = at.clip(x_all, xmin, xmax)
+    x_grid = at.sort(x_all)
+
+    return x_grid
 
 
 def redshift_mixture_log_norm(mu, sd, logw, 

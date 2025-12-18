@@ -270,6 +270,20 @@ def main():
     # ----------------------------------------------------
     # 3️⃣ Now safe to import PyMC and others
     # ----------------------------------------------------
+    import tempfile
+
+    # Unique-ish per-process / per-run compiledir
+    scratch = os.path.join(
+        tempfile.gettempdir(), f"pytensor_{os.getuid()}_{os.getpid()}"
+    )
+    
+    flags = [
+        f"compiledir={scratch}",
+        "compile__timeout=600",  # wait up to 10 min
+        "compile__wait=10",      # retry every ~10s
+    ]
+    os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
+    
     import pymc as pm
     import pytensor
     pytensor.config.openmp = False
@@ -1213,7 +1227,11 @@ def main():
                     # print("Done.")
                     t0 = time.time()
                     log_mem("before pm.sample main")
-                    cb = autils.make_tqdm_callback(pbar)
+                    #cb = autils.make_tqdm_callback(pbar)
+                    draws = sampler_kwargs.get("draws", 1000)
+                    tune = sampler_kwargs.get("tune", 1000)
+
+                    cb=autils.TqdmPerChainCallback(draws=draws, tune=tune)
 
                     
                     trace = pm.sample(nuts_sampler='pymc', 

@@ -979,6 +979,78 @@ def make_tqdm_callback(pbar):
     return cb
 
 
+class TqdmPerChainCallback(pm.callbacks.Callback):
+    def __init__(self, draws=None, tune=None):
+        # Only simple, picklable state here
+        self.draws = draws
+        self.tune = tune
+        self._pbar = None
+        self._t0 = None
+        self._last_refresh = None
+
+    def _parse_args(self, *args, **kwargs):
+        """
+        Mimic your original flexible signature handling.
+        Supports:
+          - PyMC >=5: (draw, tuning, chain)
+          - Older patterns: (trace, draw), (draw,), or kwargs
+        """
+        draw = tuning = chain = None
+
+        if len(args) >= 3:
+            draw, tuning, chain = args[:3]
+        elif len(args) == 2:
+            # could be (trace, draw)
+            draw = args[1]
+            tuning = kwargs.get("tuning")
+            chain = kwargs.get("chain", 0)
+        elif len(args) == 1:
+            draw = args[0]
+            tuning = kwargs.get("tuning")
+            chain = kwargs.get("chain", 0)
+        else:
+            draw = kwargs.get("draw", 0)
+            tuning = kwargs.get("tuning")
+            chain = kwargs.get("chain", 0)
+
+        # If PyMC passed a Draw-like object with a .tuning attribute
+        if hasattr(draw, "tuning") and tuning is None:
+            tuning = bool(getattr(draw, "tuning", False))
+
+        if chain is None:
+            chain = 0
+
+        return draw, bool(tuning), int(chain)
+
+    def __call__(self, *args, **kwargs):
+        draw, tuning, chain = self._parse_args(*args, **kwargs)
+
+        # Lazily create tqdm inside each worker
+        if self._pbar is None:
+            total = None
+            if self.draws is not None and self.tune is not None:
+                total = self.draws + self.tune
+
+            self._pbar = tqdm(
+                total=total,
+                desc=f"chain {chain}",
+                position=chain,  # one bar per chain
+                leave=True,
+            )
+            self._t0 = time.perf_counter()
+            self._last_refresh = self._t0
+
+        # Every callback => one step
+        self._pbar.update(1)
+
+        # Optional: same warmup/sampling + rate logic
+        now = time.perf_counter()
+        if (self._pbar.n % 25) == 0 and (now - self._last_refresh) >= 0.25:
+            phase = "warmup" if tuning else "sampling"
+            rate = self._pbar.n / max(now - self._t0, 1e-9)
+            self._pbar.set_postfix_str(f"{phase} | {rate:5.1f} it/s", refresh=False)
+            self._last_refresh = now     
+
 def make_tqdm_callback_frequent(pbar):
     t0 = time.perf_counter()
 
