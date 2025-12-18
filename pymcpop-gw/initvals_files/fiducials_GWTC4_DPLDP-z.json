@@ -1,0 +1,54 @@
+{
+  "alpha1_0": 1.7,
+  "alpha2_0": 4.5,
+  "mb_0": 36.0,
+  "mu1_0": 9.8,
+  "sigma1_0": 0.65,
+  "mu2_0": 33.0,
+  "sigma2_0": 3.9,
+
+  "alpha1_inf": 1.7,
+  "alpha2_inf": 4.5,
+  "mb_inf": 36.0,
+  "mu1_inf": 9.8,
+  "sigma1_inf": 0.65,
+  "mu2_inf": 33.0,
+  "sigma2_inf": 3.9,
+
+  "z_alpha1": 1.0,
+  "dz_alpha1": 0.8,
+  "z_alpha2": 1.0,
+  "dz_alpha2": 0.8,
+  "z_mb": 1.0,
+  "dz_mb": 0.8,
+  "z_mu1": 1.0,
+  "dz_mu1": 0.8,
+  "z_sigma1": 1.0,
+  "dz_sigma1": 0.8,
+  "z_mu2": 1.0,
+  "dz_mu2": 0.8,
+  "z_sigma2": 1.0,
+  "dz_sigma2": 0.8,
+
+  "lambda": [0.36, 0.59, 0.05],
+  "lambda_inf_vec": [0.36, 0.59, 0.05],
+
+  "z_lambda0": 1.0,
+  "dz_lambda0": 0.8,
+  "z_lambda1": 1.0,
+  "dz_lambda1": 0.8,
+
+  "u": 0.000816,
+  "v": 0.5,
+
+  "delta_m1": 4.3,
+  "beta": 1.2,
+  "delta_m2": 4.9,
+
+  "gamma": 3.2,
+  "kappa": 3.0,
+  "zp": 2.0,
+
+  "H0": 70.0,
+  "Om": 0.25
+}

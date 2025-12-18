@@ -1,0 +1,68 @@
+{
+  "gamma": [-6, 6],
+  "kappa": [0, 12],
+  "zp": [0, 6],
+
+  "alpha1_0": [-4, 12],
+  "alpha1_inf": [-4, 12],
+  "z_alpha1": [0, 6],
+  "dz_alpha1": [0.05, 6],
+
+  "alpha2_0": [-4, 12],
+  "alpha2_inf": [-4, 12],
+  "z_alpha2": [0, 6],
+  "dz_alpha2": [0.05, 6],
+
+  "mb_0": [20, 50],
+  "mb_inf": [20, 50],
+  "z_mb": [0, 6],
+  "dz_mb": [0.05, 6],
+
+  "mu1_0": [5, 20],
+  "mu1_inf": [5, 20],
+  "z_mu1": [0, 6],
+  "dz_mu1": [0.05, 6],
+
+  "sigma1_0": [0.1, 10],
+  "sigma1_inf": [0.1, 10],
+  "z_sigma1": [0, 6],
+  "dz_sigma1": [0.05, 6],
+
+  "mu2_0": [25, 60],
+  "mu2_inf": [25, 60],
+  "z_mu2": [0, 6],
+  "dz_mu2": [0.05, 6],
+
+  "sigma2_0": [0.1, 10],
+  "sigma2_inf": [0.1, 10],
+  "z_sigma2": [0, 6],
+  "dz_sigma2": [0.05, 6],
+
+  "delta_m1": [0, 10],
+
+  "lambda0_vec_0": "Dirichlet(1,1,1)",
+  "lambda0_0": "lambda0_vec_0[0]",
+  "lambda1_0": "lambda0_vec_0[1]",
+  "lambda2_0": "lambda0_vec_0[2]",
+
+  "lambda_inf_vec": "Dirichlet(1,1,1)",
+  "lambda0_inf": "lambda_inf_vec[0]",
+  "lambda1_inf": "lambda_inf_vec[1]",
+  "lambda2_inf": "lambda_inf_vec[2]",
+
+  "z_lambda0": [0, 6],
+  "dz_lambda0": [0.05, 6],
+  "z_lambda1": [0, 6],
+  "dz_lambda1": [0.05, 6],
+
+  "m_high": [300.0],
+
+  "beta": [-2, 7],
+  "delta_m2": [0, 10],
+
+  "H0": [20, 120],
+  "Om": [0.05, 0.55],
+  "w0": [-1.5, -0.5],
+  "Xi0": [0.05, 5],
+  "n": [0.1, 5]
+}
