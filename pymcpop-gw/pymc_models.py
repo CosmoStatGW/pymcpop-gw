@@ -2019,9 +2019,10 @@ def make_model(  priors,
             else:
                 sigma_min = min(priors["sigma1_0"][0], priors["sigma2_0"][0])
             MMIN_GRID = 2.
+            MMIN_GRID_2 = 1.99
 
             m1_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m1).astype(X)
-            m2_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m2).astype(X)
+            m2_grid_ = (MMIN_GRID_2 + (300.0 - MMIN_GRID_2) * tgrid_m2).astype(X)
             
             if mass_model =='DPLDP-z':
                 if find_z_bounds:
@@ -2800,6 +2801,12 @@ def make_model(  priors,
         # Precompute mass function pieces 
 
         if interp_mass!=0:
+
+            eps_m = at.as_tensor_variable(1e-5)
+            
+            m1_grid_ = ( m1_low_+eps_m + (300.0 - m1_low_ ) * tgrid_m1).astype(X)
+            m2_grid_ = ( m2_low_+eps_m + (300.0 - m2_low_ ) * tgrid_m2).astype(X)
+            
                 
             if mass_model=='DPLDP':
                 
@@ -2875,26 +2882,11 @@ def make_model(  priors,
                     smoothing=smoothing,
                     simplex_repair=simplex_repair
                 )
-                lp_m1_bank = lp_flat.reshape((K, N1))  # (K,N1)
-                print("lp_m1_bank for interp")
-                print(lp_m1_bank.eval())
-                
-                # # m1 trapz weights for normalization integral
-                # dm1 = (m1_grid_[-1] - m1_grid_[0]) / (m1_grid_.shape[0] - 1)
-                # w1  = at.ones_like(m1_grid_) * dm1
-                # w1  = at.set_subtensor(w1[0], 0.5 * dm1)
-                # w1  = at.set_subtensor(w1[-1], 0.5 * dm1)
-                
-                # # ln(z_k) = log ∫ exp(lp_m1_bank[k,:]) dm1  (stable)
-                # max_lp = at.max(lp_m1_bank, axis=1, keepdims=True)  # (K,1)
-                # ln_bank = at.log(at.sum(at.exp(lp_m1_bank - max_lp) * w1[None, :], axis=1)) + max_lp[:, 0]  # (K,)
+                lp_m1_bank = at.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
 
-                ln_bank = atools.safe_log(atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
-
-                print("ln_bank for interp")
-                print(ln_bank.eval())
-                
-                # Pack for later use (include z_bank!)
+                ln_bank = atools.safe_log( atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
+             
+                # Pack for later use (include z_bank)
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
                 interp_grids_mass = [m1_grid_, m2_grid_, z_bank]
                 

@@ -2838,6 +2838,94 @@ def logNorm_DPLDP_z(
     simplex_repair=False
 ):
     """
+    Same semantics as your original logNorm_DPLDP_z, but:
+    - we compute theta(z) once per z,
+    - then broadcast over m1_grid.
+
+    Returns vector (Nevt,) of log-normalizations for each z.
+    """
+
+    # --- grid in m1, same as before ---
+    if res != 500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+
+    # make sure we don't upcast dtype by mistake
+    work_dtype = getattr(z, "dtype", "float64")
+    _tgrid = at.as_tensor_variable(_tgrid, dtype=work_dtype)
+
+    m1_grid = m1_low + (m_high - m1_low) * _tgrid  # (N1,)
+
+    # --- make z a 1D tensor ---
+    z = at.atleast_1d(z)
+    K = z.shape[0]          # number of events
+    N1 = m1_grid.shape[0]   # grid size in m1
+
+    # --- evolve all hyperparameters ONLY over z (shape: (K,)) ---
+    alpha1  = theta_of_z(z, alpha1_0,  alpha1_inf,  z_alpha1,  dz_alpha1)
+    alpha2  = theta_of_z(z, alpha2_0,  alpha2_inf,  z_alpha2,  dz_alpha2)
+    mb      = theta_of_z(z, mb_0,      mb_inf,      z_mb,      dz_mb)
+    mu1     = theta_of_z(z, mu1_0,     mu1_inf,     z_mu1,     dz_mu1)
+    sigma1  = theta_of_z(z, sigma1_0,  sigma1_inf,  z_sigma1,  dz_sigma1)
+    mu2     = theta_of_z(z, mu2_0,     mu2_inf,     z_mu2,     dz_mu2)
+    sigma2  = theta_of_z(z, sigma2_0,  sigma2_inf,  z_sigma2,  dz_sigma2)
+    lambda0 = theta_of_z(z, lambda0_0, lambda0_inf, z_lambda0, dz_lambda0)
+    lambda1 = theta_of_z(z, lambda1_0, lambda1_inf, z_lambda1, dz_lambda1)
+
+    # --- broadcast to (K, N1) and flatten ---
+    # m1_grid is the same for all events: repeat it K times
+    M_flat = at.tile(m1_grid, K)  # shape: (K * N1,)
+
+    # each hyperparameter depends only on z, so we repeat each value N1 times
+    alpha1_flat  = at.repeat(alpha1,  N1)
+    alpha2_flat  = at.repeat(alpha2,  N1)
+    mb_flat      = at.repeat(mb,      N1)
+    mu1_flat     = at.repeat(mu1,     N1)
+    sigma1_flat  = at.repeat(sigma1,  N1)
+    mu2_flat     = at.repeat(mu2,     N1)
+    sigma2_flat  = at.repeat(sigma2,  N1)
+    lambda0_flat = at.repeat(lambda0, N1)
+    lambda1_flat = at.repeat(lambda1, N1)
+
+    # --- evaluate m1 logpdf in one big vectorized call ---
+    lp_flat = logpdfm1_DPLDP(
+        M_flat,
+        alpha1_flat, alpha2_flat, mb_flat,
+        mu1_flat, sigma1_flat, mu2_flat, sigma2_flat,
+        m1_low, m_high, delta_m1,
+        lambda0_flat, lambda1_flat,
+        epsilon,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+    )
+
+    # reshape back to (K, N1) and integrate over m1
+    logp = lp_flat.reshape((K, N1))
+
+    # integrate p(m1 | z) over m1 with the same trapezoidal rule
+    # attrapzvec integrates along axis=1, returns shape (K,)
+    return at.log(attrapzvec(at.exp(logp), m1_grid, axis=1))
+
+
+def logNorm_DPLDP_z_slow(
+    z, 
+    alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
+    m1_low, m_high, delta_m1, lambda0_0, lambda1_0, epsilon,
+    alpha1_inf, z_alpha1, dz_alpha1,
+    alpha2_inf, z_alpha2, dz_alpha2,
+    mb_inf,    z_mb,     dz_mb,
+    mu1_inf,   z_mu1,    dz_mu1,
+    sigma1_inf,z_sigma1, dz_sigma1,
+    mu2_inf,   z_mu2,    dz_mu2,
+    sigma2_inf,z_sigma2, dz_sigma2,
+    lambda0_inf, z_lambda0, dz_lambda0,
+    lambda1_inf, z_lambda1, dz_lambda1,
+    smoothing="LVK",
+    res=500,
+    simplex_repair=False
+):
+    """
     All hyperparameters are scalars. z is vector (Nevt,).
     m1_grid is the exact grid you want to integrate over.
     Returns ln(z) vector (Nevt,).
