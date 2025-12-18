@@ -432,10 +432,10 @@ def sample_Lambda_lhs(priors, ordered_keys, n, seed=0):
 
     # Derived m1_low and m2_low from u,v, matching your PyMC
     if u is not None:
-        m1_low = 3.0 + (10.0 - 3.0) * np.sqrt(u)
+        m1_low = 2.0 + (10.0 - 2.0) * np.sqrt(u)
         out["m1_low"] = m1_low
     if (u is not None) and (v is not None):
-        m2_low = 3.0 + v * (m1_low - 3.0)
+        m2_low = 2.0 + v * (m1_low - 2.0)
         out["m2_low"] = m2_low
 
     # If you want m_high fixed at 300.0 but it's not already in fixed_keys:
@@ -456,7 +456,69 @@ def sample_Lambda_lhs(priors, ordered_keys, n, seed=0):
     return X
 
 
-def build_initial_design(priors, ordered_keys, n_total, seed=0,
+def boost_low_mlow_points(priors, ordered_keys, n, seed=0, a_u=0.2):
+    """
+    Generate n points with boosted coverage near (m1_low, m2_low) ~ (3,3),
+    while respecting m2_low < m1_low.
+
+    Uses:
+      u ~ Beta(a_u, 1) concentrated near 0 for m1_low = 3 + 7*sqrt(u)
+      v ~ Uniform(0,1) for m2_low = 3 + v*(m1_low-3)
+    Other parameters are sampled from the usual prior sampler (mixture).
+    """
+    rng = np.random.default_rng(seed)
+
+    # start from a normal prior-like sample for all params
+    X = sample_lambda_mixture(priors, ordered_keys, n, seed=seed)
+
+    # find indices
+    key_to_idx = {k:i for i,k in enumerate(ordered_keys)}
+    i_m1 = key_to_idx["m1_low"]
+    i_m2 = key_to_idx["m2_low"]
+
+    # draw u near 0
+    u = rng.beta(a_u, 1.0, size=n)
+    m1_low = 2.0 + (10.0 - 2.0) * np.sqrt(u)
+
+    # draw m2_low conditional on m1_low
+    v = rng.random(n)
+    m2_low = 2.0 + v * (m1_low - 2.0)
+
+    X[:, i_m1] = m1_low
+    X[:, i_m2] = m2_low
+    return X
+
+
+def build_initial_design(
+    priors, ordered_keys, n_total, seed=0,
+    frac_lhs=0.6, frac_edge=0.25, frac_stress=0.12,
+    frac_low_mlow=0.05,   # NEW
+    low_mlow_a_u=0.2      # NEW (smaller => more concentrated near 3)
+):
+    rng = np.random.default_rng(seed)
+
+    # allocate counts
+    n_low   = int(round(n_total * frac_low_mlow))
+    n_lhs   = int(round(n_total * frac_lhs))
+    n_edge  = int(round(n_total * frac_edge))
+    n_stress = n_total - n_low - n_lhs - n_edge
+
+    # main components
+    X_lhs = sample_Lambda_lhs(priors, ordered_keys, n_lhs, seed=seed)
+    X_edge = sample_edge_points(priors, ordered_keys, n_edge, seed=seed+11)
+    X_stress = sample_edge_points(priors, ordered_keys, n_stress, seed=seed+29)
+
+    # NEW: targeted boost for (m1_low,m2_low) lower-left corner
+    # X_low = boost_low_mlow_points(
+    #     priors, ordered_keys, n_low, seed=seed+77, a_u=low_mlow_a_u
+    # )
+
+    X0 = np.concatenate([X_lhs, X_edge, X_stress, ], axis=0) # X_low
+    rng.shuffle(X0, axis=0)
+    return X0
+
+
+def build_initial_design_0(priors, ordered_keys, n_total, seed=0,
                          frac_lhs=0.7, frac_edge=0.2, frac_stress=0.1):
     rng = np.random.default_rng(seed)
     n_lhs = int(round(n_total * frac_lhs))

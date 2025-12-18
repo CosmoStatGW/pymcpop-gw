@@ -95,8 +95,8 @@ def sample_Lambda_from_priors(priors, ordered_keys, rng=None, n=1, need_m1_low=T
 
             # Derived triangle mapping
             if need_m1_low or need_m2_low:
-                m1_low = 3.0 + (10.0 - 3.0) * np.sqrt(u)
-                m2_low = 3.0 + v * (m1_low - 3.0)
+                m1_low = 2.0 + (10.0 - 2.0) * np.sqrt(u)
+                m2_low = 2.0 + v * (m1_low - 2.0)
                 ctx["m1_low"] = float(m1_low)
                 ctx["m2_low"] = float(m2_low)
             else:
@@ -181,8 +181,8 @@ def _triangle_m1m2_low(rng, u=None, v=None):
         u = rng.uniform(0.0, 1.0)
     if v is None:
         v = rng.uniform(0.0, 1.0)
-    m1_low = 3.0 + (10.0 - 3.0) * np.sqrt(u)
-    m2_low = 3.0 + v * (m1_low - 3.0)
+    m1_low = 2.0 + (10.0 - 2.0) * np.sqrt(u)
+    m2_low = 2.0 + v * (m1_low - 2.0)
     return float(m1_low), float(m2_low)
 
 def sample_edge_points(
