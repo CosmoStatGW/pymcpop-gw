@@ -25,6 +25,9 @@ import pymc as pm
 
 
 
+
+
+
 # # --- Helper to draw from the GMM in NumPy only ---
 # def sample_from_per_event_gmm(wts, mus, chol_covs, Xwhite, rng=onp.random.default_rng(123)):
 #     """

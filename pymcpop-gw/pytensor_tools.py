@@ -5,17 +5,20 @@
 #    license that can be found in the LICENSE file.
 
 import pytensor.tensor as at
-import jax.numpy as np
+
 import pymc as pm
-import jax
+
 from pytensor.graph import Apply, Op
 import pytensor
 import numpy as onp
+import numpy as np
 
-from jax.numpy import array
-from jax.numpy import concatenate
-from jax.numpy import ones
-from jax.numpy import zeros
+# import jax
+# import jax.numpy as np
+# from jax.numpy import array
+# from jax.numpy import concatenate
+# from jax.numpy import ones
+# from jax.numpy import zeros
 
 from pytensor.gradient import disconnected_grad as stop_grad
 #from pytensor import gradient as atg
@@ -2255,10 +2258,46 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     return log_S + log_mix
 
     
-
-
-
 def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
+
+    m1, m2 = theta
+
+    m1_grid = interp_grids[0]
+    m2_grid = interp_grids[1]
+    lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
+
+    # ----- M1 interpolation indices computed once (non-uniform grid) -----
+    j1, r1 = _interp_indices_nonuniform(m1, m1_grid)
+
+    # interpolate logpdf(m1)
+    yl_m1 = lp_m1_grid[j1 - 1]
+    yh_m1 = lp_m1_grid[j1]
+    lpdfm1 = (1.0 - r1) * yl_m1 + r1 * yh_m1
+
+    # interpolate C(m1)
+    yl_C = lC_of_m1[j1 - 1]
+    yh_C = lC_of_m1[j1]
+    lC   = (1.0 - r1) * yl_C + r1 * yh_C
+
+    # ----- M2 interpolation indices (non-uniform grid) -----
+    j2, r2 = _interp_indices_nonuniform(m2, m2_grid)
+
+    # interpolate logpdf(m2)
+    yl_m2 = lp_m2_grid[j2 - 1]
+    yh_m2 = lp_m2_grid[j2]
+    lpdfm2 = (1.0 - r2) * yl_m2 + r2 * yh_m2
+
+    # ----- combine -----
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    if force_m2_less_than_m1:
+        eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
+        return at.where(eval, lpdf, MIN)
+    else:
+        return lpdf
+
+
+def logpdf_DPLDP_from_interp_lin(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
 
         m1, m2 = theta
     
@@ -3019,7 +3058,7 @@ def logNorm_DPLDP_z_scalar(
     )
 
 
-def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
+def logpdf_DPLDP_z_from_interp_lin(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
     """
     Interpolation-only evaluator for the redshift-evolving DPLDP model.
 
@@ -3086,7 +3125,383 @@ def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_les
     else:
         return lpdf
 
-        
+
+
+# -------------------------------
+# Generic non-uniform 1D indices
+# -------------------------------
+def _interp_indices_nonuniform(x, xs, eps=1e-9):
+    """
+    Compute (idx, r) so that interpolation on a non-uniform grid xs
+    can be done as:
+        yl = ys[idx - 1]
+        yh = ys[idx]
+        y  = (1 - r) * yl + r * yh
+    
+    This is the same scheme as atinterp/atinterp_safe, but it returns
+    the indices and weights so we can reuse them for multiple ys.
+    """
+    x = at.as_tensor_variable(x)
+    xs = at.as_tensor_variable(xs)
+    
+    x0 = xs[0]
+    x1 = xs[-1]
+    
+    # clip queries slightly inside the grid to avoid boundary issues
+    xq = at.clip(x, x0 + eps, x1 - eps)
+    
+    # searchsorted on the non-uniform grid
+    idxs = at.searchsorted(xs, xq, side="right")
+    N = xs.shape[0]
+    # keep indices in [1, N-1] so (idx-1, idx) is always valid
+    idxs = at.clip(idxs, 1, N - 1)
+    
+    # stop gradient through the discrete index selection
+    idxs = stop_grad(idxs)
+    
+    # compute interpolation fraction r
+    xl = xs[idxs - 1]
+    xh = xs[idxs]
+    eps_t = at.as_tensor_variable(eps, dtype=xl.dtype)
+    denom = at.maximum(xh - xl, eps_t)
+    
+    r = (xq - xl) / denom
+    r = at.cast(r, x.dtype)
+    
+    return idxs, r
+
+
+def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    """
+    Interpolation-only evaluator for the redshift-evolving DPLDP model,
+    for *non-uniform* grids in m1, m2, and z.
+
+    interp_grids = [m1_grid, m2_grid, z_bank]
+      m1_grid : (N1,) non-uniform m1 grid
+      m2_grid : (N2,) non-uniform m2 grid
+      z_bank  : (K,)  non-uniform z grid
+
+    interp_vals  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank]
+      lp_m1_bank : (K, N1)  log p(m1 | z_k) on m1_grid, for each z_k in z_bank
+      lp_m2_grid : (N2,)    log p(m2) on m2_grid (z-independent)
+      lC_of_m1   : (N1,)    log C(m1) on m1_grid   (z-independent)
+      ln_bank    : (K,)     logNorm(z_k) for each z_k in z_bank
+
+    Given theta = (m1, m2) and z (all can be vectors), returns
+        log p(m1, m2 | z)
+    by:
+      - interpolating in m1 on each z-slice,
+      - interpolating C(m1) in m1,
+      - interpolating p(m2) in m2,
+      - interpolating logNorm in z,
+      - and combining as: log p = log p_m1 + log p_m2 - log C - logNorm.
+    """
+
+    m1, m2 = theta
+
+    # unpack grids and precomputed tables
+    m1_grid, m2_grid, z_bank = interp_grids
+    lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals
+
+    
+
+    # -------------------------------
+    # Indices + weights for each axis
+    # -------------------------------
+    # z: indices into z_bank
+    kR, rz = _interp_indices_nonuniform(z,  z_bank)
+    kL = kR - 1  # left neighbour slice in z
+
+    # m1: indices into m1_grid (we will reuse these for lp_m1_bank and lC_of_m1)
+    j1, r1 = _interp_indices_nonuniform(m1, m1_grid)
+
+    # m2: indices into m2_grid
+    j2, r2 = _interp_indices_nonuniform(m2, m2_grid)
+
+    # -------------------------------
+    # Interpolate p(m1 | z)
+    # -------------------------------
+    # At z = z_L (left slice)
+    yl_m1_L = lp_m1_bank[kL, j1 - 1]
+    yh_m1_L = lp_m1_bank[kL, j1]
+    lpdfm1_L = (1.0 - r1) * yl_m1_L + r1 * yh_m1_L
+
+    # At z = z_R (right slice)
+    yl_m1_R = lp_m1_bank[kR, j1 - 1]
+    yh_m1_R = lp_m1_bank[kR, j1]
+    lpdfm1_R = (1.0 - r1) * yl_m1_R + r1 * yh_m1_R
+
+    # Finally interpolate in z between slices L and R
+    lpdfm1 = (1.0 - rz) * lpdfm1_L + rz * lpdfm1_R
+
+    # -------------------------------
+    # Interpolate C(m1) (z-independent)
+    # -------------------------------
+    yl_C = lC_of_m1[j1 - 1]
+    yh_C = lC_of_m1[j1]
+    lC   = (1.0 - r1) * yl_C + r1 * yh_C
+
+    # -------------------------------
+    # Interpolate p(m2) (z-independent)
+    # -------------------------------
+    yl_m2 = lp_m2_grid[j2 - 1]
+    yh_m2 = lp_m2_grid[j2]
+    lpdfm2 = (1.0 - r2) * yl_m2 + r2 * yh_m2
+
+    # -------------------------------
+    # Interpolate logNorm(z)
+    # -------------------------------
+    ln_L = ln_bank[kL]
+    ln_R = ln_bank[kR]
+    ln   = (1.0 - rz) * ln_L + rz * ln_R
+
+    # -------------------------------
+    # Assemble final logpdf
+    # -------------------------------
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    if force_m2_less_than_m1:
+        ok = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
+        return at.where(ok, lpdf, MIN)
+    else:
+        return lpdf
+
+
+
+def build_m1_grid_DPLDP_z(
+    z_bank,
+    # low-z hyperparameters
+    mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+    # high-z (asymptotic) hyperparameters
+    mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
+    # evolution hyperparameters
+    z_mu1, dz_mu1,
+    z_sigma1, dz_sigma1,
+    z_mu2, dz_mu2,
+    z_sigma2, dz_sigma2,
+    z_mb, dz_mb,
+    # support for m1
+    m1_low, m_high,
+    # grid resolution controls
+    n_peak=2500,      # points in the "interesting" band (peaks + break)
+    n_tail_low=400,   # points in low-mass tail
+    n_tail_high=400,  # points in high-mass tail
+    k_sigma=4.0,      # how many sigmas around each Gaussian to cover
+):
+    """
+    Symbolic non-uniform m1 grid for the DPLDP-z mass model (with redshift evolution).
+
+    All parameters are PyTensor scalars or vectors (random variables allowed).
+    The grid is constructed *inside* the graph and depends on the evolved
+    means/widths over the provided z_bank.
+
+    Parameters
+    ----------
+    z_bank : 1D TensorVariable
+        Redshift grid (e.g. from atools.make_z_grid(...)).
+    mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0 :
+        Low-z (z~0) hyperparameters.
+    mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf :
+        Asymptotic (z->inf) hyperparameters.
+    z_mu1, dz_mu1, z_sigma1, dz_sigma1, z_mu2, dz_mu2,
+    z_sigma2, dz_sigma2, z_mb, dz_mb :
+        Evolution hyperparameters used in theta_of_z.
+    m1_low, m_high :
+        Support bounds for m1.
+    n_peak, n_tail_low, n_tail_high :
+        Number of grid points in the central band and tails.
+    k_sigma :
+        How many sigmas around the peaks the band should cover.
+
+    Returns
+    -------
+    m1_grid : 1D TensorVariable
+        Non-uniform m1 grid spanning [m1_low, m_high], with:
+        - fine spacing where peaks and break live (for all z in z_bank),
+        - coarser spacing in low/high tails.
+    """
+
+    # --- dtype and constants ---
+    dtype = getattr(m1_low, "dtype", "float64")
+    eps = at.as_tensor_variable(1e-3, dtype=dtype)
+    k_sigma_t = at.as_tensor_variable(k_sigma, dtype=dtype)
+
+    # Ensure z_bank is a tensor
+    z_bank = at.as_tensor_variable(z_bank)
+
+    # -------------------------------
+    # Evolve hyperparameters over z_bank
+    # -------------------------------
+    # mu1(z), sigma1(z), mu2(z), sigma2(z), mb(z)
+
+    mu1_z = theta_of_z(z_bank, mu1_0,  mu1_inf,  z_mu1,    dz_mu1)
+    sigma1_z = theta_of_z(z_bank, sigma1_0, sigma1_inf, z_sigma1, dz_sigma1)
+
+    mu2_z = theta_of_z(z_bank, mu2_0,  mu2_inf,  z_mu2,    dz_mu2)
+    sigma2_z = theta_of_z(z_bank, sigma2_0, sigma2_inf, z_sigma2, dz_sigma2)
+
+    mb_z = theta_of_z(z_bank, mb_0, mb_inf, z_mb, dz_mb)
+
+    # -------------------------------
+    # Global "interesting" band over all z
+    # -------------------------------
+    # For each z: cover both Gaussians ± k_sigma * sigma
+    peak_min_z = at.minimum(
+        mu1_z - k_sigma_t * at.abs(sigma1_z),
+        mu2_z - k_sigma_t * at.abs(sigma2_z),
+    )
+    peak_max_z = at.maximum(
+        mu1_z + k_sigma_t * at.abs(sigma1_z),
+        mu2_z + k_sigma_t * at.abs(sigma2_z),
+    )
+
+    # Include break mb(z)
+    band_min_z = at.minimum(peak_min_z, mb_z)
+    band_max_z = at.maximum(peak_max_z, mb_z)
+
+    # Now take global min/max over z
+    band_min = at.min(band_min_z)
+    band_max = at.max(band_max_z)
+
+    # Clip to support and add small margin
+    band_min = at.maximum(band_min, m1_low + eps)
+    band_max = at.minimum(band_max, m_high - eps)
+
+    # -------------------------------
+    # Build three segments:
+    #   1) low tail:   [m1_low, band_min)
+    #   2) peak band:  [band_min, band_max)
+    #   3) high tail:  [band_max, m_high]
+    # -------------------------------
+
+    # 1) low tail: [m1_low, band_min), n_tail_low points, endpoint excluded
+    if n_tail_low > 0:
+        t_low = at.arange(n_tail_low, dtype=dtype) / n_tail_low
+        m1_low_tail = m1_low + (band_min - m1_low) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) central band: [band_min, band_max), n_peak points, endpoint excluded
+    if n_peak > 0:
+        t_peak = at.arange(n_peak, dtype=dtype) / n_peak
+        m1_peak_band = band_min + (band_max - band_min) * t_peak
+    else:
+        m1_peak_band = at.zeros((0,), dtype=dtype)
+
+    # 3) high tail: [band_max, m_high], n_tail_high points, endpoint included
+    if n_tail_high > 1:
+        denom_high = n_tail_high - 1
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+    elif n_tail_high == 1:
+        t_high = at.zeros((1,), dtype=dtype)
+    else:
+        t_high = at.zeros((0,), dtype=dtype)
+
+    if n_tail_high > 0:
+        m1_high_tail = band_max + (m_high - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    # Concatenate all segments
+    m1_grid = at.concatenate([m1_low_tail, m1_peak_band, m1_high_tail], axis=0)
+
+    return m1_grid
+
+
+
+def build_m1_grid_DPLDP(
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high, delta_m1,
+    n_peak=2500,      # points in the "interesting" band (peaks + break)
+    n_tail_low=400,   # points in low-mass tail
+    n_tail_high=400,  # points in high-mass tail
+    k_sigma=4.0,      # how many sigmas around each Gaussian to cover
+):
+    """
+    Symbolic non-uniform m1 grid for the DPLDP mass model (no redshift evolution).
+
+    All inputs (alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
+    delta_m1) are PyTensor scalars (random variables allowed).
+
+    Returns
+    -------
+    m1_grid : TensorVariable, shape (N1,)
+        Monotonic, non-uniform grid spanning [m1_low, m_high], with:
+          - fine spacing where the Gaussians and break live,
+          - coarser spacing in the low/high tails.
+    """
+
+    # dtype: follow m1_low (or any of the floats).
+    dtype = getattr(m1_low, "dtype", "float64")
+
+    # small safety margin to avoid exactly-on-boundary issues
+    eps = at.as_tensor_variable(1e-3, dtype=dtype)
+
+    # --- cover both Gaussian peaks with a k_sigma envelope ---
+    peak_min = at.minimum(mu1 - k_sigma * at.abs(sigma1),
+                          mu2 - k_sigma * at.abs(sigma2))
+    peak_max = at.maximum(mu1 + k_sigma * at.abs(sigma1),
+                          mu2 + k_sigma * at.abs(sigma2))
+
+    # include the power-law break mb in the "interesting" band
+    band_min = at.minimum(peak_min, mb)
+    band_max = at.maximum(peak_max, mb)
+
+    # clip band to support and add margin
+    band_min = at.maximum(band_min, m1_low + eps)
+    band_max = at.minimum(band_max, m_high - eps)
+
+    # -------------------------
+    # Build three segments:
+    #   1) low tail:   [m1_low, band_min)
+    #   2) peak band:  [band_min, band_max)
+    #   3) high tail:  [band_max, m_high]
+    # -------------------------
+
+    # 1) low tail: [m1_low, band_min), with n_tail_low points
+    #    use t in [0, 1) => endpoint excluded
+    if n_tail_low > 0:
+        t_low = at.arange(n_tail_low, dtype=dtype) / n_tail_low
+        m1_low_tail = m1_low + (band_min - m1_low) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) peak band: [band_min, band_max), with n_peak points
+    if n_peak > 0:
+        t_peak = at.arange(n_peak, dtype=dtype) / n_peak
+        m1_peak_band = band_min + (band_max - band_min) * t_peak
+    else:
+        m1_peak_band = at.zeros((0,), dtype=dtype)
+
+    # 3) high tail: [band_max, m_high], with n_tail_high points
+    #    include endpoint by using denominator (n_tail_high - 1) if > 1
+    if n_tail_high > 1:
+        denom_high = n_tail_high - 1
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+    elif n_tail_high == 1:
+        # single point at band_max (or you could choose m_high)
+        t_high = at.zeros((1,), dtype=dtype)
+    else:
+        t_high = at.zeros((0,), dtype=dtype)
+
+    if n_tail_high > 0:
+        m1_high_tail = band_max + (m_high - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    # -------------------------
+    # Concatenate segments
+    # -------------------------
+    # Shapes are static: n_tail_low + n_peak + n_tail_high
+    m1_grid = at.concatenate([m1_low_tail, m1_peak_band, m1_high_tail], axis=0)
+
+    return m1_grid
+
+
+
+    
+    
 #####################################
 class GridInterpolator_at:
     '''

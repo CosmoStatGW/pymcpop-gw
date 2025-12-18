@@ -438,8 +438,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                     interp_vals_mass, interp_grids_mass,
                     force_m2_less_than_m1=False
                 )
-            print("lpmass from interp")
-            print(lpmass.eval())
+
         else:
             lpmass = atools.logpdf_DPLDP_z(
                 (m1s, m2s), z,                     
@@ -2006,38 +2005,41 @@ def make_model(  priors,
                 raise ValueError("Use finer grid for accurate mass function.")
         
         tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
-        tgrid_m2 = np.linspace(0.0, 1.0, int(interp_mass/2) ).astype(X)
+        tgrid_m2 = np.linspace(0.0, 1.0, 500 ).astype(X)
 
-        if interp_z!=0:
-            tgrid_z = np.linspace(0.0, 1.0, interp_z ).astype(X)
-            print("Pre-computing rate evolution on grid for later interpolation. Grid resolution: %s"%interp_z)
+        # if interp_z!=0:
+        #     tgrid_z = np.linspace(0.0, 1.0, interp_z ).astype(X)
+        #     print("Pre-computing rate evolution on grid for later interpolation. Grid resolution: %s"%interp_z)
 
 
         if mass_model in ('DPLDP', 'DPLDP-z'):
+            
             if mass_model =='DPLDP':
                 sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
             else:
                 sigma_min = min(priors["sigma1_0"][0], priors["sigma2_0"][0])
-            MMIN_GRID = 2.
-            MMIN_GRID_2 = 1.99
-
-            m1_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m1).astype(X)
-            m2_grid_ = (MMIN_GRID_2 + (300.0 - MMIN_GRID_2) * tgrid_m2).astype(X)
             
-            if mass_model =='DPLDP-z':
-                if find_z_bounds:
-                    z_bank = (zmin_a + (zmax_c - zmin_a) * tgrid_z).astype(X)
-                else:
-                    z_bank = (1e-05 + (10. - 1e-05) * tgrid_z).astype(X)
-                    
-            dx_min_test = np.min(np.diff(m1_grid_))
+            
+            # MMIN_GRID = 2.
+            # MMIN_GRID_2 = 1.99
 
-            if dx_min_test >= 0.5*sigma_min:
-                raise ValueError(
-                f"Spacing on mass interpolation grid ({dx_min_test:.3g}) is larger than or "
-                f"comparable to min prior scale for sigma ({sigma_min:.3g}). "
-                "Increase interp_mass or change priors."
-            )
+            # m1_grid_ = (MMIN_GRID + (300.0 - MMIN_GRID) * tgrid_m1).astype(X)
+            # m2_grid_ = (MMIN_GRID_2 + (300.0 - MMIN_GRID_2) * tgrid_m2).astype(X)
+            
+            # if mass_model =='DPLDP-z':
+            #     if find_z_bounds:
+            #         z_bank = (zmin_a + (zmax_c - zmin_a) * tgrid_z).astype(X)
+            #     else:
+            #         z_bank = (1e-05 + (10. - 1e-05) * tgrid_z).astype(X)
+                    
+            # dx_min_test = np.min(np.diff(m1_grid_))
+
+            # if dx_min_test >= 0.5*sigma_min:
+            #     raise ValueError(
+            #     f"Spacing on mass interpolation grid ({dx_min_test:.3g}) is larger than or "
+            #     f"comparable to min prior scale for sigma ({sigma_min:.3g}). "
+            #     "Increase interp_mass or change priors."
+            # )
 
         
         
@@ -2126,7 +2128,12 @@ def make_model(  priors,
         z_init = (atools.z_from_dL_at(at.exp(logd_init), 67.7, 0.31, -1, 1, 0)).eval().astype(X)
         log_onepz_init = np.log1p(z_init).astype(X)
         log_Mc_src_init = (log_Mc_det_init - log_onepz_init).astype(X)
-        
+
+
+    zgrid_ = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
+    print("z grid for interpolation built. Resolution: %s"%zres)
+    print("z min: %s , z max: %s"%(zmin_a, zmax_c))
+
     ################################################
     # Build model
     ################################################
@@ -2787,9 +2794,7 @@ def make_model(  priors,
         #     zgrid_ = atools.zGridGlobals_at_high
 
         
-        zgrid_ = stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
-        print("z grid for interpolation built. Resolution: %s"%zres)
-        print("z min: %s , z max: %s"%(zmin_a, zmax_c))
+
         
         # Precompute cosmology pieces 
         # One grid build to interpolate later
@@ -2804,11 +2809,29 @@ def make_model(  priors,
 
             eps_m = at.as_tensor_variable(1e-5)
             
-            m1_grid_ = ( m1_low_+eps_m + (300.0 - m1_low_ ) * tgrid_m1).astype(X)
+            #m1_grid_ = ( m1_low_+eps_m + (300.0 - m1_low_ ) * tgrid_m1).astype(X)
             m2_grid_ = ( m2_low_+eps_m + (300.0 - m2_low_ ) * tgrid_m2).astype(X)
+
             
                 
             if mass_model=='DPLDP':
+    
+                m1_grid_ = atools.build_m1_grid_DPLDP(
+                                            alpha1=alpha1_,
+                                            alpha2=alpha2_,
+                                            mb=mb_,
+                                            mu1=mu1_,
+                                            sigma1=sigma1_,
+                                            mu2=mu2_,
+                                            sigma2=sigma2_,
+                                            m1_low=m1_low_,
+                                            m_high=m_high_,
+                                            delta_m1=delta_m1_,
+                                            n_peak=interp_mass,      # or smaller if you want
+                                            n_tail_low=interp_mass//5,
+                                            n_tail_high=interp_mass//5,
+                                            k_sigma=4.0,
+                                        )
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
 
@@ -2843,6 +2866,41 @@ def make_model(  priors,
 
             elif mass_model=='DPLDP-z':
 
+                m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_,
+                                # low-z hyperparameters
+                                mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+                                # high-z (asymptotic) hyperparameters
+                                mu1_inf_, sigma1_inf_, mu2_inf_, sigma2_inf_, mb_inf_,
+                                # evolution hyperparameters
+                                z_mu1_, dz_mu1_,
+                                z_sigma1_, dz_sigma1_,
+                                z_mu2_, dz_mu2_,
+                                z_sigma2_, dz_sigma2_,
+                                z_mb_, dz_mb_,
+                                # support for m1
+                                m1_low_, m_high_,
+                                # grid resolution controls
+                                n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
+                                n_tail_low=interp_mass//5,   # points in low-mass tail
+                                n_tail_high=interp_mass//5,  # points in high-mass tail
+                                k_sigma=4.0,      #
+                            )
+
+                
+
+                # m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_
+                #                 m1_low=m1_low_,
+                #                 m_high=m_high_,
+                #                 mu1_0=mu1_0, sigma1_0=sigma1_0, mu1_inf=mu1_inf_, sigma1_inf=sigma1_inf_,
+                #                 mu2_0=mu2_0, sigma2_0=sigma2_0, mu2_inf=mu2_inf_, sigma2_inf=sigma2_inf_,
+                #                 mb_0=mb_0, mb_inf=mb_inf_,
+                #                 n_peak=interp_mass,        # concentrate resolution here
+                #                 n_tail_low=interp_mass//5,
+                #                 n_tail_high=interp_mass//5,
+                #                 k_sigma=4.0,
+                #                 #dtype=X,
+                #             )
+
                 # ---------
                 # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
                 # ---------
@@ -2864,11 +2922,11 @@ def make_model(  priors,
                 # ---------
                 # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
                 # ---------
-                K  = z_bank.shape[0]
+                K  = zgrid_.shape[0]
                 N1 = m1_grid_.shape[0]
                 
                 M = at.broadcast_to(m1_grid_[None, :], (K, N1))
-                Z = at.broadcast_to(z_bank[:, None],   (K, N1))
+                Z = at.broadcast_to(zgrid_[:, None],   (K, N1))
                 
                 lp_flat = atools.logpdfm1_DPLDP_z(
                     M.reshape((K * N1,)),
@@ -2888,7 +2946,7 @@ def make_model(  priors,
              
                 # Pack for later use (include z_bank)
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
-                interp_grids_mass = [m1_grid_, m2_grid_, z_bank]
+                interp_grids_mass = [m1_grid_, m2_grid_, zgrid_]
                 
             elif mass_model in ('DPUC', 'DP'):
 
