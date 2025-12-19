@@ -55,8 +55,9 @@ def main():
     parser.add_argument("--N_DP_comp_max", default=100, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
     parser.add_argument("--alpha_small", default=0.01, type=float, required=False)
-    parser.add_argument("--L_small_1", default=0.05, type=float, required=False)
-    parser.add_argument("--L_small_2", default=0.1, type=float, required=False)
+    parser.add_argument("--L_small_1", default=0.5, type=float, required=False)
+    parser.add_argument("--L_small_2", default=0.5, type=float, required=False)
+    parser.add_argument("--L_small_3", default=0.1, type=float, required=False)
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
     parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
 
@@ -90,6 +91,7 @@ def main():
     parser.add_argument("--check_init", default=1, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
     parser.add_argument("--profile", default=0, type=int, required=False)
+    parser.add_argument("--recompile", default=0, type=int, required=False)
 
     parser.add_argument("--save_thetas", default=0, type=int, required=False)
     
@@ -270,19 +272,20 @@ def main():
     # ----------------------------------------------------
     # 3️⃣ Now safe to import PyMC and others
     # ----------------------------------------------------
-    import tempfile
-
-    # Unique-ish per-process / per-run compiledir
-    scratch = os.path.join(
-        tempfile.gettempdir(), f"pytensor_{os.getuid()}_{os.getpid()}"
-    )
+    if FLAGS.recompile:
+        import tempfile
     
-    flags = [
-        f"compiledir={scratch}",
-        "compile__timeout=600",  # wait up to 10 min
-        "compile__wait=10",      # retry every ~10s
-    ]
-    os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
+        # Unique-ish per-process / per-run compiledir
+        scratch = os.path.join(
+            tempfile.gettempdir(), f"pytensor_{os.getuid()}_{os.getpid()}"
+        )
+        
+        flags = [
+            f"compiledir={scratch}",
+            "compile__timeout=600",  # wait up to 10 min
+            "compile__wait=10",      # retry every ~10s
+        ]
+        os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
     
     import pymc as pm
     import pytensor
@@ -715,6 +718,7 @@ def main():
                                     alpha_small = FLAGS.alpha_small,
                                     L_small_1 = FLAGS.L_small_1,
                                     L_small_2 = FLAGS.L_small_2,
+                                    L_small_3 = FLAGS.L_small_3,
                                     alpha_inv_params = FLAGS.alpha_inv_params,
                                     s_local = FLAGS.s_local,
                                     find_m_bounds = FLAGS.find_m_bounds,
@@ -1231,7 +1235,9 @@ def main():
                     draws = sampler_kwargs.get("draws", 1000)
                     tune = sampler_kwargs.get("tune", 1000)
 
-                    cb=autils.TqdmPerChainCallback(draws=draws, tune=tune)
+                    total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
+
+                    cb=autils.TqdmGlobalCallback(total=total_steps, )
 
                     
                     trace = pm.sample(nuts_sampler='pymc', 

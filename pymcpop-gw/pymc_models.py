@@ -1636,8 +1636,9 @@ def make_model(  priors,
                  N_DP_comp_max = 100,
                  alpha_tail = 0.2,
                  alpha_small = 0.01,
-                 L_small_1 = 0.05,
-                 L_small_2 = 0.1,
+                 L_small_1 = 0.5,
+                 L_small_2 = 0.5,
+                 L_small_3 = 0.1,
                  s_local = 0.5,
                  find_m_bounds = False,
                  alpha_inv_params = (1, 1),
@@ -1920,7 +1921,7 @@ def make_model(  priors,
 
         if (mass_model in ('DPUC', 'DP') and find_m_bounds):
 
-            print("\nFinding prior range for DP-GMM. This will overwrite input arguments.")
+            print("\nFinding prior range for DP-GMM.")
        
             scales = putils.find_mass_redshift_bounds(wts_l, mus_l, cho_covs_l,
                                           priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
@@ -1954,19 +1955,48 @@ def make_model(  priors,
             lowmu3_inj = scales['logz_min_inj'].astype(X)
             upmu3_inj = scales['logz_max_inj'].astype(X)
     
-            L_small_1 = scales['lMc_diff'].astype(X)
-            L_small_2 = scales['lq_diff'].astype(X)
+            L_small_1_data = scales['lMc_diff'].astype(X)
+            L_small_2_data = scales['lq_diff'].astype(X)
 
             L_small_m1 = scales['m1_diff'].astype(X)
             L_small_m2 = scales['m2_diff'].astype(X)
     
-            L_small_3 = scales['logz_diff'].astype(X)
+            L_small_3_data = scales['logz_diff'].astype(X)
 
             print("Mass/redshift DP-GMM prior values found, overwriting default:")
             print("lowmu1=%s, upmu1=%s, lowmu2=%s, upmu2=%s"%(lowmu1, upmu1, lowmu2, upmu2))
-            print("L_small_1=%s, L_small_2=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
+            print("L_small_1_data=%s, L_small_2_data=%s, L_small_3_data=%s"%(L_small_1_data, L_small_2_data,L_small_3_data ))
             print("L_small_m1=%s, L_small_m2=%s"%(L_small_m1, L_small_m2, ))
-        
+
+
+            
+
+            if L_small_1>0 and L_small_2>0:
+                print("Finding min spacing based on requested spacing in m1-m2...")
+
+                m1_min = min(scales['m1_min_inj'], scales['m1_min_data'] )
+                m2_min = min(scales['m2_min_inj'], scales['m2_min_data']  )
+                m1_max = min(scales['m1_max_inj'], scales['m1_max_data'] )
+                m2_max = min(scales['m2_max_inj'], scales['m2_max_data']  )
+
+                dmin = putils.min_sep_logMc_logitq(
+                    m1_min=m1_min, m1_max=m1_max,
+                    m2_min=m2_min, m2_max=m2_max,
+                    dm1=L_small_1, dm2=L_small_2
+                )
+
+
+                L_small_1 = max(L_small_1_data, dmin[0]).astype(X) 
+                L_small_2 = max(L_small_2_data, dmin[1]).astype(X)
+                
+
+                if L_small_3>0:
+
+                    L_small_3 = max(L_small_3_data, np.log(1+L_small_3/max(z_max_data, max_z)) ).astype(X)  
+                
+            print(" Final L_small_1=%s, L_small_2a=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
+
+            
         if mmin_inj!=-1:
             if 'BNS' in mass_model:
                 raise ValueError()

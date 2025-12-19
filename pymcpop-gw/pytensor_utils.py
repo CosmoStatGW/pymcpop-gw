@@ -13,6 +13,7 @@ from pytensor.printing import debugprint
 from pytensor import shared
 import numpy as onp
 from tqdm import tqdm
+from collections import defaultdict
 
 
 import xarray as xr
@@ -284,6 +285,12 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
 
     lMc_max_inj = 0
     lMc_min_inj = 1e10
+
+    m1_max_inj = 0
+    m1_min_inj = 1e10
+
+    m2_max_inj = 0
+    m2_min_inj = 1e10
     
     for H0_ in (H0_max, H0_min):
         for Om_ in (Om_min, Om_max):
@@ -295,6 +302,8 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                             zinj = z_from_dL_fn( onp.squeeze(dLinj), float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)  )
                         else:
                             zinj = onp.squeeze(dLinj)
+
+                        
                         
                         log_zinj = onp.log1p(zinj)
                         logz_max_inj_ = onp.max(  log_zinj  )
@@ -310,6 +319,8 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
 
                         if not is_observed:    
                             log_Mc_src = onp.log(Mc_det) - onp.log1p(zinj)
+                            m1inj_src = m1inj/(1+zinj)
+                            m2inj_src = m2inj/(1+zinj)
                         else:
                             log_Mc_src = onp.log(Mc_det)
                         
@@ -323,12 +334,37 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                         if log_Mc_src_min_<lMc_min_inj:
                             lMc_min_inj = log_Mc_src_min_
 
+
+                        
+                        m1_src_min_ = onp.min(m1inj_src)
+                        m1_src_max_ = onp.max(m1inj_src)
+
+                        m2_src_min_ = onp.min(m2inj_src)
+                        m2_src_max_ = onp.max(m2inj_src)
+                        
+                        if m1_src_max_> m1_max_inj:
+                            m1_max_inj = m1_src_max_
+
+                        if m1_src_min_< m1_min_inj:
+                            m1_min_inj = m1_src_min_
+
+
+                        if m2_src_max_> m2_max_inj:
+                            m2_max_inj = m2_src_max_
+
+                        if m2_src_min_< m2_min_inj:
+                            m2_min_inj = m2_src_min_
+
+                            
+
                        
 
     print("min, max injection distance: %s, %s Gpc"%(min_dL,max_dL))
     if not is_observed:  
         print("min, max injection log(1+redshift): %s, %s "%(logz_min_inj,logz_max_inj))
         print("min, max injection log(Mc_src): %s, %s "%(lMc_min_inj,lMc_max_inj))
+        print("min, max injection m1: %s, %s "%(m1_min_inj,m1_max_inj))
+        print("min, max injection m2: %s, %s "%(m2_min_inj,m2_max_inj))
     else:
         print("min, max injection log(1+distance): %s, %s "%(logz_min_inj,logz_max_inj))
         print("min, max injection log(Mc_det): %s, %s "%(lMc_min_inj,lMc_max_inj))
@@ -553,9 +589,51 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         print("min m1_D scale: %s "%(m1_diff))
         print("min m2_D scale: %s "%(m2_diff))
     
-    return dict(logz_min_data=logz_min_data, logz_max_data=logz_max_data,  lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data, lq_min_data=lq_min_data, lq_max_data=lq_max_data, logz_diff=logz_diff, lMc_diff=lMc_diff,  lq_diff=lq_diff, logz_min_inj=logz_min_inj, logz_max_inj=logz_max_inj, m1_diff=m1_diff, m2_diff=m2_diff, lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj, lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj )
+    return dict(logz_min_data=logz_min_data, logz_max_data=logz_max_data,  lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data, lq_min_data=lq_min_data, lq_max_data=lq_max_data, logz_diff=logz_diff, lMc_diff=lMc_diff,  lq_diff=lq_diff, logz_min_inj=logz_min_inj, logz_max_inj=logz_max_inj, m1_diff=m1_diff, m2_diff=m2_diff, lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj, lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj,
+               m1_min_inj = m1_min_inj, m2_min_inj=m2_min_inj, m1_max_inj = m1_max_inj, m2_max_inj=m2_max_inj,
+               m1_min_data=m1_min_data, m1_max_data=m1_max_data, m2_min_data=m2_min_data, m2_max_data=m2_max_data
+               )
     
 
+
+def min_sep_logMc_logitq(m1_min, m1_max, m2_min, m2_max, dm1, dm2):
+    # Build grids
+    m1 = onp.arange(m1_min, m1_max + dm1*0.5, dm1)
+    m2 = onp.arange(m2_min, m2_max + dm2*0.5, dm2)
+    M1, M2 = onp.meshgrid(m1, m2, indexing='ij')
+
+    # Mask to enforce m1 >= m2
+    mask = M1 >= M2
+
+    # Chirp mass and mass ratio
+    Mc = (M1 * M2)**(3/5) / (M1 + M2)**(1/5)
+    q  = M2 / M1
+
+    # Apply mask: set unphysical points to NaN
+    Mc[~mask] = onp.nan
+    q[~mask]  = onp.nan
+
+    # Transform
+    logMc   = onp.log(Mc)
+    logit_q = onp.log(q / (1.0 - q))
+
+    # Differences to nearest neighbors
+    dlogMc_m1  = onp.diff(logMc,   axis=0)
+    dlogMc_m2  = onp.diff(logMc,   axis=1)
+    dlogit_m1  = onp.diff(logit_q, axis=0)
+    dlogit_m2  = onp.diff(logit_q, axis=1)
+
+    # Take absolute minima separately, avoiding shape issues
+    min_logMc  = min(
+        onp.nanmin(onp.abs(dlogMc_m1)),
+        onp.nanmin(onp.abs(dlogMc_m2))
+    )
+    min_logitq = min(
+        onp.nanmin(onp.abs(dlogit_m1)),
+        onp.nanmin(onp.abs(dlogit_m2))
+    )
+
+    return min_logMc, min_logitq
 
 def find_zgrid_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                           H0_range, Om_range, w0_range,Xi0_range, nXi0_range,
@@ -979,18 +1057,42 @@ def make_tqdm_callback(pbar):
     return cb
 
 
-class TqdmPerChainCallback(pm.callbacks.Callback):
-    def __init__(self, draws=None, tune=None):
-        # Only simple, picklable state here
-        self.draws = draws
-        self.tune = tune
+class TqdmGlobalCallback(pm.callbacks.Callback):
+    """
+    Picklable equivalent of `make_tqdm_callback(pbar)`:
+
+    - One global progress bar (you choose `total`, e.g. chains * (draws + tune))
+    - Handles the same messy arg patterns your closure did
+    - Shows warmup/sampling, it/s, elapsed, and ETA
+    """
+
+    def __init__(self, total=None, desc="Sampling"):
+        # Only simple, picklable state
+        self.total = total
+        self.desc = desc
+
         self._pbar = None
         self._t0 = None
         self._last_refresh = None
 
+    # --- internal ---------------------------------------------------------
+
+    def _ensure_pbar(self):
+        if self._pbar is not None:
+            return
+
+        self._pbar = tqdm(
+            total=self.total,
+            desc=self.desc,
+            leave=True,
+        )
+        self._t0 = time.perf_counter()
+        self._last_refresh = self._t0
+
     def _parse_args(self, *args, **kwargs):
         """
-        Mimic your original flexible signature handling.
+        Exact same logic as in your working closure.
+
         Supports:
           - PyMC >=5: (draw, tuning, chain)
           - Older patterns: (trace, draw), (draw,), or kwargs
@@ -1013,43 +1115,164 @@ class TqdmPerChainCallback(pm.callbacks.Callback):
             tuning = kwargs.get("tuning")
             chain = kwargs.get("chain", 0)
 
-        # If PyMC passed a Draw-like object with a .tuning attribute
+        # If PyMC passed a Draw-like object, grab tuning from it when not given
         if hasattr(draw, "tuning") and tuning is None:
             tuning = bool(getattr(draw, "tuning", False))
 
-        if chain is None:
-            chain = 0
+        return draw, bool(tuning), int(chain or 0)
 
-        return draw, bool(tuning), int(chain)
+    # --- PyMC callback entry point ----------------------------------------
 
     def __call__(self, *args, **kwargs):
+        # Same parse behaviour as your old `cb`
         draw, tuning, chain = self._parse_args(*args, **kwargs)
 
-        # Lazily create tqdm inside each worker
-        if self._pbar is None:
-            total = None
-            if self.draws is not None and self.tune is not None:
-                total = self.draws + self.tune
+        self._ensure_pbar()
 
-            self._pbar = tqdm(
-                total=total,
-                desc=f"chain {chain}",
-                position=chain,  # one bar per chain
-                leave=True,
-            )
-            self._t0 = time.perf_counter()
-            self._last_refresh = self._t0
-
-        # Every callback => one step
+        # Every callback -> one iteration
         self._pbar.update(1)
 
-        # Optional: same warmup/sampling + rate logic
         now = time.perf_counter()
-        if (self._pbar.n % 25) == 0 and (now - self._last_refresh) >= 0.25:
-            phase = "warmup" if tuning else "sampling"
-            rate = self._pbar.n / max(now - self._t0, 1e-9)
-            self._pbar.set_postfix_str(f"{phase} | {rate:5.1f} it/s", refresh=False)
-            self._last_refresh = now     
+        if self._t0 is None:
+            self._t0 = now
+
+        # Throttle updates (same pattern as before)
+        if (self._pbar.n % 25) != 0 and (now - self._last_refresh) < 0.25:
+            return
+
+        elapsed = max(now - self._t0, 1e-9)
+        rate = self._pbar.n / elapsed
+        phase = "warmup" if tuning else "sampling"
+
+        # ETA if we know total
+        if self._pbar.total is not None and self._pbar.total > 0 and rate > 0:
+            remaining = max(self._pbar.total - self._pbar.n, 0)
+            eta = remaining / rate
+            postfix = (
+                f"{phase} | {rate:5.1f} it/s | "
+                f"elapsed {elapsed:5.1f}s | ETA {eta:5.1f}s"
+            )
+        else:
+            postfix = f"{phase} | {rate:5.1f} it/s | elapsed {elapsed:5.1f}s"
+
+        self._pbar.set_postfix_str(postfix, refresh=False)
+        self._last_refresh = now
+
+class TqdmEnsembleCallback(pm.callbacks.Callback):
+    """
+    One tqdm bar for the *total* work over all chains.
+
+    - `total` ≈ chains * (draws + tune)
+    - Shows elapsed time, it/s, ETA
+    - Warmup vs sampling based on the current draw
+    """
+
+    def __init__(self, draws=None, tune=None):
+        # Only simple, picklable fields here
+        self.draws = draws
+        self.tune = tune
+
+        self._pbar = None
+        self._t0 = None
+        self._last_refresh = None
+
+        self._seen_chains = set()
+        self._per_chain_counts = defaultdict(int)
+
+    # --- internal helpers -------------------------------------------------
+
+    def _ensure_pbar(self):
+        if self._pbar is not None:
+            return
+
+        # Start with unknown total; we’ll set it once we’ve seen the chains
+        self._pbar = tqdm(
+            total=None,
+            desc="MCMC",
+            leave=True,
+        )
+        self._t0 = time.perf_counter()
+        self._last_refresh = self._t0
+
+    def _maybe_set_total(self):
+        """
+        Once we know how many chains exist and have draws/tune,
+        set the global total as chains * (draws + tune).
+        """
+        if (
+            self._pbar is None
+            or self._pbar.total is not None
+            or self.draws is None
+            or self.tune is None
+            or not self._seen_chains
+        ):
+            return
+
+        # draw.chain is 0..(n_chains-1), so we can infer n_chains
+        n_chains = max(self._seen_chains) + 1
+        self._pbar.total = (self.draws + self.tune) * n_chains
+        self._pbar.refresh()
+
+    # --- PyMC entry point -------------------------------------------------
+
+    def __call__(self, trace, draw):
+        """
+        Called by PyMC as callback(trace=..., draw=...).
+
+        `draw` has attributes:
+          - chain
+          - tuning (bool)
+          - i (iteration index)
+          - is_last
+        """
+        chain = int(getattr(draw, "chain", 0))
+        tuning = bool(getattr(draw, "tuning", False))
+
+        self._ensure_pbar()
+
+        self._seen_chains.add(chain)
+        self._per_chain_counts[chain] += 1
+        self._maybe_set_total()
+
+        # One callback call == one iteration (one "draw" in PyMC docs)
+        self._pbar.update(1)
+
+        # Throttled status updates
+        now = time.perf_counter()
+        elapsed = now - self._t0
+        if elapsed <= 0:
+            return
+
+        # Don’t spam the terminal
+        if (self._pbar.n % 25) != 0 and (now - self._last_refresh) < 0.25:
+            return
+
+        rate = self._pbar.n / max(elapsed, 1e-9)
+
+        if self._pbar.total is not None and rate > 0:
+            remaining = max(self._pbar.total - self._pbar.n, 0)
+            eta = remaining / rate
+            postfix = (
+                f"{len(self._seen_chains)} chains | "
+                f"{'warmup' if tuning else 'sampling'} | "
+                f"{rate:6.1f} it/s | "
+                f"elapsed {elapsed:6.1f}s | ETA {eta:6.1f}s"
+            )
+        else:
+            postfix = (
+                f"{len(self._seen_chains)} chains | "
+                f"{'warmup' if tuning else 'sampling'} | "
+                f"{rate:6.1f} it/s | "
+                f"elapsed {elapsed:6.1f}s"
+            )
+
+        self._pbar.set_postfix_str(postfix, refresh=False)
+        self._last_refresh = now
+
+
+
+
+        
 
 def make_tqdm_callback_frequent(pbar):
     t0 = time.perf_counter()
