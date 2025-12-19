@@ -147,7 +147,7 @@ def main():
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
 
-    parser.add_argument("--mmin_inj", default=3., type=float, required=False)
+    parser.add_argument("--mmin_inj", default=-1, type=float, required=False)
     parser.add_argument("--is_compressed_inj", default=0, type=int, required=False)
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
@@ -1237,7 +1237,7 @@ def main():
 
                     total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
 
-                    cb=autils.TqdmGlobalCallback(total=total_steps, )
+                    cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
 
                     
                     trace = pm.sample(nuts_sampler='pymc', 

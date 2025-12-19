@@ -1059,30 +1059,49 @@ def make_tqdm_callback(pbar):
 
 class TqdmGlobalCallback(pm.callbacks.Callback):
     """
-    Picklable equivalent of `make_tqdm_callback(pbar)`:
+    Picklable equivalent of `make_tqdm_callback(pbar)`.
 
-    - One global progress bar (you choose `total`, e.g. chains * (draws + tune))
-    - Handles the same messy arg patterns your closure did
-    - Shows warmup/sampling, it/s, elapsed, and ETA
+    - One *global* tqdm bar for all chains.
+    - You can pass either:
+        * total=... directly, or
+        * draws, tune, chains  -> total = chains * (draws + tune)
+    - Same flexible arg parsing as your old closure.
+    - Shows warmup/sampling, it/s, elapsed, ETA.
     """
 
-    def __init__(self, total=None, desc="Sampling"):
+    def __init__(self, total=None, draws=None, tune=None, chains=None, desc="Sampling"):
         # Only simple, picklable state
-        self.total = total
         self.desc = desc
+        self._user_total = total      # if you want to set it manually
+
+        self.draws = draws
+        self.tune = tune
+        self.chains = chains
 
         self._pbar = None
         self._t0 = None
         self._last_refresh = None
 
-    # --- internal ---------------------------------------------------------
+    # -------- internals ---------------------------------------------------
+
+    def _compute_total(self):
+        if self._user_total is not None:
+            return self._user_total
+
+        if self.draws is not None and self.tune is not None and self.chains is not None:
+            return self.chains * (self.draws + self.tune)
+
+        # Fallback: unknown total
+        return None
 
     def _ensure_pbar(self):
         if self._pbar is not None:
             return
 
+        total = self._compute_total()
+
         self._pbar = tqdm(
-            total=self.total,
+            total=total,
             desc=self.desc,
             leave=True,
         )
@@ -1091,7 +1110,7 @@ class TqdmGlobalCallback(pm.callbacks.Callback):
 
     def _parse_args(self, *args, **kwargs):
         """
-        Exact same logic as in your working closure.
+        Same logic as in your working `make_tqdm_callback` closure.
 
         Supports:
           - PyMC >=5: (draw, tuning, chain)
@@ -1115,28 +1134,35 @@ class TqdmGlobalCallback(pm.callbacks.Callback):
             tuning = kwargs.get("tuning")
             chain = kwargs.get("chain", 0)
 
-        # If PyMC passed a Draw-like object, grab tuning from it when not given
+        # If PyMC passed a Draw-like object, grab tuning flag from it
         if hasattr(draw, "tuning") and tuning is None:
             tuning = bool(getattr(draw, "tuning", False))
 
-        return draw, bool(tuning), int(chain or 0)
+        if chain is None:
+            chain = 0
 
-    # --- PyMC callback entry point ----------------------------------------
+        return draw, bool(tuning), int(chain)
+
+    # -------- PyMC entry point -------------------------------------------
 
     def __call__(self, *args, **kwargs):
-        # Same parse behaviour as your old `cb`
+        # Parse args exactly like your old callback
         draw, tuning, chain = self._parse_args(*args, **kwargs)
 
         self._ensure_pbar()
 
-        # Every callback -> one iteration
+        # If we've already filled the bar, don't update any more.
+        if self._pbar.total is not None and self._pbar.n >= self._pbar.total:
+            return
+
+        # Every callback call == one iteration (one "draw" event)
         self._pbar.update(1)
 
         now = time.perf_counter()
         if self._t0 is None:
             self._t0 = now
 
-        # Throttle updates (same pattern as before)
+        # Throttle the expensive stuff, like your old code
         if (self._pbar.n % 25) != 0 and (now - self._last_refresh) < 0.25:
             return
 
@@ -1144,7 +1170,6 @@ class TqdmGlobalCallback(pm.callbacks.Callback):
         rate = self._pbar.n / elapsed
         phase = "warmup" if tuning else "sampling"
 
-        # ETA if we know total
         if self._pbar.total is not None and self._pbar.total > 0 and rate > 0:
             remaining = max(self._pbar.total - self._pbar.n, 0)
             eta = remaining / rate
