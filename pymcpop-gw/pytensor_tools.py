@@ -1845,10 +1845,137 @@ def gaussian_logpdf_pair_from_interp_lin(theta, interp_vals, interp_grids, z=Non
     return lpdfm1, lpdfm2, lpdf3
 
 
-
-
-
 def build_1d_gaussian_mixture_grid_components(
+    mu_d, sigma_d,
+    x_low, x_high,
+    n_total_min=2000,    # interpreted as *total* desired number of points
+    frac_uniform = 0.2,
+    k_sigma=4.0,         # μ ± kσ window for each component
+    sigma_floor=1e-4,    # floor on σ for grid *only* (not for pdf)
+    K=30
+):
+    """
+    Build a 1D non-uniform grid for a Gaussian mixture in x with:
+
+      - A fixed total number of points N_total = n_total_min.
+      - A fixed fraction f_uniform of points in a global uniform grid
+        over [x_low, x_high] to cover the extrema.
+      - The remaining points distributed equally across the K Gaussians,
+        each in the window [mu_k - k_sigma*sigma_k, mu_k + k_sigma*sigma_k].
+      - The mean mu_k of each component is *always* included explicitly.
+
+    Notes
+    -----
+    - All geometry is built with stop_grad(), so the grid does not
+      create gradient paths.
+    - The final grid is sorted with at.sort (no unique). Duplicates
+      are harmless for your non-uniform interpolation (which guards
+      denominators by eps).
+    """
+
+    # ---- number of components (compile-time constant) ----
+    if K <= 0:
+        raise ValueError("build_1d_gaussian_mixture_grid_components: K = len(mu_d) must be > 0.")
+
+    # ---- total points and uniform fraction ----
+    N_total = int(n_total_min)
+    if N_total < K:
+        # Need at least one point per component
+        N_total = K
+
+    N_uniform_raw = int(round(frac_uniform * N_total))
+    # ensure we leave at least one point per component
+    N_uniform = max(2, min(N_uniform_raw, N_total - K))
+    if N_uniform < 0:
+        N_uniform = 0
+
+    N_comp_total = max(N_total - N_uniform, K)  # total points to allocate to components
+
+    # base per-component count (at least 1)
+    base_per_comp = max(1, N_comp_total // K)
+    remainder = N_comp_total % K  # some components get one extra
+
+    # ---- detach parameters for geometry ----
+    mu_s      = stop_grad(mu_d)
+    sigma_s   = stop_grad(sigma_d)
+    x_low_s   = stop_grad(x_low)
+    x_high_s  = stop_grad(x_high)
+
+    dtype = getattr(x_low_s, "dtype", "float64")
+
+    eps         = at.as_tensor_variable(1e-5, dtype=dtype)
+    sigma_floor = at.as_tensor_variable(sigma_floor, dtype=dtype)
+    k_sigma_t   = at.as_tensor_variable(k_sigma, dtype=dtype)
+
+    xmin = x_low_s  + eps
+    xmax = x_high_s - eps
+    span = at.maximum(xmax - xmin, at.as_tensor_variable(1e-6, dtype=dtype))
+
+    sigma_eff = at.maximum(at.abs(sigma_s), sigma_floor)
+
+    win_min_raw = mu_s - k_sigma_t * sigma_eff
+    win_max_raw = mu_s + k_sigma_t * sigma_eff
+
+    win_min = at.clip(win_min_raw, xmin, xmax)
+    win_max = at.clip(win_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    win_width = at.maximum(win_max - win_min, tiny)
+
+    # ---- per-component bands + explicit means ----
+    comp_grids = []
+
+    for k in range(K):
+        # how many points for this component
+        n_k = base_per_comp + (1 if k < remainder else 0)
+
+        mu_k      = mu_s[k]
+        win_min_k = win_min[k]
+        win_width_k = win_width[k]
+
+        if n_k <= 1:
+            # Only the mean
+            x_comp_k = mu_k.reshape((1,))
+        else:
+            # reserve one point for the mean, n_win on the window
+            n_win = n_k - 1
+            if n_win > 1:
+                denom_k = float(n_win - 1)
+                t_k = at.arange(n_win, dtype=dtype) / denom_k  # [0,1]
+            else:
+                t_k = at.zeros((1,), dtype=dtype)
+
+            x_win_k = win_min_k + win_width_k * t_k          # n_win points
+            x_mean_k = mu_k.reshape((1,))                    # ensure mean included
+            x_comp_k = at.concatenate([x_win_k, x_mean_k], axis=0)
+
+        comp_grids.append(x_comp_k)
+
+    x_comp_all = at.concatenate(comp_grids, axis=0)  # (N_comp_total,)
+
+    # ---- global uniform background over [xmin, xmax] ----
+    if N_uniform > 0:
+        if N_uniform > 1:
+            denom_u = float(N_uniform - 1)
+            t_u = at.arange(N_uniform, dtype=dtype) / denom_u
+        else:
+            t_u = at.zeros((1,), dtype=dtype)
+        x_uniform = xmin + (xmax - xmin) * t_u
+    else:
+        x_uniform = at.zeros((0,), dtype=dtype)
+
+    # ---- combine, clip, sort ----
+    x_all = at.concatenate([x_uniform, x_comp_all], axis=0)
+    x_all = at.clip(x_all, xmin, xmax)
+
+    # sort after stop_grad to remove geometry from gradient path
+    x_all_sg = stop_grad(x_all)
+    x_grid = at.sort(x_all_sg)
+
+    return x_grid
+
+
+def build_1d_gaussian_mixture_grid_components_0(
     mu_d, sigma_d,
     x_low, x_high,
     n_total_min=2000,    # minimum total points you want overall

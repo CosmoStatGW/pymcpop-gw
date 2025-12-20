@@ -1231,13 +1231,15 @@ def main():
                     # print("Done.")
                     t0 = time.time()
                     log_mem("before pm.sample main")
-                    #cb = autils.make_tqdm_callback(pbar)
-                    draws = sampler_kwargs.get("draws", 1000)
-                    tune = sampler_kwargs.get("tune", 1000)
 
-                    total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
-
-                    cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
+                    
+                    cb = autils.make_tqdm_callback(pbar)
+                    
+                    
+                    #draws = sampler_kwargs.get("draws", 1000)
+                    #tune = sampler_kwargs.get("tune", 1000)
+                    #total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
+                    #cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
 
                     
                     trace = pm.sample(nuts_sampler='pymc', 

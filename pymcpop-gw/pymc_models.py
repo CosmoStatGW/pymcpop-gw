@@ -1988,12 +1988,15 @@ def make_model(  priors,
 
                 L_small_1 = max(L_small_1_data, dmin[0]).astype(X) 
                 L_small_2 = max(L_small_2_data, dmin[1]).astype(X)
-                
+            else:
+                L_small_1 = L_small_1_data
+                L_small_2 = L_small_2_data
 
                 if L_small_3>0:
 
                     L_small_3 = max(L_small_3_data, np.log(1+L_small_3/max(z_max_data, max_z)) ).astype(X)  
-                
+                else:
+                    L_small_3 = L_small_3_data
             print(" Final L_small_1=%s, L_small_2a=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
 
             
@@ -2973,6 +2976,7 @@ def make_model(  priors,
                     smoothing=smoothing,
                     simplex_repair=simplex_repair
                 )
+                # at.clip( lp_flat, -1e30, 1e030 )
                 lp_m1_bank = at.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
 
                 ln_bank = atools.safe_log( atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
@@ -2985,19 +2989,20 @@ def make_model(  priors,
 
                 n_total_min_mass = interp_mass
                 n_per_min = 20
-                n_per_max = 50
-                n_boundary_mass = 50
+                #n_per_max = 50
+                #n_boundary_mass = 50
                 k_sigma = 4
+                frac_uniform=0.1
                 sigma_floor=1e-4
-                
+
+
+    
 
                 log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu1, sig1,
-                                                at.as_tensor_variable(MMIN_GRID),at.as_tensor_variable(MMAX_GRID),
+                                                                at.as_tensor_variable(MMIN_GRID),at.as_tensor_variable(MMAX_GRID),
                                                 n_total_min=n_total_min_mass,
-                                                n_per_min=n_per_min,
-                                                n_per_max=n_per_max,
-                                                n_boundary=n_boundary_mass,
+                                                frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
                                                 K = N_DP_comp_max_np
@@ -3006,10 +3011,8 @@ def make_model(  priors,
                 logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu2, sig2,
                                                 at.as_tensor_variable(MMIN_GRID_1),at.as_tensor_variable(MMAX_GRID_1),
-                                                n_total_min=n_total_min_mass,
-                                                n_per_min=n_per_min,
-                                                n_per_max=n_per_max,
-                                                n_boundary=n_boundary_mass,
+                                                n_total_min=n_total_min_mass,                                                                                                                                                        frac_uniform=frac_uniform,
+
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
                                                 K = N_DP_comp_max_np
@@ -3029,9 +3032,8 @@ def make_model(  priors,
                                                 mu3, sig3,
                                                 at.as_tensor_variable(MMIN_GRID_2),at.as_tensor_variable(MMAX_GRID_2),
                                                 n_total_min=n_total_min_mass,
-                                                n_per_min=n_per_min,
-                                                n_per_max=n_per_max,
-                                                n_boundary=n_boundary_mass,
+                                                                                                                                                        frac_uniform=frac_uniform,
+
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
                                                 K = N_DP_comp_max_np
@@ -3337,7 +3339,7 @@ def make_model(  priors,
                 print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
                 
                 eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
-                log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps))
+                log_p_pop -=  atools.safe_log(m2src) + atools.safe_log(at.maximum(m1src - m2src, eps))#+at.log1p(zs)
     
                 if rate_model in ('DPUC','DPUC-vol' ):
                     # also remove jacobian for log(1+z)
