@@ -204,7 +204,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  interp_grids_mass = None,
                  is_observed = False,
                  z_grid = None,
-                 verbose=False
+                 verbose=False,
+                 #K=None
                 ):
 
 
@@ -414,20 +415,34 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         sigma1_inf  = Lambda[j + 12]; z_sigma1  = Lambda[j + 13]; dz_sigma1  = Lambda[j + 14]
         mu2_inf     = Lambda[j + 15]; z_mu2     = Lambda[j + 16]; dz_mu2     = Lambda[j + 17]
         sigma2_inf  = Lambda[j + 18]; z_sigma2  = Lambda[j + 19]; dz_sigma2  = Lambda[j + 20]
-        lambda0_inf = Lambda[j + 21]; z_lambda0 = Lambda[j + 22]; dz_lambda0 = Lambda[j + 23]
-        lambda1_inf = Lambda[j + 24]; z_lambda1 = Lambda[j + 25]; dz_lambda1 = Lambda[j + 26]
+        #lambda0_inf = Lambda[j + 21]; z_lambda0 = Lambda[j + 22]; dz_lambda0 = Lambda[j + 23]
+        #lambda1_inf = Lambda[j + 24]; z_lambda1 = Lambda[j + 25]; dz_lambda1 = Lambda[j + 26]
+        lambda0_inf = Lambda[j + 21]
+        lambda1_inf = Lambda[j + 22]
+        z_lambda    = Lambda[j + 23]
+        dz_lambda   = Lambda[j + 24]
     
+        # evo_params = [
+        #     alpha1_inf,  z_alpha1,  dz_alpha1,
+        #     alpha2_inf,  z_alpha2,  dz_alpha2,
+        #     mb_inf,      z_mb,      dz_mb,
+        #     mu1_inf,     z_mu1,     dz_mu1,
+        #     sigma1_inf,  z_sigma1,  dz_sigma1,
+        #     mu2_inf,     z_mu2,     dz_mu2,
+        #     sigma2_inf,  z_sigma2,  dz_sigma2,
+        #     lambda0_inf, z_lambda0, dz_lambda0,
+        #     lambda1_inf, z_lambda1, dz_lambda1,
+        # ]
         evo_params = [
-            alpha1_inf,  z_alpha1,  dz_alpha1,
-            alpha2_inf,  z_alpha2,  dz_alpha2,
-            mb_inf,      z_mb,      dz_mb,
-            mu1_inf,     z_mu1,     dz_mu1,
-            sigma1_inf,  z_sigma1,  dz_sigma1,
-            mu2_inf,     z_mu2,     dz_mu2,
-            sigma2_inf,  z_sigma2,  dz_sigma2,
-            lambda0_inf, z_lambda0, dz_lambda0,
-            lambda1_inf, z_lambda1, dz_lambda1,
-        ]
+                alpha1_inf,  z_alpha1,  dz_alpha1,
+                alpha2_inf,  z_alpha2,  dz_alpha2,
+                mb_inf,      z_mb,      dz_mb,
+                mu1_inf,     z_mu1,     dz_mu1,
+                sigma1_inf,  z_sigma1,  dz_sigma1,
+                mu2_inf,     z_mu2,     dz_mu2,
+                sigma2_inf,  z_sigma2,  dz_sigma2,
+                lambda0_inf, lambda1_inf, z_lambda, dz_lambda,
+            ]
     
         # ------------------------------------------------------------
         # Call the redshift-evolving mass pdf
@@ -474,26 +489,28 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         if interp_vals_mass is None:
             
             logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=z_dpuc )
-                
         else:
-            logp1, logp2, logp3 = atools.gaussian_logpdf_pair_from_interp( [m1s, m2s], interp_vals_mass, interp_grids_mass, z = z_dpuc )
+            logp1, logp2, logp3 = atools.gaussian_logpdf_pair_from_interp( [m1s, m2s], interp_vals_mass, 
+                                                                           interp_grids_mass, 
+                                                                          # K=K, 
+                                                                           z = z_dpuc )
     
         
         if rate_model in ('PL', 'MD'):
             logp_components = logp1 + logp2                    # (K,N)
         else:
             logp_components = logp1 + logp2 + logp3                   # (K,N)
-
+            
         
         # Mixture over components → (n_obs,)
-        #lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+        lpmass = at.logsumexp(logp_components + logw[:, None], axis=0)
+
+        #lpmass = atools.safe_logsumexp(logp_components + logw[:, None] , axis=0) # + logw[:, None]
 
         
-        lpmass = atools.safe_logsumexp(logp_components + logw[:, None], axis=0)
-
         if rate_model=='DPUC-vol' and is_observed:
             print("Normalize GMM x p(z)")
-            log_Nz = atools.redshift_mixture_log_norm( mu=mu, sd=sd, logw=logw, y_min=at.log(1.+at.min(z_grid)), y_max=at.log(1.+at.max(z_grid)),  H0=H0, Om=Om, w0=w0, Ny=2000 )
+            log_Nz = atools.redshift_mixture_log_norm( mu=mu, sd=sd, logw=logw, y_min=atools.safe_log(1.+at.min(z_grid)), y_max=atools.safe_log(1.+at.max(z_grid)),  H0=H0, Om=Om, w0=w0, Ny=2000 )
         elif rate_model=='MD' and is_observed:
             log_Nz = atools.N_per_year( gamma, kappa, zp, H0, Om, w0, R0=1., dc=None, z_max = 100, res=1000)
         elif rate_model=='PL' and is_observed:
@@ -575,7 +592,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     
     lp =  lpz - log_dthD_dth  + lpmass + lpspin
 
-    MIN = at.as_tensor_variable(-1e30,  dtype=z.dtype)
+    #MIN = at.as_tensor_variable(-1e30,  dtype=z.dtype)
     
     return lp #at.where(in_support, lp, MIN)
 
@@ -1174,275 +1191,6 @@ def sel_bias_with_uncertainty_at_0_debug(m1inj, m2inj, dLinj, spinsInj, log_p_dr
     return log_mu, Neff, var_log_lik_u
 
 
-
-def sel_bias_with_uncertainty_at_0_test(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
-                                    Lambda,  Ndraw, 
-                                    rate_model, mass_model, spin_model, 
-                                    smoothing, 
-                                    has_m2_break, 
-                                    interp, 
-                                    wrap_logp=False, 
-                                    log_ddL_dz_inj = None,
-                                    zinj = None,
-                                    dcinj = None,
-                                    param='vanilla',
-                                    **kwargs):
-
-    work_dtype = getattr(m1inj, "dtype", "float64")
-
-    if work_dtype == "float32":
-        eps      = at.as_tensor_variable(1e-20, dtype=work_dtype)
-        tinyL    = at.as_tensor_variable(1e-30, dtype=work_dtype)
-        big_neg  = at.as_tensor_variable(-1e6,  dtype=work_dtype)
-        big_pos  = at.as_tensor_variable(1e6,   dtype=work_dtype)
-        tiny_sum = at.as_tensor_variable(1e-20, dtype=work_dtype)
-    else:
-        eps      = at.as_tensor_variable(1e-30,  dtype=work_dtype)
-        tinyL    = at.as_tensor_variable(1e-300, dtype=work_dtype)
-        big_neg  = at.as_tensor_variable(-1e12, dtype=work_dtype)
-        big_pos  = at.as_tensor_variable(1e12,  dtype=work_dtype)
-        tiny_sum = at.as_tensor_variable(1e-300, dtype=work_dtype)
-
-    #H0, Om, w0, Xi0, n  = Lambda[:5]
-    H0  = Lambda[0]
-    Om  = Lambda[1]
-    w0  = Lambda[2]
-    Xi0 = Lambda[3]
-    n   = Lambda[4]
-
-    if wrap_logp:
-        log_p_pop_fun = log_p_pop_at_wrap
-        print("Using wrapped p_pop for inj")
-    else:
-        log_p_pop_fun = log_p_pop_at
-        print("Using regular p_pop for inj")
-
-    if (spin_model == 'default') or (spin_model == 'default_gauss'):
-        spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
-    elif spin_model == 'none':
-        spinsInj_sel = []
-
-    if zinj is None:
-        print("Sel bias is recomputing zinj!")
-        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp, param=param) 
-    if dcinj is None:
-        print("Sel bias is recomputing dcinj!")
-        dcinj = atools.dcfun_at(zinj, H0, Om, w0, interp=interp)        
-    if log_ddL_dz_inj is None:
-        print("Sel bias is recomputing log_ddL_dz_inj!")
-        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n,
-                                           dc=dcinj, interp=interp, param=param)
-    
-    one_p_z = 1.0 + zinj
-    m1Src   = m1inj / one_p_z
-    m2Src   = m2inj / one_p_z
-
-    if mass_model in ('DP', 'DPUC'):
-        Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-        log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
-        logit_q_inj    = atools.logitat(q_inj)
-        mass_1_use     = log_Mc_src_inj
-        mass_2_use     = logit_q_inj
-    else:
-        mass_1_use = m1Src
-        mass_2_use = m2Src
-
-    log_p_pop = log_p_pop_fun(
-        mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel,
-        Lambda,
-        rate_model, mass_model, spin_model,
-        smoothing=smoothing,
-        has_m2_break=has_m2_break,
-        log_ddL_dz_pre=log_ddL_dz_inj,
-        dc=dcinj,
-    )
-
-    # If you want the Jacobian back, you can re-enable this block later:
-    # if mass_model in ('DP', 'DPUC'):
-    #     log_p_pop += (
-    #         - atools.safe_log(m2Src)
-    #         - atools.safe_log(at.maximum(m1Src - m2Src, eps))
-    #         - at.log1p(zinj)
-    #     )
-
-    # ------------------------------------------------------
-    # SANITIZE log_p_pop: NaNs → big_neg, clip to [big_neg, big_pos]
-    # NaN detection: x != x is True only for NaN
-    # ------------------------------------------------------
-    nan_mask = at.neq(log_p_pop, log_p_pop)
-    print(at.sum(nan_mask).eval())
-    log_p_pop_clean = at.where(nan_mask, big_neg, log_p_pop)
-    log_p_pop_clean = at.clip(log_p_pop_clean, big_neg, big_pos)
-
-    # selection-bias log-weights
-    log_sel_b = log_p_pop_clean - log_p_draw
-    log_sel_b = at.clip(log_sel_b, big_neg, big_pos)
-
-    # very safe logsumexp over a 1D vector
-    def safe_logsumexp(x):
-        x = at.as_tensor_variable(x)
-        m = at.max(x)
-        y = at.exp(x - m)
-        s = at.sum(y)
-        s_safe = at.maximum(s, tiny_sum)   # avoid log(0)
-        return m + at.log(s_safe)
-
-    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
-
-    # mean log selection-bias term
-    log_mu = safe_logsumexp(log_sel_b) - atools.safe_log(Ndraw_t)
-
-    # keep Neff and var simple/safe to avoid NaNs
-    Neff = Ndraw_t
-    var_log_lik_u = at.zeros_like(log_mu)
-
-    return log_mu, Neff, var_log_lik_u
-
-
-
-
-def sel_bias_with_uncertainty_at_0_safe(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
-                                    Lambda,  Ndraw, 
-                                    rate_model, mass_model, spin_model, 
-                                    smoothing, 
-                                    has_m2_break, 
-                                    interp, 
-                                    wrap_logp=False, 
-                                    log_ddL_dz_inj = None,
-                                    zinj = None,
-                                    dcinj = None,
-                                    param='vanilla',
-                                    **kwargs):
-
-    work_dtype = getattr(m1inj, "dtype", "float64")
-
-    if work_dtype == "float32":
-        # reasonable tiny values in float32
-        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
-    else:
-        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
-
-    #H0, Om, w0, Xi0, n  = Lambda[:5]
-    H0  = Lambda[0]
-    Om  = Lambda[1]
-    w0  = Lambda[2]
-    Xi0 = Lambda[3]
-    n   = Lambda[4]
-
-    if wrap_logp:
-        log_p_pop_fun = log_p_pop_at_wrap
-        print("Using wrapped p_pop for inj")
-    else:
-        log_p_pop_fun = log_p_pop_at
-        print("Using regular p_pop for inj")
-
-    if (spin_model=='default') or (spin_model=='default_gauss'):
-        spinsInj_sel = [spinsInj[0], spinsInj[1], spinsInj[2], spinsInj[3]]
-    elif spin_model=='none':
-        spinsInj_sel = []
-
-    if zinj is None:
-        print("Sel bias is recomputing zinj!")
-        zinj = atools.z_from_dL_at(dLinj, H0, Om, w0, Xi0, n, interp=interp, param=param) 
-    if dcinj is None:
-        print("Sel bias is recomputing dcinj!")
-        dcinj = atools.dcfun_at(zinj, H0, Om, w0, interp=interp)        
-    if log_ddL_dz_inj is None:
-        print("Sel bias is recomputing log_ddL_dz_inj!")
-        log_ddL_dz_inj = atools.log_ddL_dz(zinj, H0, Om,  w0, Xi0, n, dc=dcinj, interp=interp, param=param)
-    
-    one_p_z = 1.0 + zinj
-    m1Src  = m1inj/one_p_z
-    m2Src  = m2inj/one_p_z
-
-    if mass_model in ('DP', 'DPUC'):
-        Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-        #log_Mc_src_inj = atools.safe_log(Mc_src_inj)
-        log_Mc_src_inj = atools.safe_log(at.maximum(Mc_src_inj, eps))
-        logit_q_inj = atools.logitat(q_inj)      
-        mass_1_use = log_Mc_src_inj
-        mass_2_use = logit_q_inj
-    else:
-        mass_1_use = m1Src
-        mass_2_use = m2Src
-
-    log_p_pop = log_p_pop_fun(mass_1_use, mass_2_use, zinj, dLinj, spinsInj_sel, 
-                              Lambda, 
-                              rate_model, mass_model, spin_model, 
-                              smoothing=smoothing, 
-                              has_m2_break=has_m2_break, 
-                              log_ddL_dz_pre = log_ddL_dz_inj,
-                              dc = dcinj
-                             )
-
-    if mass_model in ('DP', 'DPUC'):
-        # remove jacobian m1, m2 --> log(Mc), logit(q)
-        log_p_pop += (- atools.safe_log(m2Src) 
-                      - atools.safe_log(at.maximum(m1Src - m2Src, eps)) #atools.safe_log(m1Src-m2Src) 
-                      #- at.log1p(zinj) 
-                     )
-
-    log_sel_b = log_p_pop - log_p_draw
-
-    # ----------------------------------------------------------------------
-    # SAFETY 1: guard against NaNs in log_sel_b itself
-    # Any injection with NaN log weight is treated as having negligible weight
-    # ----------------------------------------------------------------------
-    if work_dtype == "float32":
-        big_neg = at.as_tensor_variable(-1e6).astype(work_dtype)
-    else:
-        big_neg = at.as_tensor_variable(-1e12).astype(work_dtype)
-
-    log_sel_b = at.where(at.isnan(log_sel_b), big_neg, log_sel_b)
-
-    # Ndraw must be a symbolic tensor with a floating dtype for logs
-    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
-    log_Ndraw = atools.safe_log(Ndraw_t)
-
-    # raw log-mean and log-second-moment
-    log_mu_raw = at.logsumexp(log_sel_b)         - log_Ndraw
-    logs2_raw  = at.logsumexp(2.0 * log_sel_b)   - log_Ndraw
-
-    # ----------------------------------------------------------------------
-    # SAFETY 2: avoid inf - inf in Neff / variance
-    # ----------------------------------------------------------------------
-    if work_dtype == "float32":
-        tiny_log = at.as_tensor_variable(-1e6).astype(work_dtype)
-    else:
-        tiny_log = at.as_tensor_variable(-1e12).astype(work_dtype)
-
-    too_tiny = at.or_(log_mu_raw < tiny_log, logs2_raw < tiny_log)
-
-    # safe versions used inside arithmetic
-    log_mu_safe = at.where(too_tiny, at.zeros_like(log_mu_raw), log_mu_raw)
-    logs2_safe  = at.where(too_tiny, at.zeros_like(logs2_raw),  logs2_raw)
-
-    #####################################
-    # N_eff as in Talbot & Golomb (2023)
-    #####################################
-    logNeff_raw = 2.0 * log_mu_safe - logs2_safe + log_Ndraw
-
-    logNeff = at.where(
-        too_tiny,
-        at.as_tensor_variable(-np.inf).astype(work_dtype),
-        logNeff_raw,
-    )
-
-    #####################################
-    # Variance of log l per unit obs (Talbot & Golomb 2023)
-    #####################################
-    delta_safe = logs2_safe - 2.0 * log_mu_safe
-    var_finite = atools.logdiffexp(delta_safe, 1.) - atools.safe_log(Ndraw_t - 1)
-
-    var_inf = at.as_tensor_variable(np.inf).astype(work_dtype)
-    var_log_lik_u = at.where(too_tiny, var_inf, var_finite)
-
-    Neff   = at.exp(logNeff)
-    log_mu = log_mu_raw  # original log_mu as return value
-
-    return log_mu, Neff, var_log_lik_u
 
 
     
@@ -2452,70 +2200,122 @@ def make_model(  priors,
 
             # # mixture weights at z≈0
             eps_w = at.as_tensor_variable(1e-12).astype(X)
-            # endpoints
+
+            # read lambda prior from priors file
+            lam0_prior = priors.get("lambda0_vec_0", "Dirichlet(1,1,1)")
+            
+            if isinstance(lam0_prior, str) and lam0_prior.startswith("Dirichlet"):
+                # parse "Dirichlet(a,b,c)"
+                inside = lam0_prior[len("Dirichlet("):-1]
+                alphas = [float(x.strip()) for x in inside.split(",")]
+            else:
+                # alternatively allow direct numeric lists in future
+                alphas = lam0_prior
+            
+            alphas = np.asarray(alphas, dtype=X)
             lambda_vec0 = pm.Dirichlet(
-                "lambda0_vec",
-                a=np.asarray([1, 1, 1], dtype=X),
-                initval=np.asarray(ivals.get("lambda"), dtype=X)
-            )
+                                    "lambda0_vec",
+                                    a=alphas,
+                                    initval=np.asarray(ivals.get("lambda"), dtype=X)
+                                )
+
+
 
             lambda0_0 = pm.Deterministic("lambda0_0", lambda_vec0[0])
             lambda1_0 = pm.Deterministic("lambda1_0", lambda_vec0[1])
             lambda2_0 = pm.Deterministic("lambda2_0", lambda_vec0[2])
-            
-            # -------------------------
-            # Redshift evolution hyperparameters for each θ in:
-            # {alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, lambda0, lambda1}
-            #
-            # Each θ has (θ_inf, z_t, Δz) with θ(z) = θ0 + (θ_inf-θ0)*S((z-z_t)/Δz)
-            # -------------------------
-            
-            # helper: choose priors for (z_t, Δz); you can swap these for your own
-            z_t_prior = priors.get("z_t", (0.05, 2.5))
-            dz_prior  = priors.get("dz",  (0.01, 2.0))   # Δz > 0; adjust as you like
 
 
-            # pick priors for the high-z asymptotes; by default reuse the low-z prior ranges
-            alpha1_inf_,  z_alpha1_,  dz_alpha1_  = putils.evo_triplet("alpha1", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("alpha1_0"),
-                                                                theta_inf_prior=priors["alpha1_0"])
-            alpha2_inf_,  z_alpha2_,  dz_alpha2_  = putils.evo_triplet("alpha2", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("alpha2_0"),
-                                                                theta_inf_prior=priors["alpha2_0"])
-            mb_inf_,      z_mb_,      dz_mb_      = putils.evo_triplet("mb",  ivals, z_t_prior=z_t_prior, dz_prior=dz_prior,    theta0_init=ivals.get("mb_0"),
-                                                                theta_inf_prior=priors["mb_0"])
-            mu1_inf_,     z_mu1_,     dz_mu1_     = putils.evo_triplet("mu1",  ivals, z_t_prior=z_t_prior, dz_prior=dz_prior,   theta0_init=ivals.get("mu1_0"),
-                                                                theta_inf_prior=priors["mu1_0"])
-            sigma1_inf_,  z_sigma1_,  dz_sigma1_  = putils.evo_triplet("sigma1", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("sigma1_0"),
-                                                                theta_inf_prior=priors["sigma1_0"])
-            mu2_inf_,     z_mu2_,     dz_mu2_     = putils.evo_triplet("mu2",  ivals,  z_t_prior=z_t_prior, dz_prior=dz_prior,  theta0_init=ivals.get("mu2_0"),
-                                                                theta_inf_prior=priors["mu2_0"])
-            sigma2_inf_,  z_sigma2_,  dz_sigma2_  = putils.evo_triplet("sigma2", ivals, z_t_prior=z_t_prior, dz_prior=dz_prior, theta0_init=ivals.get("sigma2_0"),
-                                                                theta_inf_prior=priors["sigma2_0"])
-            
-            # Mixture weights at high z: use a Dirichlet, then map to (lambda0_inf, lambda1_inf)
-            lambda_vec_inf = pm.Dirichlet("lambda_inf_vec", a=np.asarray([1, 1, 1], dtype=X),
-                                          initval=np.asarray(ivals.get("lambda_inf_vec", [1/3, 1/3, 1/3]), dtype=X))
+            alpha1_inf_,  z_alpha1_,  dz_alpha1_ = putils.evo_triplet(
+                "alpha1",
+                theta0_rv=alpha1_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            alpha2_inf_,  z_alpha2_,  dz_alpha2_ = putils.evo_triplet(
+                "alpha2",
+                theta0_rv=alpha2_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            mb_inf_,      z_mb_,      dz_mb_     = putils.evo_triplet(
+                "mb",
+                theta0_rv=mb_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            mu1_inf_,     z_mu1_,     dz_mu1_    = putils.evo_triplet(
+                "mu1",
+                theta0_rv=mu1_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            sigma1_inf_,  z_sigma1_,  dz_sigma1_ = putils.evo_triplet(
+                "sigma1",
+                theta0_rv=sigma1_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            mu2_inf_,     z_mu2_,     dz_mu2_    = putils.evo_triplet(
+                "mu2",
+                theta0_rv=mu2_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            sigma2_inf_,  z_sigma2_,  dz_sigma2_ = putils.evo_triplet(
+                "sigma2",
+                theta0_rv=sigma2_0,
+                ivals=ivals,
+                priors=priors,
+            )
+
+
+            # -------------------------
+            # High-z mixture weights + shared evolution S_lambda(z)
+            # -------------------------
+
+            # Global redshift–transition priors for all evolving hyperparameters
+            z_t_prior = priors.get("z_t", (0.05, 1.5))   # lower/upper for z_transition
+            dz_prior  = priors.get("dz",  (0.05, 2.0))   # lower/upper for Δz
+
+            # High-z endpoint on the simplex
+            lambda_vec_inf = pm.Dirichlet(
+                "lambda_inf_vec",
+                a=np.asarray([1, 1, 1], dtype=X),
+                initval=np.asarray(ivals.get("lambda_inf_vec", [0.10, 0.05, 0.85]), dtype=X),
+            )
             lambda0_inf_ = pm.Deterministic("lambda0_inf", lambda_vec_inf[0])
             lambda1_inf_ = pm.Deterministic("lambda1_inf", lambda_vec_inf[1])
             lambda2_inf_ = pm.Deterministic("lambda2_inf", lambda_vec_inf[2])
-
+            
+            # Shared transition redshift and width for the mixture weights
+            z_lambda_ = pm.Uniform(
+                "z_lambda",
+                lower=z_t_prior[0],
+                upper=z_t_prior[1],
+                initval=ivals.get("z_lambda", 1.1),
+            )
+            log_dz_lambda_ = pm.Uniform(
+                "log_dz_lambda",
+                lower=np.log(dz_prior[0]),
+                upper=np.log(dz_prior[1]),
+                initval=ivals.get("log_dz_lambda", np.log(0.5) ),
+            )
+            dz_lambda_ = pm.Deterministic("dz_lambda", at.exp(log_dz_lambda_))
 
             
-            # Allow separate (z_t, Δz) for lambda0 and lambda1 
-            z_lambda0_  = pm.Uniform("z_lambda0",  lower=z_t_prior[0], upper=z_t_prior[1],
-                                     initval=ivals.get("z_lambda0", None))
-            dz_lambda0_ = pm.Uniform("dz_lambda0", lower=dz_prior[0],  upper=dz_prior[1],
-                                     initval=ivals.get("dz_lambda0", None))
-            z_lambda1_  = pm.Uniform("z_lambda1",  lower=z_t_prior[0], upper=z_t_prior[1],
-                                     initval=ivals.get("z_lambda1", None))
-            dz_lambda1_ = pm.Uniform("dz_lambda1", lower=dz_prior[0],  upper=dz_prior[1],
-                                     initval=ivals.get("dz_lambda1", None))
-            
-            if simplex_repair:
-                print("Will enforce lambda0(z), lambda1(z), lambda2(z) on the simplex")
+            #if simplex_repair:
+            #   print("Will enforce lambda0(z), lambda1(z), lambda2(z) on the simplex")
             
             # -------------------------
-            # Pack hyperparameters for your logpdf_DPLDP_z wrapper
-            #   - low-z vector: same order you used before, but with *_0 values
+            # Pack hyperparameters for logpdf_DPLDP_z wrapper
+            #   - low-z vector: same order, but with *_0 values
             #   - evolution params: (theta_inf, z_theta, dz_theta) for each evolving parameter
             # -------------------------
             lambdaBBHmass_lowz_ = [
@@ -2535,8 +2335,7 @@ def make_model(  priors,
                 sigma1_inf_,  z_sigma1_,  dz_sigma1_,
                 mu2_inf_,     z_mu2_,     dz_mu2_,
                 sigma2_inf_,  z_sigma2_,  dz_sigma2_,
-                lambda0_inf_, z_lambda0_, dz_lambda0_,
-                lambda1_inf_, z_lambda1_, dz_lambda1_,
+                lambda0_inf_, lambda1_inf_, z_lambda_, dz_lambda_,
             ]
             
             # If your code expects a single list Lambda_, append both
@@ -2603,6 +2402,7 @@ def make_model(  priors,
 
             
             logw = atools.safe_log(w)
+
         
 
             #### Mean prior 
@@ -2668,11 +2468,11 @@ def make_model(  priors,
 
             print("s_local = %s "%s_local)
 
-            # eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",))
-            # eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",))
+            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
 
-            eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X) )
-            eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+            # eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X) )
+            # eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
 
 
             sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   
@@ -2688,7 +2488,8 @@ def make_model(  priors,
                 print("U3 = %s "%U3)
 
                 tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3, )
-                eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+                # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+                eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
 
                 sigs = at.stack([sig1, sig2, sig3], axis=0)
@@ -2710,6 +2511,10 @@ def make_model(  priors,
                 _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * tau1,  )
                 _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * tau2, )
 
+            # _ = pm.Potential("debug_w_not_nan",    -1e6 * at.any(at.isnan(w)))
+            # _ = pm.Potential("debug_mu_not_nan",   -1e6 * at.any(at.isnan(mu)))
+            # _ = pm.Potential("debug_sd_not_nan",   -1e6 * at.any(at.isnan(sigs)))
+            # _ = pm.Potential("debug_logw_not_nan", -1e6 * at.any(at.isnan(logw)))
             
             if mass_model=='DPUC':
                 print("No m1-m2 correlation.")
@@ -3324,9 +3129,9 @@ def make_model(  priors,
             # Xi_ = atools.Xifun_at(zs, Xi0_, nXi0_)
             # dc = d/(1+zs)/Xi_, 
     
-            
+            is_DP = mass_model in ('DP', 'DPUC')
             # Population prior of all events, without the term T_obs*R0
-            if mass_model in ('DP', 'DPUC'):
+            if is_DP:
     
                 # dirichelet processs will be for log(Mc_src), logit(q) ...
                 logMc_src =  log_Mc_det - at.log1p(zs)
@@ -3363,7 +3168,8 @@ def make_model(  priors,
                                            interp_vals_mass = interp_vals_mass,
                                            interp_grids_mass = interp_grids_mass,
                                            is_observed = is_observed,
-                                           z_grid = zgrid_
+                                           z_grid = zgrid_,
+                                           #K=N_DP_comp_max
                                          )
 
     
@@ -3410,7 +3216,7 @@ def make_model(  priors,
 
             log_Mc_det = logMc+y
             d = atools.dLfun_at(z, H0_, Om_, w0_, Xi0_, nXi0_, param=param)
-            logd = at.log( d )
+            logd = atools.safe_log( d )
 
 
             X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
@@ -3434,7 +3240,7 @@ def make_model(  priors,
             gwl = at.logsumexp(logp_components, axis=1)   # (N,)
 
             # jacobian
-            log_jac_q = -at.log(q) - at.log1p(-q)
+            log_jac_q = -atools.safe_log(q) - at.log1p(-q)
 
             # all
             log_p_pop = lpmass + gwl - log_Mc_det - logd - log_jac_q
@@ -3720,7 +3526,7 @@ def make_model(  priors,
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
                     res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
-                                          sequences = [ np.arange( ndata) ], 
+                                          sequences = [ at.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet],
                                             profile=True
                                             )
@@ -3733,7 +3539,7 @@ def make_model(  priors,
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
                     res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
-                                      sequences = [ np.arange( ndata) ], 
+                                      sequences = [ at.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
 
             
