@@ -345,13 +345,22 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         mh   = Lambda[istart_spin + 5]
         muM  = Lambda[istart_spin + 6]
         sM   = Lambda[istart_spin + 7]
-        lpmass = atools.logpdf_PLP_reg([m1s, m2s], [lp, al, bb, dm, ml, mh, muM, sM], smoothing=smoothing)
+        
+        if interp_vals_mass is not None:
+            # Use precomputed (m1, m2) grid for PLPreg
+            lpmass = atools.logpdf_PLPreg_from_interp(
+                [m1s, m2s],
+                interp_vals_mass,
+                interp_grids_mass,
+            )
+        else:
+            # Direct evaluation (no interpolation)
+            lpmass = atools.logpdf_PLP_reg(
+                [m1s, m2s],
+                [lp, al, bb, dm, ml, mh, muM, sM],
+                smoothing=smoothing,
+            )
 
-        # print("mass params check: [lp, al, bb, dm, ml, mh, muM, sM]")
-        # print( [v.eval() for v in [lp, al, bb, dm, ml, mh, muM, sM]] )
-
-        # print("mass params check from previous: [lp, al, bb, dm, ml, mh, muM, sM]")
-        # print( [v.eval() for v in Lambda[-8:] ] )
 
     elif mass_model=='DPLDP':
         
@@ -599,9 +608,1892 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
 
 #####################################################
 
-
-
 def sel_bias_with_uncertainty_at_0_batched_scan(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    interp,
+    log_p_incl=None,
+    wrap_logp=False,
+    # kept for API compat (ignored if dL_grid / z_grid are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # grids ONLY for dL->z (and optionally dc, log_ddL_dz as functions of dL)
+    dL_grid=None,               # 1-D, increasing in dL
+    z_grid=None,                # 1-D, z(dL_grid)
+    dc_grid=None,               # 1-D, dc(dL_grid) or dc(z_grid)
+    log_ddL_dz_grid=None,       # 1-D, log ddL/dz (dL_grid or z_grid)
+    *,
+    chunk_size=4096,
+    param='vanilla',
+    interp_vals_mass=None,
+    interp_grids_mass=None,
+    verbose=False,
+    **kwargs
+):
+    """Scan/batched version of `sel_bias_with_uncertainty_at_0`."""
+
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    def _pad_to_multiple(x, k, pad_value):
+        x = _as_at(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full(
+            (Npad,),
+            at.as_tensor_variable(pad_value, dtype=x.dtype),
+            dtype=x.dtype,
+        )
+        xpad = at.concatenate([x, pad], axis=0)
+        return xpad.reshape((C, k)), C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        """Combine two log-sum-exp accumulators in a numerically stable way."""
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    # base tensors
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+
+    # Lambda is a *sequence* (can be heterogeneous for DPUC etc.)
+    Lambda_seq = list(Lambda)
+    n_Lambda   = len(Lambda_seq)
+
+    # cosmology parameters are the first 5 entries
+    H0, Om, w0, Xi0, n = (
+        Lambda_seq[0],
+        Lambda_seq[1],
+        Lambda_seq[2],
+        Lambda_seq[3],
+        Lambda_seq[4],
+    )
+
+    # population log-p function
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1_all  = _as_at(spinsInj[0])
+        s2_all  = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2])
+        ct2_all = _as_at(spinsInj[3])
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # pad & mask
+    m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
+    m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
+    dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
+    lpdK, _, _ = _pad_to_multiple(lpd_all, K, 0.0)
+    if spin_is_default:
+        s1K,  _, _ = _pad_to_multiple(s1_all,  K, 0.0)
+        s2K,  _, _ = _pad_to_multiple(s2_all,  K, 0.0)
+        ct1K, _, _ = _pad_to_multiple(ct1_all, K, 1.0)
+        ct2K, _, _ = _pad_to_multiple(ct2_all, K, 1.0)
+
+    # optional per-injection inclination prior
+    have_log_p_incl = log_p_incl is not None
+    if have_log_p_incl:
+        log_p_incl_all = _as_at(log_p_incl)
+        lpicK, _, _ = _pad_to_multiple(log_p_incl_all, K, 0.0)
+    else:
+        lpicK = None
+
+    idxs = at.arange(C, dtype=int_dtype)
+    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BIG = -np.inf
+    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+    # z(dL) / dc / log_ddL_dz via grids (optional)
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc_grid = (dc_grid is not None)
+    have_logdd_grid = (log_ddL_dz_grid is not None)
+
+    if have_dLz:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
+        dc_grid_t = _as_at(dc_grid) if have_dc_grid else None
+        logdd_grid_t = _as_at(log_ddL_dz_grid) if have_logdd_grid else None
+
+    # --------- mass interpolation: deduplicate tensors ----------
+    have_interp_mass = (interp_vals_mass is not None) and (interp_grids_mass is not None)
+    if have_interp_mass:
+        interp_vals_mass_seq_raw  = list(interp_vals_mass)
+        interp_grids_mass_seq_raw = list(interp_grids_mass)
+        n_vals_raw  = len(interp_vals_mass_seq_raw)
+        n_grids_raw = len(interp_grids_mass_seq_raw)
+
+        # concatenate all interp tensors, then deduplicate by identity
+        interp_all_raw = interp_vals_mass_seq_raw + interp_grids_mass_seq_raw
+        unique_interp_all = []
+        interp_all_index_map = []
+
+        for v in interp_all_raw:
+            found = False
+            for ui, u in enumerate(unique_interp_all):
+                if v is u:
+                    interp_all_index_map.append(ui)
+                    found = True
+                    break
+            if not found:
+                unique_interp_all.append(v)
+                interp_all_index_map.append(len(unique_interp_all) - 1)
+
+        # split index map back into vals / grids logical positions
+        interp_vals_idx_map  = interp_all_index_map[:n_vals_raw]
+        interp_grids_idx_map = interp_all_index_map[n_vals_raw:]
+
+        interp_all_seq = unique_interp_all
+        n_interp_all   = len(interp_all_seq)
+    else:
+        interp_vals_mass_seq_raw  = []
+        interp_grids_mass_seq_raw = []
+        interp_vals_idx_map       = []
+        interp_grids_idx_map      = []
+        interp_all_seq            = []
+        n_interp_all              = 0
+
+    # ---- scan body ----
+    if spin_is_default:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+
+            idx_extra = 0
+
+            # 1) Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # 2) spin grids
+            s1K_local  = extra[idx_extra]
+            s2K_local  = extra[idx_extra + 1]
+            ct1K_local = extra[idx_extra + 2]
+            ct2K_local = extra[idx_extra + 3]
+            idx_extra += 4
+
+            # 3) optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # 4) optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # 5) unique mass interpolation tensors
+            if have_interp_mass:
+                interp_all_start = idx_extra
+                idx_extra += n_interp_all
+
+                interp_vals_local = [
+                    extra[interp_all_start + k] for k in interp_vals_idx_map
+                ]
+                interp_grids_local = [
+                    extra[interp_all_start + k] for k in interp_grids_idx_map
+                ]
+            else:
+                interp_vals_local = None
+                interp_grids_local = None
+
+            # base per-chunk slices
+            m1  = m1K[i]
+            m2  = m2K[i]
+            dL  = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+
+            # spin components for this chunk
+            s1  = s1K_local[i]
+            s2  = s2K_local[i]
+            ct1 = ct1K_local[i]
+            ct2 = ct2K_local[i]
+            spins_use = [s1, s2, ct1, ct2]
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_local,
+                interp_grids_mass=interp_grids_local,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd,        NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    else:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+
+            idx_extra = 0
+
+            # 1) Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # 2) no spins
+
+            # 3) optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # 4) optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # 5) unique mass interpolation tensors
+            if have_interp_mass:
+                interp_all_start = idx_extra
+                idx_extra += n_interp_all
+
+                interp_vals_local = [
+                    extra[interp_all_start + k] for k in interp_vals_idx_map
+                ]
+                interp_grids_local = [
+                    extra[interp_all_start + k] for k in interp_grids_idx_map
+                ]
+            else:
+                interp_vals_local = None
+                interp_grids_local = None
+
+            # base per-chunk slices
+            m1  = m1K[i]
+            m2  = m2K[i]
+            dL  = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+            spins_use = []
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_local,
+                interp_grids_mass=interp_grids_local,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd,        NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    # non_sequences
+    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask]
+    # unpack Lambda components (critical for DPUC / DPLDP-z)
+    nonseq += Lambda_seq
+
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
+    if have_log_p_incl:
+        nonseq += [lpicK]
+    if have_dLz:
+        nonseq += [dL_grid_t, z_grid_t]
+        if have_dc_grid:
+            nonseq += [dc_grid_t]
+        if have_logdd_grid:
+            nonseq += [logdd_grid_t]
+    if have_interp_mass:
+        # only the unique tensors; duplicates will be reconstructed in step
+        nonseq += interp_all_seq
+
+    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+        fn=step,
+        sequences=[idxs],
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True,
+    )
+
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    logsumexp1 = m_fin[-1]  + atools.safe_log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + atools.safe_log(at.maximum(s2_fin[-1], tinyL))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+
+def sel_bias_with_uncertainty_at_0_batched_scan_v2(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    interp,
+    log_p_incl=None,
+    wrap_logp=False,
+    # kept for API compat (ignored if dL_grid / z_grid are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # grids ONLY for dL->z (and optionally dc, log_ddL_dz as functions of dL)
+    dL_grid=None,               # 1-D, increasing in dL
+    z_grid=None,                # 1-D, z(dL_grid)
+    dc_grid=None,               # 1-D, dc(dL_grid) or dc(z_grid)
+    log_ddL_dz_grid=None,       # 1-D, log ddL/dz (dL_grid or z_grid)
+    *,
+    chunk_size=4096,
+    param='vanilla',
+    interp_vals_mass=None,
+    interp_grids_mass=None,
+    verbose=False,
+    **kwargs
+):
+    """Scan/batched version of `sel_bias_with_uncertainty_at_0`."""
+
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    def _pad_to_multiple(x, k, pad_value):
+        x = _as_at(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full(
+            (Npad,),
+            at.as_tensor_variable(pad_value, dtype=x.dtype),
+            dtype=x.dtype,
+        )
+        xpad = at.concatenate([x, pad], axis=0)
+        return xpad.reshape((C, k)), C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        """Combine two log-sum-exp accumulators in a numerically stable way."""
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    # base tensors
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+
+    # Lambda is a *sequence* (can be heterogeneous for DPUC etc.)
+    Lambda_seq = list(Lambda)
+    n_Lambda   = len(Lambda_seq)
+
+    # cosmology parameters are the first 5 entries
+    H0, Om, w0, Xi0, n = (
+        Lambda_seq[0],
+        Lambda_seq[1],
+        Lambda_seq[2],
+        Lambda_seq[3],
+        Lambda_seq[4],
+    )
+
+    # population log-p function
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1_all  = _as_at(spinsInj[0])
+        s2_all  = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2])
+        ct2_all = _as_at(spinsInj[3])
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # pad & mask
+    m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
+    m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
+    dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
+    lpdK, _, _ = _pad_to_multiple(lpd_all, K, 0.0)
+    if spin_is_default:
+        s1K,  _, _ = _pad_to_multiple(s1_all,  K, 0.0)
+        s2K,  _, _ = _pad_to_multiple(s2_all,  K, 0.0)
+        ct1K, _, _ = _pad_to_multiple(ct1_all, K, 1.0)
+        ct2K, _, _ = _pad_to_multiple(ct2_all, K, 1.0)
+
+    # optional per-injection inclination prior
+    have_log_p_incl = log_p_incl is not None
+    if have_log_p_incl:
+        log_p_incl_all = _as_at(log_p_incl)
+        lpicK, _, _ = _pad_to_multiple(log_p_incl_all, K, 0.0)
+    else:
+        lpicK = None
+
+    idxs = at.arange(C, dtype=int_dtype)
+    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BIG = -np.inf
+    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+    # z(dL) / dc / log_ddL_dz via grids (optional)
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc_grid = (dc_grid is not None)
+    have_logdd_grid = (log_ddL_dz_grid is not None)
+
+    if have_dLz:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
+        dc_grid_t = _as_at(dc_grid) if have_dc_grid else None
+        logdd_grid_t = _as_at(log_ddL_dz_grid) if have_logdd_grid else None
+
+    # mass interpolation (precomputed grids)
+    have_interp_mass = (interp_vals_mass is not None) and (interp_grids_mass is not None)
+    if have_interp_mass:
+        interp_vals_mass_seq  = list(interp_vals_mass)
+        interp_grids_mass_seq = list(interp_grids_mass)
+        n_interp_vals_mass    = len(interp_vals_mass_seq)
+        n_interp_grids_mass   = len(interp_grids_mass_seq)
+    else:
+        interp_vals_mass_seq  = []
+        interp_grids_mass_seq = []
+        n_interp_vals_mass    = 0
+        n_interp_grids_mass   = 0
+
+    # ---- scan body ----
+    if spin_is_default:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+
+            idx_extra = 0
+
+            # 1) Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # 2) spin grids
+            s1K_local  = extra[idx_extra]
+            s2K_local  = extra[idx_extra + 1]
+            ct1K_local = extra[idx_extra + 2]
+            ct2K_local = extra[idx_extra + 3]
+            idx_extra += 4
+
+            # 3) optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # 4) optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # 5) mass interpolation tables
+            interp_vals_local = None
+            interp_grids_local = None
+            if have_interp_mass:
+                iv_start = idx_extra
+                iv_end   = iv_start + n_interp_vals_mass
+                interp_vals_local = list(extra[iv_start:iv_end])
+                idx_extra = iv_end
+
+                ig_start = idx_extra
+                ig_end   = ig_start + n_interp_grids_mass
+                interp_grids_local = list(extra[ig_start:ig_end])
+                idx_extra = ig_end
+
+            # base per-chunk slices
+            m1  = m1K[i]
+            m2  = m2K[i]
+            dL  = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+
+            # spin components for this chunk
+            s1  = s1K_local[i]
+            s2  = s2K_local[i]
+            ct1 = ct1K_local[i]
+            ct2 = ct2K_local[i]
+            spins_use = [s1, s2, ct1, ct2]
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            # choose interp tables or None
+            if have_interp_mass:
+                interp_vals_arg  = interp_vals_local
+                interp_grids_arg = interp_grids_local
+            else:
+                interp_vals_arg  = None
+                interp_grids_arg = None
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_arg,
+                interp_grids_mass=interp_grids_arg,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd,        NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    else:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+
+            idx_extra = 0
+
+            # 1) Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # 2) no spins in this branch
+
+            # 3) optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # 4) optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # 5) mass interpolation tables
+            interp_vals_local = None
+            interp_grids_local = None
+            if have_interp_mass:
+                iv_start = idx_extra
+                iv_end   = iv_start + n_interp_vals_mass
+                interp_vals_local = list(extra[iv_start:iv_end])
+                idx_extra = iv_end
+
+                ig_start = idx_extra
+                ig_end   = ig_start + n_interp_grids_mass
+                interp_grids_local = list(extra[ig_start:ig_end])
+                idx_extra = ig_end
+
+            # base per-chunk slices
+            m1  = m1K[i]
+            m2  = m2K[i]
+            dL  = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+            spins_use = []
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            # choose interp tables or None
+            if have_interp_mass:
+                interp_vals_arg  = interp_vals_local
+                interp_grids_arg = interp_grids_local
+            else:
+                interp_vals_arg  = None
+                interp_grids_arg = None
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_arg,
+                interp_grids_mass=interp_grids_arg,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd,        NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    # non_sequences
+    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask]
+    # unpack Lambda components (critical for DPUC)
+    nonseq += Lambda_seq
+
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
+    if have_log_p_incl:
+        nonseq += [lpicK]
+    if have_dLz:
+        nonseq += [dL_grid_t, z_grid_t]
+        if have_dc_grid:
+            nonseq += [dc_grid_t]
+        if have_logdd_grid:
+            nonseq += [logdd_grid_t]
+    if have_interp_mass:
+        nonseq += interp_vals_mass_seq
+        nonseq += interp_grids_mass_seq
+
+    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+        fn=step,
+        sequences=[idxs],
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True,
+    )
+
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    logsumexp1 = m_fin[-1]  + atools.safe_log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + atools.safe_log(at.maximum(s2_fin[-1], tinyL))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+
+def sel_bias_with_uncertainty_at_0_batched_scan_v1(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    interp,
+    log_p_incl=None,
+    wrap_logp=False,
+    # kept for API compat (ignored if dL_grid / z_grid are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # grids ONLY for dL->z (and optionally dc, log_ddL_dz as functions of dL)
+    dL_grid=None,               # 1-D, increasing in dL
+    z_grid=None,                # 1-D, z(dL_grid)
+    dc_grid=None,               # 1-D, dc(dL_grid) or dc(z_grid)
+    log_ddL_dz_grid=None,       # 1-D, log ddL/dz (dL_grid or z_grid)
+    *,
+    chunk_size=4096,
+    param='vanilla',
+    interp_vals_mass=None,
+    interp_grids_mass=None,
+    verbose=False,
+    **kwargs
+):
+
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    def _pad_to_multiple(x, k, pad_value):
+        x = _as_at(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full(
+            (Npad,),
+            at.as_tensor_variable(pad_value, dtype=x.dtype),
+            dtype=x.dtype,
+        )
+        xpad = at.concatenate([x, pad], axis=0)
+        return xpad.reshape((C, k)), C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        """
+        Combine two log-sum-exp accumulators in a numerically stable way.
+
+        m_s, s_s : state (log max, weighted sum)
+        m_c, s_c : chunk (log max, weighted sum)
+        """
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    # tensors
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+
+    # Lambda is *not* turned into a single tensor; it can be a list/tuple
+    # of heterogeneous RVs (e.g. for DPUC). We unpack it into non_sequences.
+    Lambda_seq = list(Lambda)
+    n_Lambda   = len(Lambda_seq)
+
+    # cosmology parameters (first 5 components only; mixture part untouched)
+    H0, Om, w0, Xi0, n = (
+        Lambda_seq[0],
+        Lambda_seq[1],
+        Lambda_seq[2],
+        Lambda_seq[3],
+        Lambda_seq[4],
+    )
+
+    # p_pop function
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1_all  = _as_at(spinsInj[0])
+        s2_all  = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2])
+        ct2_all = _as_at(spinsInj[3])
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # pad & mask
+    m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
+    m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
+    dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
+    lpdK, _, _ = _pad_to_multiple(lpd_all, K, 0.0)
+    if spin_is_default:
+        s1K,  _, _ = _pad_to_multiple(s1_all,  K, 0.0)
+        s2K,  _, _ = _pad_to_multiple(s2_all,  K, 0.0)
+        ct1K, _, _ = _pad_to_multiple(ct1_all, K, 1.0)
+        ct2K, _, _ = _pad_to_multiple(ct2_all, K, 1.0)
+
+    # optional per-injection inclination prior
+    have_log_p_incl = log_p_incl is not None
+    if have_log_p_incl:
+        log_p_incl_all = _as_at(log_p_incl)
+        lpicK, _, _ = _pad_to_multiple(log_p_incl_all, K, 0.0)
+    else:
+        lpicK = None
+
+    idxs = at.arange(C, dtype=int_dtype)
+    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BIG = -np.inf
+    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+    # z(dL) / dc / log_ddL_dz via grids (optional)
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc_grid = (dc_grid is not None)
+    have_logdd_grid = (log_ddL_dz_grid is not None)
+
+    if have_dLz:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
+        if have_dc_grid:
+            dc_grid_t = _as_at(dc_grid)
+        else:
+            dc_grid_t = None
+        if have_logdd_grid:
+            logdd_grid_t = _as_at(log_ddL_dz_grid)
+        else:
+            logdd_grid_t = None
+
+    # ---- scan body ----
+    if spin_is_default:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+            # --- unpack non_sequences beyond the first five ---
+            idx_extra = 0
+
+            # first: all Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # then spin arrays
+            s1K_local  = extra[idx_extra]; s2K_local  = extra[idx_extra + 1]
+            ct1K_local = extra[idx_extra + 2]; ct2K_local = extra[idx_extra + 3]
+            idx_extra += 4
+
+            # optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # base per-chunk slices
+            m1 = m1K[i]
+            m2 = m2K[i]
+            dL = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+
+            # spin components for this chunk
+            s1 = s1K_local[i]
+            s2 = s2K_local[i]
+            ct1 = ct1K_local[i]
+            ct2 = ct2K_local[i]
+            spins_use = [s1, s2, ct1, ct2]
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_mass,
+                interp_grids_mass=interp_grids_mass,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+    else:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, *extra):
+            idx_extra = 0
+
+            # first: all Lambda components
+            Lambda_flat = extra[idx_extra:idx_extra + n_Lambda]
+            Lambda_local = Lambda_flat
+            idx_extra += n_Lambda
+
+            # no spins in this branch
+
+            # optional log_p_incl
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            # optional cosmology grids
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # base per-chunk slices
+            m1 = m1K[i]
+            m2 = m2K[i]
+            dL = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+            spins_use = []
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_local,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_mass,
+                interp_grids_mass=interp_grids_mass,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    # non_sequences
+    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask]
+    nonseq += Lambda_seq  # unpack Lambda, crucial for DPUC
+
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
+    if have_log_p_incl:
+        nonseq += [lpicK]
+    if have_dLz:
+        nonseq += [dL_grid_t, z_grid_t]
+        if have_dc_grid:
+            nonseq += [dc_grid_t]
+        if have_logdd_grid:
+            nonseq += [logdd_grid_t]
+
+    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+        fn=step,
+        sequences=[idxs],
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True,
+    )
+
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    logsumexp1 = m_fin[-1]  + atools.safe_log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + atools.safe_log(at.maximum(s2_fin[-1], tinyL))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+def sel_bias_with_uncertainty_at_0_batched_scan_01(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    interp,
+    log_p_incl=None,
+    wrap_logp=False,
+    # kept for API compat (ignored if dL_grid / z_grid are provided)
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    # grids ONLY for dL->z (and optionally dc, log_ddL_dz as functions of dL)
+    dL_grid=None,               # 1-D, increasing in dL
+    z_grid=None,                # 1-D, z(dL_grid)
+    dc_grid=None,               # 1-D, dc(dL_grid) or dc(z_grid)
+    log_ddL_dz_grid=None,       # 1-D, log ddL/dz (dL_grid or z_grid)
+    *,
+    chunk_size=4096,
+    param='vanilla',
+    interp_vals_mass=None,
+    interp_grids_mass=None,
+    verbose=False,
+    **kwargs
+):
+    """Scan/batched version of `sel_bias_with_uncertainty_at_0`.
+
+    - Optionally interpolates z(dL) from (dL_grid, z_grid) using
+      `atools._interp_indices_nonuniform` on each chunk.
+    - Optionally interpolates dc(dL) and log_ddL_dz(dL) from the
+      corresponding grids if `dc_grid` / `log_ddL_dz_grid` are passed;
+      otherwise these are computed analytically as in the non-batched
+      implementation.
+    - Supports the same mass interpolation interface
+      (`interp_vals_mass`, `interp_grids_mass`) and optional
+      per-injection inclination prior `log_p_incl`.
+
+    The accumulated log-moment outputs are mathematically equivalent
+    to `sel_bias_with_uncertainty_at_0`, up to numerical precision.
+    """
+
+    def _as_at(x):
+        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+
+    def _pad_to_multiple(x, k, pad_value):
+        x = _as_at(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full(
+            (Npad,),
+            at.as_tensor_variable(pad_value, dtype=x.dtype),
+            dtype=x.dtype,
+        )
+        xpad = at.concatenate([x, pad], axis=0)
+        return xpad.reshape((C, k)), C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        """
+        Combine two log-sum-exp accumulators in a numerically stable way.
+
+        m_s, s_s : state (log max, weighted sum)
+        m_c, s_c : chunk (log max, weighted sum)
+        """
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    # tensors
+    m1_all   = _as_at(m1inj)
+    m2_all   = _as_at(m2inj)
+    dL_all   = _as_at(dLinj)
+    lpd_all  = _as_at(log_p_draw)
+    #Lambda_t = _as_at(Lambda)
+    Lambda_t = Lambda
+
+
+    # cosmology parameters (first 5 components only; mixture part untouched)
+    H0, Om, w0, Xi0, n = (
+        Lambda_t[0],
+        Lambda_t[1],
+        Lambda_t[2],
+        Lambda_t[3],
+        Lambda_t[4],
+    )
+
+    # p_pop function
+    log_p_pop_fun = log_p_pop_at_wrap if wrap_logp else log_p_pop_at
+
+    # spins
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    if spin_is_default:
+        s1_all  = _as_at(spinsInj[0])
+        s2_all  = _as_at(spinsInj[1])
+        ct1_all = _as_at(spinsInj[2])
+        ct2_all = _as_at(spinsInj[3])
+
+    work_dtype = getattr(m1_all, "dtype", "float64")
+    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    K = int(chunk_size)
+
+    # pad & mask
+    m1K, C, N = _pad_to_multiple(m1_all,   K, 2.0)
+    m2K, _, _ = _pad_to_multiple(m2_all,   K, 1.0)
+    dLK, _, _ = _pad_to_multiple(dL_all,   K, 1.0)
+    lpdK, _, _ = _pad_to_multiple(lpd_all, K, 0.0)
+    if spin_is_default:
+        s1K,  _, _ = _pad_to_multiple(s1_all,  K, 0.0)
+        s2K,  _, _ = _pad_to_multiple(s2_all,  K, 0.0)
+        ct1K, _, _ = _pad_to_multiple(ct1_all, K, 1.0)
+        ct2K, _, _ = _pad_to_multiple(ct2_all, K, 1.0)
+
+    # optional per-injection inclination prior
+    have_log_p_incl = log_p_incl is not None
+    if have_log_p_incl:
+        log_p_incl_all = _as_at(log_p_incl)
+        lpicK, _, _ = _pad_to_multiple(log_p_incl_all, K, 0.0)
+    else:
+        lpicK = None
+
+    idxs = at.arange(C, dtype=int_dtype)
+    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    NEG_BIG = -np.inf
+    eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+
+    # z(dL) / dc / log_ddL_dz via grids (optional)
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc_grid = (dc_grid is not None)
+    have_logdd_grid = (log_ddL_dz_grid is not None)
+
+    if have_dLz:
+        dL_grid_t = _as_at(dL_grid)
+        z_grid_t  = _as_at(z_grid)
+        if have_dc_grid:
+            dc_grid_t = _as_at(dc_grid)
+        else:
+            dc_grid_t = None
+        if have_logdd_grid:
+            logdd_grid_t = _as_at(log_ddL_dz_grid)
+        else:
+            logdd_grid_t = None
+
+    # ---- scan body ----
+    if spin_is_default:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t,
+                 s1K, s2K, ct1K, ct2K, *extra):
+            # base per-chunk slices
+            m1 = m1K[i]
+            m2 = m2K[i]
+            dL = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+
+            # spin components for this chunk
+            s1 = s1K[i]
+            s2 = s2K[i]
+            ct1 = ct1K[i]
+            ct2 = ct2K[i]
+            spins_use = [s1, s2, ct1, ct2]
+
+            # unpack optional extras: inclination prior and cosmology grids
+            idx_extra = 0
+
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_mass,
+                interp_grids_mass=interp_grids_mass,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+    else:
+        def step(i, m_state, m2_state, s1_state, s2_state,
+                 m1K, m2K, dLK, lpdK, valid_mask, Lambda_t, *extra):
+            # base per-chunk slices
+            m1 = m1K[i]
+            m2 = m2K[i]
+            dL = dLK[i]
+            lpd = lpdK[i]
+            mask = valid_mask[i]
+            spins_use = []
+
+            # unpack optional extras: inclination prior and cosmology grids
+            idx_extra = 0
+
+            if have_log_p_incl:
+                lpicK_local = extra[idx_extra]
+                idx_extra += 1
+            else:
+                lpicK_local = None
+
+            dL_grid_t_local = None
+            z_grid_t_local = None
+            dc_grid_t_local = None
+            logdd_grid_t_local = None
+            if have_dLz:
+                dL_grid_t_local = extra[idx_extra]
+                z_grid_t_local  = extra[idx_extra + 1]
+                idx_extra += 2
+                if have_dc_grid:
+                    dc_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+                if have_logdd_grid:
+                    logdd_grid_t_local = extra[idx_extra]
+                    idx_extra += 1
+
+            # z, dc, log_ddL_dz
+            if have_dLz:
+                idxs_loc, r = atools._interp_indices_nonuniform(dL, dL_grid_t_local)
+                il = idxs_loc - 1
+                ih = idxs_loc
+
+                zl = z_grid_t_local[il]
+                zh = z_grid_t_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+
+                if have_dc_grid and (dc_grid_t_local is not None):
+                    dcl = dc_grid_t_local[il]
+                    dch = dc_grid_t_local[ih]
+                    dc_c = (1.0 - r) * dcl + r * dch
+                else:
+                    dc_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+
+                if have_logdd_grid and (logdd_grid_t_local is not None):
+                    ll = logdd_grid_t_local[il]
+                    lh = logdd_grid_t_local[ih]
+                    logdd_c = (1.0 - r) * ll + r * lh
+                else:
+                    logdd_c = atools.log_ddL_dz(
+                        zinj_c, H0, Om, w0, Xi0, n,
+                        dc=dc_c, interp=interp, param=param
+                    )
+            else:
+                zinj_c = atools.z_from_dL_at(
+                    dL, H0, Om, w0, Xi0, n, interp=interp, param=param
+                )
+                dc_c   = atools.dcfun_at(zinj_c, H0, Om, w0, interp=interp)
+                logdd_c = atools.log_ddL_dz(
+                    zinj_c, H0, Om, w0, Xi0, n,
+                    dc=dc_c, interp=interp, param=param
+                )
+
+            one_p_z = 1.0 + zinj_c
+            m1Src = m1 / one_p_z
+            m2Src = m2 / one_p_z
+
+            use_dp = (mass_model in ("DP", "DPUC"))
+            if use_dp:
+                Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+                mass_1_use = atools.safe_log(at.maximum(Mc_src_inj, eps))
+                mass_2_use = atools.logitat(q_inj)
+            else:
+                mass_1_use = m1Src
+                mass_2_use = m2Src
+
+            lp = log_p_pop_fun(
+                mass_1_use, mass_2_use, zinj_c, dL, spins_use, Lambda_t,
+                rate_model, mass_model, spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                log_ddL_dz_pre=logdd_c,
+                dc=dc_c,
+                interp_vals_mass=interp_vals_mass,
+                interp_grids_mass=interp_grids_mass,
+                verbose=verbose,
+            )
+
+            if use_dp:
+                lp = (
+                    lp
+                    - atools.safe_log(at.maximum(m2Src, eps))
+                    - atools.safe_log(at.maximum(m1Src - m2Src, eps))
+                )
+                if rate_model in ("DPUC", "DPUC-vol"):
+                    lp = lp - at.log1p(zinj_c)
+
+            if have_log_p_incl:
+                lpic = lpicK_local[i]
+                x = at.where(mask, lp - lpd - lpic, NEG_BIG)
+            else:
+                x = at.where(mask, lp - lpd, NEG_BIG)
+
+            m = at.max(x)
+            y = at.exp(x - m)
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
+
+            m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
+            m2c = 2.0 * m
+            m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+            return m_new, m2_new, s1_new, s2_new
+
+    # non_sequences
+    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
+    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+
+    nonseq = [m1K, m2K, dLK, lpdK, valid_mask, Lambda_t]
+    if spin_is_default:
+        nonseq += [s1K, s2K, ct1K, ct2K]
+    if have_log_p_incl:
+        nonseq += [lpicK]
+    if have_dLz:
+        nonseq += [dL_grid_t, z_grid_t]
+        if have_dc_grid:
+            nonseq += [dc_grid_t]
+        if have_logdd_grid:
+            nonseq += [logdd_grid_t]
+
+    (m_fin, m2_fin, s1_fin, s2_fin), _ = pytensor.scan(
+        fn=step,
+        sequences=[idxs],
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True,
+    )
+
+    
+    tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    logsumexp1 = m_fin[-1]  + atools.safe_log(at.maximum(s1_fin[-1], tinyL))
+    logsumexp2 = m2_fin[-1] + atools.safe_log(at.maximum(s2_fin[-1], tinyL))
+
+    Ndraw_t = at.as_tensor_variable(Ndraw).astype(work_dtype)
+    log_mu  = logsumexp1 - atools.safe_log(Ndraw_t)
+    logs2   = logsumexp2 - atools.safe_log(Ndraw_t)
+    logNeff = 2.0 * log_mu - logs2 + atools.safe_log(Ndraw_t)
+    Neff    = at.exp(logNeff)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - atools.safe_log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
+
+
+
+def sel_bias_with_uncertainty_at_0_batched_scan_0(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     Lambda, Ndraw,
     rate_model, mass_model, spin_model,
@@ -1170,25 +3062,7 @@ def sel_bias_with_uncertainty_at_0_batched(
 
 ######################
 
-def sel_bias_with_uncertainty_at_0_debug(m1inj, m2inj, dLinj, spinsInj, log_p_draw, 
-                                    Lambda,  Ndraw, 
-                                    rate_model, mass_model, spin_model, 
-                                    smoothing, 
-                                    has_m2_break, 
-                                    interp, 
-                                    wrap_logp=False, 
-                                    log_ddL_dz_inj = None,
-                                    zinj = None,
-                                    dcinj = None,
-                                    param='vanilla',
-                                    **kwargs):
-    work_dtype = getattr(m1inj, "dtype", "float64")
 
-    # ignore everything and just return constants
-    log_mu = at.as_tensor_variable(0.0, dtype=work_dtype)
-    Neff   = at.as_tensor_variable(100000.0, dtype=work_dtype)
-    var_log_lik_u = at.as_tensor_variable(0.5, dtype=work_dtype)
-    return log_mu, Neff, var_log_lik_u
 
 
 
@@ -1424,7 +3298,8 @@ def make_model(  priors,
                  is_observed = False,
                  sample_from_pop = False,
                  mmin_inj=-1,
-                 is_compressed_inj=False
+                 is_compressed_inj=False,
+                 debug_sel_batch=False
                 ):
 
     ################################################
@@ -1793,10 +3668,12 @@ def make_model(  priors,
         #     print("Pre-computing rate evolution on grid for later interpolation. Grid resolution: %s"%interp_z)
 
 
-        if mass_model in ('DPLDP', 'DPLDP-z'):
+        if mass_model in ('DPLDP', 'DPLDP-z', 'PLPreg'):
             
             if mass_model =='DPLDP':
                 sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
+            elif mass_model=='PLPreg':
+                sigma_min = priors["sigmaMass"][0]
             else:
                 sigma_min = min(priors["sigma1_0"][0], priors["sigma2_0"][0])
             
@@ -2310,9 +4187,9 @@ def make_model(  priors,
             dz_lambda_ = pm.Deterministic("dz_lambda", at.exp(log_dz_lambda_))
 
             
-            #if simplex_repair:
-            #   print("Will enforce lambda0(z), lambda1(z), lambda2(z) on the simplex")
-            
+            if simplex_repair:
+                print("Will enforce lambda0(z), lambda1(z), lambda2(z) on the simplex")
+                raise ValueError()
             # -------------------------
             # Pack hyperparameters for logpdf_DPLDP_z wrapper
             #   - low-z vector: same order, but with *_0 values
@@ -2644,8 +4521,74 @@ def make_model(  priors,
         # Precompute mass function pieces 
 
         if interp_mass!=0:
-                
-            if mass_model=='DPLDP':
+
+            if mass_model=='PLPreg':
+
+                # m2 grid: from ml_ to mh_ (global support for the companion mass)
+                eps_m = at.as_tensor_variable(1e-5, dtype=ml_.dtype)
+                m2_grid_ = (ml_ + eps_m + (mh_ - ml_) * tgrid_m2).astype(X)
+        
+                # m1 grid: adaptive, based on the PLPreg Gaussian peak
+                m1_grid_ = atools.build_m1_grid_PLPreg(
+                    ml=ml_,
+                    mh=mh_,
+                    muMass=muM_,
+                    sigmaMass=sM_,
+                    n_peak=interp_mass,
+                    n_tail_low=interp_mass // 5,
+                    n_tail_high=interp_mass // 5,
+                )
+        
+                # log p(m1) on the grid
+                lp_m1_grid = atools.logpdfm1_PLP_reg(
+                    m1_grid_,
+                    lamP_,   # lambdaPeak
+                    alpha_,  # alpha
+                    deltam_,
+                    ml_,
+                    mh_,
+                    muM_,
+                    sM_,
+                    smoothing=smoothing,
+                )
+        
+                # log p(m2) on the grid
+                lp_m2_grid = atools.logpdfm2_PLP_reg(
+                    m2_grid_,
+                    beta_,   # beta
+                    deltam_,
+                    ml_,
+                    smoothing=smoothing,
+                )
+        
+                # CDF over m2
+                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+        
+                # cdf_m2 has length m2_grid_.shape[0] - 1
+                # grid for cdf_m2 is m2_grid_[1:]
+                x0 = m2_grid_[1]
+                x1 = m2_grid_[-1]
+                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
+        
+                # log C(m1): normalization in m2, as function of m1
+                lC_of_m1 = atools.atinterp_uniform(
+                    m1_grid_,
+                    x0,
+                    x1,
+                    nU,
+                    atools.safe_log(cdf_m2),
+                )
+        
+                # Normalization for m1 (overall ln)
+                p1 = at.exp(lp_m1_grid)
+                ln = atools.safe_log(atools.attrapzvec(p1, m1_grid_))
+        
+                # Pack for later use
+                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                interp_grids_mass = [m1_grid_, m2_grid_]
+
+            
+            elif mass_model=='DPLDP':
 
                
             
@@ -3426,7 +5369,6 @@ def make_model(  priors,
 
 
 
-                          
                 
                 log_mu_, Neff_, var_ll_u_ = sel_bias_fun( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], 
                                                           Lambda_, 
@@ -3455,37 +5397,33 @@ def make_model(  priors,
                                                         
                                                         )
 
-                
-                # zinj_tmp_ = atools.atinterp(dLinj[0], dL_grid, zgrid_)
-
-                
-                # log_mu_1, Neff_1, var_ll_u_1 = sel_bias_with_uncertainty_at_0( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], 
-                #                                           Lambda_, 
-                #                                           Ndraw, 
-                #                                           rate_model, mass_model, spin_model_name, 
-                #                                           smoothing, 
-                #                                           has_m2_break, 
-                #                                           interp=pade, 
-                #                                          dL_grid=None,              # 1-D, strictly increasing in dL
-                #                                         z_grid=None,               # 1-D, z(dL_grid)
-                #                                         dc_grid=None,              # 1-D, dc(z_grid)
-                #                                         log_ddL_dz_grid=None,      # 1-D, log(ddL/dz) sampled at z_grid
-                #                                           chunk_size = chunk_inj, 
-                #                                           use_float32=False, 
-                #                                           N_inj_py=ninj_np, 
-                #                                           scan_updates=use_updates, 
-                #                                           wrap_logp = False,
-                #                                         log_ddL_dz_inj = atools.atinterp( zinj_tmp_, zgrid_, log_ddL_dz_grid),
-                #                                          zinj = zinj_tmp_,
-                #                                          dcinj = atools.atinterp( zinj_tmp_, zgrid_, dc_grid) ,
-                #                                         )
-
-                # print("Difference in log_mu_1 :")
-                # print((log_mu_1 - log_mu_).eval().max())
-
-                # print("Difference in var_ll_u_1 :")
-                # print((var_ll_u_1 - var_ll_u_).eval().max())
-                
+                if debug_sel_batch:
+                    zinj_tmp_ = atools.atinterp(dLinj[0], dL_grid, zgrid_)
+    
+                    
+                    log_mu_1, Neff_1, var_ll_u_1 = sel_bias_with_uncertainty_at_0( m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], 
+                                                              Lambda_, 
+                                                              Ndraw, 
+                                                              rate_model, mass_model, spin_model_name, 
+                                                              smoothing, 
+                                                            False,
+                                                              has_m2_break, 
+                                                              interp=pade, 
+                                                             log_p_incl = None,
+                                                             wrap_logp=False, 
+                                                            log_ddL_dz_inj = atools.atinterp( zinj_tmp_, zgrid_, log_ddL_dz_grid),
+                                                             zinj = zinj_tmp_,
+                                                             dcinj = atools.atinterp( zinj_tmp_, zgrid_, dc_grid) ,
+                                                            )
+    
+                    
+                    
+                    print("Difference in log_mu_1 :")
+                    print((log_mu_1 - log_mu_).eval().max())
+    
+                    print("Difference in var_ll_u_1 :")
+                    print((var_ll_u_1 - var_ll_u_).eval().max())
+                    
                 if not marginal_R0:
                     # This is really the number of expected events 
                     sel_effect = -R0*Ttot*at.exp(log_mu_)

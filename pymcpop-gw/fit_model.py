@@ -71,7 +71,7 @@ def main():
     
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
-    parser.add_argument("--simplex_repair", default=1, type=int, required=False)
+    parser.add_argument("--simplex_repair", default=0, type=int, required=False)
 
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
     
@@ -90,6 +90,7 @@ def main():
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=1, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
+    parser.add_argument("--debug_sel_batch", default=0, type=int, required=False)
     parser.add_argument("--profile", default=0, type=int, required=False)
     parser.add_argument("--recompile", default=0, type=int, required=False)
 
@@ -106,7 +107,7 @@ def main():
     parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
-    parser.add_argument("--inj_loop", default='vec', type=str, required=False)
+    parser.add_argument("--inj_loop", default='scan', type=str, required=False)
     parser.add_argument("--wrap_logp", default=0, type=int, required=False)
     parser.add_argument("--interp_inj", default=1, type=int, required=False)
     
@@ -760,7 +761,8 @@ def main():
                                 is_observed = FLAGS.is_observed,
                                 sample_from_pop = FLAGS.sample_from_pop,
                                 mmin_inj=FLAGS.mmin_inj,
-                                is_compressed_inj=FLAGS.is_compressed_inj
+                                is_compressed_inj=FLAGS.is_compressed_inj,
+                                debug_sel_batch=FLAGS.debug_sel_batch
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
@@ -787,7 +789,29 @@ def main():
         raise ValueError("backend can be disk or ztrace, got %s"%FLAGS.backend)
 
          
-
+    if FLAGS.debug_sel_batch:
+        print("\nMODEL RV CHECKS>>>>>>")
+        import pytensor
+        import pytensor.tensor as at
+        from pytensor.graph.basic import graph_inputs
+        from pytensor.tensor.sharedvar import SharedVariable
+        from pytensor.tensor.random.type import RandomType
+        
+        with model:
+            logp_var = model.logp()   # scalar log-prob of the entire model
+        
+        ins = list(graph_inputs([logp_var]))
+        bad = [
+            v for v in ins
+            if isinstance(v, SharedVariable) and isinstance(v.type, RandomType)
+        ]
+        
+        print("Number of Shared[RandomType] vars in model.logp graph:", len(bad))
+        for v in bad:
+            print("  name:", v.name, "| type:", v.type)
+            if v.owner is not None:
+                print("    owner op:", type(v.owner.op))
+                print("    inputs:", [getattr(inp, "name", None) for inp in v.owner.inputs])
 
     ################################################
     # Run sampler
@@ -1191,7 +1215,7 @@ def main():
                 ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
                 sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
 
-            
+
 
 
             print()

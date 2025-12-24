@@ -2555,8 +2555,25 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
     return  safe_log( attrapzvec(ps, ms) )
 
 
-            
 
+
+
+def logpdf_PLPreg_from_interp(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    """
+    Log joint pdf p(m1, m2) for the PLPreg mass model, using precomputed grids.
+
+    Uses the same interpolation machinery as logpdf_DPLDP_from_interp.
+    interp_vals  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+    interp_grids = [m1_grid, m2_grid]
+    """
+    return logpdf_DPLDP_from_interp(
+        theta,
+        interp_vals,
+        interp_grids,
+        force_m2_less_than_m1=force_m2_less_than_m1,
+    )
+
+    
 
 ####### double Power Law + double Peak  LVK low-end ########
 
@@ -4647,6 +4664,120 @@ def build_m1_grid_DPLDP(
     # sort & remove duplicates
     m1_grid_sorted = at.sort(m1_grid_clipped)
     #m1_grid_unique = stop_grad(at.unique(m1_grid_sorted))
+
+    return m1_grid_sorted
+
+
+
+def build_m1_grid_PLPreg(
+    ml, mh,
+    muMass, sigmaMass,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss=0.4,     # fraction of n_peak for the Gaussian window
+    k_sigma_gauss=3.0,  # ±kσ around the Gaussian peak
+    k_sigma_band=4.0,   # envelope band around the peak
+):
+    """
+    Adaptive non-uniform m1 grid for the PLPreg (power-law + single Gaussian peak) mass model.
+
+    Structure:
+      - low tail:   [ml, band_min)
+      - Gaussian:   [muMass - kσ, muMass + kσ]
+      - mid band:   [band_min, band_max] (envelope over the peak)
+      - high tail:  [band_max, mh]
+
+    n_peak is split into:
+      n_g   = frac_gauss * n_peak  points for the Gaussian window
+      n_mid = remaining points in the envelope band
+    """
+
+    # ---- detach hyperparameters for grid construction (no gradient through geometry) ----
+    ml_sg    = stop_grad(ml)
+    mh_sg    = stop_grad(mh)
+    mu_sg    = stop_grad(muMass)
+    sigma_sg = stop_grad(sigmaMass)
+
+    # dtype similar to build_m1_grid_DPLDP
+    dtype = getattr(
+        getattr(ml_sg, "dtype", None) or mh_sg.dtype,
+        "lower",
+        lambda: "float64",
+    )()
+
+    # small offset to avoid exactly hitting boundaries
+    eps = at.as_tensor_variable(1e-4, dtype=dtype)
+
+    xmin = ml_sg + eps
+    xmax = mh_sg - eps
+    span = at.maximum(xmax - xmin, at.as_tensor_variable(1e-6, dtype=dtype))
+
+    # ---- Gaussian window around the peak ----
+    k_g = at.as_tensor_variable(k_sigma_gauss, dtype=dtype)
+    k_b = at.as_tensor_variable(k_sigma_band,  dtype=dtype)
+
+    g_min_raw = mu_sg - k_g * at.abs(sigma_sg)
+    g_max_raw = mu_sg + k_g * at.abs(sigma_sg)
+
+    g_min = at.clip(g_min_raw, xmin, xmax)
+    g_max = at.clip(g_max_raw, xmin, xmax)
+
+    tiny   = 1e-6 * span
+    g_width = g_max - g_min
+    has_g   = at.gt(g_width, tiny)
+
+    # envelope band for mid region
+    band_min_raw = mu_sg - k_b * at.abs(sigma_sg)
+    band_max_raw = mu_sg + k_b * at.abs(sigma_sg)
+
+    band_min = at.clip(band_min_raw, xmin, xmax)
+    band_max = at.clip(band_max_raw, xmin, xmax)
+
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ---- split n_peak between Gaussian window and band ----
+    n_g = int(n_peak * float(frac_gauss))
+    n_g = max(0, min(n_g, n_peak))
+    n_mid = max(n_peak - n_g, 0)
+
+    # 1) low tail: [xmin, band_min)
+    if n_tail_low > 0:
+        denom_low = float(max(n_tail_low, 1))
+        t_low = at.arange(n_tail_low, dtype=dtype) / denom_low
+        m1_low_tail = xmin + (band_min - xmin) * t_low
+    else:
+        m1_low_tail = at.zeros((0,), dtype=dtype)
+
+    # 2) Gaussian window: [g_min, g_max]
+    if n_g > 0:
+        denom_g = float(max(n_g - 1, 1))
+        t_g = at.arange(n_g, dtype=dtype) / denom_g
+        m1_g = g_min + g_width * t_g
+        m1_g = at.switch(has_g, m1_g, at.zeros_like(m1_g))
+    else:
+        m1_g = at.zeros((0,), dtype=dtype)
+
+    # 3) mid band: [band_min, band_max]
+    if n_mid > 0:
+        denom_mid = float(max(n_mid - 1, 1))
+        t_mid = at.arange(n_mid, dtype=dtype) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,), dtype=dtype)
+
+    # 4) high tail: [band_max, xmax]
+    if n_tail_high > 0:
+        denom_high = float(max(n_tail_high - 1, 1))
+        t_high = at.arange(n_tail_high, dtype=dtype) / denom_high
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,), dtype=dtype)
+
+    # ---- combine and sort ----
+    m1_grid_raw = at.concatenate([m1_low_tail, m1_g, m1_mid, m1_high_tail], axis=0)
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = at.sort(m1_grid_clipped)
 
     return m1_grid_sorted
 
