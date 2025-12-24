@@ -2761,6 +2761,7 @@ def make_model(  priors,
                 fix_Om = True,
                fix_w0 = True,
                  fix_Xi0n = True,
+                 z_pivot=0.5,
                pade=False,
                zres=150,
                 zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
@@ -2792,7 +2793,9 @@ def make_model(  priors,
                  sample_from_pop = False,
                  mmin_inj=-1,
                  is_compressed_inj=False,
-                 debug_sel_batch=False
+                 debug_sel_batch=False,
+                 reparam_z = True,
+                 reparam_mass = False,
                 ):
 
     ################################################
@@ -3289,6 +3292,23 @@ def make_model(  priors,
     print("z grid for interpolation built. Resolution: %s"%zres)
     print("z min: %s , z max: %s"%(zmin_a, zmax_c))
 
+
+    if z_pivot!=0:
+
+        H0_min, H0_max = priors['H0']
+        Om_min, Om_max = priors['Om']
+        w0_min, w0_max = priors['w0']
+
+        # Evaluate E(z_pivot) at the corners of the (Om, w0) prior box
+        Ez_corners = [
+            atools.Efun_num(z_pivot, Om_min, w0_min),
+            atools.Efun_num(z_pivot, Om_min, w0_max),
+            atools.Efun_num(z_pivot, Om_max, w0_min),
+            atools.Efun_num(z_pivot, Om_max, w0_max),
+        ]
+        Ez_min = min(Ez_corners)
+        Ez_max = max(Ez_corners)
+
     ################################################
     # Build model
     ################################################
@@ -3310,12 +3330,6 @@ def make_model(  priors,
         # Cosmological parameters
         ################################################
 
-        
-        if fix_H0:
-            H0_ =  params_fix['H0']
-        else:
-            H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1], initval=ivals.get('H0'))
-        
         if fix_Om:
             Om_ = params_fix['Om']
         else:
@@ -3327,7 +3341,43 @@ def make_model(  priors,
             if pade:
                 raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False")
             w0_ =  pm.Uniform('w0', lower=priors['w0'][0], upper=priors['w0'][1], initval=ivals.get('w0'))
+
             
+        
+        if fix_H0:
+            H0_ =  params_fix['H0']
+        else:
+            if z_pivot!=0:
+                print("Sampling in H(z=%s)"%z_pivot)
+                # Define a broad prior for Hp = H(z_pivot)
+                # Just choose constants that safely cover the H0 prior range once divided by Ez_pivot.
+                Hp_min = H0_min * Ez_min
+                Hp_max = H0_max * Ez_max
+
+                H0_init = ivals.get('H0', 67.7)
+                
+                Hp_ = pm.Uniform(
+                    'Hp',
+                    lower=Hp_min,
+                    upper=Hp_max,
+                    # optional: if you have numeric Om_init, w0_init, you can precompute a good initval
+                    initval=H0_init * atools.Efun_at(z_pivot, ivals.get('Om', 0.3), ivals.get('w0', -1)).eval()
+                )
+
+                # E(z_pivot; Om, w0) using your helper
+                Ez_pivot = atools.Efun_at(z_pivot, Om_, w0_)
+                
+                # Physical H0 as a deterministic transform of (Hp, Om, w0)
+                H0_ = pm.Deterministic('H0', Hp_ / Ez_pivot)
+                
+                # Jacobian term: prior flat in H0, but sampling in Hp
+                _ = pm.Potential('J_H0_from_Hp', -at.log(Ez_pivot))
+
+            else:
+                
+                H0_ =  pm.Uniform('H0', lower=priors['H0'][0], upper=priors['H0'][1], initval=ivals.get('H0'))
+        
+        
         
         if fix_Xi0n:
             Xi0_ =  1.
@@ -3348,14 +3398,53 @@ def make_model(  priors,
         if rate_model=='MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
-            # gamma_ = atools.uniform_unconstrained("gamma",  priors['gamma'][0], priors['gamma'][1], init=ivals.get("gamma"))
-            # kappa_ = atools.uniform_unconstrained("kappa",  priors['kappa'][0], priors['kappa'][1], init=ivals.get("kappa"))
-            # zp_ = atools.uniform_unconstrained("zp",  priors['zp'][0], priors['zp'][1], init=ivals.get("zp"))
+
+            if reparam_z:
+                print("Using reparametrized variables for easier geometry")
+
+                gamma_min, gamma_max = priors['gamma']
+                kappa_min, kappa_max = priors['kappa']
+    
+                gamma_init = ivals.get('gamma', 3.2)
+                kappa_init = ivals.get('kappa', 3.)
+                
+                # Prior ranges for s and d
+                s_min = gamma_min + kappa_min
+                s_max = gamma_max + kappa_max
+                d_min = gamma_min - kappa_max
+                d_max = gamma_max - kappa_min
+                
+                s_ = pm.Uniform("gamma_plus_kappa", lower=s_min, upper=s_max,
+                                initval=gamma_init + kappa_init)
+                d_ = pm.Uniform("gamma_minus_kappa", lower=d_min, upper=d_max,
+                                initval=gamma_init - kappa_init)
+                
+                gamma_ = pm.Deterministic("gamma", 0.5 * (s_ + d_))
+                kappa_ = pm.Deterministic("kappa", 0.5 * (s_ - d_))
+                #_ = pm.Potential("J_gamma_kappa_from_s_d", -np.log(2.0))
+    
+    
+                z_p_min, z_p_max = priors['zp']
+    
+                z_p_init = ivals.get('zp', 2.)
+    
+                log1p_zp_ = pm.Uniform(
+                    "log1p_zp",
+                    lower=np.log1p(z_p_min),
+                    upper=np.log1p(z_p_max),
+                    initval=np.log1p(z_p_init),
+                )
+                
+                zp_ = pm.Deterministic("zp", at.expm1(log1p_zp_))
+                #_ = pm.Potential("J_zp_from_log1p", log1p_zp_ )
+
+            else:
+                gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+                kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+                zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+
+
             
             Lambda_ += [gamma_, kappa_, zp_]
 
@@ -3466,23 +3555,83 @@ def make_model(  priors,
             elif smoothing=='poly':
                 print('using differentiable polynomial smoothing')
             
-            lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))        
             alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
             beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
-            ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
-            mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
-            deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
             muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
-            sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
+            
+            if not reparam_mass:
+                
+                lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))        
+                ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
+                mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
+                deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
+                sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
+                
+            else:
+                print("Using reparametrized variables for easier geometry")
 
-             #lamP_ = atools.uniform_unconstrained("lambdaPeak",  priors['lambdaPeak'][0], priors['lambdaPeak'][1], init=ivals.get("lambdaPeak"))
-            # alpha_  = atools.uniform_unconstrained("alpha",     priors["alpha"][0],     priors["alpha"][1],     init=ivals.get("alpha"))
-            # beta_   = atools.uniform_unconstrained("beta",      priors["beta"][0],      priors["beta"][1],      init=ivals.get("beta"))
-            # ml_     = atools.uniform_unconstrained("ml",        priors["ml"][0],        priors["ml"][1],        init=ivals.get("ml"))
-            # mh_     = atools.uniform_unconstrained("mh",        priors["mh"][0],        priors["mh"][1],        init=ivals.get("mh"))
-            # deltam_ = atools.uniform_unconstrained("deltam",    priors["deltam"][0],    priors["deltam"][1],    init=ivals.get("deltam"))
-            # muM_    = atools.uniform_unconstrained("muMass",    priors["muMass"][0],    priors["muMass"][1],    init=ivals.get("muMass"))
-            # sM_     = atools.uniform_unconstrained("sigmaMass", priors["sigmaMass"][0], priors["sigmaMass"][1], init=ivals.get("sigmaMass"))
+                ml_min, ml_max       = priors["ml"]
+                mh_min, mh_max       = priors["mh"]
+                deltam_min, deltam_max = priors["deltam"]
+                muM_min, muM_max    = priors["muMass"]
+                sM_min, sM_max       = priors["sigmaMass"]
+                lam_min, lam_max    = priors["lambdaPeak"]
+    
+                ml_init = ivals.get("ml", 4)
+                mh_init = ivals.get("mh", 100)
+                delt_init = ivals.get("deltam", 3)
+                muM_init = ivals.get("muMass", 35)
+                sM_init = ivals.get("sigmaMass", 5)
+                lam_init = ivals.get("lambdaPeak", 0.05)
+    
+                M_min_phys = ml_min      # or a global mass min
+                M_max_phys = mh_max      # or a global mass max
+    
+                # Low-mass edge as a fraction of the physical mass range
+                u_ml = pm.Uniform("u_ml_PLPreg", lower=0.0, upper=1.0, initval=(ml_init - M_min_phys) / (M_max_phys - M_min_phys))
+                
+                ml_ = pm.Deterministic(
+                    "ml",
+                    M_min_phys + u_ml * (M_max_phys - M_min_phys),
+                )
+                
+                # High-mass edge, keep prior as Uniform for now (you can also reparam edges jointly if you want)
+                mh_ = pm.Uniform("mh", lower=mh_min, upper=mh_max, initval=mh_init)
+                
+                # Smoothing fraction: how much of the interval above ml is used as smoothing
+                u_smooth = pm.Uniform("u_deltam_PLPreg", lower=0.0, upper=1.0,
+                                      initval=(delt_init / max(mh_init - ml_init, 1e-3)))
+                
+                deltam_ = pm.Deterministic(
+                    "deltam",
+                    u_smooth * (mh_ - ml_),
+                )
+    
+                _  = pm.Potential("J_ml_from_u", at.log(M_max_phys - M_min_phys))
+                _ = pm.Potential("J_deltam_from_u", at.log(mh_ - ml_))
+    
+    
+                # sample unconstrained raw weight
+                lambda_raw = pm.Normal("lambdaPeak_raw", mu=0.0, sigma=1.0)
+                
+                # map to (0,1)
+                lamP_ = pm.Deterministic("lambdaPeak", at.sigmoid(lambda_raw) )
+                                         #atools.sigmoid(lambda_raw, x0=0.0, s=1.0, clip=None))
+                
+                # optional: to enforce that the prior in lambdaPeak is Uniform(0,1),
+                # add log|d lambda / d lambda_raw| = log( lambda * (1 - lambda) )
+                _ = pm.Potential("J_lambdaPeak_from_raw", at.log(lamP_) + at.log(1.0 - lamP_))
+    
+    
+                log_sigmaMass_ = pm.Uniform(
+                    "log_sigmaMass",
+                    lower=np.log(sM_min),
+                    upper=np.log(sM_max),
+                    initval=np.log(sM_init),
+                )
+                
+                sM_ = pm.Deterministic("sigmaMass", at.exp(log_sigmaMass_))
+                #_ = pm.Potential("J_sigmaMass_from_log", log_sigmaMass_)  # since log_sigmaMass_ = log σ
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 

@@ -1196,6 +1196,10 @@ def Efun_at(z, Om, w0):
     return at.sqrt(Om * a**3 + (1.0 - Om) * a**(3.0 * (1.0 + w0)))
 
 
+def Efun_num(z, Om, w0):
+    # E(z) = sqrt( Om (1+z)^3 + (1-Om) (1+z)^{3(1+w0)} )
+    a = 1.0 + z
+    return np.sqrt(Om * a**3 + (1.0 - Om) * a**(3.0 * (1.0 + w0)))
 
 
 
