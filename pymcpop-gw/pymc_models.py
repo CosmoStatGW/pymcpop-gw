@@ -3309,6 +3309,58 @@ def make_model(  priors,
         Ez_min = min(Ez_corners)
         Ez_max = max(Ez_corners)
 
+    if reparam_mass:
+
+        if mass_model=='PLPreg':
+
+            # --- prior bounds and initvals ---
+            ml_min, ml_max       = priors["ml"]
+            mh_min, mh_max       = priors["mh"]
+            deltam_min, deltam_max = priors["deltam"]
+            muM_min, muM_max     = priors["muMass"]
+            sM_min, sM_max       = priors["sigmaMass"]
+            lam_min, lam_max     = priors["lambdaPeak"]
+            
+            ml_init   = ivals.get("ml",        4.0)
+            mh_init   = ivals.get("mh",        100.0)
+            delt_init = ivals.get("deltam",    3.0)
+            muM_init  = ivals.get("muMass",    35.0)
+            sM_init   = ivals.get("sigmaMass", 5.0)
+            lam_init  = ivals.get("lambdaPeak", 0.05)
+            
+            # ------------------------------------------------------------------
+            # 1) Low edge m_low: fraction of global range 
+            # ------------------------------------------------------------------
+            
+            M_min_phys = ml_min
+            M_max_phys = mh_max
+            mass_span  = M_max_phys - M_min_phys
+            
+            # init fraction for ml
+            u_low_init = np.clip((ml_init - M_min_phys) / mass_span, 0.0, 1.0)
+
+            # use deltam prior to define a typical fraction range for smoothing
+            u_s_min = deltam_min / mass_span
+            u_s_max = deltam_max / mass_span
+            
+            u_s_min = max(0.0, float(u_s_min))
+            u_s_max = min(1.0, float(u_s_max))
+            if not (u_s_min < u_s_max):
+                # fallback if priors are pathological
+                u_s_min, u_s_max = 0.0, 1.0
+            
+            span_init      = mh_init - ml_init
+            span_init_safe = max(span_init, 1e-3)
+            u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max)
+
+
+    if dLprior == 'dVdz':
+
+        dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False)
+        dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla')
+        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 )-at.log1p(zgrid_)
+        
+
     ################################################
     # Build model
     ################################################
@@ -3437,7 +3489,8 @@ def make_model(  priors,
                 )
                 
                 zp_ = pm.Deterministic("zp", at.expm1(log1p_zp_))
-                #_ = pm.Potential("J_zp_from_log1p", log1p_zp_ )
+                # for flat prior in zp
+                pm.Potential("J_zp_from_log1p_MD", at.log1p(zp_))
 
             else:
                 gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
@@ -3570,68 +3623,66 @@ def make_model(  priors,
             else:
                 print("Using reparametrized variables for easier geometry")
 
-                ml_min, ml_max       = priors["ml"]
-                mh_min, mh_max       = priors["mh"]
-                deltam_min, deltam_max = priors["deltam"]
-                muM_min, muM_max    = priors["muMass"]
-                sM_min, sM_max       = priors["sigmaMass"]
-                lam_min, lam_max    = priors["lambdaPeak"]
-    
-                ml_init = ivals.get("ml", 4)
-                mh_init = ivals.get("mh", 100)
-                delt_init = ivals.get("deltam", 3)
-                muM_init = ivals.get("muMass", 35)
-                sM_init = ivals.get("sigmaMass", 5)
-                lam_init = ivals.get("lambdaPeak", 0.05)
-    
-                M_min_phys = ml_min      # or a global mass min
-                M_max_phys = mh_max      # or a global mass max
-    
-                # Low-mass edge as a fraction of the physical mass range
-                u_ml = pm.Uniform("u_ml_PLPreg", lower=0.0, upper=1.0, initval=(ml_init - M_min_phys) / (M_max_phys - M_min_phys))
+                u_low = pm.Uniform(
+                    "u_ml_PLPreg",
+                    lower=0.0,
+                    upper=1.0,
+                    initval=u_low_init,
+                )
                 
                 ml_ = pm.Deterministic(
                     "ml",
-                    M_min_phys + u_ml * (M_max_phys - M_min_phys),
+                    M_min_phys + u_low * mass_span,
                 )
                 
-                # High-mass edge, keep prior as Uniform for now (you can also reparam edges jointly if you want)
-                mh_ = pm.Uniform("mh", lower=mh_min, upper=mh_max, initval=mh_init)
+                # ------------------------------------------------------------------
+                # 2) High edge m_high: keep it as a simple Uniform
+                # ------------------------------------------------------------------
                 
-                # Smoothing fraction: how much of the interval above ml is used as smoothing
-                u_smooth = pm.Uniform("u_deltam_PLPreg", lower=0.0, upper=1.0,
-                                      initval=(delt_init / max(mh_init - ml_init, 1e-3)))
+                mh_ = pm.Uniform(
+                    "mh",
+                    lower=mh_min,
+                    upper=mh_max,
+                    initval=mh_init,
+                )
+
+                u_smooth = pm.Uniform(
+                    "u_deltam_PLPreg",
+                    lower=u_s_min,
+                    upper=u_s_max,
+                    initval=u_smooth_init,
+                )
                 
                 deltam_ = pm.Deterministic(
                     "deltam",
                     u_smooth * (mh_ - ml_),
                 )
-    
-                _  = pm.Potential("J_ml_from_u", at.log(M_max_phys - M_min_phys))
-                _ = pm.Potential("J_deltam_from_u", at.log(mh_ - ml_))
-    
-    
-                # sample unconstrained raw weight
-                lambda_raw = pm.Normal("lambdaPeak_raw", mu=0.0, sigma=1.0)
+
+
+                    
+                # 3) lambdaPeak: keep Uniform, PyMC handles transform
+                lamP_ = pm.Uniform(
+                    "lambdaPeak",
+                    lower=lam_min,
+                    upper=lam_max,
+                    initval=lam_init,
+                )
                 
-                # map to (0,1)
-                lamP_ = pm.Deterministic("lambdaPeak", at.sigmoid(lambda_raw) )
-                                         #atools.sigmoid(lambda_raw, x0=0.0, s=1.0, clip=None))
-                
-                # optional: to enforce that the prior in lambdaPeak is Uniform(0,1),
-                # add log|d lambda / d lambda_raw| = log( lambda * (1 - lambda) )
-                _ = pm.Potential("J_lambdaPeak_from_raw", at.log(lamP_) + at.log(1.0 - lamP_))
-    
-    
+                # 4) sigmaMass on log-scale
                 log_sigmaMass_ = pm.Uniform(
                     "log_sigmaMass",
                     lower=np.log(sM_min),
                     upper=np.log(sM_max),
                     initval=np.log(sM_init),
                 )
+
+                sM_ = pm.Deterministic(
+                        "sigmaMass",
+                        at.exp(log_sigmaMass_),
+                    )
+                # flat prior in sM_
+                _ = pm.Potential("J_sigmaMass_from_log", at.log(sM_))
                 
-                sM_ = pm.Deterministic("sigmaMass", at.exp(log_sigmaMass_))
-                #_ = pm.Potential("J_sigmaMass_from_log", log_sigmaMass_)  # since log_sigmaMass_ = log σ
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
@@ -4163,6 +4214,7 @@ def make_model(  priors,
         dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade, dc=dc_grid, param=param)
         log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade, param=param)
 
+        
 
         # Precompute mass function pieces 
 
@@ -4856,15 +4908,14 @@ def make_model(  priors,
        
         elif dLprior == 'dVdz':
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            
-            #dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=pade)
-            #dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 )-at.log1p(zgrid_)
-            #lpi = atools.atinterp( zs, zgrid_, dVdz_grid_Planck15 )
-           
-            dc_Planck15 = atools.dcfun_at(zs, 67.90, 0.3065, -1., interp=pade)
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs)
 
-            #atools.log_dV_dz_at(zs, 67.90, 0.3065, -1., dc=None )-at.log1p(zs)
+            zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)            
+            lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
+
+           
+            #dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=pade)
+            #lpi_ = atools.log_dV_dz_at(zs_Planck15, 67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
+
 
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
