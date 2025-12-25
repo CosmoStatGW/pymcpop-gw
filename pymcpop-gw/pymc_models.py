@@ -3301,13 +3301,13 @@ def make_model(  priors,
 
         # Evaluate E(z_pivot) at the corners of the (Om, w0) prior box
         Ez_corners = [
-            atools.Efun_num(z_pivot, Om_min, w0_min),
-            atools.Efun_num(z_pivot, Om_min, w0_max),
-            atools.Efun_num(z_pivot, Om_max, w0_min),
-            atools.Efun_num(z_pivot, Om_max, w0_max),
+            atools.Efun_num(z_pivot, Om_min, w0_min).astype(X),
+            atools.Efun_num(z_pivot, Om_min, w0_max).astype(X),
+            atools.Efun_num(z_pivot, Om_max, w0_min).astype(X),
+            atools.Efun_num(z_pivot, Om_max, w0_max).astype(X),
         ]
-        Ez_min = min(Ez_corners)
-        Ez_max = max(Ez_corners)
+        Ez_min = min(Ez_corners).astype(X)
+        Ez_max = max(Ez_corners).astype(X)
 
     if reparam_mass:
 
@@ -3321,44 +3321,44 @@ def make_model(  priors,
             sM_min, sM_max       = priors["sigmaMass"]
             lam_min, lam_max     = priors["lambdaPeak"]
             
-            ml_init   = ivals.get("ml",        4.0)
-            mh_init   = ivals.get("mh",        100.0)
-            delt_init = ivals.get("deltam",    3.0)
-            muM_init  = ivals.get("muMass",    35.0)
-            sM_init   = ivals.get("sigmaMass", 5.0)
-            lam_init  = ivals.get("lambdaPeak", 0.05)
+            ml_init   = ivals.get("ml",        4.0).astype(X)
+            mh_init   = ivals.get("mh",        100.0).astype(X)
+            delt_init = ivals.get("deltam",    3.0).astype(X)
+            muM_init  = ivals.get("muMass",    35.0).astype(X)
+            sM_init   = ivals.get("sigmaMass", 5.0).astype(X)
+            lam_init  = ivals.get("lambdaPeak", 0.05).astype(X)
             
             # ------------------------------------------------------------------
             # 1) Low edge m_low: fraction of global range 
             # ------------------------------------------------------------------
             
-            M_min_phys = ml_min
-            M_max_phys = mh_max
+            M_min_phys = ml_min.astype(X)
+            M_max_phys = mh_max.astype(X)
             mass_span  = M_max_phys - M_min_phys
             
             # init fraction for ml
-            u_low_init = np.clip((ml_init - M_min_phys) / mass_span, 0.0, 1.0)
+            u_low_init = np.clip((ml_init - M_min_phys) / mass_span, 0.0, 1.0).astype(X)
 
             # use deltam prior to define a typical fraction range for smoothing
             u_s_min = deltam_min / mass_span
             u_s_max = deltam_max / mass_span
             
-            u_s_min = max(0.0, float(u_s_min))
-            u_s_max = min(1.0, float(u_s_max))
+            u_s_min = max(0.0, float(u_s_min)).astype(X)
+            u_s_max = min(1.0, float(u_s_max)).astype(X)
             if not (u_s_min < u_s_max):
                 # fallback if priors are pathological
                 u_s_min, u_s_max = 0.0, 1.0
             
-            span_init      = mh_init - ml_init
-            span_init_safe = max(span_init, 1e-3)
-            u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max)
+            span_init      = (mh_init - ml_init).astype(X)
+            span_init_safe = max(span_init, 1e-3).astype(X)
+            u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
 
 
     if dLprior == 'dVdz':
 
-        dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False)
-        dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla')
-        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 )-at.log1p(zgrid_)
+        dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
+        dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
+        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 )-at.log1p(zgrid_).astype(X)
         
 
     ################################################

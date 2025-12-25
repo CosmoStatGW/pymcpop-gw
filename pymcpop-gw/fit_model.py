@@ -136,7 +136,7 @@ def main():
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
-    parser.add_argument("--z_pivot", default=0.5, type=float, required=False)
+    parser.add_argument("--z_pivot", default=0, type=float, required=False)
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
@@ -156,7 +156,7 @@ def main():
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
-    parser.add_argument("--reparam_z", default=1, type=int, required=False)
+    parser.add_argument("--reparam_z", default=0, type=int, required=False)
 
 
     FLAGS = parser.parse_args()
