@@ -6,8 +6,8 @@
   "alpha1_0": [0, 5],
   "alpha1_inf": [0, 5],
 
-  "alpha2_0": [0, 7],
-  "alpha2_inf": [0, 7],
+  "alpha2_0": [1.5, 7],
+  "alpha2_inf": [1.5, 7],
 
   "mb_0": [20, 50],
   "mb_inf": [20, 50],
@@ -21,8 +21,8 @@
   "mu2_0": [25, 60],
   "mu2_inf": [25, 80],
 
-  "sigma2_0": [0.1, 20.0],
-  "sigma2_inf": [0.1, 20.0],
+  "sigma2_0": [0.5, 10.0],
+  "sigma2_inf": [1, 20.0],
 
   "delta_m1": [0, 10],
 
@@ -44,12 +44,12 @@
   "dz": [0.05, 2.0],
 
   "delta_alpha1_sigma": 2.0,
-  "delta_alpha2_sigma": 2.0,
+  "delta_alpha2_sigma": 1.5,
   "delta_mb_sigma": 20.0,
   "delta_mu1_sigma": 30.0,
   "delta_sigma1_sigma": 3.0,
-  "delta_mu2_sigma": 30.0,
-  "delta_sigma2_sigma": 15.0,
+  "delta_mu2_sigma": 25.0,
+  "delta_sigma2_sigma": 10.0,
 
   "delta_lambda0_sigma": 1.5,
   "delta_lambda1_sigma": 1.5
