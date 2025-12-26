@@ -3354,13 +3354,13 @@ def make_model(  priors,
             u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
 
 
-    if dLprior in ('dVdz', 'dVdz-j'):
+    # if dLprior in ('dVdz', 'dVdz-j'):
 
-        dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
-        dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
-        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 ).astype(X)-at.log1p(zgrid_).astype(X) 
-        #if dLprior=='dVdz-j':
-        #  dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
+    #     dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
+    #     dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
+    #     dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 ).astype(X)-at.log1p(zgrid_).astype(X) 
+    #     if dLprior=='dVdz-j':
+    #       dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
         
 
     ################################################
@@ -4908,26 +4908,31 @@ def make_model(  priors,
             log_p_pop -= 2*logd
             print('Removing dL^2 prior')
        
-        elif dLprior in ('dVdz', 'dVdz-j'):
+        elif dLprior in ('dVdz1', 'dVdz1-j', 'dVdz2', 'dVdz2-j', 'dVdz3', 'dVdz3-j',):
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
 
-            zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)            
-            lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
+            
+            #if dLprior=='dVdz-j':
+                # way 1: pre-computed on Planck 15
+                #zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)  
+                #lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
 
-            if dLprior=='dVdz-j':
-                # cancel distace-redshift jacobian present in p_pop as this is not needed 
-                # if we specify prior in redshift directly
-                lpi_ += log_ddL_dz
-                
-            #print(lpi_[:15].eval())
+            if dLprior=='dVdz2':
+                # way 2: compute with fixed planck15 redshift
+                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)  
+                dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
+                lpi_ = atools.log_dV_dz_at(zs_Planck15,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
+                if dLprior=='dVdz2-j':
+                    lpi_  -= atools.log_ddL_dz(zs_Planck15, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
 
-            #print(( 2 * logd)[:15].eval())
+            elif dLprior=='dVdz3':
+                # way 3: compute with current redshift
+                dc_Planck15 = atools.dcfun_at(zs, 67.90, 0.3065, -1., interp=False)
+                lpi_ = atools.log_dV_dz_at(zs,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs)
+                if dLprior=='dVdz3-j':
+                     lpi_  -= atools.log_ddL_dz(zs, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
 
-           
-            #dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=pade)
-            #lpi_ = atools.log_dV_dz_at(zs_Planck15, 67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
-
-
+            
             # The following is a hack.
             # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
             # So I remove the dL^2 prior by hand on those
@@ -4945,7 +4950,6 @@ def make_model(  priors,
                 # start from lpi_ and replace the first 10 elements
                 lpi = at.set_subtensor(lpi_[:10, :], 2 * logd[:10, :])
                   
-            print(lpi[:15].eval())
             log_p_pop -= lpi
 
 
