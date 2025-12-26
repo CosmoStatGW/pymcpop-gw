@@ -3321,12 +3321,12 @@ def make_model(  priors,
             sM_min, sM_max       = priors["sigmaMass"]
             lam_min, lam_max     = priors["lambdaPeak"]
             
-            ml_init   = ivals.get("ml",        4.0).astype(X)
-            mh_init   = ivals.get("mh",        100.0).astype(X)
-            delt_init = ivals.get("deltam",    3.0).astype(X)
-            muM_init  = ivals.get("muMass",    35.0).astype(X)
-            sM_init   = ivals.get("sigmaMass", 5.0).astype(X)
-            lam_init  = ivals.get("lambdaPeak", 0.05).astype(X)
+            ml_init   = ivals.get("ml",        4.0)#.astype(X)
+            mh_init   = ivals.get("mh",        100.0)#.astype(X)
+            delt_init = ivals.get("deltam",    3.0)#.astype(X)
+            muM_init  = ivals.get("muMass",    35.0)#.astype(X)
+            sM_init   = ivals.get("sigmaMass", 5.0)#.astype(X)
+            lam_init  = ivals.get("lambdaPeak", 0.05)#.astype(X)
             
             # ------------------------------------------------------------------
             # 1) Low edge m_low: fraction of global range 
@@ -3354,11 +3354,13 @@ def make_model(  priors,
             u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
 
 
-    if dLprior == 'dVdz':
+    if dLprior in ('dVdz', 'dVdz-j'):
 
         dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
         dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
-        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 )-at.log1p(zgrid_).astype(X)
+        dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 ).astype(X)-at.log1p(zgrid_).astype(X) 
+        if dLprior=='dVdz-j':
+          dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
         
 
     ################################################
@@ -4906,11 +4908,16 @@ def make_model(  priors,
             log_p_pop -= 2*logd
             print('Removing dL^2 prior')
        
-        elif dLprior == 'dVdz':
+        elif dLprior in ('dVdz', 'dVdz-j'):
             print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
 
             zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)            
             lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
+
+
+            #print(lpi_[:15].eval())
+
+            #print(( 2 * logd)[:15].eval())
 
            
             #dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=pade)
@@ -4934,7 +4941,7 @@ def make_model(  priors,
                 # start from lpi_ and replace the first 10 elements
                 lpi = at.set_subtensor(lpi_[:10, :], 2 * logd[:10, :])
                   
-            
+            print(lpi[:15].eval())
             log_p_pop -= lpi
 
 
