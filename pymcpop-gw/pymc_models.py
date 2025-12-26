@@ -3359,8 +3359,8 @@ def make_model(  priors,
         dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
         dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
         dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 ).astype(X)-at.log1p(zgrid_).astype(X) 
-        if dLprior=='dVdz-j':
-          dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
+        #if dLprior=='dVdz-j':
+        #  dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
         
 
     ################################################
@@ -4914,7 +4914,11 @@ def make_model(  priors,
             zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)            
             lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
 
-
+            if dLprior=='dVdz-j':
+                # cancel distace-redshift jacobian present in p_pop as this is not needed 
+                # if we specify prior in redshift directly
+                lpi_ += log_ddL_dz
+                
             #print(lpi_[:15].eval())
 
             #print(( 2 * logd)[:15].eval())
