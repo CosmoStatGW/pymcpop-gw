@@ -3354,10 +3354,13 @@ def make_model(  priors,
             u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
 
 
-    # if dLprior in ('dVdz', 'dVdz-j'):
+    if dLprior in ('dVdz1', 'dVdz1-j', 'dVdz2', 'dVdz2-j', 'dVdz3', 'dVdz3-j',):
 
-    #     dc_grid_Planck15 = atools.dcfun_at(zgrid_, 67.90, 0.3065, -1., interp=False).astype(X)
-    #     dL_grid_Planck15 = atools.dLfun_at(zgrid_, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
+        zgrid_dLp = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
+
+        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.90, 0.3065, -1., interp=False).astype(X)
+        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
+        
     #     dVdz_grid_Planck15 = atools.log_dV_dz_at(zgrid_, 67.90, 0.3065, -1., dc=dc_grid_Planck15 ).astype(X)-at.log1p(zgrid_).astype(X) 
     #     if dLprior=='dVdz-j':
     #       dVdz_grid_Planck15  -= atools.log_ddL_dz(zgrid_, 67.90, 0.3065, -1., 1., 0., dc=dc_grid_Planck15, interp=False, param='vanilla').astype(X)
@@ -4914,23 +4917,27 @@ def make_model(  priors,
             
             #if dLprior=='dVdz-j':
                 # way 1: pre-computed on Planck 15
-                #zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)  
-                #lpi_ = atools.atinterp( zs_Planck15, zgrid_, dVdz_grid_Planck15 )
+                #zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
+                #lpi_ = atools.atinterp( zs_Planck15, zgrid_dLp, dVdz_grid_Planck15 )
 
-            if dLprior=='dVdz2':
+            if dLprior in ('dVdz2', 'dVdz2-j' ):
+                print('way 2: compute with fixed planck15 redshift')
                 # way 2: compute with fixed planck15 redshift
-                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_)  
+                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
                 dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
                 lpi_ = atools.log_dV_dz_at(zs_Planck15,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
                 if dLprior=='dVdz2-j':
+                    print('also accounting for z-dL jacobian w. Planck 15')
                     lpi_  -= atools.log_ddL_dz(zs_Planck15, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
 
-            elif dLprior=='dVdz3':
+            elif dLprior in ('dVdz3', 'dVdz3-j' ):
                 # way 3: compute with current redshift
+                print('way 3: compute with current redshift')
                 dc_Planck15 = atools.dcfun_at(zs, 67.90, 0.3065, -1., interp=False)
                 lpi_ = atools.log_dV_dz_at(zs,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs)
                 if dLprior=='dVdz3-j':
-                     lpi_  -= atools.log_ddL_dz(zs, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+                    print('also accounting for z-dL jacobian w. Planck 15')
+                    lpi_  -= atools.log_ddL_dz(zs, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
 
             
             # The following is a hack.
