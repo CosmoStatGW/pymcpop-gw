@@ -2741,7 +2741,7 @@ def make_model(  priors,
                  spin_model = 'none',
                  spin_inj = 'none',
                  marginal_R0 = True,
-                 dLprior = 'none',
+                 dLprior = ['none'],
                  fix_inj_len = False,
                  chunk_inj = -1,
                  chunk_reduce = False,
@@ -3354,7 +3354,16 @@ def make_model(  priors,
             u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
 
 
-    if dLprior in ('dVdz1', 'dVdz1-j', 'dVdz2', 'dVdz2-j', 'dVdz3', 'dVdz3-j',):
+    vol_in_prior = any('UniformSourceFrame' in s or 'UniformComovingVolume' in s for s in dLprior)
+    
+    all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
+    all_no_dL_prior = all(s == 'none' for s in dLprior)
+
+    edges = [0]
+    for n in Nevs_np:
+        edges.append(edges[-1] + int(n))
+
+    if vol_in_prior:
 
         zgrid_dLp = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
 
@@ -4906,59 +4915,129 @@ def make_model(  priors,
 
             
                 
-        if dLprior=='dLsq':
+        if all_dLsq_prior:
+            #dLprior=='dLsq':
             # Remove \pi(d)~dL^2 prior on distance 
             log_p_pop -= 2*logd
-            print('Removing dL^2 prior')
-       
-        elif dLprior in ('dVdz1', 'dVdz1-j', 'dVdz2', 'dVdz2-j', 'dVdz3', 'dVdz3-j',):
-            print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
+            print('Removing dL^2 prior for all events.')
 
+        elif all_no_dL_prior:    
+            print("No dL prior removed for all events.")
             
-            #if dLprior=='dVdz-j':
-                # way 1: pre-computed on Planck 15
-                #zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
-                #lpi_ = atools.atinterp( zs_Planck15, zgrid_dLp, dVdz_grid_Planck15 )
+        elif vol_in_prior:
 
-            if dLprior in ('dVdz2', 'dVdz2-j' ):
-                print('way 2: compute with fixed planck15 redshift')
-                # way 2: compute with fixed planck15 redshift
-                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
-                dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
-                lpi_ = atools.log_dV_dz_at(zs_Planck15,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
-                if dLprior=='dVdz2-j':
-                    print('also accounting for z-dL jacobian w. Planck 15')
-                    lpi_  -= atools.log_ddL_dz(zs_Planck15, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+            zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
+            dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
 
-            elif dLprior in ('dVdz3', 'dVdz3-j' ):
-                # way 3: compute with current redshift
-                print('way 3: compute with current redshift')
-                dc_Planck15 = atools.dcfun_at(zs, 67.90, 0.3065, -1., interp=False)
-                lpi_ = atools.log_dV_dz_at(zs,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs)
-                if dLprior=='dVdz3-j':
-                    print('also accounting for z-dL jacobian w. Planck 15')
-                    lpi_  -= atools.log_ddL_dz(zs, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+            lpi = at.zeros_like(log_p_pop)
 
+            # apply chunk-wise prior removal
+            for i, lab in enumerate(dLprior):
+                sl = slice(edges[i], edges[i+1])
+
+                print('For events between %s and %s, removing prior %s'%(edges[i], edges[i+1], lab))
+
+
+                if lab == 'dLsq':
+                    print('chunk is dLsq')
+                    print(sl)
+                    chunk = 2.0 * logd[sl]
+
+                elif lab == 'none':
+                    print('chunk is zero')
+                    print(sl)
+                    chunk = at.zeros_like(log_p_pop[sl])
+
+                else:
+                    # base label + whether we apply the -J correction
+                    use_J = lab.endswith('-J')
+                    base = lab[:-2] if use_J else lab
+
+                    if base == 'UniformComovingVolume':
+                        print('chunk is UniformComovingVolume')
+                        print(sl)
+                        chunk = atools.log_dV_dz_at(
+                            zs_Planck15[sl], 67.90, 0.3065, -1., dc=dc_Planck15[sl]
+                        )
+
+                    elif base == 'UniformSourceFrame':
+                        print('chunk is UniformSourceFrame')
+                        print(sl)
+                        chunk = (
+                            atools.log_dV_dz_at(
+                                zs_Planck15[sl], 67.90, 0.3065, -1., dc=dc_Planck15[sl]
+                            )
+                            - at.log1p(zs_Planck15[sl])
+                        )
+
+                    else:
+                        raise ValueError(f"Unknown dL prior label: {lab}")
+
+                    if use_J:
+                        print('removing log_ddL_dz ')
+                        chunk -= atools.log_ddL_dz(
+                            zs_Planck15[sl], 67.90, 0.3065, -1., 1., 0.,
+                            dc=dc_Planck15[sl], interp=False, param='vanilla'
+                        )
+
+                lpi = at.set_subtensor(lpi[sl], chunk)
+                #print(lpi.eval())
             
-            # The following is a hack.
-            # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
-            # So I remove the dL^2 prior by hand on those
-            print(
-            "⚠️ Warning: I remove the dL^2 prior by hand on the first 10 elements. This is usually done with LVK data for BBHs as O1-O2 do not have posteriors with dVdz prior. Do this with knowledge of the dataset. "
-        )
-            if not pop_only:
-                # 1D case: shape (N,)
-                #lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
-                lpi = at.set_subtensor(lpi_[:10], 2 * logd[:10])
-            
-            else:
-                # 2D case: shape (N, Nsamples)
-                #lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
-                # start from lpi_ and replace the first 10 elements
-                lpi = at.set_subtensor(lpi_[:10, :], 2 * logd[:10, :])
-                  
             log_p_pop -= lpi
+            
+            
+        #     #dLprior in ('dVdz1', 'dVdz1-j', 'dVdz2', 'dVdz2-j', 'dVdz3', 'dVdz3-j',):
+        #     print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
 
+            
+        #     #if dLprior=='dVdz-j':
+        #         # way 1: pre-computed on Planck 15
+        #         #zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
+        #         #lpi_ = atools.atinterp( zs_Planck15, zgrid_dLp, dVdz_grid_Planck15 )
+
+        #     if dLprior in ('dVdz2', 'dVdz2-j' ):
+        #         print('way 2: compute with fixed planck15 redshift')
+        #         # way 2: compute with fixed planck15 redshift
+        #         zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)  
+        #         dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
+        #         lpi_ = atools.log_dV_dz_at(zs_Planck15,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs_Planck15)
+        #         if dLprior=='dVdz2-j':
+        #             print('also accounting for z-dL jacobian w. Planck 15')
+        #             lpi_  -= atools.log_ddL_dz(zs_Planck15, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+
+        #     elif dLprior in ('dVdz3', 'dVdz3-j' ):
+        #         # way 3: compute with current redshift
+        #         print('way 3: compute with current redshift')
+        #         dc_Planck15 = atools.dcfun_at(zs, 67.90, 0.3065, -1., interp=False)
+        #         lpi_ = atools.log_dV_dz_at(zs,  67.90, 0.3065, -1., dc=dc_Planck15 )-at.log1p(zs)
+        #         if dLprior=='dVdz3-j':
+        #             print('also accounting for z-dL jacobian w. Planck 15')
+        #             lpi_  -= atools.log_ddL_dz(zs, 67.90, 0.3065, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+
+            
+        #     # The following is a hack.
+        #     # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
+        #     # So I remove the dL^2 prior by hand on those
+        #     print(
+        #     "⚠️ Warning: I remove the dL^2 prior by hand on the first 10 elements. This is usually done with LVK data for BBHs as O1-O2 do not have posteriors with dVdz prior. Do this with knowledge of the dataset. "
+        # )
+        #     if not pop_only:
+        #         # 1D case: shape (N,)
+        #         #lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
+        #         lpi = at.set_subtensor(lpi_[:10], 2 * logd[:10])
+            
+        #     else:
+        #         # 2D case: shape (N, Nsamples)
+        #         #lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
+        #         # start from lpi_ and replace the first 10 elements
+        #         lpi = at.set_subtensor(lpi_[:10, :], 2 * logd[:10, :])
+                  
+        #    log_p_pop -= lpi
+        
+        
+        else:
+            raise ValueError("Check dL prior choices.")
+            
 
         if not pop_only:
             if sampling_GW=='gauss' and not sample_from_pop:

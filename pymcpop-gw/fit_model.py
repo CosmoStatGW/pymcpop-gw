@@ -77,7 +77,7 @@ def main():
     
     
     
-    parser.add_argument("--dLprior", default='none', type=str, required=False)
+    parser.add_argument("--dLprior", nargs='+', default=['none'], type=str, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
