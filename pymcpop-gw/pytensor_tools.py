@@ -1580,7 +1580,7 @@ def truncGausslower_at_logpdf(x, loc, scale, xmin=0):
 
 def truncGausslower_at_pdf(x, loc, scale, xmin=0):  
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
-    return at.where(x>xmin, at.exp( -(x-loc)**2/(2*scale**2))/(at.sqrt(2.*PI)*scale)/(1.-Phialpha) , at.as_tensor_variable(0.) )
+    return at.where(x>xmin, at.exp( -(x-loc)**2/(2*scale**2))/(at.sqrt(2.*PI)*scale)/(1.-Phialpha) , at.as_tensor_variable(0.).astype(x.dtype) )
     #return -safe_log(scale)-0.5*safe_log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 
@@ -2247,7 +2247,7 @@ def logS_PLP_LVK(m, deltam, ml,):
         
         maskM = ~(maskL | maskU)
         
-        s = at.where( maskL, MIN, at.as_tensor_variable(0.)  )
+        s = at.where( maskL, MIN, at.as_tensor_variable(0.).astype(m.dtype)  )
         
         s1 = at.where( maskM,  safe_log(1/(1+ at.exp(deltam/(m-ml) + deltam/(m-ml - deltam) ) ))  , s  )
         
@@ -2287,9 +2287,9 @@ def logC_PLP( m, beta, deltam, ml, res=100):
     '''
     
     if res!=100:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(m.dtype)
     else:
-        _tgrid = _get_t_grid_100()
+        _tgrid = _get_t_grid_100().astype(m.dtype)
     
     xx = ml + (max_m - ml) * _tgrid
 
@@ -2327,9 +2327,9 @@ def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=500):
     """
 
     if res!=500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(lambdaPeak.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(lambdaPeak.dtype)
     
     xx = ml + (mh - ml) * _tgrid
 
@@ -2511,9 +2511,9 @@ def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
     #xx = at.linspace(ml, 500, res)
 
     if res!=500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(m.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(m.dtype)
     
     xx = ml + (max_m - ml) * _tgrid 
 
@@ -2548,9 +2548,9 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
 
 
     if res!=500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(lambdaPeak.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(lambdaPeak.dtype)
         
     ms = ml + (mh - ml) * _tgrid 
     
@@ -2881,9 +2881,9 @@ def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
     '''
     
     if res!=500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(alpha1.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(alpha1.dtype)
     
     ms = m1_low + (m_high - m1_low) * _tgrid 
             
@@ -3486,9 +3486,9 @@ def logNorm_DPLDP_z(
 
     # --- grid in m1, same as before ---
     if res != 500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(z.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(z.dtype)
 
     work_dtype = getattr(z, "dtype", "float64")
     _tgrid = at.as_tensor_variable(_tgrid, dtype=work_dtype)
@@ -3581,7 +3581,7 @@ def logNorm_DPLDP_z_0(
     if res != 500:
         _tgrid = at.linspace(0, 1, res)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(m.dtype)
 
     # make sure we don't upcast dtype by mistake
     work_dtype = getattr(z, "dtype", "float64")
@@ -3664,9 +3664,9 @@ def logNorm_DPLDP_z_slow(
     """
 
     if res!=500:
-        _tgrid = at.linspace(0, 1, res)
+        _tgrid = at.linspace(0, 1, res).astype(z.dtype)
     else:
-        _tgrid = _get_t_grid()
+        _tgrid = _get_t_grid().astype(z.dtype)
     
     m1_grid = m1_low + (m_high - m1_low) * _tgrid 
 
@@ -4033,7 +4033,7 @@ def build_m1_grid_DPLDP_z(
     eps   = at.as_tensor_variable(1e-4, dtype=dtype)
 
     # ensure z_bank is a tensor (but treated as constant for geometry)
-    z_bank = at.as_tensor_variable(z_bank)
+    z_bank = at.as_tensor_variable(z_bank, dtype=dtype)
 
     # global support (slightly shrunken to avoid exact boundaries)
     xmin = m1_low_s + eps
@@ -4232,7 +4232,7 @@ def build_m1_grid_DPLDP_z_0(
     k_sigma_t = at.as_tensor_variable(k_sigma, dtype=dtype)
 
     # Ensure z_bank is a tensor
-    z_bank = at.as_tensor_variable(z_bank)
+    z_bank = at.as_tensor_variable(z_bank, dtype=dtype)
 
     # -------------------------------
     # Evolve hyperparameters over z_bank

@@ -48,6 +48,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 ):
 
 
+    work_dtype = getattr(m1s, "dtype", "float64")
+    
     ###################################
     # get parameters and compute log p_pop
     ####################################
@@ -121,8 +123,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         chieff, chip = spins[0], spins[1]
 
         lpspin = atools.logpdf_multivariate_trunc_2D(  chieff, chip, muE, muP, sigE, sigP, rho,
-                                                     at.as_tensor_variable(-1.), at.as_tensor_variable(1.), 
-                                                     at.as_tensor_variable(0.), at.as_tensor_variable(1.) 
+                                                     at.as_tensor_variable(-1., dtype=work_dtype), at.as_tensor_variable(1.), 
+                                                     at.as_tensor_variable(0., dtype=work_dtype), at.as_tensor_variable(1., dtype=work_dtype) 
                                                     )
         istart_spin = istart + 5
 
@@ -135,8 +137,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         sigP  = Lambda[istart + 3]
         chieff, chip = spins[0], spins[1]
 
-        lpchie = atools.truncGausslowerupper_at_lpdf(chieff, muE, sigE, xmin=at.as_tensor_variable(-1), xmax=at.as_tensor_variable(1))
-        lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=at.as_tensor_variable(0), xmax=at.as_tensor_variable(1))
+        lpchie = atools.truncGausslowerupper_at_lpdf(chieff, muE, sigE, xmin=at.as_tensor_variable(-1, dtype=work_dtype), xmax=at.as_tensor_variable(1, dtype=work_dtype))
+        lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=at.as_tensor_variable(0, dtype=work_dtype), xmax=at.as_tensor_variable(1, dtype=work_dtype))
 
         lpspin = lpchie+lpchip
         istart_spin = istart+4
@@ -1218,6 +1220,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     lpd_all = _val(log_p_draw)
 
     work_dtype = getattr(m1_all, "dtype", "float64")
+    accum_dtype = "float64" if str(work_dtype) == "float32" else work_dtype
+    
     K = int(chunk_size)
 
     if work_dtype == "float32":
@@ -1539,16 +1543,22 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         s1c = at.sum(y)
         s2c = at.sum(y * y)
 
+        m   = m.astype(accum_dtype)
+        s1c = s1c.astype(accum_dtype)
+        s2c = s2c.astype(accum_dtype)
+
         m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,   s1c)
-        m2c = 2.0 * m
+        m2c = at.as_tensor_variable(2.0, dtype=accum_dtype) * m #2.0 * m
         m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
         return m_new, m2_new, s1_new, s2_new
 
     # -----------------------------
     # Run scan (scan over chunks C)
     # -----------------------------
-    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
-    s_init = at.as_tensor_variable(0.0,     dtype=work_dtype)
+    
+    
+    m_init = at.as_tensor_variable(-at.inf, dtype=accum_dtype)
+    s_init = at.as_tensor_variable(0.0,     dtype=accum_dtype)
 
     scan_kwargs = dict(
         fn=step,
@@ -1834,6 +1844,9 @@ def make_model(  priors,
 
     X_name = "float32" if use_float32 else "float64"  # model dtype
 
+    work_dtype = "float32" if use_float32 else "float64"
+    int_dtype = "int32" if use_float32 else "int64"
+
     
     if use_float32_bias:
         if not use_float32:
@@ -2077,9 +2090,9 @@ def make_model(  priors,
 
         # load interpolant
         with h5py.File('../tables/optimal_snr_aplus_design_05.h5','r') as f:
-            m_grid_at = at.as_tensor_variable(np.array(f['ms']))
-            osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']))
-            ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.))
+            m_grid_at = at.as_tensor_variable(np.array(f['ms']), dtype=work_dtype)
+            osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']), dtype=work_dtype)
+            ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.), dtype=work_dtype)
         grid_at = (m_grid_at, m_grid_at)
         osnr_interp_at = atools.GridInterpolator_at(grid_at, osnrs_grid_at)
                   
@@ -2099,9 +2112,9 @@ def make_model(  priors,
         log_Mc_src_init = (log_Mc_det_init - log_onepz_init).astype(X)
 
 
-    zgrid_ = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
+    zgrid_ = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype ) )
 
-    zgrid_mass_ = at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) )
+    zgrid_mass_ = at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype )
 
     
     print("z grid for interpolation built. Resolution: %s"%zres)
@@ -2180,7 +2193,7 @@ def make_model(  priors,
 
     if vol_in_prior:
 
-        zgrid_dLp = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
+        zgrid_dLp = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype ) )
 
         dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.90, 0.3065, -1., interp=False).astype(X)
         dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(X)
@@ -2196,12 +2209,12 @@ def make_model(  priors,
         if sampling_GW=='gauss':
             
             # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s, dtype=work_dtype), at.as_tensor_variable(cho_s, dtype=work_dtype), at.as_tensor_variable(log_wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(icovs_l, dtype=work_dtype), at.as_tensor_variable(log_dets_l, dtype=work_dtype)
 
             
         elif 'gmm' in sampling_GW:
             # we sample single-event parameters from the actual single-event posteriors
-            wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
+            wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(cho_covs_l, dtype=work_dtype)
 
         ################################################
         # Cosmological parameters
@@ -3015,7 +3028,7 @@ def make_model(  priors,
         if not marginal_R0:
             R0 = pm.Uniform('R0', lower=priors['R0'][0], upper=priors['R0'][1])
         else:
-            R0 = at.as_tensor_variable(1.)    
+            R0 = at.as_tensor_variable(1., dtype=work_dtype)    
         lR0 = atools.safe_log(R0)
 
 
@@ -3258,7 +3271,7 @@ def make_model(  priors,
 
                 log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu1, sig1,
-                                                                at.as_tensor_variable(MMIN_GRID),at.as_tensor_variable(MMAX_GRID),
+                                                                at.as_tensor_variable(MMIN_GRID, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID, dtype=work_dtype),
                                                 n_total_min=n_total_min_mass,
                                                 frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
@@ -3268,7 +3281,7 @@ def make_model(  priors,
 
                 logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu2, sig2,
-                                                at.as_tensor_variable(MMIN_GRID_1),at.as_tensor_variable(MMAX_GRID_1),
+                                                at.as_tensor_variable(MMIN_GRID_1, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID_1, dtype=work_dtype),
                                                 n_total_min=n_total_min_mass,                                                                                                                                                        frac_uniform=frac_uniform,
 
                                                 k_sigma=k_sigma,
@@ -3288,7 +3301,7 @@ def make_model(  priors,
 
                     log_1pz_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu3, sig3,
-                                                at.as_tensor_variable(MMIN_GRID_2),at.as_tensor_variable(MMAX_GRID_2),
+                                                at.as_tensor_variable(MMIN_GRID_2, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID_2, dtype=work_dtype),
                                                 n_total_min=n_total_min_mass,
                                                                                                                                                         frac_uniform=frac_uniform,
 
@@ -3451,7 +3464,7 @@ def make_model(  priors,
                     if spin_model == 'none' :
                         
                         X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                        d_int  = at.as_tensor_variable(3, dtype=int)
+                        d_int  = at.as_tensor_variable(3, dtype=int_dtype)
     
     
                     elif spin_model == 'default' or spin_model == 'default_gauss':
@@ -3463,7 +3476,7 @@ def make_model(  priors,
                         cost2 = atools.inv_flogitat(samples[:,6])
     
                         X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                        d_int  = at.as_tensor_variable(7, dtype=int)
+                        d_int  = at.as_tensor_variable(7, dtype=int_dtype)
     
     
                 
@@ -3673,7 +3686,7 @@ def make_model(  priors,
 
 
             X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-            d_int  = at.as_tensor_variable(3, dtype=int)
+            d_int  = at.as_tensor_variable(3, dtype=int_dtype)
 
 
             diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
@@ -3707,7 +3720,7 @@ def make_model(  priors,
 
             Theta = at.ones(d.shape)
           
-            log_P_det = atools.safe_log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8.) )
+            log_P_det = atools.safe_log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8., dtype=work_dtype) )
                                        )
             log_p_pop -= log_P_det
 
@@ -4111,8 +4124,8 @@ def make_model(  priors,
                     elif sel_smoothing=='softplus':
                         print("Tapering sel effect with softplus")
                         # Slack (how sharp the corner is) and weight (penalty strength)
-                        nu = at.as_tensor_variable(0.01)     # smaller = sharper transition
-                        lam = at.as_tensor_variable(1.)     # larger = stronger penalty
+                        nu = at.as_tensor_variable(0.01, dtype=work_dtype)     # smaller = sharper transition
+                        lam = at.as_tensor_variable(1., dtype=work_dtype)     # larger = stronger penalty
                         
                         excess  = (log_lik_var - log_lik_var_min) / nu
                         penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold

@@ -10,6 +10,9 @@
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
 
+os.environ["JAX_ENABLE_X64"] = "True"
+os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
+
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -18,6 +21,8 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")  # harmless on linux
 os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 os.environ.setdefault("OMP_PROC_BIND", "FALSE")
 os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
+
+
 
 
 import argparse
@@ -225,13 +230,13 @@ def main():
 
 
     
-        if FLAGS.use_float32:
-            os.environ.setdefault("JAX_ENABLE_X64", "False")
-        else:
-            os.environ.setdefault("JAX_ENABLE_X64", "True")
-            os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
+        # if FLAGS.use_float32:
+        #     os.environ.setdefault("JAX_ENABLE_X64", "False")
+        # else:
+        #     os.environ.setdefault("JAX_ENABLE_X64", "True")
+        #     os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
     
-
+  
         # ----------------------------------------------------
         # 2️⃣ Import libraries (now they see the environment)
         # ----------------------------------------------------
@@ -240,13 +245,15 @@ def main():
         import numpyro
         
         import jax
-        import jax.numpy as np
+        
         #jax.config.update("jax_disable_jit", True) # for debugging
     
-        if FLAGS.use_float32:
-            jax.config.update("jax_enable_x64", False)
-        else:
-            jax.config.update("jax_enable_x64", True)
+        # if FLAGS.use_float32:
+        #     jax.config.update("jax_enable_x64", False)
+        # else:
+        #     jax.config.update("jax_enable_x64", True)
+
+        jax.config.update("jax_enable_x64", True)
     
         if FLAGS.jax_debug_nans:
             jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
@@ -263,6 +270,8 @@ def main():
         print("Backend:", jax.default_backend())
     
         print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
+
+        import jax.numpy as np
     
 
     else:
@@ -311,8 +320,10 @@ def main():
         pytensor.config.floatX = "float32"
     else:
         pytensor.config.floatX = "float64"
+
+    #pytensor.config.floatX = "float64"
     
-    X = np.float32 if pytensor.config.floatX == "float32" else np.float64  # model dtype
+    X = np.float32 if FLAGS.use_float32 else np.float64  # model dtype
 
 
     
