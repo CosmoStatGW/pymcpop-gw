@@ -897,10 +897,11 @@ def main():
                     # g  = model.compile_dlogp()                      # gradient
                     # assert np.isfinite(f(ip))
                     # for gi in g(ip): assert np.all(np.isfinite(gi)) # every block finite
-                    
+
+
 
                     # log_lik
-                    print("Computing initial log-likelihood...")
+                    print("\nComputing initial log-likelihood...")
                     f = model.compile_logp(sum=True, profile=True)
                     assert np.isfinite(f(ip))
                     
