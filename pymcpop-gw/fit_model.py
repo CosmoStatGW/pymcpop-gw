@@ -10,8 +10,10 @@
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os
 
-os.environ["JAX_ENABLE_X64"] = "True"
-os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
+
+#os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+os.environ.setdefault("JAX_ENABLE_X64", "1")
+os.environ.setdefault("JAX_DEFAULT_DTYPE_BITS", "64")
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -33,7 +35,24 @@ import time
 import resource
 
 
-
+def set_pytensor_flag(key: str, value: str):
+    """Add/override one key in PYTENSOR_FLAGS without nuking the rest."""
+    cur = os.environ.get("PYTENSOR_FLAGS", "").strip()
+    items = {}
+    if cur:
+        for part in cur.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "=" in part:
+                k, v = part.split("=", 1)
+                items[k.strip()] = v.strip()
+            else:
+                # handle bare flags (rare)
+                items[part] = "True"
+    items[key] = str(value)
+    os.environ["PYTENSOR_FLAGS"] = ",".join(f"{k}={v}" for k, v in items.items())
+    
 
 def main():
 
@@ -113,7 +132,6 @@ def main():
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default='scan', type=str, required=False)
-    parser.add_argument("--wrap_logp", default=0, type=int, required=False)
     parser.add_argument("--interp_inj", default=1, type=int, required=False)
     
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
@@ -207,11 +225,26 @@ def main():
     # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
     # ----------------------------------------------------
 
-    base = os.environ.get("PYTENSOR_FLAGS", "")
-    extra = "optimizer=fast_run"
+    #set_pytensor_flag("jax__enable_x64", "True")
+
+    
+    # base = os.environ.get("PYTENSOR_FLAGS", "")
+    extra = [ "optimizer=fast_run" ]
     if FLAGS.use_float32:
-        extra = "floatX=float32," + extra
-    os.environ["PYTENSOR_FLAGS"] = (base + "," + extra).strip(",")
+        extra.append( "floatX=float32")
+    # os.environ["PYTENSOR_FLAGS"] = (base + "," + extra).strip(",")
+
+    for f in extra:
+        if "=" in f:
+            k, v = f.split("=", 1)
+            set_pytensor_flag(k.strip(), v.strip())
+        else:
+            set_pytensor_flag(f.strip(), "True")
+    
+    # and (re)assert the one you care about:
+    #set_pytensor_flag("jax__enable_x64", "True")
+
+    print("\nInitial PYTENSOR_FLAGS =", os.environ.get("PYTENSOR_FLAGS"))
 
 
     
@@ -225,9 +258,16 @@ def main():
             add = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
             os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " " + add).strip()
 
-        os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
+        
         os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
+        # If you want x64 available:
+        os.environ["JAX_ENABLE_X64"] = "1"
+        os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"   # optional
+    
+        import jax
+        jax.config.update("jax_enable_x64", True)
+        jax.config.update("jax_default_matmul_precision", "highest")
 
     
         # if FLAGS.use_float32:
@@ -244,16 +284,7 @@ def main():
         
         import numpyro
         
-        import jax
-        
-        #jax.config.update("jax_disable_jit", True) # for debugging
-    
-        # if FLAGS.use_float32:
-        #     jax.config.update("jax_enable_x64", False)
-        # else:
-        #     jax.config.update("jax_enable_x64", True)
-
-        jax.config.update("jax_enable_x64", True)
+           
     
         if FLAGS.jax_debug_nans:
             jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
@@ -272,7 +303,11 @@ def main():
         print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
 
         import jax.numpy as np
-    
+
+        print("jax_enable_x64:", jax.config.jax_enable_x64)
+        print("devices:", jax.devices())
+        print("float64 test dtype:", np.array([1.0], dtype=np.float64).dtype)
+        print()
 
     else:
         import numpy as np
@@ -297,15 +332,34 @@ def main():
         
         flags = [
             f"compiledir={scratch}",
+            #"optimizer=fast_run",
             "compile__timeout=600",  # wait up to 10 min
             "compile__wait=10",      # retry every ~10s
+            #"jax__enable_x64=True", 
         ]
-        os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
+        
+        #os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
+
+        for f in flags:
+            if "=" in f:
+                k, v = f.split("=", 1)
+                set_pytensor_flag(k.strip(), v.strip())
+            else:
+                set_pytensor_flag(f.strip(), "True")
+        
+        # and (re)assert the one you care about:
+        #set_pytensor_flag("jax__enable_x64", "True")
+
+        print("\nPYTENSOR_FLAGS for recompile =", os.environ.get("PYTENSOR_FLAGS"))
+
     
     import pymc as pm
     import pytensor
     pytensor.config.openmp = False
     import numpy as onp
+
+    print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
+    #print("PyTensor jax__enable_x64:", getattr(pytensor.config, "jax__enable_x64", None))
     
     
 
@@ -316,14 +370,14 @@ def main():
     import pytensor_tools as atools
     import pytensor_utils as autils
 
-    if FLAGS.use_float32:
-        pytensor.config.floatX = "float32"
-    else:
-        pytensor.config.floatX = "float64"
+    # if FLAGS.use_float32:
+    #     pytensor.config.floatX = "float32"
+    # else:
+    #     pytensor.config.floatX = "float64"
 
     #pytensor.config.floatX = "float64"
     
-    X = np.float32 if FLAGS.use_float32 else np.float64  # model dtype
+    X = onp.float32 if FLAGS.use_float32 else onp.float64  # model dtype
 
 
     
@@ -769,7 +823,6 @@ def main():
                                 use_updates = use_updates,
                                 inj_loop = FLAGS.inj_loop,
                                 save_thetas = FLAGS.save_thetas,
-                                wrap_logp=FLAGS.wrap_logp,
                                 interp_inj=FLAGS.interp_inj,
                                 param=FLAGS.param,
                                 DP_prior=FLAGS.DP_prior,
@@ -1285,7 +1338,8 @@ def main():
                     #tune = sampler_kwargs.get("tune", 1000)
                     #total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
                     #cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
-
+                    print("PID", os.getpid(), "jax_enable_x64", jax.config.read("jax_enable_x64"))
+                    print("PID", os.getpid(), "JAX_ENABLE_X64 env", os.environ.get("JAX_ENABLE_X64"))
                     
                     trace = pm.sample(nuts_sampler='pymc', 
                                       idata_kwargs={"log_likelihood": False},
@@ -1490,7 +1544,7 @@ def main():
 
     try:
         print("Plotting trace...")
-        az.plot_trace(trace, var_names = vnames, );
+        az.plot_trace(trace, var_names = vplot, );
         plt.savefig( os.path.join(FLAGS.fout, 'trace.pdf'), bbox_inches='tight')
         plt.close()
     except:
