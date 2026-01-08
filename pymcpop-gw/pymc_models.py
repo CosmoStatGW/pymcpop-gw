@@ -2648,35 +2648,31 @@ def make_model(  priors,
             
             ml_init   = ivals.get("ml",        4.0)#.astype(X)
             mh_init   = ivals.get("mh",        100.0)#.astype(X)
-            delt_init = ivals.get("deltam",    3.0)#.astype(X)
+            dm_init = ivals.get("deltam",    3.0)#.astype(X)
             muM_init  = ivals.get("muMass",    35.0)#.astype(X)
             sM_init   = ivals.get("sigmaMass", 5.0)#.astype(X)
             lam_init  = ivals.get("lambdaPeak", 0.05)#.astype(X)
             
-            # ------------------------------------------------------------------
-            # 1) Low edge m_low: fraction of global range 
-            # ------------------------------------------------------------------
+            # Small helper for stable initvals on (0,1)
+            def _clip01(x, eps=1e-6):
+                return float(np.clip(x, eps, 1.0 - eps))
             
-            M_min_phys = ml_min.astype(X)
-            M_max_phys = mh_max.astype(X)
-            mass_span  = M_max_phys - M_min_phys
-            
-            # init fraction for ml
-            u_low_init = np.clip((ml_init - M_min_phys) / mass_span, 0.0, 1.0).astype(X)
+            # =========================
+            # 1) ml with EXACT Uniform prior
+            # =========================
+            # Will sample a fraction u_ml ~ Uniform(0,1), map to ml = ml_min + u_ml*(ml_max-ml_min)
+            # Add Jacobian log|dml/du_ml| = log(ml_max-ml_min) so induced density on ml is uniform.
+            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min))
 
-            # use deltam prior to define a typical fraction range for smoothing
-            u_s_min = deltam_min / mass_span
-            u_s_max = deltam_max / mass_span
-            
-            u_s_min = max(0.0, float(u_s_min)).astype(X)
-            u_s_max = min(1.0, float(u_s_max)).astype(X)
-            if not (u_s_min < u_s_max):
-                # fallback if priors are pathological
-                u_s_min, u_s_max = 0.0, 1.0
-            
-            span_init      = (mh_init - ml_init).astype(X)
-            span_init_safe = max(span_init, 1e-3).astype(X)
-            u_smooth_init  = np.clip(delt_init / span_init_safe, u_s_min, u_s_max).astype(X)
+            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min))
+
+            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min))
+
+            log_sM_min = np.log(sM_min)
+            log_sM_max = np.log(sM_max)
+            log_sM_init = float(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
+
+
 
 
     vol_in_prior = any('UniformSourceFrame' in s or 'UniformComovingVolume' in s for s in dLprior)
@@ -2958,66 +2954,77 @@ def make_model(  priors,
             else:
                 print("Using reparametrized variables for easier geometry")
 
-                u_low = pm.Uniform(
-                    "u_ml_PLPreg",
-                    lower=0.0,
-                    upper=1.0,
-                    initval=u_low_init,
-                )
-                
-                ml_ = pm.Deterministic(
-                    "ml",
-                    M_min_phys + u_low * mass_span,
-                )
-                
-                # ------------------------------------------------------------------
-                # 2) High edge m_high: keep it as a simple Uniform
-                # ------------------------------------------------------------------
-                
-                mh_ = pm.Uniform(
-                    "mh",
-                    lower=mh_min,
-                    upper=mh_max,
-                    initval=mh_init,
-                )
 
-                u_smooth = pm.Uniform(
-                    "u_deltam_PLPreg",
-                    lower=u_s_min,
-                    upper=u_s_max,
-                    initval=u_smooth_init,
-                )
-                
-                deltam_ = pm.Deterministic(
-                    "deltam",
-                    u_smooth * (mh_ - ml_),
-                )
+                # tiny buffer to avoid exact boundaries
+                eps = 1e-9
 
 
-                    
-                # 3) lambdaPeak: keep Uniform, PyMC handles transform
-                lamP_ = pm.Uniform(
-                    "lambdaPeak",
-                    lower=lam_min,
-                    upper=lam_max,
-                    initval=lam_init,
+                u_ml = pm.Uniform(
+                    "u_ml",
+                    0.0, 1.0,
+                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min)),
                 )
-                
-                # 4) sigmaMass on log-scale
-                log_sigmaMass_ = pm.Uniform(
-                    "log_sigmaMass",
-                    lower=np.log(sM_min),
-                    upper=np.log(sM_max),
-                    initval=np.log(sM_init),
-                )
+                ml_ = pm.Deterministic("ml", ml_min + u_ml * (ml_max - ml_min))
+                # (Jacobian is constant -> optional; leaving it out changes nothing)
+                # pm.Potential("J_ml", at.log(ml_max - ml_min))
 
-                sM_ = pm.Deterministic(
-                        "sigmaMass",
-                        at.exp(log_sigmaMass_),
-                    )
-                # flat prior in sM_
-                _ = pm.Potential("J_sigmaMass_from_log", at.log(sM_))
+
+                # -----------------------
+                # 2) mh | ml ~ Uniform(max(mh_min, ml+eps), mh_max)
+                #    Ensures mh > ml by construction
+                # -----------------------
+                mh_lower = at.maximum(mh_min, ml_ + eps)
+                mh_span  = mh_max - mh_lower
                 
+                u_mh = pm.Uniform(
+                    "u_mh",
+                    0.0, 1.0,
+                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps))),
+                )
+                mh_ = pm.Deterministic("mh", mh_lower + u_mh * mh_span)
+                
+                # This Jacobian term makes the induced density for mh|ml uniform in physical space.
+                # (Because we sample u_mh uniformly but want flat in mh, and mh_span depends on ml.)
+                pm.Potential("J_mh_given_ml", at.log(at.maximum(mh_span, eps)))
+                
+                # -----------------------
+                # 3) deltam | (ml,mh) ~ Uniform(dm_min, min(dm_max, (mh-ml)-eps))
+                #    Ensures deltam < (mh-ml) by construction
+                # -----------------------
+                span_ = mh_ - ml_
+                dm_upper = at.minimum(deltam_max, span_ - eps)
+                dm_span  = dm_upper - deltam_min
+                
+                u_dm = pm.Uniform(
+                    "u_deltam",
+                    0.0, 1.0,
+                    initval=_clip01((dm_init - deltam_min) / (deltam_max - deltam_min)),
+                )
+                deltam_ = pm.Deterministic("deltam", deltam_min + u_dm * dm_span)
+                
+                pm.Potential("J_deltam_given_span", at.log(at.maximum(dm_span, eps)))
+                
+                # hard rejection when dm_upper <= dm_min (no valid deltam)
+                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, 0.0, -np.inf))
+                
+                # -----------------------
+                # 4) sigmaMass ~ Uniform(sM_min, sM_max)  (keep it simple & truly flat)
+                # -----------------------
+                u_sM = pm.Uniform(
+                    "u_sigmaMass",
+                    0.0, 1.0,
+                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min)),
+                )
+                sM_ = pm.Deterministic("sigmaMass", sM_min + u_sM * (sM_max - sM_min))
+                # (Jacobian constant -> optional)
+                # pm.Potential("J_sigmaMass", at.log(sM_max - sM_min))
+                
+
+
+                lamP_ = pm.Uniform("lambdaPeak", lower=lam_min, upper=lam_max, initval=lam_init)
+
+                
+
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
@@ -3942,7 +3949,8 @@ def make_model(  priors,
 
                     
                     # sample = mu + L @ x   (batched)
-                    samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+                    #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+                    samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
 
                     lpp_dtype = getattr(samples, "dtype", "float64")
                     print("work_dtype in samples is %s"%lpp_dtype)

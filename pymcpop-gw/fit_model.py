@@ -110,7 +110,7 @@ def main():
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
     parser.add_argument("--MAP_init", default=0, type=int, required=False)
-    parser.add_argument("--eps_init", default=0.01, type=float, required=False)
+    parser.add_argument("--eps_init", default=0.5, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=1, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
@@ -153,6 +153,9 @@ def main():
     parser.add_argument("--target_accept", default=0.9, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
     parser.add_argument("--jax_debug_nans", default=1, type=int, required=False)
+    parser.add_argument("--dense_mass", default=0, type=int, required=False)
+    parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
+    
     
     
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -358,8 +361,9 @@ def main():
     pytensor.config.openmp = False
     import numpy as onp
 
-    print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
-    #print("PyTensor jax__enable_x64:", getattr(pytensor.config, "jax__enable_x64", None))
+    if uses_jax:
+        print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
+        #print("PyTensor jax__enable_x64:", getattr(pytensor.config, "jax__enable_x64", None))
     
     
 
@@ -1266,12 +1270,12 @@ def main():
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
-                                        "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
+                                        "dense_mass": FLAGS.dense_mass,   # set True if dim ≤ ~50 and strong correlations
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3,
                                         "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
-                                        "max_tree_depth": 10,
+                                        "max_tree_depth": FLAGS.max_tree_depth,
                                         "forward_mode_differentiation": False,
                                     },
                                 },
@@ -1338,7 +1342,8 @@ def main():
                     #tune = sampler_kwargs.get("tune", 1000)
                     #total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
                     #cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
-                    print("PID", os.getpid(), "jax_enable_x64", jax.config.read("jax_enable_x64"))
+                    if uses_jax:
+                        print("PID", os.getpid(), "jax_enable_x64", jax.config.read("jax_enable_x64"))
                     print("PID", os.getpid(), "JAX_ENABLE_X64 env", os.environ.get("JAX_ENABLE_X64"))
                     
                     trace = pm.sample(nuts_sampler='pymc', 

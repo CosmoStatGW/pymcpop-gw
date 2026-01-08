@@ -183,6 +183,16 @@ def uniform_unconstrained(name, low, high, init=None):
 
 
 
+
+def soft_constraint_leq(x, y, k=50.0):
+    """
+    Smooth barrier enforcing x <= y.
+    Returns ~0 when x<=y and ~-(x-y) when violated (scaled by k).
+    """
+    return -at.softplus(k * (x - y)) / k
+
+    
+
 def logdiffexp(a, b):
     """
     Stable log(exp(a) - exp(b)) elementwise.
