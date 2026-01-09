@@ -1048,7 +1048,7 @@ def logpdf_multivariate_trunc_2D(x1, x2, m1, m2, s1, s2, rho, l1, u1, l2, u2):
 
     logpdf = -0.5 * (2.0 * at.log(2.0 * PI) + logdetC + quad)  # (n,)
 
-    return at.where(where_inf, MIN, logpdf)
+    return at.where(where_inf, _const_like(x1, MIN) , logpdf)
 
 
 
@@ -1103,7 +1103,7 @@ def logpdf_flat_sharp(theta, lambdaBBHmass):
     m1, m2 = theta
     ml, mh = lambdaBBHmass
 
-    return at.where( (m1>=ml) & (m1<=mh) & (m2>=ml) & (m2<=mh) & (m2<=m1), -2*at.log( mh-ml ) , MIN  )
+    return at.where( (m1>=ml) & (m1<=mh) & (m2>=ml) & (m2<=mh) & (m2<=m1), -2*at.log( mh-ml ) , neg_inf = _const_like(m1, -np.inf)  )
 
 
 def logpdf_flat(theta, lambdaBBHmass):  
@@ -1136,7 +1136,7 @@ def truncGausslowerupper_at_lpdf(x, loc, scale, xmin=0, xmax=1):
     Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
     
     return at.where( (x>=xmin) & (x<=xmax), 
-                    -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
+                    -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , _const_like(x, -np.inf) )
 
 
 def truncGausslowerupper_at_lpdf_nonly(x, loc, scale, xmin=0, xmax=1):    
@@ -1152,7 +1152,7 @@ def truncGausslower_at_lpdf(x, loc, scale, xmin=0):
     #Phibeta = 0.5*(1.+at.erf((xmax-loc)/(at.sqrt(2.)*scale)))
     
     return at.where( x>=xmin, 
-                    -at.log(scale)-0.5*at.log(2*PI)-at.log(1.-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
+                    -at.log(scale)-0.5*at.log(2*PI)-at.log(1.-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) ,  _const_like(x, -np.inf) )
 
 
 def double_gauss_norm(mu, sigma):
@@ -1163,7 +1163,7 @@ def double_gauss_norm(mu, sigma):
 
 def truncGausslower_at_logpdf(x, loc, scale, xmin=0):  
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
-    return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , MIN )
+    return at.where(x>xmin, at.log(1./(at.sqrt(2.*PI)*scale)/(1.-Phialpha)) + -(x-loc)**2/(2*scale**2) , _const_like(x, -np.inf) )
     #return -at.log(scale)-0.5*at.log(2.*PI) -0.5*(x-loc)**2/(scale**2)
 
 def truncGausslower_at_pdf(x, loc, scale, xmin=0):  
@@ -1189,24 +1189,52 @@ def logpdf_gauss_cond(theta, lambdaBBHmass):
     return logpdfm1+logpdfm2
 
 
-def gaussian_logpdf_pair(x1, x2, mu1, mu2, sd1, sd2):
+def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None):
     """
-    Two independent Gaussians logpdf: N(x1|mu1,sd1) + N(x2|mu2,sd2)
-    Stable for small sd via max(sd, eps).
+    Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
+    means mu and std-devs sd.
     """
-    eps = _const_like(x1, 1e-6) if str(getattr(x1, "dtype", "")).endswith("32") else _const_like(x1, 1e-12)
-    sd1c = at.maximum(sd1, eps)
-    sd2c = at.maximum(sd2, eps)
+    work_dtype = getattr(m1s, "dtype", "float64")
 
-    z1 = (x1 - mu1) / sd1c
-    z2 = (x2 - mu2) / sd2c
+    m1 = m1s[None, :]          # (1, N)
+    m2 = m2s[None, :]          # (1, N)
 
-    log2pi = _const_like(x1, np.log(2.0 * np.pi))
+    mu1 = mu[0][:, None]       # (K, 1)
+    mu2 = mu[1][:, None]       # (K, 1)
 
-    return (
-        -_const_like(x1, 0.5) * (z1 * z1 + log2pi) - at.log(sd1c)
-        -_const_like(x1, 0.5) * (z2 * z2 + log2pi) - at.log(sd2c)
-    )
+    sd1 = sd[0][:, None]       # (K, 1)
+    sd2 = sd[1][:, None]       # (K, 1)
+
+    # Typed constants (avoid np.inf upcasting and repeated as_tensor_variable nodes)
+    eps = at.constant(1e-6, dtype=work_dtype)
+    eps2 = eps * eps
+    inf = at.constant(np.inf, dtype=work_dtype)
+
+    var1 = at.clip(sd1 * sd1, eps2, inf)  # (K,1)
+    var2 = at.clip(sd2 * sd2, eps2, inf)  # (K,1)
+
+    diff1 = m1 - mu1                      # (K,N)
+    diff2 = m2 - mu2                      # (K,N)
+
+    # 1D Gaussian logpdfs (keep same constant expression, but ensure constants don't upcast)
+    const = -0.5 * at.log(at.constant(2.0 * PI, dtype=work_dtype))
+
+    logp1 = const - 0.5 * at.log(var1) - 0.5 * (diff1 * diff1 / var1)
+    logp2 = const - 0.5 * at.log(var2) - 0.5 * (diff2 * diff2 / var2)
+
+    if z is not None:
+        z = z[None, :]
+        muz = mu[2][:, None]       # (K, 1)
+        sdz = sd[2][:, None]
+
+        varz = at.clip(sdz * sdz, eps2, inf)  # (K,1)
+        diffz = z - muz
+        logpz = const - 0.5 * at.log(varz) - 0.5 * (diffz * diffz / varz)
+    else:
+        logpz = at.zeros_like(logp1, dtype=work_dtype)
+
+    return logp1, logp2, logpz
+
 
 
 def gaussian_logpdf_pair_work(m1s, m2s, mu, sd, z=None):
@@ -1783,7 +1811,7 @@ def truncated_power_law(m, alpha, ml, mh):
         
         where_compute = (ml < m) & (m < mh )
 
-        result = at.where(where_compute, at.log(m)*(-alpha), MIN)
+        result = at.where(where_compute, at.log(m)*(-alpha), _const_like(m, -np.inf) )
         
         return result
 
@@ -1796,13 +1824,13 @@ def logpdf_PLP(theta, lambdaBBHmass, pairing=True):
                 
         where_compute = (m2 <= m1) & (ml <= m2) & (m1 <= mh ) 
 
-        lpdfm1 = at.where(where_compute, logpdfm1_PLP(m1,  lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass ), MIN )
-        lpdfm2 = at.where(where_compute,logpdfm2_PLP(m2, beta, deltam, ml), MIN )
+        lpdfm1 = at.where(where_compute, logpdfm1_PLP(m1,  lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass ), _const_like(m1, -np.inf) )
+        lpdfm2 = at.where(where_compute,logpdfm2_PLP(m2, beta, deltam, ml), _const_like(m1, -np.inf) )
         if pairing:
-            lC = at.where(where_compute, logC_PLP(m1, beta, deltam,  ml, ), MIN )
-        ln = at.where(where_compute, logNorm_PLP( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass), MIN )
+            lC = at.where(where_compute, logC_PLP(m1, beta, deltam,  ml, ), _const_like(m1, -np.inf) )
+        ln = at.where(where_compute, logNorm_PLP( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass), _const_like(m1, -np.inf) )
         
-        return at.where( where_compute, lpdfm1+lpdfm2+lC-ln, MIN )
+        return at.where( where_compute, lpdfm1+lpdfm2+lC-ln, _const_like(m1, -np.inf) )
         
 
 def logS_PLP(m, deltam, ml, eps=1e-12):
@@ -1812,16 +1840,19 @@ def logS_PLP(m, deltam, ml, eps=1e-12):
     """
 
     eps = at.as_tensor_variable(eps, dtype=m.dtype)
+    one_ = at.as_tensor_variable(1.0, dtype=m.dtype)
+    two_ = at.as_tensor_variable(2.0, dtype=m.dtype)
+    three_ = at.as_tensor_variable(3.0, dtype=m.dtype)
     
     # normalize position in the window and clamp to [0, 1]
     t = (m - ml) / at.maximum(deltam, eps)
-    t = at.clip(t, 0.0, 1.0)
+    t = at.clip(t, eps, one_-eps )
 
     # smoothstep: S(t) = 3t^2 - 2t^3, monotone from 0→1 with zero slope at ends
-    S = t * t * (3.0 - 2.0 * t)
+    S = t * t * (three_ - two_ * t)
 
     # log S, safely (avoid log(0) at the lower edge)
-    return at.log(at.clip(S, eps, 1.0))
+    return at.log(at.clip(S, eps, one_ ))
     
 def logS_PLP_LVK(m, deltam, ml,):
         
@@ -1830,7 +1861,7 @@ def logS_PLP_LVK(m, deltam, ml,):
         
         maskM = ~(maskL | maskU)
         
-        s = at.where( maskL, MIN, at.as_tensor_variable(0., dtype=m.dtype)  )
+        s = at.where( maskL, _const_like(m, -np.inf), at.as_tensor_variable(0., dtype=m.dtype)  )
         
         s1 = at.where( maskM,  at.log(1/(1+ at.exp(deltam/(m-ml) + deltam/(m-ml - deltam) ) ))  , s  )
         
@@ -1843,13 +1874,13 @@ def logpdfm1_PLP(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass):
     where_compute = (ml <= m) & (m <= mh )
 
     norm = norm_truncated_pl_num(alpha, ml, mh)
-    trunc_component = at.where(where_compute, 1./m**alpha/norm, MIN)
-    gauss_component = at.where(where_compute, at.exp(-(m-muMass)**2/(2*sigmaMass**2))/(at.sqrt(2*PI)*sigmaMass), MIN)
+    trunc_component = at.where(where_compute, 1./m**alpha/norm, _const_like(m, -np.inf))
+    gauss_component = at.where(where_compute, at.exp(-(m-muMass)**2/(2*sigmaMass**2))/(at.sqrt(2*PI)*sigmaMass), _const_like(m, -np.inf))
 
     lS = logS_PLP(m, deltam, ml) 
         
     result =  at.where( where_compute, at.log( (1-lambdaPeak)*trunc_component+lambdaPeak*gauss_component)+lS
-                       , MIN )
+                       , _const_like(m, -np.inf) )
     return result
 
     
@@ -1858,7 +1889,7 @@ def logpdfm2_PLP(m2, beta, deltam, ml):
 
     where_compute = (ml<= m2) #& (~where_nan)
     res = at.log(m2)*(beta)+logS_PLP(m2, deltam, ml)
-    result = at.where( where_compute, res, MIN )
+    result = at.where( where_compute, res, _const_like(m2, -np.inf) )
            
     return result
 
@@ -1921,7 +1952,7 @@ def logNorm_PLP(lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, res=500):
     p    = at.exp(logp)
 
     Z = attrapzvec(p, xx)                              # (scalar)
-    return at.log(at.clip(Z, 1e-300, np.inf))
+    return at.log(at.clip(Z, _const_like(lambdaPeak, 1e-300) , _const_like(lambdaPeak, np.inf)))
             
     
             
@@ -2262,13 +2293,13 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
         log_lambda1 = at.log(lambda1)
 
         lambda2_raw  = one - lambda0 - lambda1
-        lambda2_safe = at.clip(lambda2_raw, eps_w, one)
+        lambda2_safe = at.clip(lambda2_raw, eps_w, one-eps_w)
         log_lambda2  = at.log(lambda2_safe)
 
     else:
         # ---- Simplex repair (same math as your version; just dtype-safe) ----
-        lam0 = at.clip(lambda0, eps_w, one)
-        lam1 = at.clip(lambda1, eps_w, one)
+        lam0 = at.clip(lambda0, eps_w, one-eps_w)
+        lam1 = at.clip(lambda1, eps_w, one-eps_w)
         lam2_raw = one - lam0 - lam1
 
         lam2 = eps_w + at.softplus(lam2_raw - eps_w)
@@ -2395,7 +2426,7 @@ def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_tha
 
     if force_m2_less_than_m1:
         eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-        return at.where(eval, lpdf, MIN)
+        return at.where(eval, lpdf, _const_like(m1, -np.inf) )
     else:
         return lpdf
 
@@ -2450,13 +2481,13 @@ def logpdf_DPLDP_from_interp_lin(theta, interp_vals, interp_grids, force_m2_less
 
         # lC = atinterp_uniform(m1, x0_1, x1_1, nU_1, lC_of_m1)
         
-
+ 
 
         lpdf = lpdfm1 + lpdfm2 -lC -ln
 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-            return at.where(eval, lpdf, MIN)
+            return at.where(eval, lpdf, _const_like(m1, -np.inf) )
         else:
             return lpdf
     
@@ -2523,7 +2554,7 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-            return at.where(eval, lpdf, MIN)
+            return at.where(eval, lpdf, _const_like(m1, -np.inf))
         else:
             return lpdf
         
@@ -2738,7 +2769,7 @@ def logpdf_FP(theta, lambdaBBHmass, norm=True, norm_p1=False, res=1000, force_m2
 
     if force_m2_less_than_m1:
         eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-        joint = at.where(eval, lpdfval, MIN)
+        joint = at.where(eval, lpdfval, _const_like(m1, -np.inf))
     else:
         joint = lpdfval
 
@@ -3499,7 +3530,7 @@ def logpdf_DPLDP_z_from_interp_lin(theta, z, interp_vals, interp_grids, force_m2
 
     if force_m2_less_than_m1:
         ok = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-        return at.where(ok, lpdf, MIN)
+        return at.where(ok, lpdf, _const_like(m1, -np.inf))
     else:
         return lpdf
 
@@ -3671,7 +3702,7 @@ def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_les
 
     if force_m2_less_than_m1:
         ok = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-        return at.where(ok, lpdf, MIN)
+        return at.where(ok, lpdf, _const_like(m1, -np.inf))
     else:
         return lpdf
 

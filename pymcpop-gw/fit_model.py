@@ -920,6 +920,34 @@ def main():
             else:                    
                 #print("Using model init point as init")
                 MAP_init=False
+
+                if FLAGS.use_float32:
+                    import traceback
+                    from pymc.initial_point import make_initial_point_expression
+                    
+                    free_rvs = list(model.free_RVs)
+                    
+                    bad = []
+                    for rv in free_rvs:
+                        try:
+                            _ = make_initial_point_expression(
+                                free_rvs=[rv],
+                                rvs_to_transforms=model.rvs_to_transforms,
+                                initval_strategies={},          # required in PyMC 5.1
+                                jitter_rvs=None,
+                                default_strategy="support_point",
+                                return_transformed=True,
+                            )
+                        except TypeError as e:
+                            bad.append(rv)
+                            print("\n=== FAIL ===")
+                            print("RV:", rv.name, "dtype:", getattr(rv, "dtype", None))
+                            print("Error:", e)
+                            # optional: print short traceback
+                            # traceback.print_exc(limit=2)
+                    
+                    print("\nBad RVs:", [rv.name for rv in bad])
+                    
                 ip = model.initial_point()
                 # N = gmm_means.shape[0]
                 # nd = gmm_means.shape[2]

@@ -148,6 +148,7 @@ def evo_triplet(
     theta0_rv,      # PyMC RV for theta_0 (e.g. alpha1_0)
     ivals,
     priors,
+    dtype="float64"
 ):
     """
     Create (theta_inf, z_t, dz) using Δθ parametrisation:
@@ -163,7 +164,7 @@ def evo_triplet(
     sigma_key = f"delta_{name}_sigma"
     delta_sigma = priors.get(sigma_key, 1.0)   # fallback if missing
 
-    delta_init = ivals.get(f"delta_{name}", 0.0)
+    delta_init = ivals.get(f"delta_{name}", 0.0)#.astype(dtype)
 
     delta_theta = pm.Normal(
         f"delta_{name}",
@@ -179,7 +180,7 @@ def evo_triplet(
 
     # ----- z_t prior -----
     z_low, z_high = priors.get("z_t", (0.05, 2.5))
-    z_init = ivals.get(f"z_{name}", 0.5 * (z_low + z_high))
+    z_init = ivals.get(f"z_{name}", 0.5 * (z_low + z_high))#.astype(dtype)
 
     z_t = pm.Uniform(
         f"z_{name}",
@@ -192,7 +193,7 @@ def evo_triplet(
     dz_low, dz_high = priors.get("dz", (0.05, 3.0))
     dz_mid = 0.5 * (dz_low + dz_high)
 
-    log_dz_init = onp.log(ivals.get(f"dz_{name}", dz_mid))
+    log_dz_init = onp.log(ivals.get(f"dz_{name}", dz_mid))#.astype(dtype)
 
     log_dz = pm.Normal(
         f"log_dz_{name}",

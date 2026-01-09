@@ -2654,23 +2654,29 @@ def make_model(  priors,
             lam_init  = ivals.get("lambdaPeak", 0.05)#.astype(X)
             
             # Small helper for stable initvals on (0,1)
-            def _clip01(x, eps=1e-6):
-                return float(np.clip(x, eps, 1.0 - eps))
+            def _clip01(x, eps=1e-6, dtype="float64"):
+                if dtype=="float64":
+                    return float(np.clip(x, eps, 1.0 - eps))
+                else:
+                    return np.float32(np.clip(x, eps, 1.0 - eps))
             
             # =========================
             # 1) ml with EXACT Uniform prior
             # =========================
             # Will sample a fraction u_ml ~ Uniform(0,1), map to ml = ml_min + u_ml*(ml_max-ml_min)
             # Add Jacobian log|dml/du_ml| = log(ml_max-ml_min) so induced density on ml is uniform.
-            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min))
+            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min), dtype=X_name)
 
-            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min))
+            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min), dtype=X_name)
 
-            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min))
+            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min), dtype=X_name)
 
             log_sM_min = np.log(sM_min)
             log_sM_max = np.log(sM_max)
-            log_sM_init = float(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
+            if X_name=="float64":
+                log_sM_init = float(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
+            else:
+                log_sM_init = np.float32(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
 
 
 
@@ -2810,13 +2816,13 @@ def make_model(  priors,
     
                 z_p_min, z_p_max = priors['zp']
     
-                z_p_init = ivals.get('zp', 2.)
+                z_p_init = np.asarray( ivals.get('zp'), dtype=X )
     
                 log1p_zp_ = pm.Uniform(
                     "log1p_zp",
-                    lower=np.log1p(z_p_min),
-                    upper=np.log1p(z_p_max),
-                    initval=np.log1p(z_p_init),
+                    lower = np.log1p(z_p_min).astype(X),
+                    upper = np.log1p(z_p_max).astype(X),
+                    initval = np.log1p(z_p_init).astype(X) ,
                 )
                 
                 zp_ = pm.Deterministic("zp", at.expm1(log1p_zp_))
@@ -2962,7 +2968,7 @@ def make_model(  priors,
                 u_ml = pm.Uniform(
                     "u_ml",
                     0.0, 1.0,
-                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min)),
+                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min), dtype=X_name),
                 )
                 ml_ = pm.Deterministic("ml", ml_min + u_ml * (ml_max - ml_min))
                 # (Jacobian is constant -> optional; leaving it out changes nothing)
@@ -2979,7 +2985,7 @@ def make_model(  priors,
                 u_mh = pm.Uniform(
                     "u_mh",
                     0.0, 1.0,
-                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps))),
+                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps)), dtype=X_name),
                 )
                 mh_ = pm.Deterministic("mh", mh_lower + u_mh * mh_span)
                 
@@ -3005,7 +3011,7 @@ def make_model(  priors,
                 pm.Potential("J_deltam_given_span", at.log(at.maximum(dm_span, eps)))
                 
                 # hard rejection when dm_upper <= dm_min (no valid deltam)
-                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, 0.0, -np.inf))
+                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, at.as_tensor_variable(0.0, dtype=work_dtype), at.as_tensor_variable(-np.inf, dtype=work_dtype)))
                 
                 # -----------------------
                 # 4) sigmaMass ~ Uniform(sM_min, sM_max)  (keep it simple & truly flat)
@@ -3013,7 +3019,7 @@ def make_model(  priors,
                 u_sM = pm.Uniform(
                     "u_sigmaMass",
                     0.0, 1.0,
-                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min)),
+                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min), dtype=X_name),
                 )
                 sM_ = pm.Deterministic("sigmaMass", sM_min + u_sM * (sM_max - sM_min))
                 # (Jacobian constant -> optional)
@@ -3219,8 +3225,8 @@ def make_model(  priors,
             )
             log_dz_lambda_ = pm.Uniform(
                 "log_dz_lambda",
-                lower=np.log(dz_prior[0]),
-                upper=np.log(dz_prior[1]),
+                lower=np.log(dz_prior[0]).astype(X),
+                upper=np.log(dz_prior[1]).astype(X),
                 initval=ivals.get("log_dz_lambda", np.log(0.5) ),
             )
             dz_lambda_ = pm.Deterministic("dz_lambda", at.exp(log_dz_lambda_))
@@ -4672,7 +4678,7 @@ def make_model(  priors,
                         selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
                         # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
                         # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf))
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, at.as_tensor_variable(0.0, dtype=work_dtype), at.as_tensor_variable(-np.inf, dtype=work_dtype) ))
 
             
             _ = pm.Potential('selection_bias', selection_bias)
