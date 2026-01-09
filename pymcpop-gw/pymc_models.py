@@ -3087,9 +3087,27 @@ def make_model(  priors,
             alpha2_0  = pm.Uniform("alpha2_0",  lower=priors["alpha2_0"][0],  upper=priors["alpha2_0"][1],  initval=ivals.get("alpha2_0"))
             mb_0      = pm.Uniform("mb_0",      lower=priors["mb_0"][0],      upper=priors["mb_0"][1],      initval=ivals.get("mb_0"))
             mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
-            sigma1_0  = pm.Uniform("sigma1_0",  lower=priors["sigma1_0"][0],  upper=priors["sigma1_0"][1],  initval=ivals.get("sigma1_0"))
+            
+            #sigma1_0  = pm.Uniform("sigma1_0",  lower=priors["sigma1_0"][0],  upper=priors["sigma1_0"][1],  initval=ivals.get("sigma1_0"))
+            sigma1_0 = pm.Truncated(
+                        "sigma1_0",
+                        pm.LogNormal.dist(mu=np.log(0.6), sigma=0.9),
+                        lower=priors["sigma1_0"][0],
+                        upper=priors["sigma1_0"][1],
+                        initval=ivals.get("sigma1_0"),
+                    )
+            
             mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
-            sigma2_0  = pm.Uniform("sigma2_0",  lower=priors["sigma2_0"][0],  upper=priors["sigma2_0"][1],  initval=ivals.get("sigma2_0"))
+            #sigma2_0  = pm.Uniform("sigma2_0",  lower=priors["sigma2_0"][0],  upper=priors["sigma2_0"][1],  initval=ivals.get("sigma2_0"))
+            sigma2_0 = pm.Truncated(
+                        "sigma2_0",
+                        pm.LogNormal.dist(mu=np.log(4.0), sigma=0.9),
+                        lower=priors["sigma2_0"][0],
+                        upper=priors["sigma2_0"][1],
+                        initval=ivals.get("sigma2_0"),
+                    )
+            
+            
             delta_m1_ = pm.Uniform("delta_m1",  lower=priors["delta_m1"][0],upper=priors["delta_m1"][1],initval=ivals.get("delta_m1"))
             
             # m1_low, m2_low, m_high as in your original block
@@ -3104,7 +3122,7 @@ def make_model(  priors,
             # secondary-mass hyperparams (unchanged unless you also evolve them)
             beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
             delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01).astype(X))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.1).astype(X))
             
             if has_m2_break:
                 print("Including gap for secondary mass")
@@ -3162,12 +3180,17 @@ def make_model(  priors,
                 priors=priors,
             )
         
-            mb_inf_,      z_mb_,      dz_mb_     = putils.evo_triplet(
-                "mb",
-                theta0_rv=mb_0,
-                ivals=ivals,
-                priors=priors,
-            )
+            # mb_inf_,      z_mb_,      dz_mb_     = putils.evo_triplet(
+            #     "mb",
+            #     theta0_rv=mb_0,
+            #     ivals=ivals,
+            #     priors=priors,
+            # )
+            
+            mb_inf_ = pm.Deterministic("mb_inf", mb_0) 
+            z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0).astype(X)) 
+            dz_mb_  = pm.Deterministic("dz_mb", at.as_tensor_variable(1.0).astype(X))  
+            
         
             mu1_inf_,     z_mu1_,     dz_mu1_    = putils.evo_triplet(
                 "mu1",
