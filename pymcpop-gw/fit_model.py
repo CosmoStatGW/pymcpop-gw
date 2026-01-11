@@ -233,8 +233,10 @@ def main():
     
     # base = os.environ.get("PYTENSOR_FLAGS", "")
     extra = [ "optimizer=fast_run" ]
-    if FLAGS.use_float32:
-        extra.append( "floatX=float32")
+    
+    #if FLAGS.use_float32:
+    #    extra.append( "floatX=float32")
+    
     # os.environ["PYTENSOR_FLAGS"] = (base + "," + extra).strip(",")
 
     for f in extra:
@@ -273,12 +275,6 @@ def main():
         jax.config.update("jax_default_matmul_precision", "highest")
 
     
-        # if FLAGS.use_float32:
-        #     os.environ.setdefault("JAX_ENABLE_X64", "False")
-        # else:
-        #     os.environ.setdefault("JAX_ENABLE_X64", "True")
-        #     os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"  # optional, newer JAX
-    
   
         # ----------------------------------------------------
         # 2️⃣ Import libraries (now they see the environment)
@@ -293,7 +289,6 @@ def main():
             jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
         else:
             jax.config.update("jax_debug_nans", False)
-        #jax.config.update("jax_default_matmul_precision", "tensorfloat32")
         jax.config.update("jax_default_matmul_precision", "highest")
 
         if FLAGS.chain_method == "parallel":
@@ -374,14 +369,6 @@ def main():
     import pytensor_tools as atools
     import pytensor_utils as autils
 
-    # if FLAGS.use_float32:
-    #     pytensor.config.floatX = "float32"
-    # else:
-    #     pytensor.config.floatX = "float64"
-
-    #pytensor.config.floatX = "float64"
-    
-    X = onp.float32 if FLAGS.use_float32 else onp.float64  # model dtype
 
 
     
@@ -397,10 +384,7 @@ def main():
 
     
     
-    if FLAGS.use_float32:
-        print("dtype test:", np.array(0., dtype=np.float32).dtype)
-    else:
-        print("dtype test:", np.array(0., dtype=np.float64).dtype)
+    print("dtype test:", np.array(0., dtype=np.float64).dtype)
     
     
     
@@ -453,16 +437,16 @@ def main():
         # allNgm = at.as_tensor_variable(data['allNgm'])
         # Nevents = at.as_tensor_variable(data['Nevents'])
 
-        samples_means_at = data['samples_means'].astype(X)
-        samples_cho_covs_at = (data['samples_cho_covs']*FLAGS.cho_dil).astype(X)
+        samples_means_at = data['samples_means']#.astype(X)
+        samples_cho_covs_at = (data['samples_cho_covs']*FLAGS.cho_dil)#.astype(X)
     
-        gmm_log_wts = data['gmm_log_wts'].astype(X)
-        gmm_means = data['gmm_means'].astype(X)
-        gmm_icovs =  data['gmm_icovs'].astype(X)
-        gmm_cho_covs =  data['gmm_cho_covs'].astype(X)
-        gmm_log_dets =  data['gmm_log_dets'].astype(X)
-        allNgm =  data['allNgm'].astype(X)
-        Nevents =  data['Nevents'].astype(X)
+        gmm_log_wts = data['gmm_log_wts']#.astype(X)
+        gmm_means = data['gmm_means']#.astype(X)
+        gmm_icovs =  data['gmm_icovs']#.astype(X)
+        gmm_cho_covs =  data['gmm_cho_covs']#.astype(X)
+        gmm_log_dets =  data['gmm_log_dets']#.astype(X)
+        allNgm =  data['allNgm']#.astype(X)
+        Nevents =  data['Nevents']#.astype(X)
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
@@ -563,17 +547,10 @@ def main():
 
     injections = dt.load_injections(FLAGS.fin_injections, allPercUse=FLAGS.n_inj_use)
 
-    if FLAGS.use_float32:
-        XI = X
-    else:
-        if FLAGS.use_float32_bias:
-            XI = np.float32
-        else:
-            XI = np.float64
     
     if FLAGS.is_compressed_inj:
         print("Injections obtained with compression.")
-        log_p_incl = injections['log_p_incl'].astype(XI)
+        log_p_incl = injections['log_p_incl']#.astype(XI)
     else:
         log_p_incl = []#np.full(len(injections['dL']), None)
         for _ in range(len(injections['dL'])):
@@ -589,12 +566,12 @@ def main():
         #         at.as_tensor_variable(injections['Ngen']), 
         #         at.as_tensor_variable(injections['Ndet']), 
         #           ]
-        InjData = [ injections['dL'].astype(XI), 
-                injections['m1d'].astype(XI), 
-                injections['m2d'].astype(XI), 
-                 injections['log_wt'].astype(XI), 
-                 injections['Ngen'].astype(XI), 
-                 injections['Ndet'].astype(XI), 
+        InjData = [ injections['dL'],#.astype(XI), 
+                injections['m1d'],#.astype(XI), 
+                injections['m2d'],#.astype(XI), 
+                 injections['log_wt'],#.astype(XI), 
+                 injections['Ngen'],#.astype(XI), 
+                 injections['Ndet'],#.astype(XI), 
                     log_p_incl
                   ]
     else:
@@ -609,14 +586,14 @@ def main():
             #     at.as_tensor_variable(injections['Ngen']), 
             #     at.as_tensor_variable(injections['Ndet']), 
             #       ]
-            InjData = [ injections['dL'].astype(XI), 
-                 injections['m1d'].astype(XI), 
-                 injections['m2d'].astype(XI), 
-                 injections['chieff'].astype(XI), 
-                 injections['chip'].astype(XI), 
-                 injections['log_wt'].astype(XI), 
-                 injections['Ngen'].astype(XI), 
-                injections['Ndet'].astype(XI), 
+            InjData = [ injections['dL'],#.astype(XI), 
+                 injections['m1d'],#.astype(XI), 
+                 injections['m2d'],#.astype(XI), 
+                 injections['chieff'],#.astype(XI), 
+                 injections['chip'],#.astype(XI), 
+                 injections['log_wt'],#.astype(XI), 
+                 injections['Ngen'], ##.astype(XI), 
+                injections['Ndet'],#.astype(XI), 
                         log_p_incl
                   ]
         elif FLAGS.spin_inj=='chi12xyz':
@@ -642,16 +619,16 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'].astype(XI), 
-                     injections['m1d'].astype(XI), 
-                     injections['m2d'].astype(XI), 
-                     chi1Inj.astype(XI), 
-                     chi2Inj.astype(XI),
-                     cost1Inj.astype(XI),
-                     cost2Inj.astype(XI),
-                     injections['log_wt'].astype(XI), 
-                     injections['Ngen'].astype(XI), 
-                     injections['Ndet'].astype(XI), 
+                InjData = [ injections['dL'], #.astype(XI), 
+                     injections['m1d'], #.astype(XI), 
+                     injections['m2d'],#.astype(XI), 
+                     chi1Inj, #, .astype(XI), 
+                     chi2Inj, #.astype(XI),
+                     cost1Inj, #.astype(XI),
+                     cost2Inj, #.astype(XI),
+                     injections['log_wt'], #.astype(XI), 
+                     injections['Ngen'], #.astype(XI), 
+                     injections['Ndet'], #.astype(XI), 
                             log_p_incl
                       ]
 
@@ -666,12 +643,12 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'].astype(XI), 
-                    injections['m1d'].astype(XI), 
-                    injections['m2d'].astype(XI), 
-                    injections['log_wt'].astype(XI), 
-                    injections['Ngen'].astype(XI), 
-                    injections['Ndet'].astype(XI), 
+                InjData = [ injections['dL'], #m .astype(XI), 
+                    injections['m1d'], #, .astype(XI), 
+                    injections['m2d'], #.astype(XI), 
+                    injections['log_wt'], #.astype(XI), 
+                    injections['Ngen'], #.astype(XI), 
+                    injections['Ndet'], #.astype(XI), 
                             log_p_incl
                       ]
                 
@@ -688,16 +665,16 @@ def main():
                 #     at.as_tensor_variable(injections['Ngen']), 
                 #     at.as_tensor_variable(injections['Ndet']), 
                 #       ]
-                InjData = [ injections['dL'].astype(XI), 
-                     injections['m1d'].astype(XI), 
-                     injections['m2d'].astype(XI), 
-                     injections['chi1'].astype(XI), 
-                     injections['chi2'].astype(XI),
-                     injections['cost1'].astype(XI),
-                     injections['cost2'].astype(XI),
-                    injections['log_wt'].astype(XI), 
-                     injections['Ngen'].astype(XI), 
-                     injections['Ndet'].astype(XI), 
+                InjData = [ injections['dL'], #.astype(XI), 
+                     injections['m1d'], # .astype(XI), 
+                     injections['m2d'], #.astype(XI), 
+                     injections['chi1'], #.astype(XI), 
+                     injections['chi2'], #.astype(XI),
+                     injections['cost1'], #.astype(XI),
+                     injections['cost2'], #.astype(XI),
+                    injections['log_wt'], #.astype(XI), 
+                     injections['Ngen'], #.astype(XI), 
+                     injections['Ndet'], #.astype(XI), 
                             log_p_incl
                       ]
         else:
@@ -709,21 +686,21 @@ def main():
     
         if 'gmm' in FLAGS.sampling_gw or 'gumbel' in FLAGS.sampling_gw:
             GWData =  [
-                       onp.exp(gmm_log_wts).astype(X), 
-                       gmm_means.astype(X), 
-                       gmm_cho_covs.astype(X), 
-                       injections['Tobs'].astype(X),
+                       onp.exp(gmm_log_wts), #.astype(X), 
+                       gmm_means, #.astype(X), 
+                       gmm_cho_covs, #.astype(X), 
+                       injections['Tobs'], #.astype(X),
                         Nevents
                       ]
         elif FLAGS.sampling_gw=='gauss':
-            GWData =  [samples_means_at.astype(X), 
-                       samples_cho_covs_at.astype(X), 
-                       gmm_log_wts.astype(X), 
-                       gmm_means.astype(X), 
-                       gmm_icovs.astype(X), 
-                       gmm_log_dets.astype(X), 
-                       gmm_cho_covs.astype(X),
-                       injections['Tobs'].astype(X),
+            GWData =  [samples_means_at, #.astype(X), 
+                       samples_cho_covs_at, #astype(X), 
+                       gmm_log_wts, #.astype(X), 
+                       gmm_means, #.astype(X), 
+                       gmm_icovs, #.astype(X), 
+                       gmm_log_dets, #.astype(X), 
+                       gmm_cho_covs, #.astype(X),
+                       injections['Tobs'], #.astype(X),
                        Nevents, 
                       ]
             

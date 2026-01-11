@@ -275,7 +275,7 @@ def build_zmax_envelope_from_corners(
         Resolution of the distance grid used to build the envelope.
     """
     # log-spaced distance grid (better coverage across many decades)
-    dL_grid = onp.geomspace(dL_min_gpc, dL_max_gpc, n_grid).astype(dtype)
+    dL_grid = onp.geomspace(dL_min_gpc, dL_max_gpc, n_grid)#.astype(dtype)
 
     H0_min, H0_max     = map(float, priors["H0"])
     Om_min, Om_max     = map(float, priors["Om"])

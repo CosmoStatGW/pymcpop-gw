@@ -19,6 +19,9 @@ import h5py
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
+eps   = 1e-30
+tinyL = 1e-300
+NEG_BIG = -np.inf
 
 
 #####################################################
@@ -47,8 +50,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 ):
 
 
-    work_dtype = getattr(m1s, "dtype", "float64")
-    print("work_dtype in log_p_pop call input is %s"%work_dtype)
+    # work_dtype = getattr(m1s, "dtype", "float64")
+    # print("work_dtype in log_p_pop call input is %s"%work_dtype)
     
     ###################################
     # get parameters and compute log p_pop
@@ -96,7 +99,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
 
         z_dpuc = at.log1p(z)
         
-        lpz = at.zeros(z.shape, dtype=work_dtype) #atools.log_dV_dz_at(z, H0, Om, w0, dc=dc ) #-z_dpuc
+        lpz = at.zeros(z.shape) #atools.log_dV_dz_at(z, H0, Om, w0, dc=dc ) #-z_dpuc
         
         istart = 5
 
@@ -123,8 +126,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         chieff, chip = spins[0], spins[1]
 
         lpspin = atools.logpdf_multivariate_trunc_2D(  chieff, chip, muE, muP, sigE, sigP, rho,
-                                                     at.as_tensor_variable(-1., dtype=work_dtype), at.as_tensor_variable(1., dtype=work_dtype), 
-                                                     at.as_tensor_variable(0., dtype=work_dtype), at.as_tensor_variable(1., dtype=work_dtype) 
+                                                     -1., 1., 
+                                                     0., 1.
                                                     )
         istart_spin = istart + 5
 
@@ -137,8 +140,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         sigP  = Lambda[istart + 3]
         chieff, chip = spins[0], spins[1]
 
-        lpchie = atools.truncGausslowerupper_at_lpdf(chieff, muE, sigE, xmin=at.as_tensor_variable(-1, dtype=work_dtype), xmax=at.as_tensor_variable(1, dtype=work_dtype))
-        lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=at.as_tensor_variable(0, dtype=work_dtype), xmax=at.as_tensor_variable(1, dtype=work_dtype))
+        lpchie = atools.truncGausslowerupper_at_lpdf(chieff, muE, sigE, xmin=-1., xmax=1.)
+        lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=0., xmax=1.)
 
         lpspin = lpchie+lpchip
         istart_spin = istart+4
@@ -167,7 +170,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
             print(  muChi.eval(), sigmaChi.eval(), zeta.eval(), sigmat.eval() )
    
     else:
-        lpspin = at.zeros( z.shape,  dtype=work_dtype )
+        lpspin = at.zeros( z.shape )
         istart_spin = istart
 
     
@@ -368,7 +371,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         elif rate_model=='PL' and is_observed:
             raise NotImplementedError()
         else:
-             log_Nz = at.zeros(m1s.shape, dtype=work_dtype)
+             log_Nz = at.zeros(m1s.shape)
 
         lpmass -= log_Nz 
 
@@ -388,7 +391,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         # 3) Quadratic form (x-μ)^T Σ^{-1} (x-μ) for all (k, n)
         #    Using batched matmul; result tmp is (K, N, 2), then rowwise dot with diff
         tmp  = at.matmul(diff, fishers)            # (K, N, 2)
-        quad = at.sum(diff * tmp, axis=2, dtype=work_dtype, acc_dtype="float64")          # (K, N)
+        quad = at.sum(diff * tmp, axis=2)          # (K, N)
         
         # 4) Component log-densities (MvN with precision)
         nd = 2
@@ -433,7 +436,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     else:
         log_dthD_dth = log_ddL_dz_pre
         
-    log_dthD_dth += at.as_tensor_variable(2., dtype=work_dtype)*at.log1p(z)
+    log_dthD_dth += 2*at.log1p(z)
         
     #else:
     #    log_dthD_dth = at.zeros(z.shape)
@@ -444,23 +447,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
     
     lp =  lpz - log_dthD_dth  + lpmass + lpspin 
 
-    #MIN = at.as_tensor_variable(-1e30,  dtype=z.dtype)
 
-    work_dtype = getattr(lpmass, "dtype", "float64")
-    print("work_dtype in log_p_pop lpmass output is %s"%work_dtype)
-
-    work_dtype = getattr(lpz, "dtype", "float64")
-    print("work_dtype in log_p_pop lpz output is %s"%work_dtype)
-
-    work_dtype = getattr(log_dthD_dth, "dtype", "float64")
-    print("work_dtype in log_p_pop log_dthD_dth output is %s"%work_dtype)
-
-    work_dtype = getattr(lpspin, "dtype", "float64")
-    print("work_dtype in log_p_pop lpspin output is %s"%work_dtype)
-
-    work_dtype = getattr(lp, "dtype", "float64")
-    print("work_dtype in log_p_pop call output is %s"%work_dtype)
-    return lp #at.where(in_support, lp, MIN)
+    return lp 
 
 
 
@@ -491,15 +479,6 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                    verbose=False,
                                     **kwargs):
 
-    work_dtype = getattr(m1inj, "dtype", "float64")
-
-    if work_dtype == "float32":
-        # reasonable tiny values in float32
-        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
-    else:
-        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
 
     #H0, Om, w0, Xi0, n  = Lambda[:5]
     H0  = Lambda[0]
@@ -578,7 +557,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
         log_sel_b = log_sel_b - log_p_incl
 
     # Ndraw must be a symbolic tensor with a floating dtype for logs
-    Ndraw_t = at.as_tensor_variable(Ndraw)#.astype(m1inj.dtype)
+    Ndraw_t = Ndraw
     
     log_mu = at.logsumexp(log_sel_b, ) - at.log(Ndraw_t)
     
@@ -613,7 +592,7 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw_t-1)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw_t-1.)
 
     Neff = at.exp(logNeff)
     
@@ -653,14 +632,14 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 ):
     """Scan/batched version of `sel_bias_with_uncertainty_at_0`."""
 
-    work_dtype = getattr(m1inj, "dtype", "float64")
-    print("work_dtype in sel_bias_with_uncertainty_at_0_batched_scan is %s"%work_dtype)
+    #work_dtype = getattr(m1inj, "dtype", "float64")
+    #print("work_dtype in sel_bias_with_uncertainty_at_0_batched_scan is %s"%work_dtype)
     
-    def _as_at(x):
-        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+    #def _as_at(x):
+    #    return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
 
     def _pad_to_multiple(x, k, pad_value):
-        x = _as_at(x)
+        #x = _as_at(x)
         if x.ndim != 1:
             x = at.flatten(x, 1)
         N = x.shape[0]
@@ -668,8 +647,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
         Npad = C * k - N
         pad = at.full(
             (Npad,),
-            at.as_tensor_variable(pad_value, dtype=x.dtype),
-            dtype=x.dtype,
+            pad_value, #at.as_tensor_variable(pad_value, dtype=x.dtype),
+            #dtype=x.dtype,
         )
         xpad = at.concatenate([x, pad], axis=0)
         return xpad.reshape((C, k)), C, N
@@ -681,10 +660,15 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
         return m_new, s_new
 
     # base tensors
-    m1_all   = _as_at(m1inj)
-    m2_all   = _as_at(m2inj)
-    dL_all   = _as_at(dLinj)
-    lpd_all  = _as_at(log_p_draw)
+    #m1_all   = _as_at(m1inj)
+    #m2_all   = _as_at(m2inj)
+    #dL_all   = _as_at(dLinj)
+    #lpd_all  = _as_at(log_p_draw)
+
+    m1_all   = m1inj
+    m2_all   = m2inj
+    dL_all   = dLinj
+    lpd_all  = log_p_draw
 
     # Lambda is a *sequence* (can be heterogeneous for DPUC etc.)
     Lambda_seq = list(Lambda)
@@ -702,14 +686,15 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
  
     # spins
     spin_is_default = (spin_model in ("default", "default_gauss"))
-    if spin_is_default:
-        s1_all  = _as_at(spinsInj[0])
-        s2_all  = _as_at(spinsInj[1])
-        ct1_all = _as_at(spinsInj[2])
-        ct2_all = _as_at(spinsInj[3])
+    #if spin_is_default:
+    #    s1_all  = _as_at(spinsInj[0])
+    #    s2_all  = _as_at(spinsInj[1])
+    #    ct1_all = _as_at(spinsInj[2])
+    #    ct2_all = _as_at(spinsInj[3])
 
-    work_dtype = getattr(m1_all, "dtype", "float64")
-    int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    #work_dtype = getattr(m1_all, "dtype", "float64")
+    #int_dtype  = "int32" if work_dtype in ("float16", "float32") else "int64"
+    
     K = int(chunk_size)
 
     # pad & mask
@@ -726,18 +711,20 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     # optional per-injection inclination prior
     have_log_p_incl = log_p_incl is not None
     if have_log_p_incl:
-        log_p_incl_all = _as_at(log_p_incl)
+        #log_p_incl_all = _as_at(log_p_incl)
         lpicK, _, _ = _pad_to_multiple(log_p_incl_all, K, 0.0)
     else:
         lpicK = None
 
-    idxs = at.arange(C, dtype=int_dtype)
-    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
-    NEG_BIG = at.as_tensor_variable(-np.inf, dtype=work_dtype) 
-    if work_dtype == "float32":
-        eps = at.as_tensor_variable(1e-20, dtype=work_dtype)
-    else:
-        eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    idxs = at.arange(C)
+    valid_mask = (at.arange(C * K) < N).reshape((C, K))
+    
+     #at.as_tensor_variable(-np.inf, dtype=work_dtype) 
+    
+    # if work_dtype == "float32":
+    #     eps = at.as_tensor_variable(1e-20, dtype=work_dtype)
+    # else:
+    #     eps = at.as_tensor_variable(1e-30, dtype=work_dtype)
         
     # z(dL) / dc / log_ddL_dz via grids (optional)
     have_dLz = (dL_grid is not None) and (z_grid is not None)
@@ -745,10 +732,14 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     have_logdd_grid = (log_ddL_dz_grid is not None)
 
     if have_dLz:
-        dL_grid_t = _as_at(dL_grid)
-        z_grid_t  = _as_at(z_grid)
-        dc_grid_t = _as_at(dc_grid) if have_dc_grid else None
-        logdd_grid_t = _as_at(log_ddL_dz_grid) if have_logdd_grid else None
+        dL_grid_t = dL_grid #_as_at(dL_grid)
+        z_grid_t  = z_grid #_as_at(z_grid)
+        #dc_grid_t = _as_at(dc_grid) if have_dc_grid else None
+        #logdd_grid_t = _as_at(log_ddL_dz_grid) if have_logdd_grid else None
+
+        dc_grid_t = dc_grid if have_dc_grid else None
+        logdd_grid_t = log_ddL_dz_grid if have_logdd_grid else None
+        
 
     # mass interpolation (precomputed grids)
     have_interp_mass = (interp_vals_mass is not None) and (interp_grids_mass is not None)
@@ -920,8 +911,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
             m = at.max(x)
             y = at.exp(x - m)
-            s1c = at.sum(y, dtype=work_dtype, acc_dtype="float64")
-            s2c = at.sum(at.sqr(y), dtype=work_dtype, acc_dtype="float64")
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
 
             m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
             m2c = 2.0 * m
@@ -1073,8 +1064,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
 
             m = at.max(x)
             y = at.exp(x - m)
-            s1c = at.sum(y, dtype=work_dtype, acc_dtype="float64")
-            s2c = at.sum(at.sqr(y), dtype=work_dtype, acc_dtype="float64")
+            s1c = at.sum(y)
+            s2c = at.sum(at.sqr(y))
 
             m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,  s1c)
             m2c = 2.0 * m
@@ -1082,8 +1073,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
             return m_new, m2_new, s1_new, s2_new
 
     # non_sequences
-    m_init = at.as_tensor_variable(-at.inf, dtype=work_dtype)
-    s_init = at.as_tensor_variable(0.0,    dtype=work_dtype)
+    m_init = at.as_tensor_variable(-np.inf, dtype="float64")
+    s_init = at.as_tensor_variable(0.0,     dtype="float64")
 
     nonseq = [m1K, m2K, dLK, lpdK, valid_mask]
     # unpack Lambda components (critical for DPUC)
@@ -1112,18 +1103,18 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
         profile=True
     )
 
-    if work_dtype == "float32":
-        # reasonable tiny values in float32
-        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
-    else:
-        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
+    # if work_dtype == "float32":
+    #     # reasonable tiny values in float32
+    #     eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
+    #     tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
+    # else:
+    #     eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
+    #     tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
         
     logsumexp1 = m_fin[-1]  + at.log(at.maximum(s1_fin[-1], tinyL))
     logsumexp2 = m2_fin[-1] + at.log(at.maximum(s2_fin[-1], tinyL))
 
-    Ndraw_t = at.as_tensor_variable(Ndraw)#.astype(work_dtype)
+    Ndraw_t = Ndraw #at.as_tensor_variable(Ndraw)#.astype(work_dtype)
     log_mu  = logsumexp1 - at.log(Ndraw_t)
     logs2   = logsumexp2 - at.log(Ndraw_t)
     logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
@@ -1179,11 +1170,11 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         except Exception:
             return x
 
-    def _as_at(x):
-        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
+    # def _as_at(x):
+    #     return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
 
     def _val(x):
-        return _replace_rvs_by_values_compat(_as_at(x))
+        return _replace_rvs_by_values_compat(x) #_as_at(x))
 
     # stop_grad compat
     try:
@@ -1204,8 +1195,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         Npad = C * k - N
         pad = at.full(
             (Npad,),
-            at.as_tensor_variable(pad_value, dtype=x.dtype),
-            dtype=x.dtype,
+            pad_value, #at.as_tensor_variable(pad_value, dtype=x.dtype),
+            #dtype=x.dtype,
         )
         xpad = at.concatenate([x, pad], axis=0)
         return xpad.reshape((C, k)), C, N
@@ -1233,25 +1224,26 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     dL_all  = _val(dLinj)
     lpd_all = _val(log_p_draw)
 
-    work_dtype = getattr(m1_all, "dtype", "float64")
+    #work_dtype = getattr(m1_all, "dtype", "float64")
 
     # IMPORTANT: OOM-safe mixed precision
     # - big arrays stay in work_dtype (often float32)
     # - all chunk-local compute + accumulators run in compute_dtype
-    compute_dtype = "float64" if str(work_dtype) == "float32" else work_dtype
-    accum_dtype = compute_dtype
+    
+    # compute_dtype = "float64" if str(work_dtype) == "float32" else work_dtype
+    # accum_dtype = compute_dtype
 
     K = int(chunk_size)
 
     # eps/tiny in compute dtype (numerical safety for logs)
-    if str(compute_dtype) == "float32":
-        eps   = at.as_tensor_variable(1e-20, dtype=compute_dtype)
-        tinyL = at.as_tensor_variable(1e-30, dtype=compute_dtype)
-    else:
-        eps   = at.as_tensor_variable(1e-30,  dtype=compute_dtype)
-        tinyL = at.as_tensor_variable(1e-300, dtype=compute_dtype)
+    # if str(compute_dtype) == "float32":
+    #     eps   = at.as_tensor_variable(1e-20, dtype=compute_dtype)
+    #     tinyL = at.as_tensor_variable(1e-30, dtype=compute_dtype)
+    # else:
+    #     eps   = at.as_tensor_variable(1e-30,  dtype=compute_dtype)
+    #     tinyL = at.as_tensor_variable(1e-300, dtype=compute_dtype)
 
-    neg_inf = at.as_tensor_variable(-np.inf, dtype=compute_dtype)
+    #neg_inf = at.as_tensor_variable(-np.inf, dtype=compute_dtype)
 
 
     # -----------------------------
@@ -1285,7 +1277,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         lpicK, _, _ = _pad_to_multiple_1d(lpic_all, K, 0.0)
     else:
         # keep same dtype as lpdK (work_dtype)
-        lpicK = at.zeros_like(lpdK, dtype=work_dtype)
+        lpicK = at.zeros_like(lpdK)
 
     if spin_is_default:
         s1K,  _, _ = _pad_to_multiple_1d(_val(spinsInj[0]), K, 0.0)
@@ -1293,8 +1285,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         ct1K, _, _ = _pad_to_multiple_1d(_val(spinsInj[2]), K, 1.0)
         ct2K, _, _ = _pad_to_multiple_1d(_val(spinsInj[3]), K, 1.0)
 
-    int_dtype = "int32"
-    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
+    #int_dtype = "int32"
+    valid_mask = (at.arange(C * K) < N).reshape((C, K))
 
     # -----------------------------
     # Grids (VALUE vars)
@@ -1311,8 +1303,8 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         dL_flat = dLK.reshape((-1,))
         idx_flat, r_flat = atools._interp_indices_nonuniform(dL_flat, dL_grid_t)
 
-        idx_flat = stop_grad(idx_flat).astype(int_dtype)
-        r_flat   = stop_grad(r_flat).astype(work_dtype)
+        idx_flat = stop_grad(idx_flat)#.astype(int_dtype)
+        r_flat   = stop_grad(r_flat)#.astype(work_dtype)
 
         idxK = idx_flat.reshape((C, K))
         rK   = r_flat.reshape((C, K))
@@ -1324,14 +1316,14 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             ilK = idxK - 1
             ihK = idxK
             # These become (C,K) arrays; keep them in work_dtype to reduce memory
-            zK = ((1.0 - rK) * z_grid_t[ilK] + rK * z_grid_t[ihK]).astype(work_dtype)
+            zK = ((1.0 - rK) * z_grid_t[ilK] + rK * z_grid_t[ihK])#.astype(work_dtype)
 
             dcK = None
             logddK = None
             if have_dc_grid:
-                dcK = ((1.0 - rK) * dc_grid_t[ilK] + rK * dc_grid_t[ihK]).astype(work_dtype)
+                dcK = ((1.0 - rK) * dc_grid_t[ilK] + rK * dc_grid_t[ihK])#.astype(work_dtype)
             if have_logdd_grid:
-                logddK = ((1.0 - rK) * logdd_grid_t[ilK] + rK * logdd_grid_t[ihK]).astype(work_dtype)
+                logddK = ((1.0 - rK) * logdd_grid_t[ilK] + rK * logdd_grid_t[ihK])#.astype(work_dtype)
         else:
             zK = dcK = logddK = None
 
@@ -1342,11 +1334,11 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         # tail layout: [Lambda..., interp_vals..., interp_grids...]
         Lambda_flat = tail[:n_Lambda]
         # Cast cosmology params to compute_dtype INSIDE scan
-        H0  = at.cast(Lambda_flat[0], compute_dtype)
-        Om  = at.cast(Lambda_flat[1], compute_dtype)
-        w0  = at.cast(Lambda_flat[2], compute_dtype)
-        Xi0 = at.cast(Lambda_flat[3], compute_dtype)
-        n_  = at.cast(Lambda_flat[4], compute_dtype)
+        H0  = Lambda_flat[0]
+        Om  = Lambda_flat[1]
+        w0  = Lambda_flat[2]
+        Xi0 = Lambda_flat[3]
+        n_  = Lambda_flat[4]
 
         if have_interp_mass:
             iv = list(tail[n_Lambda:n_Lambda + n_iv])
@@ -1356,7 +1348,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             ig = None
 
         # Also cast the Lambda vector passed to log_p_pop to compute_dtype (small)
-        Lambda_cast = [at.cast(v, compute_dtype) for v in Lambda_flat]
+        Lambda_cast = [ v for v in Lambda_flat]
         return Lambda_cast, H0, Om, w0, Xi0, n_, iv, ig
 
     def _cosmo_direct(dL_chunk, H0, Om, w0, Xi0, n_):
@@ -1366,7 +1358,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         return z, dc, logdd
 
     def _mass_inputs(m1, m2, z):
-        one_p_z = at.as_tensor_variable(1.0, dtype=compute_dtype) + z
+        one_p_z = 1.0 + z #at.as_tensor_variable(1.0, dtype=compute_dtype) + z
         m1Src = m1 / one_p_z
         m2Src = m2 / one_p_z
         if use_dp:
@@ -1439,17 +1431,17 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         mask = args[pos]; pos += 1
 
         # Cast ONLY the chunk vectors to compute_dtype (this is the key)
-        m1 = at.cast(m1, compute_dtype)
-        m2 = at.cast(m2, compute_dtype)
-        dL = at.cast(dL, compute_dtype)
-        lpd = at.cast(lpd, compute_dtype)
-        lpic = at.cast(lpic, compute_dtype)
+        # m1 = at.cast(m1, compute_dtype)
+        # m2 = at.cast(m2, compute_dtype)
+        # dL = at.cast(dL, compute_dtype)
+        # lpd = at.cast(lpd, compute_dtype)
+        # lpic = at.cast(lpic, compute_dtype)
 
         if spin_is_default:
-            s1  = at.cast(args[pos],   compute_dtype)
-            s2  = at.cast(args[pos+1], compute_dtype)
-            ct1 = at.cast(args[pos+2], compute_dtype)
-            ct2 = at.cast(args[pos+3], compute_dtype)
+            s1  = args[pos]#,   compute_dtype)
+            s2  = args[pos+1]#, compute_dtype)
+            ct1 = args[pos+2]#, compute_dtype)
+            ct2 = args[pos+3]#, compute_dtype)
             pos += 4
             spins_use = [s1, s2, ct1, ct2]
         else:
@@ -1461,18 +1453,18 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
 
         if have_dLz:
             if hoist_interp_outputs:
-                z = at.cast(args[pos], compute_dtype); pos += 1
+                z = args[pos]; pos += 1
                 if have_dc_grid:
-                    dc = at.cast(args[pos], compute_dtype); pos += 1
+                    dc = args[pos]; pos += 1
                 if have_logdd_grid:
-                    logdd = at.cast(args[pos], compute_dtype); pos += 1
+                    logdd = args[pos]; pos += 1
                 if (not have_dc_grid) or (not have_logdd_grid):
                     idxs_loc = args[pos]
-                    r = at.cast(args[pos+1], compute_dtype)
+                    r = args[pos+1]
                     pos += 2
             else:
                 idxs_loc = args[pos]
-                r = at.cast(args[pos+1], compute_dtype)
+                r = args[pos+1]
                 pos += 2
 
         # ---- rolling states (float64 if compute_dtype=float64)
@@ -1502,13 +1494,13 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             if z is None:
                 il = idxs_loc - 1
                 ih = idxs_loc
-                z = (1.0 - r) * at.cast(z_grid_t_local[il], compute_dtype) + r * at.cast(z_grid_t_local[ih], compute_dtype)
+                z = (1.0 - r) * z_grid_t_local[il] + r * z_grid_t_local[ih]
 
             if dc is None:
                 if have_dc_grid:
                     il = idxs_loc - 1
                     ih = idxs_loc
-                    dc = (1.0 - r) * at.cast(dc_grid_t_local[il], compute_dtype) + r * at.cast(dc_grid_t_local[ih], compute_dtype)
+                    dc = (1.0 - r) * dc_grid_t_local[il] + r * dc_grid_t_local[ih]
                 else:
                     dc = atools.dcfun_at(z, H0, Om, w0, interp=interp)
 
@@ -1516,7 +1508,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
                 if have_logdd_grid:
                     il = idxs_loc - 1
                     ih = idxs_loc
-                    logdd = (1.0 - r) * at.cast(logdd_grid_t_local[il], compute_dtype) + r * at.cast(logdd_grid_t_local[ih], compute_dtype)
+                    logdd = (1.0 - r) * logdd_grid_t_local[il] + r * logdd_grid_t_local[ih]
                 else:
                     logdd = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n_, dc=dc, interp=interp, param=param)
         else:
@@ -1539,7 +1531,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             interp_grids_mass=ig,
             verbose=verbose,
         )
-        lp = at.cast(lp, compute_dtype)
+        #lp = at.cast(lp, compute_dtype)
 
         if use_dp:
             lp = _dp_jacobian_fix(lp, m1Src, m2Src, z)
@@ -1547,27 +1539,27 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         # -----------------------------
         # Chunk reduction (keep it in accum_dtype)
         # -----------------------------
-        x = at.where(mask, lp - lpd - lpic, neg_inf)  # compute_dtype
+        x = at.where(mask, lp - lpd - lpic, NEG_BIG)  # compute_dtype
         m = at.max(x)                                # compute_dtype
         y = at.exp(x - m)                            # compute_dtype
 
         # sums in float64 (or compute_dtype if already float64)
-        s1c = at.sum(y,     dtype=accum_dtype, acc_dtype=accum_dtype)
-        s2c = at.sum(y * y, dtype=accum_dtype, acc_dtype=accum_dtype)
+        s1c = at.sum(y)
+        s2c = at.sum(y * y)
 
         # promote m to accum dtype for stable accumulation
-        m = at.cast(m, accum_dtype)
+        #m = at.cast(m, accum_dtype)
 
         m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,   s1c)
-        m2c = at.as_tensor_variable(2.0, dtype=accum_dtype) * m
+        m2c = 2.0 * m #at.as_tensor_variable(2.0, dtype=accum_dtype) * m
         m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
         return m_new, m2_new, s1_new, s2_new
 
     # -----------------------------
     # Run scan (scan over chunks C)
     # -----------------------------
-    m_init = at.as_tensor_variable(-np.inf, dtype=accum_dtype)
-    s_init = at.as_tensor_variable(0.0,     dtype=accum_dtype)
+    m_init = at.as_tensor_variable(-np.inf, dtype="float64")
+    s_init = at.as_tensor_variable(0.0,     dtype="float64")
 
     scan_kwargs = dict(
         fn=step,
@@ -1598,488 +1590,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     logsumexp1 = m_last  + at.log(at.maximum(s1_last, tinyL))
     logsumexp2 = m2_last + at.log(at.maximum(s2_last, tinyL))
 
-    Ndraw_t = at.cast(at.as_tensor_variable(Ndraw), accum_dtype)
-    log_mu  = logsumexp1 - at.log(Ndraw_t)
-    logs2   = logsumexp2 - at.log(Ndraw_t)
-
-    logNeff = at.as_tensor_variable(2.0, dtype=accum_dtype) * log_mu - logs2 + at.log(Ndraw_t)
-    Neff    = at.exp(logNeff)
-
-    var_log_lik_u = (
-        atools.logdiffexp(logs2 - at.as_tensor_variable(2.0, dtype=accum_dtype) * log_mu, 1.0)
-        - at.log(Ndraw_t - at.as_tensor_variable(1.0, dtype=accum_dtype))
-    )
-
-    return log_mu, Neff, var_log_lik_u
-
-    
-
-def sel_bias_with_uncertainty_at_0_batched_scan_GPU_nocast(
-    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
-    Lambda, Ndraw,
-    rate_model, mass_model, spin_model,
-    smoothing,
-    simplex_repair,
-    has_m2_break,
-    interp,
-    log_p_incl=None,
-    # kept for API compat (ignored if dL_grid / z_grid are provided)
-    log_ddL_dz_inj=None,
-    zinj=None,
-    dcinj=None,
-    # grids ONLY for dL->z (and optionally dc, log_ddL_dz as functions of dL)
-    dL_grid=None,               # 1-D, increasing in dL
-    z_grid=None,                # 1-D, z(dL_grid)
-    dc_grid=None,               # 1-D, dc(dL_grid) or dc(z_grid)
-    log_ddL_dz_grid=None,       # 1-D, log ddL/dz (dL_grid or z_grid)
-    *,
-    chunk_size=4096,
-    param='vanilla',
-    interp_vals_mass=None,
-    interp_grids_mass=None,
-    verbose=False,
-    # NEW: hoist interpolation outputs out of scan (OPTION C) ONLY for grid-based pieces.
-    # This can speed sampling, but may increase memory by ~N * (#extra arrays) * itemsize.
-    # Default False to be OOM-safe.
-    hoist_interp_outputs=False,
-    **kwargs
-):
-    import numpy as np
-    import pytensor
-    import pytensor.tensor as at
-
-    # -----------------------------
-    # PyMC-safe "RV -> value var"
-    # -----------------------------
-    def _replace_rvs_by_values_compat(x):
-        try:
-            import pymc as pm
-            model = pm.modelcontext(None)
-            return model.replace_rvs_by_values([x])[0]
-        except Exception:
-            return x
-
-    def _as_at(x):
-        return x if isinstance(x, at.Variable) else at.as_tensor_variable(x)
-
-    def _val(x):
-        return _replace_rvs_by_values_compat(_as_at(x))
-
-    def _pad_to_multiple_1d(x, k, pad_value):
-        x = _val(x)
-        if x.ndim != 1:
-            x = at.flatten(x, 1)
-        N = x.shape[0]
-        C = (N + k - 1) // k
-        Npad = C * k - N
-        pad = at.full(
-            (Npad,),
-            at.as_tensor_variable(pad_value, dtype=x.dtype),
-            dtype=x.dtype,
-        )
-        xpad = at.concatenate([x, pad], axis=0)
-        return xpad.reshape((C, k)), C, N
-
-    def _combine_logsumexp(m_s, s_s, m_c, s_c):
-        m_new = at.maximum(m_s, m_c)
-        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
-        return m_new, s_new
-
-    # -----------------------------
-    # Flags / constants
-    # -----------------------------
-    spin_is_default  = (spin_model in ("default", "default_gauss"))
-    use_dp           = (mass_model in ("DP", "DPUC"))
-    have_dLz         = (dL_grid is not None) and (z_grid is not None)
-    have_dc_grid     = (dc_grid is not None)
-    have_logdd_grid  = (log_ddL_dz_grid is not None)
-    have_interp_mass = (interp_vals_mass is not None) and (interp_grids_mass is not None)
-
-    # -----------------------------
-    # Base tensors
-    # -----------------------------
-    m1_all  = _val(m1inj)
-    m2_all  = _val(m2inj)
-    dL_all  = _val(dLinj)
-    lpd_all = _val(log_p_draw)
-
-    work_dtype = getattr(m1_all, "dtype", "float64")
-    #accum_dtype = "float64" if str(work_dtype) == "float32" else work_dtype
-    accum_dtype = work_dtype
-    print("work_dtype in sel_bias_with_uncertainty_at_0_batched_scan_GPU is %s"%work_dtype)
-    print("accum_dtype in sel_bias_with_uncertainty_at_0_batched_scan_GPU is %s"%accum_dtype)
-    
-    K = int(chunk_size)
-
-    if work_dtype == "float32":
-        # reasonable tiny values in float32
-        eps   = at.as_tensor_variable(1e-20, dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-30, dtype=work_dtype)
-        neg_inf = at.as_tensor_variable(-np.inf, dtype=work_dtype)
-    else:
-        eps   = at.as_tensor_variable(1e-30,  dtype=work_dtype)
-        tinyL = at.as_tensor_variable(1e-300, dtype=work_dtype)
-        neg_inf = at.as_tensor_variable(-np.inf, dtype=work_dtype)
-    
-  
-    # -----------------------------
-    # Lambda / interp tables as VALUE vars
-    # -----------------------------
-    Lambda_seq = [_val(v) for v in list(Lambda)]
-    n_Lambda = len(Lambda_seq)
-
-    if have_interp_mass:
-        interp_vals_arg  = [_val(v) for v in list(interp_vals_mass)]
-        interp_grids_arg = [_val(v) for v in list(interp_grids_mass)]
-        n_iv = len(interp_vals_arg)
-        n_ig = len(interp_grids_arg)
-    else:
-        interp_vals_arg = None
-        interp_grids_arg = None
-        n_iv = 0
-        n_ig = 0
-
-    # -----------------------------
-    # Pad & mask (C chunks of length K)
-    # -----------------------------
-    m1K, C, N  = _pad_to_multiple_1d(m1_all,  K, 2.0)
-    m2K, _, _  = _pad_to_multiple_1d(m2_all,  K, 1.0)
-    dLK, _, _  = _pad_to_multiple_1d(dL_all,  K, 1.0)
-    lpdK, _, _ = _pad_to_multiple_1d(lpd_all, K, 0.0)
-
-    if log_p_incl is not None:
-        lpic_all = _val(log_p_incl)
-        lpicK, _, _ = _pad_to_multiple_1d(lpic_all, K, 0.0)
-    else:
-        lpicK = at.zeros_like(lpdK, dtype=work_dtype)
-
-    if spin_is_default:
-        s1K,  _, _ = _pad_to_multiple_1d(_val(spinsInj[0]), K, 0.0)
-        s2K,  _, _ = _pad_to_multiple_1d(_val(spinsInj[1]), K, 0.0)
-        ct1K, _, _ = _pad_to_multiple_1d(_val(spinsInj[2]), K, 1.0)
-        ct2K, _, _ = _pad_to_multiple_1d(_val(spinsInj[3]), K, 1.0)
-
-    int_dtype = "int32"
-    valid_mask = (at.arange(C * K, dtype=int_dtype) < N).reshape((C, K))
-
-    # -----------------------------
-    # Grids (VALUE vars)
-    # -----------------------------
-    if have_dLz:
-        dL_grid_t = _val(dL_grid)
-        z_grid_t  = _val(z_grid)
-        dc_grid_t = _val(dc_grid) if have_dc_grid else None
-        logdd_grid_t = _val(log_ddL_dz_grid) if have_logdd_grid else None
-
-        # HOIST 1: indices + r out of scan (always safe; already what you did)
-        dL_flat = dLK.reshape((-1,))
-        idx_flat, r_flat = atools._interp_indices_nonuniform(dL_flat, dL_grid_t)
-
-        # stop-grad: idx/r are purely bookkeeping
-        idx_flat = stop_grad(idx_flat)#.astype(int_dtype)
-        r_flat   = stop_grad(r_flat)
-
-        idxK = idx_flat.reshape((C, K))
-        rK   = r_flat.reshape((C, K))
-
-        # Avoid idx=0 edge cases
-        idxK = at.clip(idxK, 1, dL_grid_t.shape[0] - 1)
-
-        # HOIST 2 (OPTION C): optionally hoist z/dc/logdd-from-grid OUTSIDE scan
-        # This adds extra (C,K) arrays → can OOM on GPU for huge N.
-        # Default False.
-        if hoist_interp_outputs:
-            ilK = idxK - 1
-            ihK = idxK
-
-            zK = (1.0 - rK) * z_grid_t[ilK] + rK * z_grid_t[ihK]
-
-            dcK = None
-            logddK = None
-
-            if have_dc_grid:
-                dcK = (1.0 - rK) * dc_grid_t[ilK] + rK * dc_grid_t[ihK]
-            if have_logdd_grid:
-                logddK = (1.0 - rK) * logdd_grid_t[ilK] + rK * logdd_grid_t[ihK]
-        else:
-            zK = dcK = logddK = None
-
-    # -----------------------------
-    # Helpers used in step
-    # -----------------------------
-    def _unpack_tail(tail):
-        # tail layout: [Lambda..., interp_vals..., interp_grids...]
-        Lambda_flat = tail[:n_Lambda]
-        H0  = Lambda_flat[0]
-        Om  = Lambda_flat[1]
-        w0  = Lambda_flat[2]
-        Xi0 = Lambda_flat[3]
-        n_  = Lambda_flat[4]
-        if have_interp_mass:
-            iv = list(tail[n_Lambda:n_Lambda + n_iv])
-            ig = list(tail[n_Lambda + n_iv:n_Lambda + n_iv + n_ig])
-        else:
-            iv = None
-            ig = None
-        return Lambda_flat, H0, Om, w0, Xi0, n_, iv, ig
-
-    def _cosmo_direct(dL_chunk, H0, Om, w0, Xi0, n_):
-        z = atools.z_from_dL_at(dL_chunk, H0, Om, w0, Xi0, n_, interp=interp, param=param)
-        dc = atools.dcfun_at(z, H0, Om, w0, interp=interp)
-        logdd = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n_, dc=dc, interp=interp, param=param)
-        return z, dc, logdd
-
-    def _mass_inputs(m1, m2, z):
-        one_p_z = 1.0 + z
-        m1Src = m1 / one_p_z
-        m2Src = m2 / one_p_z
-        if use_dp:
-            Mc, q = atools.Mcq_from_m1m2_at(m1Src, m2Src)
-            mass_1_use = at.log(at.maximum(Mc, eps))
-            mass_2_use = atools.logitat(q)
-        else:
-            mass_1_use = m1Src
-            mass_2_use = m2Src
-        return mass_1_use, mass_2_use, m1Src, m2Src
-
-    def _dp_jacobian_fix(lp, m1Src, m2Src, z):
-        lp = (
-            lp
-            - at.log(at.maximum(m2Src, eps))
-            - at.log(at.maximum(m1Src - m2Src, eps))
-        )
-        if rate_model in ("DPUC", "DPUC-vol"):
-            lp = lp - at.log1p(z)
-        return lp
-
-    # -----------------------------
-    # Build scan sequences (PER-CHUNK)
-    # -----------------------------
-    seqs = [m1K, m2K, dLK, lpdK, lpicK, valid_mask]
-
-    if spin_is_default:
-        seqs += [s1K, s2K, ct1K, ct2K]
-
-    if have_dLz:
-        if hoist_interp_outputs:
-            # Prefer passing hoisted z/dc/logdd as sequences when available.
-            seqs += [zK]
-            if have_dc_grid:
-                seqs += [dcK]
-            if have_logdd_grid:
-                seqs += [logddK]
-            # If some are missing, we’ll still need idx/r for the missing parts
-            if (not have_dc_grid) or (not have_logdd_grid):
-                seqs += [idxK, rK]
-        else:
-            seqs += [idxK, rK]
-
-    # -----------------------------
-    # Non-sequences: grids + tail
-    # -----------------------------
-    nonseq = []
-    if have_dLz:
-        nonseq += [z_grid_t]
-        if have_dc_grid:
-            nonseq += [dc_grid_t]
-        if have_logdd_grid:
-            nonseq += [logdd_grid_t]
-
-    nonseq += Lambda_seq
-    if have_interp_mass:
-        nonseq += interp_vals_arg
-        nonseq += interp_grids_arg
-
-    # -----------------------------
-    # Step function (NO slicing with [i]; consumes chunk tensors directly)
-    # -----------------------------
-    def step(*args):
-        """
-        args layout:
-          sequences...,
-          m_state, m2_state, s1_state, s2_state,
-          nonseq... (grids...), tail...
-        """
-        # ---- unpack the rolling states (always last 4 before nonseq)
-        # We don’t know how many sequences were included without re-deriving;
-        # we’ll parse in the same order we built `seqs` and `nonseq`.
-
-        pos = 0
-
-        # ---- sequences (fixed front)
-        m1 = args[pos]; pos += 1
-        m2 = args[pos]; pos += 1
-        dL = args[pos]; pos += 1
-        lpd = args[pos]; pos += 1
-        lpic = args[pos]; pos += 1
-        mask = args[pos]; pos += 1
-
-        if spin_is_default:
-            s1 = args[pos]; s2 = args[pos+1]; ct1 = args[pos+2]; ct2 = args[pos+3]
-            pos += 4
-            spins_use = [s1, s2, ct1, ct2]
-        else:
-            spins_use = []
-
-        # dL->z inputs
-        z = dc = logdd = None
-        idxs_loc = r = None
-
-        if have_dLz:
-            if hoist_interp_outputs:
-                # z is always provided when hoisting
-                z = args[pos]; pos += 1
-
-                if have_dc_grid:
-                    dc = args[pos]; pos += 1
-                if have_logdd_grid:
-                    logdd = args[pos]; pos += 1
-
-                # If dc/logdd are not hoisted because grids missing, we still have idx/r
-                if (not have_dc_grid) or (not have_logdd_grid):
-                    idxs_loc = args[pos]; r = args[pos+1]
-                    pos += 2
-            else:
-                idxs_loc = args[pos]; r = args[pos+1]
-                pos += 2
-
-        # ---- rolling states
-        m_state  = args[pos]; m2_state = args[pos+1]; s1_state = args[pos+2]; s2_state = args[pos+3]
-        pos += 4
-
-        # ---- non-sequences grids (in the same order we pushed them)
-        # note: even when hoisting, z_grid_t etc are still passed as nonseq (cheap).
-        if have_dLz:
-            z_grid_t_local = args[pos]; pos += 1
-            dc_grid_t_local = None
-            logdd_grid_t_local = None
-            if have_dc_grid:
-                dc_grid_t_local = args[pos]; pos += 1
-            if have_logdd_grid:
-                logdd_grid_t_local = args[pos]; pos += 1
-        else:
-            z_grid_t_local = dc_grid_t_local = logdd_grid_t_local = None
-
-        # ---- tail (Lambda + optional interp mass tables)
-        tail = args[pos:]
-        Lambda_local, H0, Om, w0, Xi0, n_, iv, ig = _unpack_tail(tail)
-
-        # -----------------------------
-        # Compute z/dc/logdd depending on mode
-        # -----------------------------
-        if have_dLz:
-            if z is None:
-                # not hoisted: interpolate z from grids using idx/r
-                il = idxs_loc - 1
-                ih = idxs_loc
-                z = (1.0 - r) * z_grid_t_local[il] + r * z_grid_t_local[ih]
-
-            if dc is None:
-                if have_dc_grid:
-                    # grid dc (not hoisted)
-                    il = idxs_loc - 1
-                    ih = idxs_loc
-                    dc = (1.0 - r) * dc_grid_t_local[il] + r * dc_grid_t_local[ih]
-                else:
-                    # param-dependent dc
-                    dc = atools.dcfun_at(z, H0, Om, w0, interp=interp)
-
-            if logdd is None:
-                if have_logdd_grid:
-                    # grid logdd (not hoisted)
-                    il = idxs_loc - 1
-                    ih = idxs_loc
-                    logdd = (1.0 - r) * logdd_grid_t_local[il] + r * logdd_grid_t_local[ih]
-                else:
-                    # param-dependent logdd
-                    logdd = atools.log_ddL_dz(z, H0, Om, w0, Xi0, n_, dc=dc, interp=interp, param=param)
-
-        else:
-            # direct cosmology
-            z, dc, logdd = _cosmo_direct(dL, H0, Om, w0, Xi0, n_)
-
-        # -----------------------------
-        # Evaluate per-injection logp (vector over K)
-        # -----------------------------
-        mass_1_use, mass_2_use, m1Src, m2Src = _mass_inputs(m1, m2, z)
-
-        lp = log_p_pop_at(
-            mass_1_use, mass_2_use, z, dL, spins_use, Lambda_local,
-            rate_model, mass_model, spin_model,
-            smoothing=smoothing,
-            simplex_repair=simplex_repair,
-            has_m2_break=has_m2_break,
-            log_ddL_dz_pre=logdd,
-            dc=dc,
-            interp_vals_mass=iv,
-            interp_grids_mass=ig,
-            verbose=verbose,
-        )
-        if use_dp:
-            lp = _dp_jacobian_fix(lp, m1Src, m2Src, z)
-
-        # -----------------------------
-        # Chunk reduction: log-mean + effective sample size pieces
-        # -----------------------------
-        x = at.where(mask, lp - lpd - lpic, neg_inf)
-        m = at.max(x)
-        y = at.exp(x - m)
-        s1c = at.sum(y, dtype=work_dtype, acc_dtype="float64")
-        s2c = at.sum(y * y, dtype=work_dtype, acc_dtype="float64")
-
-        #m   = m.astype(accum_dtype)
-        #s1c = s1c.astype(accum_dtype)
-        #s2c = s2c.astype(accum_dtype)
-
-        m_new,  s1_new = _combine_logsumexp(m_state,  s1_state,  m,   s1c)
-        m2c = at.as_tensor_variable(2.0, dtype=accum_dtype) * m #2.0 * m
-        m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
-        return m_new, m2_new, s1_new, s2_new
-
-    # -----------------------------
-    # Run scan (scan over chunks C)
-    # -----------------------------
-    
-    
-    m_init = at.as_tensor_variable(-at.inf, dtype=accum_dtype)
-    s_init = at.as_tensor_variable(0.0,     dtype=accum_dtype)
-
-    scan_kwargs = dict(
-        fn=step,
-        sequences=seqs,
-        outputs_info=[m_init, m_init, s_init, s_init],
-        non_sequences=nonseq,
-        strict=True,
-        profile=True,
-    )
-
-    # Try to only keep the final step to reduce stored scan outputs.
-    # This is OOM-safe and can also reduce graph size.
-    try:
-        (m_out, m2_out, s1_out, s2_out), _ = pytensor.scan(
-            **scan_kwargs,
-            return_steps=1,
-        )
-        # With return_steps=1, outputs are length-1 vectors; take last element
-        m_last  = m_out[-1]
-        m2_last = m2_out[-1]
-        s1_last = s1_out[-1]
-        s2_last = s2_out[-1]
-    except TypeError:
-        # Older PyTensor: no return_steps
-        (m_out, m2_out, s1_out, s2_out), _ = pytensor.scan(**scan_kwargs)
-        m_last  = m_out[-1]
-        m2_last = m2_out[-1]
-        s1_last = s1_out[-1]
-        s2_last = s2_out[-1]
-
-    # -----------------------------
-    # Final reductions (identical)
-    # -----------------------------
-    logsumexp1 = m_last  + at.log(at.maximum(s1_last, tinyL))
-    logsumexp2 = m2_last + at.log(at.maximum(s2_last, tinyL))
-
-    Ndraw_t = at.as_tensor_variable(Ndraw)#.astype(work_dtype)
+    Ndraw_t = Ndraw #at.cast(at.as_tensor_variable(Ndraw), accum_dtype)
     log_mu  = logsumexp1 - at.log(Ndraw_t)
     logs2   = logsumexp2 - at.log(Ndraw_t)
 
@@ -2088,10 +1599,12 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU_nocast(
 
     var_log_lik_u = (
         atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0)
-        - at.log(Ndraw_t - 1.0)
+        - at.log(Ndraw_t - 1. )
     )
 
     return log_mu, Neff, var_log_lik_u
+
+    
 
     
 #####################################################
@@ -2177,17 +1690,17 @@ def make_model(  priors,
 
 
     
-    X = np.float32 if use_float32 else np.float64  # model dtype
+    # X = np.float32 if use_float32 else np.float64  # model dtype
 
-    X_name = "float32" if use_float32 else "float64"  # model dtype
+    # X_name = "float32" if use_float32 else "float64"  # model dtype
 
-    work_dtype = "float32" if use_float32 else "float64"
-    int_dtype = "int32" if use_float32 else "int64"
-    print("work_dtype in model is %s"%work_dtype)
-    print("int_dtype in model is %s"%int_dtype)
+    # work_dtype = "float32" if use_float32 else "float64"
+    # int_dtype = "int32" if use_float32 else "int64"
+    # print("work_dtype in model is %s"%work_dtype)
+    # print("int_dtype in model is %s"%int_dtype)
 
-    half_ = at.as_tensor_variable(0.5, dtype=work_dtype)
-    two_pi_ = at.as_tensor_variable(2*np.pi, dtype=work_dtype)
+    # half_ = at.as_tensor_variable(0.5, dtype=work_dtype)
+    # two_pi_ = at.as_tensor_variable(2*np.pi, dtype=work_dtype)
 
 
     ################################################
@@ -2341,19 +1854,16 @@ def make_model(  priors,
         params_fix=PLPeakO3params
 
 
- 
-
-
     
-    if use_float32_bias:
-        if not use_float32:
-            XI = np.float32
-        else:
-            XI = X
-    else:
-        XI = X
-    print("Model dtype will be %s"%X)
-    print("Injections dtype will be %s"%XI)
+    # if use_float32_bias:
+    #     if not use_float32:
+    #         XI = np.float32
+    #     else:
+    #         XI = X
+    # else:
+    #     XI = X
+    # print("Model dtype will be %s"%X)
+    # print("Injections dtype will be %s"%XI)
 
 
 
@@ -2434,32 +1944,32 @@ def make_model(  priors,
                           #rng=onp.random.default_rng(123)
                              )
     
-            lowmu1 = scales['lMc_min_data'].astype(X)
-            upmu1 = scales['lMc_max_data'].astype(X)
+            lowmu1 = scales['lMc_min_data']#.astype(X)
+            upmu1 = scales['lMc_max_data']#.astype(X)
     
-            lowmu2 = scales['lq_min_data'].astype(X)
-            upmu2 = scales['lq_max_data'].astype(X)
+            lowmu2 = scales['lq_min_data']#.astype(X)
+            upmu2 = scales['lq_max_data']#.astype(X)
 
-            lowmu3 = scales['logz_min_data'].astype(X)
-            upmu3 = scales['logz_max_data'].astype(X)
+            lowmu3 = scales['logz_min_data']#.astype(X)
+            upmu3 = scales['logz_max_data']#.astype(X)
 
 
-            lowmu1_inj = scales['lMc_min_inj'].astype(X)
-            upmu1_inj = scales['lMc_max_inj'].astype(X)
+            lowmu1_inj = scales['lMc_min_inj']#.astype(X)
+            upmu1_inj = scales['lMc_max_inj']#.astype(X)
     
-            lowmu2_inj = scales['lq_min_inj'].astype(X)
-            upmu2_inj = scales['lq_max_inj'].astype(X)
+            lowmu2_inj = scales['lq_min_inj']#.astype(X)
+            upmu2_inj = scales['lq_max_inj']#.astype(X)
 
-            lowmu3_inj = scales['logz_min_inj'].astype(X)
-            upmu3_inj = scales['logz_max_inj'].astype(X)
+            lowmu3_inj = scales['logz_min_inj']#.astype(X)
+            upmu3_inj = scales['logz_max_inj']#.astype(X)
     
-            L_small_1_data = scales['lMc_diff'].astype(X)
-            L_small_2_data = scales['lq_diff'].astype(X)
+            L_small_1_data = scales['lMc_diff']#.astype(X)
+            L_small_2_data = scales['lq_diff']#.astype(X)
 
-            L_small_m1 = scales['m1_diff'].astype(X)
-            L_small_m2 = scales['m2_diff'].astype(X)
+            L_small_m1 = scales['m1_diff']#.astype(X)
+            L_small_m2 = scales['m2_diff']#.astype(X)
     
-            L_small_3_data = scales['logz_diff'].astype(X)
+            L_small_3_data = scales['logz_diff']#.astype(X)
 
             print("Mass/redshift DP-GMM prior values found, overwriting default:")
             print("lowmu1=%s, upmu1=%s, lowmu2=%s, upmu2=%s"%(lowmu1, upmu1, lowmu2, upmu2))
@@ -2484,15 +1994,15 @@ def make_model(  priors,
                 )
 
 
-                L_small_1 = max(L_small_1_data, dmin[0]).astype(X) 
-                L_small_2 = max(L_small_2_data, dmin[1]).astype(X)
+                L_small_1 = max(L_small_1_data, dmin[0])#.astype(X) 
+                L_small_2 = max(L_small_2_data, dmin[1])#.astype(X)
             else:
                 L_small_1 = L_small_1_data
                 L_small_2 = L_small_2_data
 
                 if L_small_3>0:
 
-                    L_small_3 = max(L_small_3_data, np.log(1+L_small_3/max(z_max_data, max_z)) ).astype(X)  
+                    L_small_3 = max(L_small_3_data, np.log(1+L_small_3/max(z_max_data, max_z)) )#.astype(X)  
                 else:
                     L_small_3 = L_small_3_data
             print(" Final L_small_1=%s, L_small_2a=%s, L_small_3=%s"%(L_small_1, L_small_2,L_small_3 ))
@@ -2535,8 +2045,8 @@ def make_model(  priors,
         if interp_mass<100:
                 raise ValueError("Use finer grid for accurate mass function.")
         
-        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass ).astype(X)
-        tgrid_m2 = np.linspace(0.0, 1.0, 500 ).astype(X)
+        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass )#.astype(X)
+        tgrid_m2 = np.linspace(0.0, 1.0, 500 )#.astype(X)
 
   
         if mass_model in ('DPLDP', 'DPLDP-z', 'PLPreg'):
@@ -2587,9 +2097,9 @@ def make_model(  priors,
 
         # load interpolant
         with h5py.File('../tables/optimal_snr_aplus_design_05.h5','r') as f:
-            m_grid_at = at.as_tensor_variable(np.array(f['ms']), dtype=work_dtype)
-            osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']), dtype=work_dtype)
-            ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.), dtype=work_dtype)
+            m_grid_at = at.as_tensor_variable(np.array(f['ms']))
+            osnrs_grid_at = at.as_tensor_variable(np.array(f['SNR']))
+            #ref_dist_Gpc_at = at.as_tensor_variable(np.array(1.), dtype=work_dtype)
         grid_at = (m_grid_at, m_grid_at)
         osnr_interp_at = atools.GridInterpolator_at(grid_at, osnrs_grid_at)
                   
@@ -2601,18 +2111,17 @@ def make_model(  priors,
         samples_init = putils.sample_from_per_event_gmm(wts_l, mus_l, cho_covs_l, x, rng=None)
 
         log_Mc_det_init = samples_init[:, 0]
-        logit_q_init = samples_init[:, 1].astype(X)
+        logit_q_init = samples_init[:, 1]#.astype(X)
         logd_init = samples_init[:, 2]
 
-        z_init = (atools.z_from_dL_at(at.exp(logd_init), 67.7, 0.31, -1, 1, 0)).eval().astype(X)
-        log_onepz_init = np.log1p(z_init).astype(X)
-        log_Mc_src_init = (log_Mc_det_init - log_onepz_init).astype(X)
+        z_init = (atools.z_from_dL_at(at.exp(logd_init), 67.7, 0.31, -1, 1, 0)).eval()#.astype(X)
+        log_onepz_init = np.log1p(z_init)#.astype(X)
+        log_Mc_src_init = (log_Mc_det_init - log_onepz_init)#.astype(X)
 
 
-    zgrid_ = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype ) )
+    zgrid_ =  stop_grad(  at.as_tensor_variable(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
 
-    zgrid_mass_ = at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype )
-
+    zgrid_mass_ =  stop_grad( at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
     
     print("z grid for interpolation built. Resolution: %s"%zres)
     print("z min: %s , z max: %s"%(zmin_a, zmax_c))
@@ -2626,13 +2135,13 @@ def make_model(  priors,
 
         # Evaluate E(z_pivot) at the corners of the (Om, w0) prior box
         Ez_corners = [
-            atools.Efun_num(z_pivot, Om_min, w0_min).astype(X),
-            atools.Efun_num(z_pivot, Om_min, w0_max).astype(X),
-            atools.Efun_num(z_pivot, Om_max, w0_min).astype(X),
-            atools.Efun_num(z_pivot, Om_max, w0_max).astype(X),
+            atools.Efun_num(z_pivot, Om_min, w0_min), #.astype(X),
+            atools.Efun_num(z_pivot, Om_min, w0_max), #.astype(X),
+            atools.Efun_num(z_pivot, Om_max, w0_min), #.astype(X),
+            atools.Efun_num(z_pivot, Om_max, w0_max), #.astype(X),
         ]
-        Ez_min = min(Ez_corners).astype(X)
-        Ez_max = max(Ez_corners).astype(X)
+        Ez_min = min(Ez_corners)#.astype(X)
+        Ez_max = max(Ez_corners)#.astype(X)
 
     if reparam_mass:
 
@@ -2654,30 +2163,27 @@ def make_model(  priors,
             lam_init  = ivals.get("lambdaPeak", 0.05)#.astype(X)
             
             # Small helper for stable initvals on (0,1)
-            def _clip01(x, eps=1e-6, dtype="float64"):
-                if dtype=="float64":
-                    return float(np.clip(x, eps, 1.0 - eps))
-                else:
-                    return np.float32(np.clip(x, eps, 1.0 - eps))
+            def _clip01(x, eps=1e-6):
+                #if dtype=="float64":
+                return np.clip(x, eps, 1.0 - eps)
+                # else:
+                #     return np.float32(np.clip(x, eps, 1.0 - eps))
             
             # =========================
             # 1) ml with EXACT Uniform prior
             # =========================
             # Will sample a fraction u_ml ~ Uniform(0,1), map to ml = ml_min + u_ml*(ml_max-ml_min)
             # Add Jacobian log|dml/du_ml| = log(ml_max-ml_min) so induced density on ml is uniform.
-            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min), dtype=X_name)
+            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min))
 
-            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min), dtype=X_name)
+            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min))
 
-            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min), dtype=X_name)
+            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min))
 
             log_sM_min = np.log(sM_min)
             log_sM_max = np.log(sM_max)
-            if X_name=="float64":
-                log_sM_init = float(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
-            else:
-                log_sM_init = np.float32(np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6))
-
+            log_sM_init = np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6)
+            
 
 
 
@@ -2692,10 +2198,10 @@ def make_model(  priors,
 
     if vol_in_prior:
 
-        zgrid_dLp = stop_grad( at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost), dtype=work_dtype ) )
+        zgrid_dLp = stop_grad(  at.as_tensor_variable(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
 
-        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.90, 0.3065, -1., interp=False).astype(work_dtype)
-        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla').astype(work_dtype)
+        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.90, 0.3065, -1., interp=False)#.astype(work_dtype)
+        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla')#.astype(work_dtype)
         
 
     ################################################
@@ -2705,16 +2211,17 @@ def make_model(  priors,
     with pm.Model(coords=coords) as model:
 
 
-        if sampling_GW=='gauss':
+        # if sampling_GW=='gauss':
             
-            # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s, dtype=work_dtype), at.as_tensor_variable(cho_s, dtype=work_dtype), at.as_tensor_variable(log_wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(icovs_l, dtype=work_dtype), at.as_tensor_variable(log_dets_l, dtype=work_dtype)
+        #     # we sample single-event parameters from broad gaussian approximations of the posteriors
+        #     mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s, dtype=work_dtype), at.as_tensor_variable(cho_s, dtype=work_dtype), at.as_tensor_variable(log_wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(icovs_l, dtype=work_dtype), at.as_tensor_variable(log_dets_l, dtype=work_dtype)
 
             
-        elif 'gmm' in sampling_GW:
-            # we sample single-event parameters from the actual single-event posteriors
-            wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(cho_covs_l, dtype=work_dtype)
+        # elif 'gmm' in sampling_GW:
+        #     # we sample single-event parameters from the actual single-event posteriors
+        #     wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(cho_covs_l, dtype=work_dtype)
 
+        
         ################################################
         # Cosmological parameters
         ################################################
@@ -2725,7 +2232,7 @@ def make_model(  priors,
             Om_ = pm.Uniform('Om', lower=priors['Om'][0], upper=priors['Om'][1], initval=ivals.get('Om')) 
 
         if fix_w0:
-            w0_ = at.as_tensor_variable(-1., dtype=work_dtype)
+            w0_ = at.as_tensor_variable(-1.)
         else:
             if pade:
                 raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False")
@@ -2743,7 +2250,7 @@ def make_model(  priors,
                 Hp_min = H0_min * Ez_min
                 Hp_max = H0_max * Ez_max
 
-                H0_init = ivals.get('H0', at.as_tensor_variable(67.7, dtype=work_dtype))
+                H0_init = ivals.get('H0', at.as_tensor_variable(67.7) )
                 
                 Hp_ = pm.Uniform(
                     'Hp',
@@ -2769,8 +2276,8 @@ def make_model(  priors,
         
         
         if fix_Xi0n:
-            Xi0_ =  at.as_tensor_variable(1., dtype=work_dtype)
-            nXi0_ = at.as_tensor_variable(0., dtype=work_dtype)
+            Xi0_ =  at.as_tensor_variable(1.) #, dtype=work_dtype)
+            nXi0_ = at.as_tensor_variable(0.) #, dtype=work_dtype)
         else:
             Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
             nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
@@ -2816,13 +2323,13 @@ def make_model(  priors,
     
                 z_p_min, z_p_max = priors['zp']
     
-                z_p_init = np.asarray( ivals.get('zp'), dtype=X )
+                z_p_init = np.asarray( ivals.get('zp'), ) #dtype=X )
     
                 log1p_zp_ = pm.Uniform(
                     "log1p_zp",
-                    lower = np.log1p(z_p_min).astype(X),
-                    upper = np.log1p(z_p_max).astype(X),
-                    initval = np.log1p(z_p_init).astype(X) ,
+                    lower = np.log1p(z_p_min), #.astype(X),
+                    upper = np.log1p(z_p_max), #.astype(X),
+                    initval = np.log1p(z_p_init), #.astype(X) ,
                 )
                 
                 zp_ = pm.Deterministic("zp", at.expm1(log1p_zp_))
@@ -2904,7 +2411,7 @@ def make_model(  priors,
                     _ = pm.Potential('bound_betaChi', atools.log_sigmoid(betaChi_, 1+3e-04, 1e-04)  )
                 else:
                     print("Putting prior on alpha_chi, beta_chi with hard cut")
-                    _ = pm.Potential('bound_alphaChi', at.switch( at.le(alphaChi_, 1. ), -np.inf, at.as_tensor_variable(0.) ) )
+                    _ = pm.Potential('bound_alphaChi', at.switch( at.le(alphaChi_, 1. ), -np.inf, 0. ) )
                     _ = pm.Potential('bound_betaChi', at.switch( at.le(betaChi_, 1. ), -np.inf, 0.0 ) )
         
             else:
@@ -2968,7 +2475,7 @@ def make_model(  priors,
                 u_ml = pm.Uniform(
                     "u_ml",
                     0.0, 1.0,
-                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min), dtype=X_name),
+                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min)),
                 )
                 ml_ = pm.Deterministic("ml", ml_min + u_ml * (ml_max - ml_min))
                 # (Jacobian is constant -> optional; leaving it out changes nothing)
@@ -2985,7 +2492,7 @@ def make_model(  priors,
                 u_mh = pm.Uniform(
                     "u_mh",
                     0.0, 1.0,
-                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps)), dtype=X_name),
+                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps))),
                 )
                 mh_ = pm.Deterministic("mh", mh_lower + u_mh * mh_span)
                 
@@ -3011,7 +2518,7 @@ def make_model(  priors,
                 pm.Potential("J_deltam_given_span", at.log(at.maximum(dm_span, eps)))
                 
                 # hard rejection when dm_upper <= dm_min (no valid deltam)
-                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, at.as_tensor_variable(0.0, dtype=work_dtype), at.as_tensor_variable(-np.inf, dtype=work_dtype)))
+                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, 0.0, -np.inf))
                 
                 # -----------------------
                 # 4) sigmaMass ~ Uniform(sM_min, sM_max)  (keep it simple & truly flat)
@@ -3019,7 +2526,7 @@ def make_model(  priors,
                 u_sM = pm.Uniform(
                     "u_sigmaMass",
                     0.0, 1.0,
-                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min), dtype=X_name),
+                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min), ) #dtype=X_name),
                 )
                 sM_ = pm.Deterministic("sigmaMass", sM_min + u_sM * (sM_max - sM_min))
                 # (Jacobian constant -> optional)
@@ -3050,27 +2557,27 @@ def make_model(  priors,
             m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
             v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
             m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X)  )
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
             delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1], dtype=X), initval=np.asarray(ivals.get("lambda"), dtype=X))
+            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(ivals.get("lambda")))
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
             lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
             lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
             beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
             delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01) )
             
             if has_m2_break:
                 print("Including gap for secondary mass")
                 m_g_     =  pm.Uniform("m_g", lower=priors["m_g"][0], upper=priors["m_g"][1], initval=ivals.get("m_g")) 
                 w_g_     = pm.Uniform("w_g", lower=priors["w_g"][0], upper=priors["w_g"][1], initval=ivals.get("w_g")) 
-                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
-                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+                sig_g_l_ = at.as_tensor_variable(1e-02)#.astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02)#.astype(X)
             else:
-                m_g_     = at.as_tensor_variable(45.).astype(X)
-                w_g_     = at.as_tensor_variable(70.).astype(X)
-                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
-                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+                m_g_     = at.as_tensor_variable(45.)#.astype(X)
+                w_g_     = at.as_tensor_variable(70.)#.astype(X)
+                sig_g_l_ = at.as_tensor_variable(1e-02)#.astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02)#.astype(X)
             
             Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
@@ -3113,34 +2620,34 @@ def make_model(  priors,
             
             # m1_low, m2_low, m_high as in your original block
             u        = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
-            m1_low_  = pm.Deterministic("m1_low", (3 + (10 - 3) * at.sqrt(u)).astype(X) )
+            m1_low_  = pm.Deterministic("m1_low", (3 + (10 - 3) * at.sqrt(u)) ) #.astype(X) )
             v        = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
-            m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)).astype(X))
-            m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype(X))
+            m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)) ) #.astype(X))
+            m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X))
             
 
             
             # secondary-mass hyperparams (unchanged unless you also evolve them)
             beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
             delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.1).astype(X))
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.1) ) #.astype(X))
             
             if has_m2_break:
                 print("Including gap for secondary mass")
                 m_g_     = pm.Uniform("m_g", lower=priors["m_g"][0], upper=priors["m_g"][1], initval=ivals.get("m_g"))
                 w_g_     = pm.Uniform("w_g", lower=priors["w_g"][0], upper=priors["w_g"][1], initval=ivals.get("w_g"))
-                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
-                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+                sig_g_l_ = at.as_tensor_variable(1e-02)#.astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02)#.astype(X)
             else:
-                m_g_     = at.as_tensor_variable(45.).astype(X)
-                w_g_     = at.as_tensor_variable(70.).astype(X)
-                sig_g_l_ = at.as_tensor_variable(1e-02).astype(X)
-                sig_g_h_ = at.as_tensor_variable(1e-02).astype(X)
+                m_g_     = at.as_tensor_variable(45.)#.astype(X)
+                w_g_     = at.as_tensor_variable(70.)#.astype(X)
+                sig_g_l_ = at.as_tensor_variable(1e-02)#.astype(X)
+                sig_g_h_ = at.as_tensor_variable(1e-02)#.astype(X)
 
 
 
             # # mixture weights at z≈0
-            eps_w = at.as_tensor_variable(1e-12).astype(X)
+            #eps_w = at.as_tensor_variable(1e-12)#.astype(X)
 
             # read lambda prior from priors file
             lam0_prior = priors.get("lambda0_vec_0", "Dirichlet(1,1,1)")
@@ -3153,11 +2660,11 @@ def make_model(  priors,
                 # alternatively allow direct numeric lists in future
                 alphas = lam0_prior
             
-            alphas = np.asarray(alphas, dtype=X)
+            alphas = np.asarray(alphas)
             lambda_vec0 = pm.Dirichlet(
                                     "lambda0_vec",
                                     a=alphas,
-                                    initval=np.asarray(ivals.get("lambda"), dtype=X)
+                                    initval=np.asarray(ivals.get("lambda"))
                                 )
 
 
@@ -3189,8 +2696,8 @@ def make_model(  priors,
             # )
             
             mb_inf_ = pm.Deterministic("mb_inf", mb_0) 
-            z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0).astype(X)) 
-            dz_mb_  = pm.Deterministic("dz_mb", at.as_tensor_variable(1.0).astype(X))  
+            z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0) ) #.astype(X)) 
+            dz_mb_  = pm.Deterministic("dz_mb", at.as_tensor_variable(1.0)) #.astype(X))  
             
         
             mu1_inf_,     z_mu1_,     dz_mu1_    = putils.evo_triplet(
@@ -3233,8 +2740,8 @@ def make_model(  priors,
             # High-z endpoint on the simplex
             lambda_vec_inf = pm.Dirichlet(
                 "lambda_inf_vec",
-                a=np.asarray([1, 1, 1], dtype=X),
-                initval=np.asarray(ivals.get("lambda_inf_vec", [0.10, 0.05, 0.85]), dtype=X),
+                a=np.asarray([1, 1, 1]),
+                initval=np.asarray(ivals.get("lambda_inf_vec", [0.10, 0.05, 0.85])),
             )
             lambda0_inf_ = pm.Deterministic("lambda0_inf", lambda_vec_inf[0])
             lambda1_inf_ = pm.Deterministic("lambda1_inf", lambda_vec_inf[1])
@@ -3249,8 +2756,8 @@ def make_model(  priors,
             )
             log_dz_lambda_ = pm.Uniform(
                 "log_dz_lambda",
-                lower=np.log(dz_prior[0]).astype(X),
-                upper=np.log(dz_prior[1]).astype(X),
+                lower=np.log(dz_prior[0]), #.astype(X),
+                upper=np.log(dz_prior[1]), #.astype(X),
                 initval=ivals.get("log_dz_lambda", np.log(0.5) ),
             )
             dz_lambda_ = pm.Deterministic("dz_lambda", at.exp(log_dz_lambda_))
@@ -3318,7 +2825,7 @@ def make_model(  priors,
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
     
-                beta_init = np.full(N_DP_comp_max_np, 1e-02).astype(X)
+                beta_init = np.full(N_DP_comp_max_np, 1e-02)#.astype(X)
                 #beta_init[0] = 0.99
     
                 beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
@@ -3366,12 +2873,12 @@ def make_model(  priors,
             
             
      
-            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center).astype(X) )
-            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center).astype(X))
+            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center)) #.astype(X) )
+            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center)) #.astype(X))
 
             if rate_model in ('DPUC','DPUC-vol' ):
                 mu3_center = ( lowmu3+ upmu3) / 2.0
-                mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center).astype(X))
+                mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center)) #.astype(X))
 
                 mus = at.stack([mu1, mu2, mu3], axis=0)
                 
@@ -3414,8 +2921,8 @@ def make_model(  priors,
 
             print("s_local = %s "%s_local)
 
-            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
-            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
+            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
 
             # eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X) )
             # eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
@@ -3435,7 +2942,7 @@ def make_model(  priors,
 
                 tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3, )
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
-                eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
+                eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
 
                 sigs = at.stack([sig1, sig2, sig3], axis=0)
@@ -3493,7 +3000,7 @@ def make_model(  priors,
                 # ----- Cholesky of Σ (for reference / if you need solves) -----
                 # Σ = [[s1^2, ρ s1 s2], [ρ s1 s2, s2^2]]
                 # Cholesky L = diag([s1, s2]) @ [[1, 0], [ρ, sqrt(1-ρ^2)]]
-                row0 = at.stack([sig1,               at.zeros_like(sig1, dtype=work_dtype)], axis=1)          # (K,2)
+                row0 = at.stack([sig1,               at.zeros_like(sig1)], axis=1)          # (K,2)
                 row1 = at.stack([rho * sig2,         sig2 * sqrt1mr2     ], axis=1)          # (K,2)
                 L    = at.stack([row0, row1], axis=1)     
                 Cho_cov = pm.Deterministic("Cho_cov", L, dims=("component","GMMdimension","GMMdimension_1"))
@@ -3562,7 +3069,7 @@ def make_model(  priors,
         if not marginal_R0:
             R0 = pm.Uniform('R0', lower=priors['R0'][0], upper=priors['R0'][1])
         else:
-            R0 = at.as_tensor_variable(1., dtype=work_dtype)    
+            R0 = at.as_tensor_variable(1.)   
         lR0 = at.log(R0)
 
 
@@ -3649,7 +3156,8 @@ def make_model(  priors,
 
                
             
-                eps_m = at.as_tensor_variable(1e-2, dtype=m2_low_.dtype)
+                #eps_m = at.as_tensor_variable(1e-2, dtype=m2_low_.dtype)
+                eps_m = 1e-02
                 m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
 
                 #m1_grid_ = at.linspace(2., 300., interp_mass )
@@ -3704,7 +3212,7 @@ def make_model(  priors,
 
             elif mass_model=='DPLDP-z':
 
-                eps_m = at.as_tensor_variable(1e-5, dtype=m2_low_.dtype)
+                eps_m = 1e-5 #at.as_tensor_variable(1e-5, dtype=m2_low_.dtype)
                 m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
 
                 m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_mass_,
@@ -3805,7 +3313,7 @@ def make_model(  priors,
 
                 log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu1, sig1,
-                                                                at.as_tensor_variable(MMIN_GRID, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID, dtype=work_dtype),
+                                                                at.as_tensor_variable(MMIN_GRID), at.as_tensor_variable(MMAX_GRID),
                                                 n_total_min=n_total_min_mass,
                                                 frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
@@ -3815,7 +3323,7 @@ def make_model(  priors,
 
                 logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu2, sig2,
-                                                at.as_tensor_variable(MMIN_GRID_1, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID_1, dtype=work_dtype),
+                                                at.as_tensor_variable(MMIN_GRID_1), at.as_tensor_variable(MMAX_GRID_1),
                                                 n_total_min=n_total_min_mass,                                                                                                                                                        frac_uniform=frac_uniform,
 
                                                 k_sigma=k_sigma,
@@ -3835,7 +3343,7 @@ def make_model(  priors,
 
                     log_1pz_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu3, sig3,
-                                                at.as_tensor_variable(MMIN_GRID_2, dtype=work_dtype),at.as_tensor_variable(MMAX_GRID_2, dtype=work_dtype),
+                                                at.as_tensor_variable(MMIN_GRID_2), at.as_tensor_variable(MMAX_GRID_2),
                                                 n_total_min=n_total_min_mass,
                                                                                                                                                         frac_uniform=frac_uniform,
 
@@ -3877,7 +3385,7 @@ def make_model(  priors,
             # Individual event mass and distance
             ###############################################
     
-                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init).astype(X) )    
+                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
     
                 if 'gauss' not in sampling_GW:
                     
@@ -3889,7 +3397,7 @@ def make_model(  priors,
                             ###################################
                             # categorical way
         
-                            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1).astype(int_dtype) )
+                            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
         
                         elif sampling_GW=='gmm':
                             ###################################
@@ -3907,7 +3415,7 @@ def make_model(  priors,
                         L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
                          
                         # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                        Lx = at.sum(L_selected * x[:, None, :], axis=2, dtype=work_dtype, acc_dtype="float64")  # → shape (N, D)
+                        Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
     
                 
                     else:
@@ -3933,7 +3441,7 @@ def make_model(  priors,
                         # mu_selected: (N, D)
                         mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
                         
-                        # L_selected: (N, D, D)
+                        # L_selzgrid_zgrid_ected: (N, D, D)
                         L_selected = at.sum(cho_covs_l * s_soft_hard[:, :, None, None], axis=1)
                         
                         # Lx: (N, D)  [ (N,D,D) * (N,1,D) → (N,D,D); sum over last axis → (N,D) ]
@@ -3982,20 +3490,15 @@ def make_model(  priors,
                     #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
                     samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
 
-                    lpp_dtype = getattr(samples, "dtype", "float64")
-                    print("work_dtype in samples is %s"%lpp_dtype)
+                  
                 
                     # logp = log p(x) - log|L|
                     # d = x.shape[1]
-                    log_px = -half_ * at.sum(x**2, axis=1, dtype=work_dtype, acc_dtype="float64") - half_ * nd_np * at.log(two_pi_)    # (N,)
+                    log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
 
-                    lpp_dtype = getattr(log_px, "dtype", "float64")
-                    print("work_dtype in log_px is %s"%lpp_dtype)
 
-                    log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1, dtype=work_dtype, acc_dtype="float64")  # (N,)
+                    log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
 
-                    lpp_dtype = getattr(log_det_L, "dtype", "float64")
-                    print("work_dtype in log_det_L is %s"%lpp_dtype)
                     
                     pilik = log_px - log_det_L                                               # (N,)
 
@@ -4008,7 +3511,7 @@ def make_model(  priors,
                     if spin_model == 'none' :
                         
                         X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                        d_int  = at.as_tensor_variable(3, dtype=int_dtype)
+                        d_int  = 3
     
     
                     elif spin_model == 'default' or spin_model == 'default_gauss':
@@ -4020,7 +3523,7 @@ def make_model(  priors,
                         cost2 = atools.inv_flogitat(samples[:,6])
     
                         X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                        d_int  = at.as_tensor_variable(7, dtype=int_dtype)
+                        d_int  = 7
     
     
                 
@@ -4033,8 +3536,6 @@ def make_model(  priors,
                     # Broadcast X against component-wise parameters
                     # diff: (N, ngmm, d)
                     diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
-                    lpp_dtype = getattr(diff, "dtype", "float64")
-                    print("work_dtype in diff is %s"%lpp_dtype)
                     
                     # Quadratic form using precision F = Σ^{-1}
                     # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
@@ -4047,42 +3548,20 @@ def make_model(  priors,
                     # r^T F r for each (obs, comp)
                     quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
 
-                    lpp_dtype = getattr(quad, "dtype", "float64")
-                    print("work_dtype in quad is %s"%lpp_dtype)
-
-                    lpp_dtype = getattr(d_int, "dtype", "float64")
-                    print("work_dtype in d_int is %s"%lpp_dtype)
-
-                    lpp_dtype = getattr(two_pi_, "dtype", "float64")
-                    print("work_dtype in two_pi_ is %s"%lpp_dtype)
-
-                    lpp_dtype = getattr(at.log(two_pi_), "dtype", "float64")
-                    print("work_dtype in safe_log(two_pi_) is %s"%lpp_dtype)
                     
                     # Component logpdfs (Multivariate Normal)
-                    log_norm = (-half_ * d_int * at.log(two_pi_)).astype(work_dtype)     # scalar
-
-                    lpp_dtype = getattr(log_norm, "dtype", "float64")
-                    print("work_dtype in log_norm is %s"%lpp_dtype)
-
-                    
+                    log_norm = (-0.5 * d_int * at.log(2*np.pi)) #.astype(work_dtype)     # scalar
+     
                     logp_components = (
-                        -half_ * quad
+                        -0.5 * quad
                         + log_norm
-                        - half_ * log_dets_l
+                        - 0.5 * log_dets_l
                         + log_wts_l
                     )                                             # (N, ngmm)
-
-                    lpp_dtype = getattr(logp_components, "dtype", "float64")
-                    print("work_dtype in logp_components is %s"%lpp_dtype)
 
                     # Mixture log-likelihood per observation: logsumexp over components
                     gwl = at.logsumexp(logp_components, axis=1, )   # (N,)
 
-                    lpp_dtype = getattr(gwl, "dtype", "float64")
-                    print("work_dtype in gwl is %s"%lpp_dtype)
-
-            
                 
                 else:
                     raise NotImplementedError()
@@ -4196,14 +3675,7 @@ def make_model(  priors,
                                            z_grid = zgrid_,
                                            #K=N_DP_comp_max
                                          )
-            
-            lpp_dtype = getattr(log_p_pop, "dtype", "float64")
-            print("work_dtype in log_p_pop is %s"%lpp_dtype)
-
-    
-            
-            
-            
+                        
         
         
         else:
@@ -4237,7 +3709,7 @@ def make_model(  priors,
             # Compute p_pop
             logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=y )        
             logp_components = logp1 + logp2 + logp3                     # (K,N)
-            lpmass = at.logsumexp(logp_components + logw[:, None], axis=0, dtype=work_dtype, acc_dtype="float64")
+            lpmass = at.logsumexp(logp_components + logw[:, None], axis=0 )
 
 
             # compute GW likelihood in det. frame
@@ -4248,7 +3720,7 @@ def make_model(  priors,
 
 
             X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-            d_int  = at.as_tensor_variable(3, dtype=int_dtype)
+            d_int  = 3
 
 
             diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
@@ -4282,7 +3754,7 @@ def make_model(  priors,
 
             Theta = at.ones(d.shape)
           
-            log_P_det = at.log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8., dtype=work_dtype) )
+            log_P_det = at.log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8.) )
                                        )
             log_p_pop -= log_P_det
 
@@ -4302,7 +3774,7 @@ def make_model(  priors,
             zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
             dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
 
-            lpi = at.zeros_like(log_p_pop, dtype=work_dtype)
+            lpi = at.zeros_like(log_p_pop )
 
             # apply chunk-wise prior removal
             for i, lab in enumerate(dLprior):
@@ -4314,12 +3786,12 @@ def make_model(  priors,
                 if lab == 'dLsq':
                     print('chunk is dLsq')
                     print(sl)
-                    chunk = at.as_tensor_variable(2.0, dtype=work_dtype) * logd[sl]
+                    chunk = 2 * logd[sl]
 
                 elif lab == 'none':
                     print('chunk is zero')
                     print(sl)
-                    chunk = at.zeros_like(log_p_pop[sl], dtype=work_dtype)
+                    chunk = at.zeros_like(log_p_pop[sl])
 
                 else:
                     # base label + whether we apply the -J correction
@@ -4372,9 +3844,8 @@ def make_model(  priors,
 
             
             # just sum log likelihoods
-            lpp_dtype = getattr(log_p_pop, "dtype", "float64")
-            print("work_dtype in log_p_pop just before sum is %s"%lpp_dtype)
-            likelihood_val = at.sum( log_p_pop, dtype=work_dtype, acc_dtype="float64" )
+
+            likelihood_val = at.sum( log_p_pop )
 
         
         else:
@@ -4389,7 +3860,7 @@ def make_model(  priors,
             
 
             # then sum log likelihoods
-            likelihood_val = at.sum( log_p_pop_marg, dtype=work_dtype, acc_dtype="float64" )  
+            likelihood_val = at.sum( log_p_pop_marg )  
 
             # Check number of effective samples for computing MC integral 
             logs2 = at.logsumexp(2*log_p_pop_masked, axis=1,) -2*at.log(allNsamples)
@@ -4398,7 +3869,7 @@ def make_model(  priors,
             
             if Neff_min_lik>0:
                 
-                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ), dtype=work_dtype, acc_dtype="float64" ) )
+                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
               
             else:
                 print("No bound on effective number of samples for individual event MC integrals")
@@ -4411,7 +3882,7 @@ def make_model(  priors,
             # R0*T_obs . So we get a factor (R0*T_obs)**N_i for every
             # observing run. R0 is the same for every run so I just have
             # (R0)**{\sum N_i} . For T_obs I have T_{obs,1}**N_1 * T_{obs,2}**N_2 * ...
-            poiss_term = at.sum(Nevs*at.log(allTobs), dtype=work_dtype, acc_dtype="float64")+N*lR0
+            poiss_term = at.sum(Nevs*at.log(allTobs))+N*lR0
             likelihood_val += poiss_term
         else:
             print("Will marginalise over R0 with flat-in-log prior.")
@@ -4587,7 +4058,7 @@ def make_model(  priors,
                                             profile=True
                                             )
                     log_mu_vec = res_i[0]
-                    Neff_ = at.sum(res_i[1], dtype=work_dtype, acc_dtype="float64")
+                    Neff_ = at.sum(res_i[1])
 
                     
                 else:
@@ -4601,7 +4072,7 @@ def make_model(  priors,
 
             
                     log_mu_ = res_i[0]
-                    Neff_ = at.sum(res_i[1], dtype=work_dtype, acc_dtype="float64")
+                    Neff_ = at.sum(res_i[1])
     
 
                 
@@ -4612,13 +4083,13 @@ def make_model(  priors,
                     sel_effect = -at.sum(at.exp(log_mu_+lR0+at.log(Tobs)))
                 else:
                     if sel_method=='Tobs':
-                        sel_effect = -N*at.logsumexp( at.log(Tobs/Ttot)+log_mu_ , dtype=work_dtype, acc_dtype="float64")
+                        sel_effect = -N*at.logsumexp( at.log(Tobs/Ttot)+log_mu_ )
                         print('Using sel function with weighted obs time average. Obs times: %s'%str(Tobs))
                     elif sel_method=='Nevs':
                         # This is technically wrong, but I leave it here
                         # to check how large the error is when using the wrong expression
                         print('Using sel function with number of events')
-                        sel_effect = -at.sum(Nevs*log_mu_, dtype=work_dtype, acc_dtype="float64")
+                        sel_effect = -at.sum(Nevs*log_mu_)
 
             
             ################################################
@@ -4686,8 +4157,8 @@ def make_model(  priors,
                     elif sel_smoothing=='softplus':
                         print("Tapering sel effect with softplus")
                         # Slack (how sharp the corner is) and weight (penalty strength)
-                        nu = at.as_tensor_variable(0.01, dtype=work_dtype)     # smaller = sharper transition
-                        lam = at.as_tensor_variable(1., dtype=work_dtype)     # larger = stronger penalty
+                        nu = 0.01    # smaller = sharper transition
+                        lam = 1.    # larger = stronger penalty
                         
                         excess  = (log_lik_var - log_lik_var_min) / nu
                         penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
@@ -4702,7 +4173,7 @@ def make_model(  priors,
                         selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
                         # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
                         # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, at.as_tensor_variable(0.0, dtype=work_dtype), at.as_tensor_variable(-np.inf, dtype=work_dtype) ))
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf ))
 
             
             _ = pm.Potential('selection_bias', selection_bias)
