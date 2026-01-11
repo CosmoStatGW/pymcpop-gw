@@ -3059,6 +3059,7 @@ def make_model(  priors,
             beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
             delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
+            
             if has_m2_break:
                 print("Including gap for secondary mass")
                 m_g_     =  pm.Uniform("m_g", lower=priors["m_g"][0], upper=priors["m_g"][1], initval=ivals.get("m_g")) 

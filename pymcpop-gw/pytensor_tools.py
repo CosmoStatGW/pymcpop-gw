@@ -224,7 +224,7 @@ def safe_logsumexp(x, axis=None, keepdims=False):
     Numerically stable logsumexp for PyTensor/JAX.
     Uses standard max-shift trick and avoids log(0) with a tiny floor.
     """
-    x = at.as_tensor_variable(x)
+    #x = at.as_tensor_variable(x)
     dtype = getattr(x, "dtype", "float64")
 
     if dtype == "float32":
