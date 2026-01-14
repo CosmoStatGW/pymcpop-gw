@@ -44,6 +44,7 @@ tiny = 1e-300
 _eps_for_div = 1E-30
 neg_inf = MIN
 
+PI = np.pi
 
  
 try:
@@ -696,17 +697,17 @@ class TrapzOp(Op):
 ##########################
 
 
-PI = np.pi
+
 
 
 # Precompute n-point Gauss–Legendre nodes/weights on [0,1]
 def gauss_legendre_01(n=32, ): #dtype="float64"):
     from numpy.polynomial.legendre import leggauss
-    dtype=pytensor.config.floatX
+    #dtype=pytensor.config.floatX
     x, w = leggauss(n)                 # on [-1, 1]
     x01 = (x + 1.0) * 0.5              # map to [0, 1]
     w01 = w * 0.5
-    return x01.astype(dtype), w01.astype(dtype)
+    return x01, w01 #.astype(dtype)
 
 _x01_np, _w01_np = gauss_legendre_01(n=32)  # 16–64 usually plenty
 x01_at = at.as_tensor_variable(_x01_np)     # shape (n,)
@@ -722,10 +723,10 @@ def dcfun_at(z, H0, Om, w0, interp=False):
         # zz = at.linspace(0, z, steps=500).T
         # E = Efun_at(zz,Om,w0 )
         # return c_light/H0 * attrapzvec(1/E, zz)*1e-03
-        z_nodes = (z[..., None] * _x01_np )  # shape (..., n)
+        z_nodes = z[..., None] * _x01_np  # shape (..., n)
         integrand = 1.0 / Efun_at(z_nodes, Om, w0)  # shape (..., n)
         I = at.sum(_w01_np * integrand, axis=-1)     # shape (...)
-        return ((c_light / H0) * z * I * 1e-03 )
+        return (c_light / H0) * z * I * 1e-03
 
 def Xifun_at(z, Xi0, n):
     return Xi0+(1-Xi0)/(1+z)**n
@@ -2042,7 +2043,7 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     m1_low, m_high, delta_m1,
     lambda0, lambda1,
     epsilon,
-    smoothing='LVK', simplex_repair=False, eps_w=1e-12):
+    smoothing='LVK', simplex_repair=False, eps_w=1e-15):
 
 
     #work_dtype = getattr(m1, "dtype", "float64")
@@ -2055,8 +2056,11 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     # )
 
     if not simplex_repair:
-        log_lambda0 = at.log(lambda0)
-        log_lambda1 = at.log(lambda1)
+        #log_lambda0 = at.log(lambda0)
+        #log_lambda1 = at.log(lambda1)
+
+        log_lambda0 = at.log(at.clip(lambda0, eps_w, 1.0-eps_w))
+        log_lambda1 = at.log(at.clip(lambda1, eps_w, 1.0-eps_w))
 
         lambda2_raw  = 1. - lambda0 - lambda1
         lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0-eps_w)
@@ -2287,6 +2291,7 @@ def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high
     p2 = at.exp( logpdfm2_PLP_reg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
     
     cdf = atcumtrapz( p2, xx, )
+    cdf = at.clip(cdf, 1e-300, np.inf)
 
     #itr = atinterp( m, xx[1:], at.log(cdf) )
 
@@ -3326,11 +3331,13 @@ def build_m1_grid_DPLDP_z(
     z_mb, dz_mb,
     # support for m1
     m1_low, m_high,
+    delta_m1,
     # grid resolution controls
     n_peak=2500,      # points in the "interesting" band (peaks + break)
     n_tail_low=400,   # points in low-mass tail
     n_tail_high=400,  # points in high-mass tail
     k_sigma=4.0,      # how many sigmas around each Gaussian to cover
+    n_taper=10, 
 ):
     """
     Symbolic non-uniform m1 grid for the DPLDP-z mass model (with redshift evolution).
@@ -3377,6 +3384,7 @@ def build_m1_grid_DPLDP_z(
 
     m1_low_s     = stop_grad(m1_low)
     m_high_s     = stop_grad(m_high)
+    delta_m1_s = stop_grad(delta_m1) 
 
     # dtype & tiny eps near boundaries
     #dtype = getattr(m1_low_s, "dtype", "float64")
@@ -3389,6 +3397,18 @@ def build_m1_grid_DPLDP_z(
     xmin = m1_low_s + eps
     xmax = m_high_s - eps
     span = at.maximum(xmax - xmin, 1e-06) #at.as_tensor_variable(1e-6, dtype=dtype))
+
+    # -----  explicit taper window grid -----
+    # make sure the window has nonzero width and lies in support
+    taper_hi = at.clip(xmin + at.maximum(delta_m1_s, 1e-6), xmin, xmax)
+    taper_w  = at.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 0:
+        denom_t = float(max(n_taper - 1, 1))
+        t_taper = at.arange(n_taper) / denom_t
+        m1_taper = xmin + taper_w * t_taper
+    else:
+        m1_taper = at.zeros((0,))
 
     # ---- evolve hyperparameters over z_bank (using detached params) ----
     mu1_z = theta_of_z(z_bank, mu1_0_s,  mu1_inf_s,  z_mu1_s,    dz_mu1_s)
@@ -3430,7 +3450,7 @@ def build_m1_grid_DPLDP_z(
     peak_max_z = at.maximum(peak_max_z, mb_z)
 
     band_min = at.clip(at.min(peak_min_z), xmin, xmax)
-    band_max = at.clip(at.max(peak_max_z), xmax, xmax)  # min/max then clip
+    band_max = at.clip(at.max(peak_max_z), xmin, xmax)  # min/max then clip
 
     band_width = at.maximum(band_max - band_min, tiny)
 
@@ -3468,7 +3488,15 @@ def build_m1_grid_DPLDP_z(
         t_g1 = at.arange(n_g1) / denom_g1
         m1_g1 = g1_min + g1_width * t_g1
         # if the window is effectively degenerate, kill it
-        m1_g1 = at.switch(has_g1, m1_g1, at.zeros_like(m1_g1))
+
+        fallback_width = 1e-08 * span  #  small compared to global support
+        # center the fallback at the midpoint of the proposed window (≈ mu1 band)
+        g1_center = 0.5 * (g1_min + g1_max)
+        g1_center = at.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
+        
+        fallback_g1 = g1_center + fallback_width * (t_g1 - 0.5)  # monotone in t_g1
+
+        m1_g1 = at.switch(has_g1, m1_g1, fallback_g1)
     else:
         m1_g1 = at.zeros((0,))
 
@@ -3480,7 +3508,12 @@ def build_m1_grid_DPLDP_z(
             denom_g2 = 1.0
         t_g2 = at.arange(n_g2) / denom_g2
         m1_g2 = g2_min + g2_width * t_g2
-        m1_g2 = at.switch(has_g2, m1_g2, at.zeros_like(m1_g2))
+
+        g2_center = 0.5 * (g2_min + g2_max)
+        g2_center = at.clip(g2_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g2 = g2_center + fallback_width * (t_g2 - 0.5)
+        m1_g2 = at.switch(has_g2, m1_g2, fallback_g2)
+        
     else:
         m1_g2 = at.zeros((0,))
 
@@ -3508,7 +3541,7 @@ def build_m1_grid_DPLDP_z(
 
     # ---- combine, clip, sort, deduplicate ----
     m1_grid_raw = at.concatenate(
-        [m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        [m1_taper, m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
         axis=0,
     )
 
@@ -3517,9 +3550,21 @@ def build_m1_grid_DPLDP_z(
 
     # enforce monotonicity and remove duplicates
     m1_grid_sorted = at.sort(m1_grid_clipped)
-    #m1_grid_unique = at.unique(m1_grid_sorted)
+    #m1_grid_strict = at.unique(m1_grid_sorted)
 
-    return m1_grid_sorted
+    # minimum ramp spacing
+    #min_step = 1e-4  # Msun
+    n_taper_eff = 200.0
+
+    # delta_m1_s should be stop_grad(delta_m1) if available in this function
+    min_step = at.maximum(delta_m1_s / n_taper_eff, 1e-6)  # lower bound just for safety
+
+    ramp = min_step * at.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
+    
+    m1_grid_strict = m1_grid_sorted + ramp
+    m1_grid_strict = at.clip(m1_grid_strict, xmin, xmax)
+
+    return m1_grid_strict
 
     
 

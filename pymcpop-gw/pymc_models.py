@@ -3127,6 +3127,7 @@ def make_model(  priors,
         
                 # CDF over m2
                 cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
         
                 # cdf_m2 has length m2_grid_.shape[0] - 1
                 # grid for cdf_m2 is m2_grid_[1:]
@@ -3212,8 +3213,21 @@ def make_model(  priors,
 
             elif mass_model=='DPLDP-z':
 
-                eps_m = 1e-5 #at.as_tensor_variable(1e-5, dtype=m2_low_.dtype)
-                m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
+                eps_m = 1e-5 
+                #m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low_ + eps_m
+                m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
+                
+                t1 = at.linspace(0.0, 1.0, n2_taper)
+                t2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t1
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * t2
+                
+                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
 
                 m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_mass_,
                                 # low-z hyperparameters
@@ -3228,11 +3242,13 @@ def make_model(  priors,
                                 z_mb_, dz_mb_,
                                 # support for m1
                                 m1_low_, m_high_,
+                                delta_m1_,
                                 # grid resolution controls
                                 n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
                                 n_tail_low=interp_mass//5,   # points in low-mass tail
                                 n_tail_high=interp_mass//5,  # points in high-mass tail
                                 k_sigma=4.0,      #
+                                n_taper=interp_mass//5,  # points in low-mass tapering
                             )
 
                 
@@ -3292,7 +3308,12 @@ def make_model(  priors,
                 # at.clip( lp_flat, -1e30, 1e030 )
                 lp_m1_bank = at.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
 
-                ln_bank = at.log( atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
+                #ln_bank = at.log( atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
+                lp_max = at.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
+                p_shift = at.exp(lp_m1_bank - lp_max)                       # safe exp
+                I = atools.attrapzvec(p_shift, m1_grid_, axis=1)            # (K,)
+                I = at.clip(I, 1e-300, np.inf)
+                ln_bank = at.log(I) + lp_max[:, 0]
              
                 # Pack for later use (include z_bank)
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
@@ -3387,67 +3408,26 @@ def make_model(  priors,
     
                 x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
     
-                if 'gauss' not in sampling_GW:
                     
-                    if 'gmm' in sampling_GW:
+                if 'gmm' in sampling_GW:
             
-                        print('Sampling m1d, m2d, dL from GMM')
+                    print('Sampling m1d, m2d, dL from GMM')
         
-                        if sampling_GW=='gmm_cat':
-                            ###################################
-                            # categorical way
+                        
+                    ###################################
+                    # categorical way
+
+                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
         
-                            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
-        
-                        elif sampling_GW=='gmm':
-                            ###################################
-                            # continuous way
-            
-                            u_gmm = pm.Normal("u_gmm", 0.0, 1.0, dims= "event_index")
-                            v_gmm = at.clip( atools.normal_cdf(u_gmm), 1e-9, 1.0 - 1e-9) 
-        
-                            cdf_w = at.cumsum(wts_l, axis=1)                                          
-                            ig = pm.Deterministic('idx', (v_gmm[:, None] < cdf_w).argmax(axis=1), dims= "event_index" )             
+           
+                    # Select means and Cholesky factors per batch
+                    mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                    L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
+                     
+                    # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                    Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
     
-                        
-                        # Select means and Cholesky factors per batch
-                        mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-                        L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-                         
-                        # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                        Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
-    
-                
-                    else:
-                        print('Sampling m1d, m2d, dL from gumbel soft assignment, tau=0.5')
-                        
-                        #tau = pm.MutableData("tau_gmm", 0.5)  # (note: if grads feel weak, raise to ~0.3–0.7)
-                        tau=0.5
-                        logits = at.log(at.clip(wts_l, 1e-12, 1.0))               # (N, K)
-                        g = pm.Gumbel("gumbel", mu=0.0, beta=1.0, shape=wts_l.shape)  # (N, K)
-                        y_soft = pm.math.softmax((logits + g) / tau, axis=1)      # (N, K)
-                        
-                        # hard label for inspection (unchanged)
-                        ig = pm.Deterministic("idx", at.argmax(y_soft, axis=1), dims="event_index")  # (N,)
-                        
-                        # --- Straight-Through gate (hard forward, soft gradient) ---
-                        # get K from your tensors (N, K, D)
-                        K = mus_l.shape[1]
-                        topk = at.argmax((logits + g) / tau, axis=1)                                     # (N,)
-                        one_hot = at.eq(at.arange(K)[None, :], topk[:, None])#.astype(y_soft.dtype)       # (N, K)
-                        s_soft_hard = stop_grad(one_hot - y_soft) + y_soft                         # (N, K)
-    
-                        # --- Soft selection, but with ST gating in forward ---
-                        # mu_selected: (N, D)
-                        mu_selected = at.sum(mus_l * s_soft_hard[:, :, None], axis=1)
-                        
-                        # L_selzgrid_zgrid_ected: (N, D, D)
-                        L_selected = at.sum(cho_covs_l * s_soft_hard[:, :, None, None], axis=1)
-                        
-                        # Lx: (N, D)  [ (N,D,D) * (N,1,D) → (N,D,D); sum over last axis → (N,D) ]
-                        Lx = at.sum(L_selected * x[:, None, :], axis=2)
-                    
-                    
+                              
                     # Final transformed sample
                     samples = mu_selected + Lx                # shape (N, D)
         
