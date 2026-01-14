@@ -3155,13 +3155,27 @@ def make_model(  priors,
             
             elif mass_model=='DPLDP':
 
-               
-            
-                #eps_m = at.as_tensor_variable(1e-2, dtype=m2_low_.dtype)
-                eps_m = 1e-02
-                m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
+                    
+                eps_m = 1e-5
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low_ + eps_m
+                m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
+                
+                u1 = at.linspace(0.0, 1.0, n2_taper)
+                
+                eps_t = 1e-4
+                t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                
+                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
 
-                #m1_grid_ = at.linspace(2., 300., interp_mass )
+
             
                 m1_grid_ = atools.build_m1_grid_DPLDP(
                                             alpha1=alpha1_,
@@ -3178,6 +3192,8 @@ def make_model(  priors,
                                             n_tail_low=interp_mass//5,
                                             n_tail_high=interp_mass//5,
                                             #k_sigma=4.0,
+                                            n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
+                                            n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
                                         )
                 
                 lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
@@ -3188,24 +3204,26 @@ def make_model(  priors,
 
                 # CDF over m2
                 cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
                 
-                # cdf_m2 has length m2_grid_.shape[0] - 1
-                # grid for cdf_m2 is m2_grid_[1:]
-                x0 = m2_grid_[1]
-                x1 = m2_grid_[-1]
-                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = at.log(cdf_m2)
                 
-                lC_of_m1 = atools.atinterp_uniform(
-                    m1_grid_,
-                    x0,
-                    x1,
-                    nU,
-                    at.log(cdf_m2),
-                )
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation (must match your test)
+                lC_of_m1 = atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
                 
                 # Normalization for m1
-                p1 = at.exp(lp_m1_grid)
-                ln = at.log(atools.attrapzvec(p1, m1_grid_))
+                #p1 = at.exp(lp_m1_grid)
+                #ln = at.log(atools.attrapzvec(p1, m1_grid_))
+                lp_max = at.max(lp_m1_grid)
+                p_shift = at.exp(lp_m1_grid - lp_max)
+                I = atools.attrapzvec(p_shift, m1_grid_)
+                I = at.clip(I, 1e-300, np.inf)
+                ln = at.log(I) + lp_max
                 
                 # Pack for later use
                 interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
@@ -3214,18 +3232,21 @@ def make_model(  priors,
             elif mass_model=='DPLDP-z':
 
                 eps_m = 1e-5 
-                #m2_grid_ = ( m2_low_+ eps_m+ (300.0 - m2_low_ ) * tgrid_m2)#.astype(X)
                 n2 = 500
                 n2_taper = 100
                 
                 m2_lo = m2_low_ + eps_m
                 m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
                 
-                t1 = at.linspace(0.0, 1.0, n2_taper)
-                t2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                u1 = at.linspace(0.0, 1.0, n2_taper)
                 
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t1
-                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * t2
+                eps_t = 1e-4
+                t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
                 
                 m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
 
@@ -3251,20 +3272,6 @@ def make_model(  priors,
                                 n_taper=interp_mass//5,  # points in low-mass tapering
                             )
 
-                
-
-                # m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_mass_
-                #                 m1_low=m1_low_,
-                #                 m_high=m_high_,
-                #                 mu1_0=mu1_0, sigma1_0=sigma1_0, mu1_inf=mu1_inf_, sigma1_inf=sigma1_inf_,
-                #                 mu2_0=mu2_0, sigma2_0=sigma2_0, mu2_inf=mu2_inf_, sigma2_inf=sigma2_inf_,
-                #                 mb_0=mb_0, mb_inf=mb_inf_,
-                #                 n_peak=interp_mass,        # concentrate resolution here
-                #                 n_tail_low=interp_mass//5,
-                #                 n_tail_high=interp_mass//5,
-                #                 k_sigma=4.0,
-                #                 #dtype=X,
-                #             )
 
                 # ---------
                 # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
@@ -3277,12 +3284,18 @@ def make_model(  priors,
             
                 # lC_grid evaluated on m1_grid (shape (N1,))
                 cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
 
-                x0 = m2_grid_[1]
-                x1 = m2_grid_[-1]
-                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = at.log(cdf_m2)
                 
-                lC_of_m1 = atools.atinterp_uniform(m1_grid_,x0,x1,nU,at.log(cdf_m2),)
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation (must match your test)
+                lC_of_m1 = atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
+                
 
                 # ---------
                 # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)

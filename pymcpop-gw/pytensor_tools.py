@@ -2107,8 +2107,72 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
 
 
 
-    
 def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    """
+    Interpolation-only evaluator for the non-evolving DPLDP model,
+    on non-uniform m1 and m2 grids.
+
+    interp_grids = [m1_grid, m2_grid]
+    interp_vals  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+
+    Returns log p(m1,m2) = log p(m1) + log p(m2) - log C(m1) - ln
+    """
+
+    m1, m2 = theta
+
+    m1_grid, m2_grid = interp_grids
+    lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
+
+    # ------------------------------------------------------------
+    # 0) HARD SUPPORT MASK  (same philosophy as DPLDP-z)
+    # ------------------------------------------------------------
+    ok = (
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1]) &
+        (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+    )
+
+    if force_m2_less_than_m1:
+        ok = ok & (m2 <= m1)
+
+    # avoid C(m1)=0 zone (logC=-inf -> +inf in joint)
+    ok = ok & (m1 > m2_grid[0])
+
+    # ------------------------------------------------------------
+    # 1) SAFE indices + weights
+    # ------------------------------------------------------------
+    j1, r1 = _interp_indices_nonuniform_safe(m1, m1_grid)
+    j2, r2 = _interp_indices_nonuniform_safe(m2, m2_grid)
+
+    # ------------------------------------------------------------
+    # 2) Interpolate log p(m1)
+    # ------------------------------------------------------------
+    yl_m1 = lp_m1_grid[j1 - 1]
+    yh_m1 = lp_m1_grid[j1]
+    lpdfm1 = (1.0 - r1) * yl_m1 + r1 * yh_m1
+
+    # ------------------------------------------------------------
+    # 3) Interpolate log C(m1)
+    # ------------------------------------------------------------
+    yl_C = lC_of_m1[j1 - 1]
+    yh_C = lC_of_m1[j1]
+    lC = (1.0 - r1) * yl_C + r1 * yh_C
+
+    # ------------------------------------------------------------
+    # 4) Interpolate log p(m2)
+    # ------------------------------------------------------------
+    yl_m2 = lp_m2_grid[j2 - 1]
+    yh_m2 = lp_m2_grid[j2]
+    lpdfm2 = (1.0 - r2) * yl_m2 + r2 * yh_m2
+
+    # ------------------------------------------------------------
+    # 5) Combine
+    # ------------------------------------------------------------
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    return at.where(ok, lpdf, -np.inf)
+
+    
+def logpdf_DPLDP_from_interp_02(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
 
     m1, m2 = theta
 
@@ -3150,7 +3214,78 @@ def logpdf_DPLDP_z_from_interp_lin(theta, z, interp_vals, interp_grids, force_m2
 # Generic non-uniform 1D indices
 # -------------------------------
 
-def _interp_indices_nonuniform(x, xs, eps_xs=1e-9):
+def interp_logpdf_1d_nonuniform(x, x_grid, y_grid):
+    """
+    Interpolate y_grid(x_grid) to y(x) using your indexer.
+    """
+    j, r = _interp_indices_nonuniform(x, x_grid)
+    yL = y_grid[j - 1]
+    yR = y_grid[j]
+    return (1.0 - r) * yL + r * yR
+
+
+def _interp_indices_nonuniform_safe(x, x_grid):
+    """
+    Robust index+weight for non-uniform 1D interpolation.
+
+    Returns:
+      j  in [1, N-1]
+      r  in [0, 1]
+    such that:
+      xL = x_grid[j-1], xR = x_grid[j]
+      y(x) ~ (1-r)*y[j-1] + r*y[j]
+    """
+    N = x_grid.shape[0]
+
+    # clip x into grid domain (avoid out-of-bounds indices)
+    x_clip = at.clip(x, x_grid[0], x_grid[-1])
+
+    # searchsorted gives insertion index in [0..N]
+    j = at.searchsorted(x_grid, x_clip, side="right")
+
+    # clamp to valid interpolation interval [1..N-1]
+    j = at.clip(j, 1, N - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = at.maximum(xR - xL, 1e-30)
+
+    r = (x_clip - xL) / denom
+    r = at.clip(r, 0.0, 1.0)
+
+    return j, r
+
+
+
+def _interp_indices_nonuniform(x, x_grid):
+    """
+    Robust non-uniform 1D interpolation indices.
+
+    Returns:
+      j  : right index, always in [1, N-1]
+      r  : fraction in [0,1]
+    """
+    # ensure x is inside bounds (important!)
+    x = at.clip(x, x_grid[0], x_grid[-1])
+
+    # searchsorted with side="right" ensures:
+    # if x == x_grid[0] -> j = 1 (NOT 0)
+    j = at.searchsorted(x_grid, x, side="right")
+
+    # enforce 1 <= j <= N-1
+    j = at.clip(j, 1, x_grid.shape[0] - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+
+    denom = at.maximum(xR - xL, 1e-12)
+    r = (x - xL) / denom
+    r = at.clip(r, 0.0, 1.0)
+
+    return j, r
+
+    
+def _interp_indices_nonuniform_0(x, xs, eps_xs=1e-9):
     """
     Same I/O and math. More JAX-friendly: eps is consistently typed to xs.dtype.
     """
@@ -3222,6 +3357,197 @@ def _interp_indices_nonuniform_0(x, xs, eps=1e-9):
 
 
 def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    m1, m2 = theta
+
+    m1_grid, m2_grid, z_bank = interp_grids
+    lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals
+
+    # ------------------------------------------------------------
+    # 0) HARD SUPPORT MASK (this is the production fix)
+    # ------------------------------------------------------------
+    ok = (
+        #at.isfinite(m1) & at.isfinite(m2) & at.isfinite(z)
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1])
+        & (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+        & (z  >= z_bank[0])  & (z  <= z_bank[-1])
+    )
+
+
+    # optional physical constraint
+    if force_m2_less_than_m1:
+        ok = ok & (m2 <= m1)
+
+    # CRITICAL: avoid C(m1)=0 region which would produce +inf
+    ok = ok & (m1 > m2_grid[0])
+
+    # ------------------------------------------------------------
+    # 1) SAFE indices + weights
+    # ------------------------------------------------------------
+    kR, rz = _interp_indices_nonuniform_safe(z,  z_bank)
+    kL = kR - 1
+
+    j1, r1 = _interp_indices_nonuniform_safe(m1, m1_grid)
+    j2, r2 = _interp_indices_nonuniform_safe(m2, m2_grid)
+
+    # ------------------------------------------------------------
+    # 2) Interpolate log p(m1 | z)
+    # ------------------------------------------------------------
+    yl_m1_L = lp_m1_bank[kL, j1 - 1]
+    yh_m1_L = lp_m1_bank[kL, j1]
+    lpdfm1_L = (1.0 - r1) * yl_m1_L + r1 * yh_m1_L
+
+    yl_m1_R = lp_m1_bank[kR, j1 - 1]
+    yh_m1_R = lp_m1_bank[kR, j1]
+    lpdfm1_R = (1.0 - r1) * yl_m1_R + r1 * yh_m1_R
+
+    lpdfm1 = (1.0 - rz) * lpdfm1_L + rz * lpdfm1_R
+
+    # ------------------------------------------------------------
+    # 3) Interpolate log C(m1)
+    # ------------------------------------------------------------
+    yl_C = lC_of_m1[j1 - 1]
+    yh_C = lC_of_m1[j1]
+    lC   = (1.0 - r1) * yl_C + r1 * yh_C
+
+    # If logC is -inf or nan -> reject safely
+    #ok = ok & at.isfinite(lC)
+
+    # ------------------------------------------------------------
+    # 4) Interpolate log p(m2)
+    # ------------------------------------------------------------
+    yl_m2 = lp_m2_grid[j2 - 1]
+    yh_m2 = lp_m2_grid[j2]
+    lpdfm2 = (1.0 - r2) * yl_m2 + r2 * yh_m2
+
+    # ------------------------------------------------------------
+    # 5) Interpolate ln_norm(z)
+    # ------------------------------------------------------------
+    ln_L = ln_bank[kL]
+    ln_R = ln_bank[kR]
+    ln   = (1.0 - rz) * ln_L + rz * ln_R
+
+    #ok = ok & at.isfinite(ln)
+
+    # ------------------------------------------------------------
+    # 6) Assemble joint logpdf
+    # ------------------------------------------------------------
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    return at.where(ok, lpdf, -np.inf)
+
+
+
+def logpdf_DPLDP_z_from_interp_02(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
+    """
+    Safe interpolation-only evaluator for the redshift-evolving DPLDP model
+    on non-uniform grids in (m1, m2, z).
+
+    Key robustness features:
+      - Inputs are clipped to grid bounds BEFORE computing interpolation indices
+        (prevents j=0 -> j-1=-1 wraparound and kL=-1 issues).
+      - The returned logpdf is masked to -inf OUTSIDE the true support,
+        so proposals outside support do not return garbage.
+
+    Returns:
+        log p(m1, m2 | z) = log p(m1|z) + log p(m2) - log C(m1) - logNorm(z)
+    """
+
+    m1, m2 = theta
+
+    # unpack grids and precomputed tables
+    m1_grid, m2_grid, z_bank = interp_grids
+    lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals
+
+    # -------------------------------
+    # Define support (true domain)
+    # -------------------------------
+    m1_min = m1_grid[0]
+    m1_max = m1_grid[-1]
+    m2_min = m2_grid[0]
+    m2_max = m2_grid[-1]
+    z_min  = z_bank[0]
+    z_max  = z_bank[-1]
+
+    # "True support" mask (mathematically correct)
+    m1_ok = at.and_(m1 >= m1_min, m1 <= m1_max)
+    m2_ok = at.and_(m2 >= m2_min, m2 <= m2_max)
+    z_ok  = at.and_(z  >= z_min,  z  <= z_max)
+
+    ok = at.and_(at.and_(m1_ok, m2_ok), z_ok)
+
+    if force_m2_less_than_m1:
+        ok = at.and_(ok, at.and_(m2 <= m1, at.and_(m2 > 0, m1 > 0)))
+
+    # -------------------------------
+    # Clip inputs ONLY for safe indexing
+    # (so indices are always valid)
+    # -------------------------------
+    m1_clip = at.clip(m1, m1_min, m1_max)
+    m2_clip = at.clip(m2, m2_min, m2_max)
+    z_clip  = at.clip(z,  z_min,  z_max)
+
+    # -------------------------------
+    # Indices + weights for each axis
+    # -------------------------------
+    # z: indices into z_bank
+    kR, rz = _interp_indices_nonuniform(z_clip, z_bank)
+    kL = kR - 1
+
+    # m1: indices into m1_grid
+    j1, r1 = _interp_indices_nonuniform(m1_clip, m1_grid)
+
+    # m2: indices into m2_grid
+    j2, r2 = _interp_indices_nonuniform(m2_clip, m2_grid)
+
+    # -------------------------------
+    # Interpolate p(m1 | z)
+    # -------------------------------
+    # At z = z_L
+    yl_m1_L = lp_m1_bank[kL, j1 - 1]
+    yh_m1_L = lp_m1_bank[kL, j1]
+    lpdfm1_L = (1.0 - r1) * yl_m1_L + r1 * yh_m1_L
+
+    # At z = z_R
+    yl_m1_R = lp_m1_bank[kR, j1 - 1]
+    yh_m1_R = lp_m1_bank[kR, j1]
+    lpdfm1_R = (1.0 - r1) * yl_m1_R + r1 * yh_m1_R
+
+    # Interpolate in z
+    lpdfm1 = (1.0 - rz) * lpdfm1_L + rz * lpdfm1_R
+
+    # -------------------------------
+    # Interpolate C(m1) (z-independent)
+    # -------------------------------
+    yl_C = lC_of_m1[j1 - 1]
+    yh_C = lC_of_m1[j1]
+    lC   = (1.0 - r1) * yl_C + r1 * yh_C
+
+    # -------------------------------
+    # Interpolate p(m2) (z-independent)
+    # -------------------------------
+    yl_m2 = lp_m2_grid[j2 - 1]
+    yh_m2 = lp_m2_grid[j2]
+    lpdfm2 = (1.0 - r2) * yl_m2 + r2 * yh_m2
+
+    # -------------------------------
+    # Interpolate logNorm(z)
+    # -------------------------------
+    ln_L = ln_bank[kL]
+    ln_R = ln_bank[kR]
+    ln   = (1.0 - rz) * ln_L + rz * ln_R
+
+    # -------------------------------
+    # Assemble final logpdf
+    # -------------------------------
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    # IMPORTANT: enforce correct support
+    # (also prevents out-of-support proposals from producing garbage)
+    return at.where(ok, lpdf, -np.inf)
+
+
+
+def logpdf_DPLDP_z_from_interp_01(theta, z, interp_vals, interp_grids, force_m2_less_than_m1=False):
     """
     Interpolation-only evaluator for the redshift-evolving DPLDP model,
     for *non-uniform* grids in m1, m2, and z.
@@ -3317,6 +3643,9 @@ def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, interp_grids, force_m2_les
         return lpdf
 
 
+
+
+
 def build_m1_grid_DPLDP_z(
     z_bank,
     # low-z hyperparameters
@@ -3338,6 +3667,7 @@ def build_m1_grid_DPLDP_z(
     n_tail_high=400,  # points in high-mass tail
     k_sigma=4.0,      # how many sigmas around each Gaussian to cover
     n_taper=10, 
+     n_taper_eff = 200
 ):
     """
     Symbolic non-uniform m1 grid for the DPLDP-z mass model (with redshift evolution).
@@ -3400,13 +3730,17 @@ def build_m1_grid_DPLDP_z(
 
     # -----  explicit taper window grid -----
     # make sure the window has nonzero width and lies in support
+    # ----- explicit taper window grid (clustered near xmin) -----
     taper_hi = at.clip(xmin + at.maximum(delta_m1_s, 1e-6), xmin, xmax)
     taper_w  = at.maximum(taper_hi - xmin, 1e-6)
-
-    if n_taper > 0:
-        denom_t = float(max(n_taper - 1, 1))
-        t_taper = at.arange(n_taper) / denom_t
-        m1_taper = xmin + taper_w * t_taper
+    
+    if n_taper > 1:
+        # cluster points near xmin using logarithmic spacing
+        eps_t = 1e-4  # controls closeness of the first interior point (fraction of taper width)
+        u = at.linspace(0.0, 1.0, n_taper)  # [0,1]
+        t = at.exp(at.log(eps_t) * (1.0 - u))   # goes from eps_t -> 1
+        t = (t - eps_t) / (1.0 - eps_t)         # rescale to [0,1]
+        m1_taper = xmin + taper_w * t
     else:
         m1_taper = at.zeros((0,))
 
@@ -3471,13 +3805,30 @@ def build_m1_grid_DPLDP_z(
 
     # ---- segments ----
 
-    # 1) low tail: [xmin, band_min)
+    # 1) low tail: ideally [taper_hi, band_min), but keep fixed length (n_tail_low)
+    # so it always has shape (n_tail_low,) and compiles.
+    
     if n_tail_low > 0:
-        denom_low = float(max(n_tail_low, 1))
-        t_low = at.arange(n_tail_low) / denom_low
-        m1_low_tail = xmin + (band_min - xmin) * t_low
+        denom_low = float(n_tail_low + 1)  # +1 so we avoid including the endpoint
+        t_low = (at.arange(n_tail_low) + 1.0) / denom_low   # in (0,1)
+    
+        low_start = taper_hi
+        low_width = band_min - low_start
+    
+        # fallback width if the segment would be empty or negative.
+        # use something comparable to the taper resolution (not microscopic).
+        # taper_w ~ delta_m1, so taper_w / n_taper is a sensible spacing scale.
+        fallback_w = at.maximum(taper_w / at.maximum(n_taper, 1), 1e-3)  # Msun scale floor
+    
+        tail_good = low_start + low_width * t_low
+        tail_fallback = low_start + fallback_w * t_low
+    
+        # if low_width > 0 -> use the good tail, else use fallback tail
+        m1_low_tail = at.switch(at.gt(low_width, 0), tail_good, tail_fallback)
+    
     else:
         m1_low_tail = at.zeros((0,))
+
 
     # 2) Gaussian 1: [g1_min, g1_max]
     if n_g1 > 0:
@@ -3490,6 +3841,8 @@ def build_m1_grid_DPLDP_z(
         # if the window is effectively degenerate, kill it
 
         fallback_width = 1e-08 * span  #  small compared to global support
+        #fallback_width = at.maximum(1e-8 * span, 10.0 * ramp_step)
+        
         # center the fallback at the midpoint of the proposed window (≈ mu1 band)
         g1_center = 0.5 * (g1_min + g1_max)
         g1_center = at.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
@@ -3530,11 +3883,8 @@ def build_m1_grid_DPLDP_z(
 
     # 5) high tail: [band_max, xmax]
     if n_tail_high > 0:
-        if n_tail_high > 1:
-            denom_high = float(n_tail_high - 1)
-        else:
-            denom_high = 1.0
-        t_high = at.arange(n_tail_high) / denom_high
+        denom_high = float(max(n_tail_high, 1))  # NOTE: n_tail_high (not n_tail_high-1)
+        t_high = at.arange(n_tail_high) / denom_high  # in [0, 1) never hits 1
         m1_high_tail = band_max + (xmax - band_max) * t_high
     else:
         m1_high_tail = at.zeros((0,))
@@ -3550,22 +3900,16 @@ def build_m1_grid_DPLDP_z(
 
     # enforce monotonicity and remove duplicates
     m1_grid_sorted = at.sort(m1_grid_clipped)
-    #m1_grid_strict = at.unique(m1_grid_sorted)
-
-    # minimum ramp spacing
-    #min_step = 1e-4  # Msun
-    n_taper_eff = 200.0
-
-    # delta_m1_s should be stop_grad(delta_m1) if available in this function
-    min_step = at.maximum(delta_m1_s / n_taper_eff, 1e-6)  # lower bound just for safety
-
-    ramp = min_step * at.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
     
-    m1_grid_strict = m1_grid_sorted + ramp
-    m1_grid_strict = at.clip(m1_grid_strict, xmin, xmax)
+    Ntot = m1_grid_sorted.shape[0]
 
+    # pick a ramp small enough that the *total* ramp never exceeds eps/2
+    ramp_step = at.minimum(1e-6, 0.5 * eps / at.maximum(Ntot - 1, 1))
+    
+    ramp = ramp_step * at.arange(Ntot, dtype=m1_grid_sorted.dtype)
+    
+    m1_grid_strict = at.clip(m1_grid_sorted + ramp, xmin, xmax)
     return m1_grid_strict
-
     
 
 def build_m1_grid_DPLDP_z_0(
@@ -3711,6 +4055,390 @@ def build_m1_grid_DPLDP_z_0(
 
 
 def build_m1_grid_DPLDP(
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss1=0.2,
+    frac_gauss2=0.2,
+    k_sigma_gauss=3.0,
+    k_sigma_band=4.0,
+    n_taper=10,
+    n_taper_eff=200,
+):
+    """
+    Symbolic non-uniform m1 grid for non-evolving DPLDP.
+
+    Structure:
+      - taper:      [m1_low, m1_low+delta_m1] (clustered near m1_low)
+      - low tail:   [taper_hi, band_min)
+      - Gaussian 1: [mu1 - kσ1, mu1 + kσ1] (with fallback if degenerate)
+      - Gaussian 2: [mu2 - kσ2, mu2 + kσ2] (with fallback if degenerate)
+      - mid band:   [band_min, band_max] envelope over peaks + mb
+      - high tail:  [band_max, m_high)   (endpoint excluded)
+
+    Guarantees:
+      - all points inside (m1_low, m_high)
+      - strictly increasing (via tiny ramp)
+      - avoids repeated xmin/xmax collapse
+    """
+
+    # ---- detach hyperparameters for grid geometry (no grad through geometry) ----
+    mb_sg       = stop_grad(mb)
+    mu1_sg      = stop_grad(mu1)
+    sigma1_sg   = stop_grad(sigma1)
+    mu2_sg      = stop_grad(mu2)
+    sigma2_sg   = stop_grad(sigma2)
+    m1_low_sg   = stop_grad(m1_low)
+    m_high_sg   = stop_grad(m_high)
+    delta_m1_sg = stop_grad(delta_m1)
+
+    # gentle boundary offset (avoid exact endpoints)
+    eps = 1e-4
+    xmin = m1_low_sg + eps
+    xmax = m_high_sg - eps
+    span = at.maximum(xmax - xmin, 1e-6)
+
+    # ------------------------------------------------------------
+    # 0) Taper grid: clustered near xmin (important for logS_PLP)
+    # ------------------------------------------------------------
+    taper_hi = at.clip(xmin + at.maximum(delta_m1_sg, 1e-6), xmin, xmax)
+    taper_w  = at.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 1:
+        eps_t = 1e-4  # smallest fraction of taper width for the first interior point
+        u = at.linspace(0.0, 1.0, n_taper)  # [0,1]
+        t = at.exp(at.log(eps_t) * (1.0 - u))   # eps_t -> 1
+        t = (t - eps_t) / (1.0 - eps_t)         # -> [0,1]
+        m1_taper = xmin + taper_w * t
+    else:
+        m1_taper = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 1) Gaussian windows (clip to support)
+    # ------------------------------------------------------------
+    k_g = k_sigma_gauss
+    k_b = k_sigma_band
+
+    g1_min_raw = mu1_sg - k_g * at.abs(sigma1_sg)
+    g1_max_raw = mu1_sg + k_g * at.abs(sigma1_sg)
+    g2_min_raw = mu2_sg - k_g * at.abs(sigma2_sg)
+    g2_max_raw = mu2_sg + k_g * at.abs(sigma2_sg)
+
+    g1_min = at.clip(g1_min_raw, xmin, xmax)
+    g1_max = at.clip(g1_max_raw, xmin, xmax)
+    g2_min = at.clip(g2_min_raw, xmin, xmax)
+    g2_max = at.clip(g2_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+
+    has_g1 = at.gt(g1_width, tiny)
+    has_g2 = at.gt(g2_width, tiny)
+
+    # ------------------------------------------------------------
+    # 2) Envelope "interesting band" over peaks + mb
+    # ------------------------------------------------------------
+    peak_min_raw = at.minimum(g1_min_raw, g2_min_raw)
+    peak_min_raw = at.minimum(peak_min_raw, mb_sg)
+
+    peak_max_raw = at.maximum(g1_max_raw, g2_max_raw)
+    peak_max_raw = at.maximum(peak_max_raw, mb_sg)
+
+    band_min = at.clip(peak_min_raw, xmin, xmax)
+    band_max = at.clip(peak_max_raw, xmin, xmax)
+
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ------------------------------------------------------------
+    # 3) Split n_peak between Gaussians + mid band
+    # ------------------------------------------------------------
+    n_g1  = int(n_peak * float(frac_gauss1))
+    n_g2  = int(n_peak * float(frac_gauss2))
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak:
+        scale = float(n_peak) / float(n_g1 + n_g2)
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # ------------------------------------------------------------
+    # 4) Low tail: start AFTER taper, keep fixed length
+    # ------------------------------------------------------------
+    if n_tail_low > 0:
+        denom_low = float(n_tail_low + 1)
+        t_low = (at.arange(n_tail_low) + 1.0) / denom_low  # in (0,1)
+
+        low_start = taper_hi
+        low_width = band_min - low_start
+
+        fallback_w = at.maximum(taper_w / at.maximum(n_taper, 1), 1e-3)
+
+        tail_good = low_start + low_width * t_low
+        tail_fallback = low_start + fallback_w * t_low
+
+        m1_low_tail = at.switch(at.gt(low_width, 0), tail_good, tail_fallback)
+    else:
+        m1_low_tail = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 5) Gaussian 1 segment (with fallback window if degenerate)
+    # ------------------------------------------------------------
+    if n_g1 > 0:
+        denom_g1 = float(max(n_g1 - 1, 1))
+        t_g1 = at.arange(n_g1) / denom_g1
+
+        m1_g1 = g1_min + g1_width * t_g1
+
+        fallback_width = 1e-8 * span
+        g1_center = 0.5 * (g1_min + g1_max)
+        g1_center = at.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g1 = g1_center + fallback_width * (t_g1 - 0.5)
+
+        m1_g1 = at.switch(has_g1, m1_g1, fallback_g1)
+    else:
+        m1_g1 = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 6) Gaussian 2 segment (with fallback window if degenerate)
+    # ------------------------------------------------------------
+    if n_g2 > 0:
+        denom_g2 = float(max(n_g2 - 1, 1))
+        t_g2 = at.arange(n_g2) / denom_g2
+
+        m1_g2 = g2_min + g2_width * t_g2
+
+        fallback_width = 1e-8 * span
+        g2_center = 0.5 * (g2_min + g2_max)
+        g2_center = at.clip(g2_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g2 = g2_center + fallback_width * (t_g2 - 0.5)
+
+        m1_g2 = at.switch(has_g2, m1_g2, fallback_g2)
+    else:
+        m1_g2 = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 7) Mid band segment
+    # ------------------------------------------------------------
+    if n_mid > 0:
+        denom_mid = float(max(n_mid - 1, 1))
+        t_mid = at.arange(n_mid) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 8) High tail: endpoint excluded (avoid exact xmax)
+    # ------------------------------------------------------------
+    if n_tail_high > 0:
+        denom_high = float(max(n_tail_high, 1))   # not (n_tail_high-1)
+        t_high = at.arange(n_tail_high) / denom_high  # in [0,1)
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # Combine -> clip -> sort -> tiny ramp for strict monotonicity
+    # ------------------------------------------------------------
+    m1_grid_raw = at.concatenate(
+        [m1_taper, m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = at.sort(m1_grid_clipped)
+
+    # tiny ramp ensures strict increase (does not affect resolution)
+    ramp_step = 1e-6
+    ramp = ramp_step * at.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
+    #m1_grid_strict = m1_grid_sorted + ramp
+    m1_grid_strict = at.clip(m1_grid_sorted + ramp, xmin, xmax)
+    return m1_grid_strict
+
+
+def build_m1_grid_DPLDP_01(
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss1=0.2,
+    frac_gauss2=0.2,
+    k_sigma_gauss=3.0,
+    k_sigma_band=4.0,
+    n_taper=10,          # NEW: points inside [m1_low, m1_low+delta_m1]
+    n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
+):
+    # ---- detach hyperparameters for grid construction ----
+    mb_sg       = stop_grad(mb)
+    mu1_sg      = stop_grad(mu1)
+    sigma1_sg   = stop_grad(sigma1)
+    mu2_sg      = stop_grad(mu2)
+    sigma2_sg   = stop_grad(sigma2)
+    m1_low_sg   = stop_grad(m1_low)
+    m_high_sg   = stop_grad(m_high)
+    delta_m1_sg = stop_grad(delta_m1)
+
+    eps = 1e-4
+    xmin = m1_low_sg + eps
+    xmax = m_high_sg - eps
+    span = at.maximum(xmax - xmin, 1e-6)
+
+    # ---------------------------------------------------------
+    # (0) Explicit taper grid: [xmin, xmin + delta_m1]
+    # ---------------------------------------------------------
+    taper_hi = at.clip(xmin + at.maximum(delta_m1_sg, 1e-6), xmin, xmax)
+    taper_w  = at.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 0:
+        denom_t = float(max(n_taper - 1, 1))
+        t_taper = at.arange(n_taper) / denom_t
+        m1_taper = xmin + taper_w * t_taper
+    else:
+        m1_taper = at.zeros((0,))
+
+    # ---- Gaussian windows ----
+    k_g = k_sigma_gauss
+    k_b = k_sigma_band
+
+    g1_min_raw = mu1_sg - k_g * at.abs(sigma1_sg)
+    g1_max_raw = mu1_sg + k_g * at.abs(sigma1_sg)
+    g2_min_raw = mu2_sg - k_g * at.abs(sigma2_sg)
+    g2_max_raw = mu2_sg + k_g * at.abs(sigma2_sg)
+
+    g1_min = at.clip(g1_min_raw, xmin, xmax)
+    g1_max = at.clip(g1_max_raw, xmin, xmax)
+    g2_min = at.clip(g2_min_raw, xmin, xmax)
+    g2_max = at.clip(g2_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+    has_g1 = at.gt(g1_width, tiny)
+    has_g2 = at.gt(g2_width, tiny)
+
+    # ---- envelope band over both Gaussians + mb ----
+    peak_min_raw = at.minimum(at.minimum(g1_min_raw, g2_min_raw), mb_sg)
+    peak_max_raw = at.maximum(at.maximum(g1_max_raw, g2_max_raw), mb_sg)
+
+    band_min = at.clip(peak_min_raw, xmin, xmax)
+    band_max = at.clip(peak_max_raw, xmin, xmax)
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ---- split n_peak between Gaussians and mid band ----
+    n_g1  = int(n_peak * float(frac_gauss1))
+    n_g2  = int(n_peak * float(frac_gauss2))
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak:
+        scale = float(n_peak) / float(n_g1 + n_g2)
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # ---------------------------------------------------------
+    # (1) Low tail: [xmin, band_min)
+    # IMPORTANT: start slightly above xmin so we don't duplicate taper points
+    # ---------------------------------------------------------
+    if n_tail_low > 0:
+        denom_low = float(max(n_tail_low, 1))
+        # start at 1/denom_low (exclude exact xmin)
+        t_low = (at.arange(n_tail_low) + 1.0) / denom_low
+        m1_low_tail = xmin + (band_min - xmin) * t_low
+    else:
+        m1_low_tail = at.zeros((0,))
+
+    # ---------------------------------------------------------
+    # (2) Gaussian 1 segment with safe fallback near its center
+    # ---------------------------------------------------------
+    if n_g1 > 0:
+        denom_g1 = float(max(n_g1 - 1, 1))
+        t_g1 = at.arange(n_g1) / denom_g1
+        m1_g1 = g1_min + g1_width * t_g1
+
+        fallback_width = 1e-8 * span
+        g1_center = 0.5 * (g1_min + g1_max)
+        g1_center = at.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g1 = g1_center + fallback_width * (t_g1 - 0.5)
+
+        m1_g1 = at.switch(has_g1, m1_g1, fallback_g1)
+    else:
+        m1_g1 = at.zeros((0,))
+
+    # ---------------------------------------------------------
+    # (3) Gaussian 2 segment with safe fallback near its center
+    # ---------------------------------------------------------
+    if n_g2 > 0:
+        denom_g2 = float(max(n_g2 - 1, 1))
+        t_g2 = at.arange(n_g2) / denom_g2
+        m1_g2 = g2_min + g2_width * t_g2
+
+        fallback_width = 1e-8 * span
+        g2_center = 0.5 * (g2_min + g2_max)
+        g2_center = at.clip(g2_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g2 = g2_center + fallback_width * (t_g2 - 0.5)
+
+        m1_g2 = at.switch(has_g2, m1_g2, fallback_g2)
+    else:
+        m1_g2 = at.zeros((0,))
+
+    # ---------------------------------------------------------
+    # (4) Mid band: [band_min, band_max]
+    # ---------------------------------------------------------
+    if n_mid > 0:
+        denom_mid = float(max(n_mid - 1, 1))
+        t_mid = at.arange(n_mid) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,))
+
+    # ---------------------------------------------------------
+    # (5) High tail: [band_max, xmax]
+    # ---------------------------------------------------------
+    if n_tail_high > 0:
+        denom_high = float(max(n_tail_high - 1, 1))
+        t_high = at.arange(n_tail_high) / denom_high
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,))
+
+    # ---- combine and clip ----
+    m1_grid_raw = at.concatenate(
+        [m1_taper, m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = at.sort(m1_grid_clipped)
+
+    # ---------------------------------------------------------
+    # Remove repeats WITHOUT scan: tie-only ramp
+    # (this spreads only the duplicates; doesn’t shift the whole grid)
+    # ---------------------------------------------------------
+    dx = at.diff(m1_grid_sorted)
+    ties = at.le(dx, 0)
+
+    min_step = at.maximum(delta_m1_sg / n_taper_eff, 1e-6)
+
+    tie_count = at.concatenate(
+        [at.zeros((1,), dtype=m1_grid_sorted.dtype),
+         at.cumsum(ties).astype(m1_grid_sorted.dtype)]
+    )
+
+    m1_grid_strict = m1_grid_sorted + min_step * tie_count
+    m1_grid_strict = at.clip(m1_grid_strict, xmin, xmax)
+
+    return m1_grid_strict
+
+
+
+def build_m1_grid_DPLDP_old(
     alpha1, alpha2, mb,
     mu1, sigma1, mu2, sigma2,
     m1_low, m_high,
