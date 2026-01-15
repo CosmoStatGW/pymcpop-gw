@@ -3086,69 +3086,86 @@ def make_model(  priors,
 
         if interp_mass!=0:
 
-            if mass_model=='PLPreg':
+            if mass_model == "PLPreg":
 
-                # m2 grid: from ml_ to mh_ (global support for the companion mass)
-                eps_m = at.as_tensor_variable(1e-5, dtype=ml_.dtype)
-                m2_grid_ = (ml_ + eps_m + (mh_ - ml_) * tgrid_m2)#.astype(X)
-        
-                # m1 grid: adaptive, based on the PLPreg Gaussian peak
+                # ---------------------------
+                # 1) m2 grid: log-cluster taper
+                # ---------------------------
+                eps_m = 1e-5
+                n2 = 500
+                n2_taper = 150
+            
+                m2_lo = ml_ + eps_m
+                m2_taper_hi = m2_lo + at.maximum(deltam_, 1e-6)
+            
+                u1 = at.linspace(0.0, 1.0, n2_taper)
+                eps_t = 1e-4
+                t1 = at.exp(at.log(eps_t) * (1.0 - u1))
+                t1 = (t1 - eps_t) / (1.0 - eps_t)
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t1
+            
+                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (mh_ - m2_taper_hi) * u2
+            
+                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
+            
+                # ---------------------------
+                # 2) m1 grid: adaptive PLPreg grid (should include taper+ramp like DPLDP)
+                # ---------------------------
                 m1_grid_ = atools.build_m1_grid_PLPreg(
                     ml=ml_,
                     mh=mh_,
                     muMass=muM_,
                     sigmaMass=sM_,
+                    deltam=deltam_,
                     n_peak=interp_mass,
                     n_tail_low=interp_mass // 5,
                     n_tail_high=interp_mass // 5,
+                    n_taper=interp_mass // 5,
                 )
-        
-                # log p(m1) on the grid
+            
+                # ---------------------------
+                # 3) Bank logpdfs
+                # ---------------------------
                 lp_m1_grid = atools.logpdfm1_PLP_reg(
                     m1_grid_,
-                    lamP_,   # lambdaPeak
-                    alpha_,  # alpha
-                    deltam_,
-                    ml_,
-                    mh_,
-                    muM_,
-                    sM_,
+                    lamP_, alpha_, deltam_,
+                    ml_, mh_,
+                    muM_, sM_,
                     smoothing=smoothing,
                 )
-        
-                # log p(m2) on the grid
+            
                 lp_m2_grid = atools.logpdfm2_PLP_reg(
                     m2_grid_,
-                    beta_,   # beta
-                    deltam_,
-                    ml_,
+                    beta_, deltam_, ml_,
                     smoothing=smoothing,
                 )
-        
-                # CDF over m2
-                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
-                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
-        
-                # cdf_m2 has length m2_grid_.shape[0] - 1
-                # grid for cdf_m2 is m2_grid_[1:]
-                x0 = m2_grid_[1]
-                x1 = m2_grid_[-1]
-                nU = m2_grid_.shape[0] - 1  # == cdf_m2.shape[0]
-        
-                # log C(m1): normalization in m2, as function of m1
-                lC_of_m1 = atools.atinterp_uniform(
-                    m1_grid_,
-                    x0,
-                    x1,
-                    nU,
-                    at.log(cdf_m2),
-                )
-        
-                # Normalization for m1 (overall ln)
-                p1 = at.exp(lp_m1_grid)
-                ln = at.log(atools.attrapzvec(p1, m1_grid_))
-        
-                # Pack for later use
+            
+                # ---------------------------
+                # 4) logC(m1): stable CDF + nonuniform interp
+                # ---------------------------
+                lp2_max = at.max(lp_m2_grid)
+                p2_shift = at.exp(lp_m2_grid - lp2_max)
+            
+                cdf_shift = atools.atcumtrapz(p2_shift, m2_grid_)  # (N2-1,)
+                cdf_shift = at.clip(cdf_shift, 1e-300, np.inf)
+            
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2 = at.log(cdf_shift) + lp2_max
+            
+                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                lC_of_m1 = atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
+            
+                # ---------------------------
+                # 5) stable ln(m1)
+                # ---------------------------
+                lp1_max = at.max(lp_m1_grid)
+                p1_shift = at.exp(lp_m1_grid - lp1_max)
+                I1 = atools.attrapzvec(p1_shift, m1_grid_)
+                I1 = at.clip(I1, 1e-300, np.inf)
+                ln = at.log(I1) + lp1_max
+            
+                # Pack
                 interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
                 interp_grids_mass = [m1_grid_, m2_grid_]
 

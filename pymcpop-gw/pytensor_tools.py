@@ -4615,6 +4615,169 @@ def build_m1_grid_DPLDP_old(
 def build_m1_grid_PLPreg(
     ml, mh,
     muMass, sigmaMass,
+    deltam,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss=0.4,
+    k_sigma_gauss=3.0,
+    k_sigma_band=4.0,
+    n_taper=10,
+):
+    """
+    Symbolic non-uniform m1 grid for PLPreg (power-law + single Gaussian peak).
+
+    Structure:
+      - taper:      [ml, ml + deltam] (log-clustered near ml)
+      - low tail:   [taper_hi, band_min)  fixed-length, with fallback if empty
+      - Gaussian:   [mu - kσ, mu + kσ]    with fallback if degenerate
+      - mid band:   [band_min, band_max]
+      - high tail:  [band_max, mh)        endpoint excluded
+    Guarantees:
+      - inside (ml, mh)
+      - strictly increasing (tiny ramp)
+      - fixed shapes (compiles)
+    """
+
+    # detach geometry params (no grad through grid)
+    ml_s = stop_grad(ml)
+    mh_s = stop_grad(mh)
+    mu_s = stop_grad(muMass)
+    sig_s = stop_grad(sigmaMass)
+    deltam_s = stop_grad(deltam)
+
+    # gentle boundary offset
+    eps = 1e-4
+    xmin = ml_s + eps
+    xmax = mh_s - eps
+    span = at.maximum(xmax - xmin, 1e-6)
+
+    # ------------------------------------------------------------
+    # 0) Taper grid near xmin (log clustered)
+    # ------------------------------------------------------------
+    taper_hi = at.clip(xmin + at.maximum(deltam_s, 1e-6), xmin, xmax)
+    taper_w  = at.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 1:
+        eps_t = 1e-4
+        u = at.linspace(0.0, 1.0, n_taper)
+        t = at.exp(at.log(eps_t) * (1.0 - u))     # eps_t -> 1
+        t = (t - eps_t) / (1.0 - eps_t)           # -> [0,1]
+        m1_taper = xmin + taper_w * t
+    else:
+        m1_taper = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 1) Gaussian window and band window (clipped)
+    # ------------------------------------------------------------
+    k_g = k_sigma_gauss
+    k_b = k_sigma_band
+
+    g_min_raw = mu_s - k_g * at.abs(sig_s)
+    g_max_raw = mu_s + k_g * at.abs(sig_s)
+
+    g_min = at.clip(g_min_raw, xmin, xmax)
+    g_max = at.clip(g_max_raw, xmin, xmax)
+
+    band_min_raw = mu_s - k_b * at.abs(sig_s)
+    band_max_raw = mu_s + k_b * at.abs(sig_s)
+
+    band_min = at.clip(band_min_raw, xmin, xmax)
+    band_max = at.clip(band_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+
+    g_width = g_max - g_min
+    has_g = at.gt(g_width, tiny)
+
+    band_width = at.maximum(band_max - band_min, tiny)
+
+    # ------------------------------------------------------------
+    # 2) Split peak budget
+    # ------------------------------------------------------------
+    n_g = int(n_peak * float(frac_gauss))
+    n_g = max(0, min(n_g, n_peak))
+    n_mid = max(n_peak - n_g, 0)
+
+    # ------------------------------------------------------------
+    # 3) Low tail AFTER taper (fixed length, fallback if empty)
+    # ------------------------------------------------------------
+    if n_tail_low > 0:
+        denom_low = float(n_tail_low + 1)
+        t_low = (at.arange(n_tail_low) + 1.0) / denom_low  # (0,1)
+
+        low_start = taper_hi
+        low_width = band_min - low_start
+
+        # fallback width comparable to taper resolution
+        fallback_w = at.maximum(taper_w / at.maximum(n_taper, 1), 1e-3)
+
+        tail_good = low_start + low_width * t_low
+        tail_fallback = low_start + fallback_w * t_low
+
+        m1_low_tail = at.switch(at.gt(low_width, 0), tail_good, tail_fallback)
+    else:
+        m1_low_tail = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 4) Gaussian segment (fallback if degenerate)
+    # ------------------------------------------------------------
+    if n_g > 0:
+        denom_g = float(max(n_g - 1, 1))
+        t_g = at.arange(n_g) / denom_g
+        m1_g = g_min + g_width * t_g
+
+        fallback_width = 1e-8 * span
+        g_center = 0.5 * (g_min + g_max)
+        g_center = at.clip(g_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g = g_center + fallback_width * (t_g - 0.5)
+
+        m1_g = at.switch(has_g, m1_g, fallback_g)
+    else:
+        m1_g = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 5) Mid band
+    # ------------------------------------------------------------
+    if n_mid > 0:
+        denom_mid = float(max(n_mid - 1, 1))
+        t_mid = at.arange(n_mid) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 6) High tail (exclude xmax)
+    # ------------------------------------------------------------
+    if n_tail_high > 0:
+        denom_high = float(max(n_tail_high, 1))
+        t_high = at.arange(n_tail_high) / denom_high  # [0,1)
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = at.zeros((0,))
+
+    # ------------------------------------------------------------
+    # Combine -> clip -> sort -> tiny ramp
+    # ------------------------------------------------------------
+    m1_grid_raw = at.concatenate(
+        [m1_taper, m1_low_tail, m1_g, m1_mid, m1_high_tail],
+        axis=0
+    )
+
+    m1_grid_clipped = at.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = at.sort(m1_grid_clipped)
+
+    ramp_step = 1e-6
+    ramp = ramp_step * at.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
+    m1_grid_strict = m1_grid_sorted + ramp
+
+    return m1_grid_strict
+
+    
+
+def build_m1_grid_PLPreg_0(
+    ml, mh,
+    muMass, sigmaMass,
     n_peak=2500,
     n_tail_low=400,
     n_tail_high=400,
