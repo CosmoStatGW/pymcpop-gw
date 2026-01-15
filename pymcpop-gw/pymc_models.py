@@ -3689,6 +3689,7 @@ def make_model(  priors,
         
         
         else:
+            # sample_from_pop=1
             # sampling from GMM and then computing GW likelihood in det space
             print("\nWill sample from population then compute GW likelihood.")
 

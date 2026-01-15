@@ -1209,15 +1209,86 @@ def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None, eps=1e-06):
         diffz = z - muz
         logpz = const - 0.5 * at.log(varz) - 0.5 * (diffz * diffz / varz)
     else:
-        logpz = at.zeros_like(logp1, dtype=work_dtype)
+        logpz = at.zeros_like(logp1)
 
     return logp1, logp2, logpz
 
 
 
-
-
 def gaussian_logpdf_pair_from_interp(theta, interp_vals, interp_grids, z=None):
+    """
+    SAFE interpolation evaluator for DP Gaussian-mixture logpdf banks.
+
+    Returns:
+      lpdfm1, lpdfm2, lpdf3  each shape (K, N)
+    """
+    m1, m2 = theta
+
+    m1_grid = interp_grids[0]     # (n1,)
+    m2_grid = interp_grids[1]     # (n2,)
+
+    lp_m1_grid = interp_vals[0]   # (K, n1)
+    lp_m2_grid = interp_vals[1]   # (K, n2)
+
+    # ------------------------------------------------------------
+    # 0) HARD SUPPORT MASK (prevents extrapolation disasters)
+    # ------------------------------------------------------------
+    ok = (
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1]) &
+        (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+    )
+
+    if z is None:
+        ok3 = ok
+    else:
+        z_grid = interp_grids[2]
+        ok3 = ok & (z >= z_grid[0]) & (z <= z_grid[-1])
+
+    # ------------------------------------------------------------
+    # 1) SAFE indices
+    # ------------------------------------------------------------
+    j1, r1 = _interp_indices_nonuniform_safe(m1, m1_grid)  # (N,)
+    j2, r2 = _interp_indices_nonuniform_safe(m2, m2_grid)  # (N,)
+
+    # interpolate (K, N)
+    yl1 = lp_m1_grid[:, j1 - 1]
+    yh1 = lp_m1_grid[:, j1]
+    lpdfm1 = (1.0 - r1[None, :]) * yl1 + r1[None, :] * yh1
+
+    yl2 = lp_m2_grid[:, j2 - 1]
+    yh2 = lp_m2_grid[:, j2]
+    lpdfm2 = (1.0 - r2[None, :]) * yl2 + r2[None, :] * yh2
+
+    # ------------------------------------------------------------
+    # 2) Optional z
+    # ------------------------------------------------------------
+    if z is None:
+        lpdf3 = at.zeros_like(lpdfm2)
+    else:
+        z_grid = interp_grids[2]
+        lp_z_grid = interp_vals[2]  # (K, nz)
+
+        j3, r3 = _interp_indices_nonuniform_safe(z, z_grid)
+
+        yl3 = lp_z_grid[:, j3 - 1]
+        yh3 = lp_z_grid[:, j3]
+        lpdf3 = (1.0 - r3[None, :]) * yl3 + r3[None, :] * yh3
+
+    # ------------------------------------------------------------
+    # 3) Apply support mask  -> outside becomes -inf
+    # ------------------------------------------------------------
+    # ok mask is (N,), but outputs are (K,N) => broadcast ok[None,:]
+    neginf = at.as_tensor_variable(-np.inf, dtype=lpdfm1.dtype)
+    lpdfm1 = at.where(ok3[None, :], lpdfm1, neginf)
+    lpdfm2 = at.where(ok3[None, :], lpdfm2, neginf)
+    lpdf3  = at.where(ok3[None, :], lpdf3,  neginf)
+
+    return lpdfm1, lpdfm2, lpdf3
+
+
+    
+
+def gaussian_logpdf_pair_from_interp_0(theta, interp_vals, interp_grids, z=None):
     """
     Interpolate Gaussian-mixture logpdfs on non-uniform grids for:
       - m1  (e.g. log Mc)
@@ -1454,7 +1525,113 @@ def gaussian_logpdf_pair_from_interp_lin(theta, interp_vals, interp_grids, z=Non
     return lpdfm1, lpdfm2, lpdf3
 
 
+
 def build_1d_gaussian_mixture_grid_components(
+    mu_d, sigma_d,
+    x_low, x_high,
+    n_total_min=2000,
+    frac_uniform=0.2,
+    k_sigma=4.0,
+    sigma_floor=1e-4,
+    K=30,
+    eps=1e-5,
+    ramp_step=1e-10,     # NEW
+):
+    """
+    Robust 1D non-uniform grid for a Gaussian mixture (DP components).
+
+    Same as your current version, but:
+      - adds strict-monotonic ramp after sorting
+      - still keeps stop_grad geometry
+    """
+
+    if K <= 0:
+        raise ValueError("K must be > 0")
+
+    N_total = int(n_total_min)
+    if N_total < K:
+        N_total = K
+
+    N_uniform_raw = int(round(frac_uniform * N_total))
+    N_uniform = max(2, min(N_uniform_raw, N_total - K))
+    if N_uniform < 0:
+        N_uniform = 0
+
+    N_comp_total = max(N_total - N_uniform, K)
+
+    base_per_comp = max(1, N_comp_total // K)
+    remainder = N_comp_total % K
+
+    # detach for geometry
+    mu_s      = stop_grad(mu_d)
+    sigma_s   = stop_grad(sigma_d)
+    x_low_s   = stop_grad(x_low)
+    x_high_s  = stop_grad(x_high)
+
+    xmin = x_low_s + eps
+    xmax = x_high_s - eps
+    span = at.maximum(xmax - xmin, 1e-6)
+
+    sigma_eff = at.maximum(at.abs(sigma_s), sigma_floor)
+
+    win_min_raw = mu_s - k_sigma * sigma_eff
+    win_max_raw = mu_s + k_sigma * sigma_eff
+
+    win_min = at.clip(win_min_raw, xmin, xmax)
+    win_max = at.clip(win_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    win_width = at.maximum(win_max - win_min, tiny)
+
+    # per-component grids
+    comp_grids = []
+    for k in range(K):
+        n_k = base_per_comp + (1 if k < remainder else 0)
+
+        mu_k = mu_s[k]
+        win_min_k = win_min[k]
+        win_width_k = win_width[k]
+
+        if n_k <= 1:
+            x_comp_k = mu_k.reshape((1,))
+        else:
+            n_win = n_k - 1
+            denom_k = float(max(n_win - 1, 1))
+            t_k = at.arange(n_win) / denom_k  # [0,1]
+            x_win_k  = win_min_k + win_width_k * t_k
+            x_mean_k = mu_k.reshape((1,))
+            x_comp_k = at.concatenate([x_win_k, x_mean_k], axis=0)
+
+        comp_grids.append(x_comp_k)
+
+    x_comp_all = at.concatenate(comp_grids, axis=0)
+
+    # global uniform
+    if N_uniform > 0:
+        denom_u = float(max(N_uniform - 1, 1))
+        t_u = at.arange(N_uniform) / denom_u
+        x_uniform = xmin + (xmax - xmin) * t_u
+    else:
+        x_uniform = at.zeros((0,))
+
+    # combine + clip + sort
+    x_all = at.concatenate([x_uniform, x_comp_all], axis=0)
+    x_all = at.clip(x_all, xmin, xmax)
+
+    x_sorted = at.sort(stop_grad(x_all))
+
+    # ---- NEW: strict ramp ----
+    # tiny ramp to avoid zero intervals (does not affect resolution)
+    ramp = ramp_step * at.arange(x_sorted.shape[0], dtype=x_sorted.dtype)
+    x_strict = x_sorted + ramp
+
+    # keep within domain
+    x_strict = at.clip(x_strict, xmin, xmax)
+
+    return x_strict
+
+
+def build_1d_gaussian_mixture_grid_components_0(
     mu_d, sigma_d,
     x_low, x_high,
     n_total_min=2000,    # interpreted as *total* desired number of points
@@ -2169,7 +2346,7 @@ def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_tha
     # ------------------------------------------------------------
     lpdf = lpdfm1 + lpdfm2 - lC - ln
 
-    return at.where(ok, lpdf, -np.inf)
+    return at.where(ok, lpdf, -1e30)
 
     
 def logpdf_DPLDP_from_interp_02(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
