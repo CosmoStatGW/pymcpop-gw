@@ -2820,16 +2820,34 @@ def make_model(  priors,
 
                 print("Prior for the process is stick-breaking")
                 #### Stick Breaking Prior
-                alpha_inv_init = alpha_inv_params[0] / alpha_inv_params[1]
+                alpha_inv_init = 10. #alpha_inv_params[0] / alpha_inv_params[1]
                 alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
     
-                beta_init = np.full(N_DP_comp_max_np, 1e-02)#.astype(X)
+                #beta_init = np.full(N_DP_comp_max_np, 1e-02)#.astype(X)
                 #beta_init[0] = 0.99
+                beta_init = np.full(N_DP_comp_max_np, 0.02)
+                beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
     
                 beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
-                w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
+
+                #b0 = pm.draw(beta, draws=1)
+                print("beta init top10:", np.sort(beta_init)[::-1][:10])
+                print("beta init first10:", beta_init[:10])
+
+
+                #w = pm.Deterministic("w", atools.stick_breaking(beta), dims="component")
+
+                w_raw = atools.stick_breaking(beta)
+                w = pm.Deterministic("w", w_raw / at.sum(w_raw), dims="component")
+
+                # ---- quick init diagnostics (runs once at model build) ----
+                w0 =  atools.stick_breaking(beta_init) #pm.draw(w, draws=1)
+                w0 = (w0/at.sum(w0)).eval()
+                print("w init: sum=", w0.sum(), " max=", w0.max(), " min=", w0.min())
+                print("w init top10:", np.sort(w0)[::-1][:10])
+                print("# comps for 90% mass:", np.searchsorted(np.cumsum(np.sort(w0)[::-1]), 0.90) + 1)
 
             elif DP_prior=='dirichelet':
                 print("Prior for the process is dirichelet")
@@ -2870,14 +2888,33 @@ def make_model(  priors,
 
             mu1_center = (lowmu1 + upmu1) / 2.0  # 3.55
             mu2_center = (lowmu2 + upmu2) / 2.0
+
+            M_active = 5
+
+            mu1_init = np.full(N_DP_comp_max_np, mu1_center)
+            mu2_init = np.full(N_DP_comp_max_np, mu2_center)
             
+            mu1_init[:M_active] = np.linspace(lowmu1 + 0.1*(upmu1-lowmu1),
+                                              upmu1  - 0.1*(upmu1-lowmu1),
+                                              M_active)
+            
+            mu2_init[:M_active] = np.linspace(lowmu2 + 0.1*(upmu2-lowmu2),
+                                              upmu2  - 0.1*(upmu2-lowmu2),
+                                              M_active)
             
      
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center)) #.astype(X) )
             mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center)) #.astype(X))
 
             if rate_model in ('DPUC','DPUC-vol' ):
+
                 mu3_center = ( lowmu3+ upmu3) / 2.0
+                mu3_init = np.full(N_DP_comp_max_np, mu3_center)
+                mu3_init[:M_active] = np.linspace(lowmu3 + 0.1*(upmu3-lowmu3),
+                                              upmu3  - 0.1*(upmu3-lowmu3),
+                                              M_active)
+                
+                
                 mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center)) #.astype(X))
 
                 mus = at.stack([mu1, mu2, mu3], axis=0)
@@ -2916,8 +2953,8 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, ) #initval= (U1 / 4.0 ).astype(X)  )
-            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, ) #initval= (U2 / 4.0 ).astype(X)  )
+            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
+            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
 
             print("s_local = %s "%s_local)
 
@@ -2940,7 +2977,7 @@ def make_model(  priors,
                 print("L_small_3 = %s "%L_small_3)
                 print("U3 = %s "%U3)
 
-                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3, )
+                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  

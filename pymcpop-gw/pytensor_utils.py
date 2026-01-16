@@ -23,6 +23,9 @@ import zarr
 import pytensor_tools as atools
 
 import pymc as pm
+from pathlib import Path
+from typing import Optional, List
+from tqdm.auto import tqdm
 
 
 
@@ -1556,6 +1559,153 @@ def load_pymc_zarr_trace_robust(store_path):
         warmup_sample_stats=warmup_stats,
     )
 
+
+
+def zarr_to_pymc_netcdf(zarr_path: Path,
+                        output_nc: Path,
+                        drop_chains: Optional[List[int]] = None,
+                        variables: Optional[List[str]] = None,
+                        thin: int = 1,
+                        lazy: bool = True,
+                        show_progress: bool = True,):
+    """
+    Converte uno Zarr trace (trace_backup.zarr) in un file NetCDF compatibile PyMC/ArviZ,
+    con progress bar efficiente.
+    Args:
+        zarr_path: Path al file/directory trace_backup.zarr
+        output_nc: Path di output .nc
+        drop_chains: lista di indici di catene da rimuovere (es. [0,2])
+        variables: lista di variabili da includere (None = tutte)
+        thin: thinning sui draw (1 = nessun thinning, 10 = prendi 1 ogni 10)
+        lazy: se True usa Dask per lazy loading
+        show_progress: se True mostra progress bar
+    Returns:
+        az.InferenceData
+    """
+    print(f"\n{'='*70}")
+    print("Loading trace using method: lazy")
+    print(f"{'='*70}\n")
+    path_name = zarr_path.parent.name
+    print(f"[1/1] {path_name}")
+    store = zarr.open_group(str(zarr_path), mode="r")
+    print("Groups:", list(store.group_keys()))
+    print("Arrays:", list(store.array_keys()))
+    if 'posterior' in store:
+        post = store['posterior']
+        print("\nPosterior arrays:", list(post.array_keys()))
+        first_var = list(post.array_keys())[0]
+        print(f"\nFirst var '{first_var}' shape:", post[first_var].shape)
+        print(f"First var attrs:", dict(post[first_var].attrs))
+    if "posterior" not in store:
+        raise ValueError("Nessun gruppo 'posterior' trovato nello Zarr.")
+    posterior_group = store["posterior"]
+    # =========================
+    # 1. Identifica coordinate
+    # =========================
+    coords = {}
+    coord_names = set()
+    for var_name in posterior_group.array_keys():
+        arr = posterior_group[var_name]
+        dims = arr.attrs.get("_ARRAY_DIMENSIONS", [])
+        if len(dims) == 1 and dims[0] == var_name:
+            coord_names.add(var_name)
+            coords[var_name] = arr[:]
+    # =========================
+    # 2. Selezione variabili
+    # =========================
+    all_vars = list(posterior_group.array_keys())
+    if variables is None:
+        variables = all_vars
+    else:
+        variables = [v for v in variables if v in all_vars]
+    datasets = {}
+    # =========================
+    # 3. Costruzione DataArrays con progress
+    # =========================
+    iterator = variables
+    if show_progress:
+        iterator = tqdm(
+            variables,
+            desc="Variables",
+            unit="var",
+            leave=True,
+        )
+    for var_name in iterator:
+        if var_name in coord_names:
+            continue
+        arr = posterior_group[var_name]
+        # Lazy loading con Dask
+        if lazy:
+            try:
+                import dask.array as da
+                data = da.from_zarr(str(zarr_path / "posterior" / var_name))
+            except ImportError:
+                data = arr
+        else:
+            data = arr[:]
+        # Thinning (assume chain, draw)
+        if thin > 1 and data.ndim >= 2:
+            data = data[:, ::thin, ...]
+        # Dimensioni
+        if "_ARRAY_DIMENSIONS" in arr.attrs:
+            dims = list(arr.attrs["_ARRAY_DIMENSIONS"])
+        else:
+            ndim = len(arr.shape)
+            if ndim == 2:
+                dims = ["chain", "draw"]
+            elif ndim == 1:
+                dims = [f"{var_name}_dim"]
+            else:
+                dims = ["chain", "draw"] + [f"dim_{i}" for i in range(ndim - 2)]
+        # Coordinate mancanti
+        for i, dim in enumerate(dims):
+            if dim not in coords and i < len(arr.shape):
+                coords[dim] = np.arange(arr.shape[i])
+        datasets[var_name] = xr.DataArray(data, dims=dims)
+    posterior = xr.Dataset(datasets, coords=coords)
+    # =========================
+    # 4. Drop catene
+    # =========================
+    if drop_chains and "chain" in posterior.dims:
+        all_chains = posterior.coords["chain"].values
+        keep_idx = [i for i in range(len(all_chains)) if i not in drop_chains]
+        keep_chains = all_chains[keep_idx]
+        posterior = posterior.sel(chain=keep_chains)
+        print(f"Filtered chains: keeping {len(keep_chains)}/{len(all_chains)}")
+    # =========================
+    # 5. InferenceData
+    # =========================
+    trace = az.InferenceData(posterior=posterior)
+    # =========================
+    # 6. Salvataggio NetCDF OTTIMIZZATO (xarray)
+    # =========================
+    print(f"Saving NetCDF (fast): {output_nc}")
+    posterior_ds = trace.posterior
+    if output_nc.exists():
+        output_nc.unlink()
+    # Rechunk: pochi chunk grandi -> meno overhead I/O
+    if lazy:
+        posterior_ds = posterior_ds.chunk({
+            "chain": 1,
+            "draw": min(2000, posterior_ds.sizes.get("draw", 1))
+        })
+    # Encoding: disattiva compressione per massima velocità
+    encoding = {}
+    for var in posterior_ds.data_vars:
+        encoding[var] = {
+            "zlib": False,
+            "chunksizes": tuple(posterior_ds[var].data.chunksize if hasattr(posterior_ds[var].data, "chunksize") else posterior_ds[var].shape),}
+    if show_progress and lazy:
+        try:
+            from dask.diagnostics import ProgressBar
+            with ProgressBar():
+                posterior_ds.to_netcdf(output_nc, engine="h5netcdf", encoding=encoding, compute=True)
+        except ImportError:
+            posterior_ds.to_netcdf(output_nc, engine="h5netcdf", encoding=encoding, compute=True)
+    else:
+        posterior_ds.to_netcdf(output_nc, engine="h5netcdf", encoding=encoding, compute=True)
+    print("✓ Fast NetCDF save completed\n")
+    return trace
 
 
 def drop_object_vars(idata: az.InferenceData) -> az.InferenceData:
