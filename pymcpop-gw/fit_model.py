@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--alpha_small", default=0.01, type=float, required=False)
     parser.add_argument("--L_small_1", default=1., type=float, required=False)
     parser.add_argument("--L_small_2", default=1., type=float, required=False)
-    parser.add_argument("--L_small_3", default=0.1, type=float, required=False)
+    parser.add_argument("--L_small_3", default=0.5, type=float, required=False)
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
     parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
 
@@ -1036,6 +1036,8 @@ def main():
                     for gi in grads: assert np.all(np.isfinite(gi)) # every block finite
                     
                     print("Start is finite ✅")
+
+                        
 
                     
                 except Exception as e:
