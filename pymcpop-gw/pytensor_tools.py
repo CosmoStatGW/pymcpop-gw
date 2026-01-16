@@ -1526,7 +1526,108 @@ def gaussian_logpdf_pair_from_interp_lin(theta, interp_vals, interp_grids, z=Non
 
 
 
+
 def build_1d_gaussian_mixture_grid_components(
+    mu_d, sigma_d,
+    x_low, x_high,
+    n_total_min=2000,
+    frac_uniform=0.2,
+    k_sigma=4.0,
+    sigma_floor=1e-4,
+    K=30,
+    eps=1e-5,
+    ramp_step=1e-10,
+    n_per_min=20,   # NEW
+):
+    if K <= 0:
+        raise ValueError("K must be > 0")
+
+    # ---- detach for geometry ----
+    mu_s      = stop_grad(mu_d)
+    sigma_s   = stop_grad(sigma_d)
+    x_low_s   = stop_grad(x_low)
+    x_high_s  = stop_grad(x_high)
+
+    xmin = x_low_s + eps
+    xmax = x_high_s - eps
+    span = at.maximum(xmax - xmin, 1e-6)
+
+    # ---- choose N_total so that per-component minimum is satisfied ----
+    N_total = int(n_total_min)
+
+    # uniform background points
+    N_uniform_raw = int(round(frac_uniform * N_total))
+    N_uniform = max(2, min(N_uniform_raw, N_total - K))
+    if N_uniform < 0:
+        N_uniform = 0
+
+    # enforce minimum per component
+    N_comp_min = K * int(n_per_min)
+    N_total = max(N_total, N_uniform + N_comp_min)
+
+    # recompute uniform with updated N_total
+    N_uniform_raw = int(round(frac_uniform * N_total))
+    N_uniform = max(2, min(N_uniform_raw, N_total - K))
+    if N_uniform < 0:
+        N_uniform = 0
+
+    N_comp_total = max(N_total - N_uniform, N_comp_min)
+
+    base_per_comp = max(int(n_per_min), N_comp_total // K)
+    remainder = N_comp_total % K
+
+    # ---- component windows ----
+    sigma_eff = at.maximum(at.abs(sigma_s), sigma_floor)
+
+    win_min_raw = mu_s - k_sigma * sigma_eff
+    win_max_raw = mu_s + k_sigma * sigma_eff
+
+    win_min = at.clip(win_min_raw, xmin, xmax)
+    win_max = at.clip(win_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    win_width = at.maximum(win_max - win_min, tiny)
+
+    comp_grids = []
+    for k in range(K):
+        n_k = base_per_comp + (1 if k < remainder else 0)
+
+        mu_k = mu_s[k]
+        win_min_k = win_min[k]
+        win_width_k = win_width[k]
+
+        if n_k <= 1:
+            x_comp_k = mu_k.reshape((1,))
+        else:
+            n_win = n_k - 1
+            denom_k = float(max(n_win - 1, 1))
+            t_k = at.arange(n_win) / denom_k
+            x_win_k  = win_min_k + win_width_k * t_k
+            x_mean_k = mu_k.reshape((1,))
+            x_comp_k = at.concatenate([x_win_k, x_mean_k], axis=0)
+
+        comp_grids.append(x_comp_k)
+
+    x_comp_all = at.concatenate(comp_grids, axis=0)
+
+    # ---- global uniform ----
+    if N_uniform > 0:
+        denom_u = float(max(N_uniform - 1, 1))
+        t_u = at.arange(N_uniform) / denom_u
+        x_uniform = xmin + (xmax - xmin) * t_u
+    else:
+        x_uniform = at.zeros((0,))
+
+    x_all = at.concatenate([x_uniform, x_comp_all], axis=0)
+    x_all = at.clip(x_all, xmin, xmax)
+
+    x_sorted = at.sort(stop_grad(x_all))
+    ramp = ramp_step * at.arange(x_sorted.shape[0], dtype=x_sorted.dtype)
+    x_strict = at.clip(x_sorted + ramp, xmin, xmax)
+
+    return x_strict
+
+def build_1d_gaussian_mixture_grid_components_01(
     mu_d, sigma_d,
     x_low, x_high,
     n_total_min=2000,

@@ -2064,24 +2064,24 @@ def make_model(  priors,
 
             if sel_method=='skip':
             
-                MMIN_GRID = lowmu1*(1-0.1)
-                MMAX_GRID = upmu1*(1+0.1)
+                MMIN_GRID = lowmu1#*(1-0.1)
+                MMAX_GRID = upmu1#*(1+0.1)
 
                 MMIN_GRID_1 = lowmu2 #*(1-0.1)
-                MMAX_GRID_1 = upmu2*(1+0.1)
+                MMAX_GRID_1 = upmu2#*(1+0.1)
 
-                MMIN_GRID_2 = lowmu3*(1-0.1)
-                MMAX_GRID_2 = upmu3*(1+0.1)
+                MMIN_GRID_2 = lowmu3#*(1-0.1)
+                MMAX_GRID_2 = upmu3#*(1+0.1)
                 
             else:
-                MMIN_GRID = min(lowmu1_inj, lowmu1)*(1-0.1)
-                MMAX_GRID = max(upmu1, upmu1_inj)*(1+0.1)
+                MMIN_GRID = min(lowmu1_inj, lowmu1)#*(1-0.1)
+                MMAX_GRID = max(upmu1, upmu1_inj)#*(1+0.1)
 
                 MMIN_GRID_1 = min(lowmu2_inj, lowmu2) #*(1-0.1)
-                MMAX_GRID_1 = max(upmu2, upmu2_inj)*(1+0.1)
+                MMAX_GRID_1 = max(upmu2, upmu2_inj)#*(1+0.1)
 
-                MMIN_GRID_2 = min(lowmu3_inj, lowmu3)*(1-0.1)
-                MMAX_GRID_2 = max(upmu3, upmu3_inj)*(1+0.1)
+                MMIN_GRID_2 = min(lowmu3_inj, lowmu3)#*(1-0.1)
+                MMAX_GRID_2 = max(upmu3, upmu3_inj)#*(1+0.1)
 
             
             print("Grid in log(Mc) source between %s and %s"%(MMIN_GRID, MMAX_GRID))
@@ -3360,27 +3360,79 @@ def make_model(  priors,
                 sigma_floor=1e-4
 
 
+                mu1_lo = MMIN_GRID #min(lowmu1, lowmu1_inj)
+                mu1_hi = MMAX_GRID #max(upmu1,  upmu1_inj)
+                
+                mu2_lo = MMIN_GRID_1 #min(lowmu2, lowmu2_inj)
+                mu2_hi = MMAX_GRID_1 #max(upmu2,  upmu2_inj)
+                
+                # Choose n_eps: 6 is extremely safe (Gaussian tail ~ 1e-9 one-sided)
+                n_eps = 6.0
+                
+                # Bounds for logMc grid
+                XLOW1, XHIGH1, sig1_max = putils.safe_interp_bounds_from_tau_eps(
+                    mu_low=mu1_lo,
+                    mu_high=mu1_hi,
+                    tau_upper=U1,       # <-- upper bound of tau1 Uniform
+                    s_local=s_local,
+                    k_sigma=k_sigma,
+                    n_eps=n_eps,
+                    extra_frac=0.10,
+                )
+                
+                # Bounds for logit(q) grid
+                XLOW2, XHIGH2, sig2_max = putils.safe_interp_bounds_from_tau_eps(
+                    mu_low=mu2_lo,
+                    mu_high=mu2_hi,
+                    tau_upper=U2,       # <-- upper bound of tau2 Uniform
+                    s_local=s_local,
+                    k_sigma=k_sigma,
+                    n_eps=n_eps,
+                    extra_frac=0.10,
+                )
+                
+                # OPTIONAL: clip to global physical transform limits (recommended)
+                # these should be your transform-domain hard limits (constants)
+                #XLOW1  = at.maximum(XLOW1,  at.as_tensor_variable(MMIN_GRID))
+                #XHIGH1 = at.minimum(XHIGH1, at.as_tensor_variable(MMAX_GRID))
+                
+                #XLOW2  = at.maximum(XLOW2,  at.as_tensor_variable(MMIN_GRID_1))
+                #XHIGH2 = at.minimum(XHIGH2, at.as_tensor_variable(MMAX_GRID_1))
+
+                
     
 
                 log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu1, sig1,
-                                                                at.as_tensor_variable(MMIN_GRID), at.as_tensor_variable(MMAX_GRID),
+                                                XLOW1, XHIGH1,
                                                 n_total_min=n_total_min_mass,
                                                 frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
+                                                n_per_min = n_per_min,
                                                 K = N_DP_comp_max_np
                                             )
 
                 logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu2, sig2,
-                                                at.as_tensor_variable(MMIN_GRID_1), at.as_tensor_variable(MMAX_GRID_1),
-                                                n_total_min=n_total_min_mass,                                                                                                                                                        frac_uniform=frac_uniform,
-
+                                               XLOW2, XHIGH2,
+                                                n_total_min=n_total_min_mass,
+                                                frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
+                                                n_per_min=n_per_min, 
                                                 K = N_DP_comp_max_np
                                             )
+
+
+                print("grid m1 range:", log_Mc_grid[0].eval(), log_Mc_grid[-1].eval())
+                print("mu prior range:", lowmu1, upmu1)
+                print("sigma upper used:", sig1_max.eval())
+
+
+                print("grid logit q range:", logit_q_grid[0].eval(), logit_q_grid[-1].eval())
+                print("mu prior range:", lowmu2, upmu2)
+                print("sigma upper used:", sig2_max.eval())
                 
 
                 if rate_model in ('MD', 'PL'):
@@ -3392,19 +3444,45 @@ def make_model(  priors,
 
                 else:
 
+
+                    mu3_lo = MMIN_GRID_2 #min(lowmu3, lowmu3_inj)
+                    mu3_hi = MMAX_GRID_2 #max(upmu3,  upmu3_inj)
+
+                    # Bounds for logit(q) grid
+                    XLOW3, XHIGH3, sig3_max = putils.safe_interp_bounds_from_tau_eps(
+                        mu_low=mu3_lo,
+                        mu_high=mu3_hi,
+                        tau_upper=U3,       # <-- upper bound of tau2 Uniform
+                        s_local=s_local,
+                        k_sigma=k_sigma,
+                        n_eps=n_eps,
+                        extra_frac=0.10,
+                    )
+                    
+                    # OPTIONAL: clip to global physical transform limits (recommended)
+                    # these should be your transform-domain hard limits (constants)
+                    #XLOW3  = at.maximum(XLOW3,  at.as_tensor_variable(MMIN_GRID_2))
+                    #XHIGH3 = at.minimum(XHIGH3, at.as_tensor_variable(MMAX_GRID_2))
+
+                
                     log_1pz_grid = atools.build_1d_gaussian_mixture_grid_components(
                                                 mu3, sig3,
-                                                at.as_tensor_variable(MMIN_GRID_2), at.as_tensor_variable(MMAX_GRID_2),
-                                                n_total_min=n_total_min_mass,
-                                                                                                                                                        frac_uniform=frac_uniform,
-
+                                                XLOW3, XHIGH3,
+                                                n_total_min=n_total_min_mass,                                                                                    frac_uniform=frac_uniform,
                                                 k_sigma=k_sigma,
                                                 sigma_floor=sigma_floor,
+                                                n_per_min=n_per_min, 
                                                 K = N_DP_comp_max_np
                                             )
 
+                    print("grid log(1+z) range:", log_1pz_grid[0].eval(), log_1pz_grid[-1].eval())
+                    print("mu prior range:", lowmu3, upmu3)
+                    print("sigma upper used:", sig3_max.eval())
+
            
                     lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd, z=log_1pz_grid)
+
+                    
 
 
                     interp_vals_mass  = [lp_Mc_grid, lp_q_grid, lp_z_grid]

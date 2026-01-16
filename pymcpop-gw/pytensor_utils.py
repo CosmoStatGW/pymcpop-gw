@@ -663,6 +663,40 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     
 
 
+def safe_interp_bounds_from_tau_eps(
+    mu_low, mu_high,          # prior support for component means
+    tau_upper,                # U (upper bound of tau Uniform)
+    s_local,                  # std of eps Normal
+    k_sigma=4.0,              # window used in grid builder
+    n_eps=6.0,                # how many eps-sigmas you want to cover
+    extra_frac=0.10,          # extra padding relative to mu span
+    eps=1e-6,                 # avoid degenerate span
+):
+    """
+    Build robust interpolation bounds for sigma = tau * exp(eps),
+    eps ~ N(0, s_local).
+
+    We cover eps in [-n_eps*s_local, +n_eps*s_local] => sigma_max = U * exp(n_eps*s_local).
+    Then cover mu range plus k_sigma*sigma_max.
+    """
+    mu_low  = at.as_tensor_variable(mu_low)
+    mu_high = at.as_tensor_variable(mu_high)
+    tau_upper = at.as_tensor_variable(tau_upper)
+    s_local = at.as_tensor_variable(s_local)
+
+    span_mu = at.maximum(mu_high - mu_low, eps)
+
+    # conservative sigma bound
+    sigma_max = tau_upper * at.exp(n_eps * s_local)
+
+    pad = k_sigma * sigma_max + extra_frac * span_mu
+
+    x_low  = mu_low  - pad
+    x_high = mu_high + pad
+
+    return x_low, x_high, sigma_max
+
+
 def min_sep_logMc_logitq(m1_min, m1_max, m2_min, m2_max, dm1, dm2):
     # Build grids
     m1 = onp.arange(m1_min, m1_max + dm1*0.5, dm1)
