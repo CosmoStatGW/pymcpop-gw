@@ -101,6 +101,14 @@ def main():
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
     parser.add_argument("--monotonicity", default='poly', type=str, required=False)
     parser.add_argument("--eps_DE", default=-1, type=float, required=False)
+    parser.add_argument("--ell_min", default=0.1, type=float, required=False)
+    parser.add_argument("--fine_res", default=0.05, type=float, required=False)
+    parser.add_argument("--res_highz", default=0.1, type=float, required=False)
+    parser.add_argument("--res_lowz", default=0.05, type=float, required=False)
+
+    
+
+    
     
     parser.add_argument("--monotonicity_scale", default=0., type=float, required=False)
     parser.add_argument("--zmin_mono", default=0., type=float, required=False)
@@ -113,7 +121,7 @@ def main():
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
     
     parser.add_argument("--nu", default=0.5, type=float, required=False)
-    parser.add_argument("--lam", default=10, type=float, required=False)
+    parser.add_argument("--lam", default=1, type=float, required=False)
     parser.add_argument("--clip_high", default=500, type=float, required=False)
     parser.add_argument("--clip_low", default=-500, type=float, required=False)
     parser.add_argument("--GP_prior", default='frechet', type=str, required=False)
@@ -602,7 +610,7 @@ def main():
         print('No initial values passed.')
         ivals={}
     
-    model = models.make_model(  priors,
+    model, z_grid = models.make_model(  priors,
                                     GWData,
                                     InjData,
                                     ivals=ivals,
@@ -659,7 +667,11 @@ def main():
                                     use_log_alpha_beta=FLAGS.use_log_alpha_beta,
                                     params_fix=params_fix,
                                       allTobs=FLAGS.allTobs,
-                                    U = Uprior
+                                    U = Uprior,
+                                ell_min=FLAGS.ell_min,
+                                        res_lowz=FLAGS.res_lowz,
+                                        res_highz=FLAGS.res_highz,
+                                    fine_res=FLAGS.fine_res
                                 )
 
     print('Done.')
@@ -672,13 +684,17 @@ def main():
     
     if FLAGS.backend=='disk':
         backend=None
+    elif FLAGS.backend=='ztrace':
+        import zarr, numcodecs
+        
+        from pymc.backends.zarr import ZarrTrace
+        
+        spath=os.path.join(FLAGS.fout, "trace_backup.zarr")
+        backend = ZarrTrace(store=spath)
+        print("Intermediate trace will be stored at %s"%spath)
+        print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
     else:
-        # for saving see https://discourse.pymc.io/t/saving-intermediate-results-using-mcmc-in-pymc4/9938
-        # Not well tested
-        import clickhouse_driver
-        import mcbackend
-        ch_client = clickhouse_driver.Client("localhost")
-        backend = mcbackend.ClickHouseBackend(ch_client)
+        raise ValueError("backend can be disk or ztrace, got %s"%FLAGS.backend)
 
          
 
@@ -753,7 +769,8 @@ def main():
                         
             
                        
-                        z_grid = atools.zGridGlobals   # (N,)
+                        #z_grid = atools.zGridGlobals   # (N,)
+                        z_grid = onp.asarray(z_grid.eval())
                         N = z_grid.size
                         z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
                         
@@ -779,7 +796,7 @@ def main():
                         
                         # 4) The node function you used to build f_rotated_ (same as your snippet)
                         z0 = z_grid[0]
-                        s0 = 0.001
+                        s0 = 0.0001
                         f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
     
                         
@@ -796,7 +813,7 @@ def main():
                         u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
                         
     
-                        ip["f_rotated_"]     = u_nodes_init + 1e-3 * onp.random.randn(u_nodes_init.size)
+                        ip["f_rotated_"]     = u_nodes_init + 1e-4 * onp.random.randn(u_nodes_init.size)
                         #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
                     
                     else:
@@ -1279,11 +1296,18 @@ def main():
     if FLAGS.backend=='disk':
         trace.to_netcdf( os.path.join(FLAGS.fout, "trace.nc"))
     else:
-        # Fetch the run from the database (downloads just metadata)
-        run = backend.get_run(trace.run_id)
-        idata = run.to_inferencedata()
+        # Fetch the run 
+        try:
+            idata = autils.load_pymc_zarr_trace_robust(spath)  # your working loader
+            print( "idata loaded." )
+            #idata_clean = autils.drop_object_vars(idata)
+            #print( "idata cleaned." )
+            az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+            print( "trace saved." )
 
-        az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+        except Exception as e:
+            print(e)
+            print( "No final trace saved." )
         
 
     #########

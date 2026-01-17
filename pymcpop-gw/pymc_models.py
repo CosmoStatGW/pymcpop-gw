@@ -381,7 +381,7 @@ def make_model(  priors,
                  monotonicity_scale = 1. ,
                  zmin_mono = 0, 
                  zres=150,
-                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
+                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.5, zmax_c=10.0, hi_boost=0.20,
                  find_z_bounds = False,
                 nu = 0.25,
                  lam = 10,
@@ -412,7 +412,11 @@ def make_model(  priors,
                dil_factor=1,
                use_log_alpha_beta=False ,
                allTobs=None,
-                 U = 10.
+                 U = 10.,
+                ell_min=0.05,
+                 res_lowz = 0.1,
+                 res_highz = 0.1,
+                 fine_res = 0.01
                 ):
 
     ################################################
@@ -626,7 +630,7 @@ def make_model(  priors,
 
         zmin_a = min( zmin_a, min(min_z, z_min_data))
         
-        zmid_b = z_max_data
+        zmid_b = min( zmid_b, z_max_data )
         zmax_c = max(z_max_data, max_z)*(1+0.05)
 
         print("Redshift values found, overwriting default:")
@@ -635,18 +639,43 @@ def make_model(  priors,
 
         z_max_mono = max(z_max_data, max_z)
 
-        ell_min = z_diff
+        if ell_min>0:
+            print("z_diff found to be %s"%z_diff)
+            print("Min length scale passed by hand, = %s. Using max(ell_min, z_diff) "%ell_min)
+            ell_min = max( z_diff, ell_min )   
+        else:
+            ell_min = z_diff
         ell_max = z_span
     
         print(f"ell_min:                  {ell_min:.6g}")
         print(f"z_max_mono:                  {z_max_mono:.6g}")
+
+
+
+        if invert_dL_GP:
+            print()
+            zgrid_ = stop_grad( at.as_tensor_variable(  np.unique( np.sort( np.concatenate( [np.arange(zmin_a, zmid_b, res_lowz ), np.arange(zmid_b, zmax_c, res_highz ) ]))) ) )
+            
+            #stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
+            print("z grid for interpolation built. ")
+            print("Resolution up to %s: %s"%(zmid_b, res_lowz))
+            print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, res_highz))
+            print("Total len: %s"%(zgrid_.shape.eval()))
+            
+
+            zgrid_fine_ = stop_grad( at.as_tensor_variable(  np.arange(zmin_a, zmax_c, fine_res ) ))
+            print("z fine for integration/monotonicity built")
+            print("Resolution: %s"%(fine_res))
+            #print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, 0.5))
+            print("Total len: %s"%(zgrid_fine_.shape.eval()))
+            
+            print("z min: %s , z max: %s"%(zmin_a, zmax_c))
         
         beta = 0.1 #atools.find_beta(ell_min, 2., p0=0.01)
         al = 0.05 #atools.find_al(ell_min, 10., p0=0.01)
 
        
-        
-        #if True:
+        print()
         lambda_ell = -at.log(alpha_ell) * ell_min**(d_GP / 2)
         print('lambda_ell is %s'%lambda_ell.eval())
 
@@ -768,6 +797,8 @@ def make_model(  priors,
                         "pc_large_ell",
                         -lambda_large * ℓ
                                 )
+                else:
+                    print('No large ℓ penalty')
             
             elif GP_prior=='gamma':
                 ℓ = pm.Gamma("ℓ", alpha=2., beta=beta)
@@ -943,7 +974,7 @@ def make_model(  priors,
             m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
             v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
             m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0).astype('float64')  )
+            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype('float64')  )
             delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
             lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
@@ -954,13 +985,13 @@ def make_model(  priors,
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
             if has_m2_break:
                 print("Including gap for secondary mass")
-                m_g_     = at.as_tensor_variable(45.).astype('float64')
-                w_g_     = at.as_tensor_variable(70.).astype('float64')
+                m_g_     = at.as_tensor_variable(45.)#.astype('float64')
+                w_g_     = at.as_tensor_variable(70.)#.astype('float64')
                 sig_g_l_ = at.as_tensor_variable(1e-04)
                 sig_g_h_ = at.as_tensor_variable(1e-04)
             else:
-                m_g_     = at.as_tensor_variable(45.).astype('float64')
-                w_g_     = at.as_tensor_variable(70.).astype('float64')
+                m_g_     = at.as_tensor_variable(45.)#.astype('float64')
+                w_g_     = at.as_tensor_variable(70.)#.astype('float64')
                 sig_g_l_ = at.as_tensor_variable(1e-04)
                 sig_g_h_ = at.as_tensor_variable(1e-04)
             
@@ -1357,104 +1388,52 @@ def make_model(  priors,
 
                 if invert_dL_GP:
 
-                    # # we sampled distance from the posterior. need to invert the dL-z relation
-                    # dc_grid = atools.dcfun_at(atools.zGridGlobals_at, H0_, Om_,  w0_, interp=False)
-                    # b_full = atools.d_log_dLEM_dz(atools.zGridGlobals_at, H0_, Om_,  w0_ , dc=dc_grid, safe=False)
-                    
-                    # dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at (None, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL, data_range=data_range, GP_zero_point=GP_zero_point, dense_grad = dense_grad,  eta=η , ell=ℓ, nu=nu, sgn=sgn, b_full=b_full  )
-    
-                    # zs = pm.Deterministic('z', atools.atinterp( dval, dLGrid_at, atools.zGridGlobals_at ) , dims= "event_index" ) 
-
-                    # dc = pm.Deterministic('dc', atools.dcfun_at(zs, H0_, Om_,  w0_, interp=False) , dims= "event_index" )
-                    
-
-                     
-                    # distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, atools.zGridGlobals_at, log_distance_ratio_grid )), dims= "event_index")
-
-                                        
-                    # d_log_distance_ratio_d_z = atools.atinterp( zs, atools.zGridGlobals_at, grad_log_distance_ratio_grid )  
 
                     
-                    # d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio, dims= "event_index")
-
-                    
-                    # dLem_grid = (1+atools.zGridGlobals_at)*dc_grid
-
-                    # ddLem_dz_grid =  atools.ddL_dz_EM( atools.zGridGlobals_at, H0_, Om_, w0_,  dc=dc_grid )
-    
-                    # distance_ratio_grid = pm.Deterministic( "d_ratio_grid",  at.exp(log_distance_ratio_grid) )
-
-                    # dL_grid = pm.Deterministic( "dL_grid",  dLem_grid*distance_ratio_grid )
-                
-                    # s_grid = dLem_grid * grad_log_distance_ratio_grid + ddLem_dz_grid
-                    # log_ddL_dz_grid = at.log( at.abs( s_grid * distance_ratio_grid ) )
-                    # # log_ddL_dz_grid = at.log( at.abs( dLem_grid*grad_log_distance_ratio_grid*distance_ratio_grid + distance_ratio_grid*ddLem_dz_grid ) )
-
-                    # ddL_dz_grid = pm.Deterministic( "ddL_dz_grid",  s_grid * distance_ratio_grid  )
-
-                    
-                    # log_ddL_dz = atools.atinterp( zs, atools.zGridGlobals_at, log_ddL_dz_grid )
-                
-
-                    # if monotonicity:
-
-                    #     # Bound explicitly, just in case a few points escape 
-                        
-                    #     print('Imposing d(dL)/dz >0 on all the domain')
-                    #     ν = pm.Deterministic("ν", at.as_tensor_variable(1e-05) )       
-                    
-                    #     ddL_dz_mon = distance_ratio_grid * ( b_full + grad_log_distance_ratio_grid )
-                                            
-                    #     Φ = pm.Deterministic("Φ", pm.math.invprobit(pm.math.clip( ddL_dz_mon / ν, -10, 10)))
-                    #     # Binary likelihood: all 1s (indicating positive slope)
-                    #     monotonicity = pm.Bernoulli("monotonicity", p=Φ, observed=at.ones(log_ddL_dz_grid.shape[0]).eval() )
-
-
-                    zgrid_ = stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
-                    print("z grid for interpolation built. Resolution: %s"%zres)
-                    print("z min: %s , z max: %s"%(zmin_a, zmax_c))
-
                     # Precompute cosmology pieces (symbolic)
-                    dc_grid      = atools.dcfun_at(zgrid_, H0_, Om_, w0_, interp=False)
-                    dLem_grid    = (1.0 + zgrid_) * dc_grid
-                    ddLem_dz_grid= atools.ddL_dz_EM(zgrid_, H0_, Om_, w0_, dc=dc_grid)
-                    b_full       = atools.d_log_dLEM_dz(zgrid_, H0_, Om_, w0_, dc=dc_grid, safe=False)
+                    dc_grid      = atools.dcfun_at(zgrid_fine_, H0_, Om_, w0_, interp=False)
+                    dLem_grid    = (1.0 + zgrid_fine_) * dc_grid
+                    ddLem_dz_grid= atools.ddL_dz_EM(zgrid_fine_, H0_, Om_, w0_, dc=dc_grid)
+                    
+                    b_full       = atools.d_log_dLEM_dz(zgrid_fine_, H0_, Om_, w0_, dc=dc_grid, safe=False)
                     
                     # GP log-ratio & its derivative on the grid
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid = atools.z_from_dL_at(
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid, log_distance_ratio_grid_fine, grad_log_distance_ratio_grid_fine = atools.z_from_dL_at(
                         None, H0_, Om_, w0_, Lambda_MG_,
                         is_GP_dL=True,
-                        z_grid = zgrid_
-                        # data_range=data_range, GP_zero_point=GP_zero_point,
-                        # dense_grad=dense_grad, eta=η, ell=ℓ, b_full=b_full,
+                        z_grid = zgrid_,
+                        z_grid_fine = zgrid_fine_,
+                        out_type='fine'
                     )
+
+                    
                     
                     # Event-level z
-                    zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_), dims="event_index")
+                    zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_fine_), dims="event_index")
                     
                     # Event-level dc
                     dc = pm.Deterministic("dc", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims="event_index")
                     
                     # Distance ratio on grid (compute once)
-                    distance_ratio_grid = at.exp(log_distance_ratio_grid)
+                    distance_ratio_grid = at.exp(log_distance_ratio_grid_fine)
                     
 
 
-                    s_grid = dLem_grid * grad_log_distance_ratio_grid + ddLem_dz_grid
+                    s_grid = dLem_grid * grad_log_distance_ratio_grid_fine + ddLem_dz_grid
                     ddL_dz_grid = s_grid * distance_ratio_grid
                     log_ddL_dz_grid = at.log( at.abs( ddL_dz_grid)+ 1e-30 )
                     
 
                     
-                    log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid )
+                    log_ddL_dz = atools.atinterp( zs, zgrid_fine_, log_ddL_dz_grid )
                     
                     # Interpolate what you need at zs
-                    log_dratio_at_z  = atools.atinterp(zs, zgrid_, log_distance_ratio_grid)
-                    grad_log_dr_at_z = atools.atinterp(zs, zgrid_, grad_log_distance_ratio_grid)
+                    log_dratio_at_z  = atools.atinterp(zs, zgrid_fine_, log_distance_ratio_grid_fine)
+                    grad_log_dr_at_z = atools.atinterp(zs, zgrid_fine_, grad_log_distance_ratio_grid_fine)
 
 
 
-                    log_ddL_dz_at_z  = atools.atinterp(zs, zgrid_, log_ddL_dz_grid)
+                    log_ddL_dz_at_z  = atools.atinterp(zs, zgrid_fine_, log_ddL_dz_grid)
                     
                     distance_ratio = pm.Deterministic("d_ratio", at.exp(log_dratio_at_z), dims="event_index")
                     d_ratio_d_z    = pm.Deterministic("d_ratio_d_z", distance_ratio * grad_log_dr_at_z, dims="event_index")
@@ -1464,40 +1443,26 @@ def make_model(  priors,
                     print("monotonicity is %s"%monotonicity)
                     if monotonicity is not None:
                         
-                        
-                        if monotonicity=='softplus':
-                            print('Imposing d(dL)/dz >0 on all the domain')
-                            # Temperature (smaller => harder constraint). Keep as tensor, no Deterministic needed.
-                            print('Using softplus with nu=%s'%nu)
-                            #nu   = at.as_tensor_variable(1e-15)
-                            k = 1.7/nu
-                            pm.Potential( "monotonicity", -at.sum(atools.softplus(-k * s_grid)) )
-                            
-
-                        elif monotonicity=='softplus_clip':
-
-                            #nu   = at.as_tensor_variable(1e-05)  
-                            print('Imposing d(dL)/dz >0 on all the domain')
-                            print('Using stable softplus, nu=%s, clipping between %s, %s'%(nu,clip_low, clip_high ))
-                            pm.Potential( "monotonicity", -at.sum( at.logaddexp( 0.0, at.clip(-s_grid/nu, clip_low, clip_high) )  ) )
-                            
-                        elif monotonicity=='poly':
+                        if monotonicity=='poly':
                             print('Imposing d(dL)/dz >0 on all the domain')
                             print('Using smooth polynomial, nu=%s, lam=%s'%(nu, lam))
                             
                             # pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
 
                             # GP derivative g(z)
-                            g_grid = grad_log_distance_ratio_grid
+                            g_grid = grad_log_distance_ratio_grid_fine
+                            #atools.atinterp(zgrid_fine_, zgrid_, grad_log_distance_ratio_grid) 
+                            b_full_fine = atools.d_log_dLEM_dz(zgrid_fine_, H0_, Om_, w0_, dc=None, safe=False)
+                            
                             
                             # dimensionless monotonicity condition
-                            q_grid = g_grid + b_full
+                            q_grid = g_grid + b_full_fine
 
-                            mask = (zgrid_ <= z_max_mono)  # boolean mask on the grid
+                            mask = (zgrid_fine_ <= z_max_mono)  # boolean mask on the grid
 
                             if zmin_mono!=0:
                                 print("Lower lim for monotonicity penalty at z=%s"%zmin_mono)
-                                mask &= (zgrid_ >= zmin_mono)
+                                mask &= (zgrid_fine_ >= zmin_mono)
 
                             if monotonicity_scale==0:
                                 q_mono = q_grid[mask]
@@ -1518,7 +1483,7 @@ def make_model(  priors,
                             else:
                                 print("Standardize monotonicity with scale %s"%monotonicity_scale) 
                                 g_mono = g_grid[mask]
-                                b_mono = b_full[mask]
+                                b_mono = b_full_fine[mask]
 
                                 # avoid crazy ratios if b is small but still inside mask
                                 b_min  = 1e-10
@@ -1561,8 +1526,10 @@ def make_model(  priors,
                             at.power(ratio, 1.0 / (3.0 * w0_)) - 1.0
                         )
 
+                        print("... with Om=%s, w0=%s, the transition redshift is z_eps_DE = %s"%(Om_.eval(), w0_.eval(), z_eps.eval()))
+
                         delta_z = 0.2   # smoothness of transition
-                        w = pm.math.sigmoid((zgrid_ - z_eps) / delta_z)
+                        w = pm.math.sigmoid((zgrid_fine_ - z_eps) / delta_z)
 
                         sigma_tail = pm.HalfNormal("sigma_tail", sigma=0.1)
 
@@ -1890,12 +1857,12 @@ def make_model(  priors,
 
                 if is_GP_dL:
                     
-                    zinj = atools.atinterp( dLinj[0], dLGrid_at, zgrid_ )
+                    zinj = atools.atinterp( dLinj[0], dLGrid_at, zgrid_fine_ )
                    
                     dc_inj = atools.dcfun_at(zinj, H0_, Om_,  w0_, interp=False)
                     
 
-                    log_ddL_dz_inj   = atools.atinterp(zinj, zgrid_, log_ddL_dz_grid)
+                    log_ddL_dz_inj   = atools.atinterp(zinj, zgrid_fine_, log_ddL_dz_grid)
           
                 else:
                     zinj, log_ddL_dz_inj, dc_inj = None, None, None
@@ -2079,5 +2046,5 @@ def make_model(  priors,
                     sel_uncertainty_term = pm.Potential('selection_uncertainty', sel_uncertainty)
             
 
-    return model
+    return model, zgrid_
 

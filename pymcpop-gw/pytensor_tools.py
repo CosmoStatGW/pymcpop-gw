@@ -94,7 +94,7 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
     N1  = int(round(rem * low_boost))
     #N2a = int(round(rem * 0.45))
     N2 = rem - N1 #- N2a  # remainder
-    print("z grid built. N1=%s, N2=%s, N3=%s"%(N1, N2, N3))
+    #print("z grid built. N1=%s, N2=%s, N3=%s"%(N1, N2, N3))
 
     g1  = onp.logspace(onp.log10(zmin_a), onp.log10(zmin_b), max(N1,1), endpoint=False)
     #g2a = log_cheb(1e-3, 1e-1,            max(N2a,1))
@@ -195,11 +195,12 @@ def logdiffexp(x, y, neg_inf=-np.inf):
     x = at.as_tensor_variable(x); y = at.as_tensor_variable(y)
     m = at.maximum(x, y)
     d = at.abs(x - y)
-    tiny = at.as_tensor_variable(1e-300).astype(m.dtype)   # avoid 0 in masked branches
+    #tiny = at.as_tensor_variable(1e-300).astype(m.dtype)   # avoid 0 in masked branches
+    tiny=1e-300
     d = at.maximum(d, tiny)
     # log|exp(x)-exp(y)| = max(x,y) + log(1 - exp(-|x-y|))
     logabs = m + at.log1p(-at.exp(-d))
-    return at.where(x >= y, logabs, at.as_tensor_variable(neg_inf).astype(m.dtype))
+    return at.where(x >= y, logabs, neg_inf) #at.as_tensor_variable(neg_inf).astype(m.dtype))
 
 
 def logdiffexp32(x,y):
@@ -298,12 +299,12 @@ def stick_breaking(beta):
 
 def sigmoid(x, x0, s, eps=1e-12, clip=1e-15):
     # ensure positive scale
-    s = at.maximum(s, at.as_tensor_variable(eps).astype(x.dtype))
+    s = at.maximum(s, eps )#at.as_tensor_variable(eps).astype(x.dtype))
     t = (x - x0) / s
     y = 0.5 * (at.tanh(0.5 * t) + 1.0)   # stable sigmoid
     if clip is not None:
-        lo = at.as_tensor_variable(clip).astype(x.dtype)
-        hi = at.as_tensor_variable(1.0 - clip).astype(x.dtype)
+        lo = at.as_tensor_variable(clip)#.astype(x.dtype)
+        hi = at.as_tensor_variable(1.0 - clip)#.astype(x.dtype)
         y = at.clip(y, lo, hi)            # only if you really need interior (0,1)
     return y
 
@@ -420,9 +421,9 @@ def meshgrid_at(x, y):
 from pytensor.gradient import disconnected_grad  # <- correct import
 
 def atinterp1(x, xs, ys, return_grad=False):
-    x  = at.as_tensor_variable(x).astype("float64").ravel()
-    xs = at.as_tensor_variable(xs).astype("float64").ravel()
-    ys = at.as_tensor_variable(ys).astype("float64").ravel()
+    #x  = at.as_tensor_variable(x).astype("float64").ravel()
+    #xs = at.as_tensor_variable(xs).astype("float64").ravel()
+    #ys = at.as_tensor_variable(ys).astype("float64").ravel()
 
     # Detach indexing path from autodiff
     x_det  = disconnected_grad(x)
@@ -439,7 +440,7 @@ def atinterp1(x, xs, ys, return_grad=False):
     x_det = at.clip(x_det, xs_det[0], xs_det[-1])
 
     # Build strictly-increasing surrogate grid for indexing
-    eps      = at.as_tensor_variable(1e-12).astype("float64")
+    eps      = 1e-12 #at.as_tensor_variable(1e-12).astype("float64")
     dx       = xs_det[1:] - xs_det[:-1]
     dx_safe  = at.maximum(dx, eps)
 
@@ -665,7 +666,7 @@ def gauss_legendre_01(n=32, dtype="float64"):
     x, w = leggauss(n)                 # on [-1, 1]
     x01 = (x + 1.0) * 0.5              # map to [0, 1]
     w01 = w * 0.5
-    return x01.astype(dtype), w01.astype(dtype)
+    return x01, w01 #.astype(dtype), w01.astype(dtype)
 
 _x01_np, _w01_np = gauss_legendre_01(n=32)  # 16–64 usually plenty
 x01_at = at.as_tensor_variable(_x01_np)     # shape (n,)
@@ -761,7 +762,7 @@ def z_from_dL_at_softplus(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs):
     return dLGrid_at, logXi_nodes, g_nodes
 
 
-def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, **kwargs ): #data_range=None, res=1000, GP_zero_point=False):
+def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'): 
     
     if not is_GP_dL:
         Xi0, n = Lambda_MG
@@ -770,23 +771,27 @@ def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, **kwargs ): #data_r
     
     else:
         gp = Lambda_MG[0]
-
-        dCGrid_at  = dcfun_at( z_grid, H0, Om, w0 )
-        
-        dLGrid_EM_at = dCGrid_at*(1+z_grid)
-
         Z_nodes      = z_grid         # coarse, used for the GP
-        z_grid_fine  = zGrid500_at         # fine, used for integration/inversion
-    
 
-        log_distance_ratio, grad_log_distance_ratio = compute_gp_interp_dist_ratio(
+        if z_grid_fine is None:
+            z_grid_fine = zGrid500_at
+    
+        log_distance_ratio, grad_log_distance_ratio, log_distance_ratio_fine, grad_log_distance_ratio_fine = compute_gp_interp_dist_ratio(
     Z_nodes, gp, name="f", z_fine=z_grid_fine, reparameterize=True
 )
 
-                
-        dLGrid_at = at.exp(log_distance_ratio)*dLGrid_EM_at
+        if out_type=='fine':
+            z_grid_out = z_grid_fine
+            dr_grid_out=at.exp(log_distance_ratio_fine)
+        else:
+            z_grid_out = z_grid
+            dr_grid_out=at.exp(log_distance_ratio)
+        
+        dCGrid_at  = dcfun_at( z_grid_out, H0, Om, w0 )
+        dLGrid_EM_at = dCGrid_at*(1+z_grid_out)
+        dLGrid_at = dr_grid_out*dLGrid_EM_at
 
-        return dLGrid_at, log_distance_ratio, grad_log_distance_ratio
+        return dLGrid_at, log_distance_ratio, grad_log_distance_ratio, log_distance_ratio_fine, grad_log_distance_ratio_fine
 
 
 
@@ -1201,6 +1206,7 @@ def compute_gp_interp_dist_ratio(
     name="f",
     z_fine=None,             # (N_fine,)   optional finer grid (e.g., 500) used only for integration
     reparameterize=True,
+    return_fine=False
 ):
     """
     1) Draw GP on coarse nodes z_nodes (cheap Cholesky).
@@ -1245,9 +1251,9 @@ def compute_gp_interp_dist_ratio(
 
     # 3) interpolate the integrated curve back to the coarse nodes
     log_dr_nodes = atinterp(z_nodes, z_fine, log_dr_f)            # (N_nodes,)
-
+                
     # Derivative at nodes is exactly the GP at nodes
-    return log_dr_nodes, g_nodes
+    return log_dr_nodes, g_nodes, log_dr_f, g_fine
 
 
 def compute_gp_interp_dist_ratio_0( z_grid, gp, data_range=None, name="f", res=1000, GP_zero_point='y' , dense_grad = False , eta=None, ell=None, nu=None, sgn=None, b_full=None):
@@ -1396,8 +1402,8 @@ def matern52_dcov_dx_1d(Xd, Xc, eta, ell):
 
 
 def matern52_1d(X, Y, eta, ell):
-    X = np.atleast_2d(X).astype(np.float64)
-    Y = np.atleast_2d(Y).astype(np.float64)
+    X = np.atleast_2d(X)#.astype(np.float64)
+    Y = np.atleast_2d(Y)#.astype(np.float64)
     d = np.abs(X - Y.T)
     a = np.sqrt(5.0) / ell
     return (eta**2) * (1.0 + a*d + 5.0*(d**2)/(3.0*ell**2)) * np.exp(-a*d)
@@ -1715,14 +1721,14 @@ def logS_PLP(m, deltam, ml, eps=1e-12):
     with a C^1 transition (smoothstep) in between. Numerically robust.
     """
     # normalize position in the window and clamp to [0, 1]
-    t = (m - ml) / at.maximum(deltam, at.as_tensor_variable(eps).astype(m.dtype))
+    t = (m - ml) / at.maximum(deltam, eps) #at.as_tensor_variable(eps).astype(m.dtype))
     t = at.clip(t, 0.0, 1.0)
 
     # smoothstep: S(t) = 3t^2 - 2t^3, monotone from 0→1 with zero slope at ends
     S = t * t * (3.0 - 2.0 * t)
 
     # log S, safely (avoid log(0) at the lower edge)
-    return at.log(at.clip(S, at.as_tensor_variable(eps).astype(m.dtype), 1.0))
+    return at.log(at.clip(S, eps, 1.0))
     
 def logS_PLP_LVK(m, deltam, ml,):
         
@@ -1849,7 +1855,7 @@ def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
     mmin_c = at.clip(mmin, epsv, INF)
     mmax_c = at.maximum(at.clip(mmax, epsv,INF), mmin_c * (1.0 + 1e-12))
 
-    t = at.as_tensor_variable(1.0).astype(alpha.dtype) - alpha  # t = 1 - α
+    t = 1.0 - alpha  # t = 1 - α
     close = at.abs(t) < 1e-6
 
     # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
