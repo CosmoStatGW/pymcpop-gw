@@ -42,7 +42,7 @@ def main():
     parser.add_argument("--fin_data", nargs='+', type=str, required=True)
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
-    parser.add_argument("--backend", default='disk', type=str, required=False)
+    parser.add_argument("--backend", default='ztrace', type=str, required=False)
     
     parser.add_argument("--pop_only", default=0, type=int, required=False)
     

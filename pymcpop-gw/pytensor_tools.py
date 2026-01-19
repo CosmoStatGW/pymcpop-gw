@@ -6,7 +6,6 @@
 
 import pytensor.tensor as at
 import jax.numpy as np
-import numpy as onp
 import pymc as pm
 import jax
 from pytensor.graph import Apply, Op
