@@ -37,7 +37,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                  rate_model, mass_model, spin_model, 
                  smoothing='LVK', 
                  simplex_repair=False,
-                 has_m2_break=False, 
+                 has_m2_break=False,
+                norm_gauss='uplow',
                  dc=None, 
                  log_ddL_dz_pre=None,
                  param='vanilla',
@@ -221,14 +222,15 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
         x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
         x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+        x21 = Lambda[istart_spin + 20]
 
-        lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
+        lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
 
         if interp_vals_mass is not None:
             print("Log p pop will use pre-computed mass function grid")
             lpmass = atools.logpdf_DPLDP_from_interp([m1s, m2s], interp_vals_mass, interp_grids_mass)
         else:
-            lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=None, interp_grids = None )
+            lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing, interp_vals=None, interp_grids = None, norm_gauss=norm_gauss )
 
 
         if verbose:
@@ -251,9 +253,10 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
         x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
         x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+        x21 = Lambda[istart_spin + 20]
     
         lambdaBBHmass_lowz = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
-                              x11, x12, x13, x14, x15, x16, x17, x18, x19, x20]
+                              x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
     
         # ------------------------------------------------------------
         # UNPACK evolution hyperparameters (27 scalars):
@@ -261,7 +264,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         #    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
         #    lambda0, lambda1
         # ------------------------------------------------------------
-        j = istart_spin + 20
+        j = istart_spin + 21
     
         alpha1_inf  = Lambda[j +  0]; z_alpha1  = Lambda[j +  1]; dz_alpha1  = Lambda[j +  2]
         alpha2_inf  = Lambda[j +  3]; z_alpha2  = Lambda[j +  4]; dz_alpha2  = Lambda[j +  5]
@@ -274,8 +277,9 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
         #lambda1_inf = Lambda[j + 24]; z_lambda1 = Lambda[j + 25]; dz_lambda1 = Lambda[j + 26]
         lambda0_inf = Lambda[j + 21]
         lambda1_inf = Lambda[j + 22]
-        z_lambda    = Lambda[j + 23]
-        dz_lambda   = Lambda[j + 24]
+        lambda2_inf = Lambda[j + 23]
+        z_lambda    = Lambda[j + 24]
+        dz_lambda   = Lambda[j + 25]
     
         # evo_params = [
         #     alpha1_inf,  z_alpha1,  dz_alpha1,
@@ -296,7 +300,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 sigma1_inf,  z_sigma1,  dz_sigma1,
                 mu2_inf,     z_mu2,     dz_mu2,
                 sigma2_inf,  z_sigma2,  dz_sigma2,
-                lambda0_inf, lambda1_inf, z_lambda, dz_lambda,
+                lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda,
             ]
     
         # ------------------------------------------------------------
@@ -319,7 +323,8 @@ def log_p_pop_at(m1s, m2s, z, dL, spins,
                 smoothing=smoothing,
                 interp_vals=None,
                 interp_grids=None,
-                simplex_repair=simplex_repair
+                simplex_repair=simplex_repair,
+                norm_gauss=norm_gauss
             )
             
             
@@ -467,7 +472,8 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                     rate_model, mass_model, spin_model, 
                                     smoothing, 
                                    simplex_repair,
-                                    has_m2_break, 
+                                    has_m2_break,
+                                   norm_gauss,
                                     interp, 
                                    log_p_incl = None,
                                     log_ddL_dz_inj = None,
@@ -526,7 +532,8 @@ def sel_bias_with_uncertainty_at_0(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                               rate_model, mass_model, spin_model, 
                               smoothing=smoothing, 
                               simplex_repair=simplex_repair,
-                              has_m2_break=has_m2_break, 
+                              has_m2_break=has_m2_break,
+                             norm_gauss=norm_gauss,
                               log_ddL_dz_pre = log_ddL_dz_inj,
                               dc = dcinj,
                               interp_vals_mass = interp_vals_mass,
@@ -611,6 +618,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
     smoothing,
     simplex_repair,
     has_m2_break,
+    norm_gauss,
     interp,
     log_p_incl=None,
     # kept for API compat (ignored if dL_grid / z_grid are provided)
@@ -887,6 +895,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
                 smoothing=smoothing,
                 simplex_repair=simplex_repair,
                 has_m2_break=has_m2_break,
+                norm_gauss=norm_gauss,
                 log_ddL_dz_pre=logdd_c,
                 dc=dc_c,
                 interp_vals_mass=interp_vals_arg,
@@ -1040,6 +1049,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan(
                 smoothing=smoothing,
                 simplex_repair=simplex_repair,
                 has_m2_break=has_m2_break,
+                norm_gauss=norm_gauss,
                 log_ddL_dz_pre=logdd_c,
                 dc=dc_c,
                 interp_vals_mass=interp_vals_arg,
@@ -1134,6 +1144,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     smoothing,
     simplex_repair,
     has_m2_break,
+    norm_gauss,
     interp,
     log_p_incl=None,
     # kept for API compat (ignored if dL_grid / z_grid are provided)
@@ -1525,6 +1536,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             smoothing=smoothing,
             simplex_repair=simplex_repair,
             has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
             log_ddL_dz_pre=logdd,
             dc=dc,
             interp_vals_mass=iv,
@@ -1629,6 +1641,7 @@ def make_model(  priors,
                  interp_mass = 0,
                  interp_z = 0,
                  has_m2_break = False,
+                 norm_gauss = 'uplow',
                  spin_model = 'none',
                  spin_inj = 'none',
                  marginal_R0 = True,
@@ -2579,7 +2592,7 @@ def make_model(  priors,
                 sig_g_l_ = at.as_tensor_variable(1e-02)#.astype(X)
                 sig_g_h_ = at.as_tensor_variable(1e-02)#.astype(X)
             
-            Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
+            Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
         
         
@@ -2775,7 +2788,7 @@ def make_model(  priors,
                 alpha1_0, alpha2_0, mb_0,
                 mu1_0, sigma1_0, mu2_0, sigma2_0,
                 m1_low_, m_high_, delta_m1_,
-                lambda0_0, lambda1_0,
+                lambda0_0, lambda1_0, lambda2_0, 
                 beta_, m2_low_, delta_m2_,
                 epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
             ]
@@ -2788,7 +2801,7 @@ def make_model(  priors,
                 sigma1_inf_,  z_sigma1_,  dz_sigma1_,
                 mu2_inf_,     z_mu2_,     dz_mu2_,
                 sigma2_inf_,  z_sigma2_,  dz_sigma2_,
-                lambda0_inf_, lambda1_inf_, z_lambda_, dz_lambda_,
+                lambda0_inf_, lambda1_inf_, lambda2_inf_, z_lambda_, dz_lambda_,
             ]
             
             # If your code expects a single list Lambda_, append both
@@ -3250,7 +3263,7 @@ def make_model(  priors,
                                             n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
                                         )
                 
-                lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, epsilon_,  smoothing=smoothing) 
+                lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
 
 
                 lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
@@ -3366,11 +3379,12 @@ def make_model(  priors,
                     alpha1_0, alpha2_0, mb_0,
                     mu1_0, sigma1_0, mu2_0, sigma2_0,
                     m1_low_, m_high_, delta_m1_,
-                    lambda0_0, lambda1_0,
+                    lambda0_0, lambda1_0, lambda2_0,
                     epsilon_,
                     *evo_params_,
                     smoothing=smoothing,
-                    simplex_repair=simplex_repair
+                    simplex_repair=simplex_repair,
+                    norm_gauss=norm_gauss
                 )
                 # at.clip( lp_flat, -1e30, 1e030 )
                 lp_m1_bank = at.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
@@ -3792,6 +3806,7 @@ def make_model(  priors,
                                            smoothing=smoothing,
                                            simplex_repair=simplex_repair,
                                            has_m2_break=has_m2_break, 
+                                            norm_gauss=norm_gauss,
                                            dc=dc, 
                                            log_ddL_dz_pre=log_ddL_dz,
                                            interp_vals_mass = interp_vals_mass,
@@ -4092,7 +4107,8 @@ def make_model(  priors,
                                                           rate_model, mass_model, spin_model_name, 
                                                           smoothing, 
                                                           simplex_repair,
-                                                          has_m2_break, 
+                                                          has_m2_break,
+                                                          norm_gauss,
                                                           interp=pade, 
                                                           log_p_incl = lp_incl_inj[0],
                                                          dL_grid=dL_grid_inj,             
@@ -4123,7 +4139,8 @@ def make_model(  priors,
                                                               rate_model, mass_model, spin_model_name, 
                                                               smoothing, 
                                                             False,
-                                                              has_m2_break, 
+                                                              has_m2_break,
+                                                                norm_gauss,
                                                               interp=pade, 
                                                              log_p_incl = None,
                                                             log_ddL_dz_inj = atools.atinterp( zinj_tmp_, zgrid_, log_ddL_dz_grid),
@@ -4178,7 +4195,7 @@ def make_model(  priors,
                     print("Loop over injections sets, dynamical slicing")
                     # This should improve efficiency. But it can give problems with pytensor.scan (?)
 
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]],  spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata], rate_model, mass_model, spin_model_name, smoothing, has_m2_break, norm_gauss, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
                                           sequences = [ at.arange( ndata) ], 
                                           non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet],
                                             profile=True
@@ -4191,7 +4208,7 @@ def make_model(  priors,
                     print("Loop over injections sets, no slicing")
                     # makes it jax-compatible (jax does not support dynamical slicing at the moment)
                     # Not true anymore after pymc v5.10 ? Check
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
+                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, smoothing, has_m2_break, norm_gauss, interp=pade, dL_grid=dL_grid, z_grid=zgrid_ ), 
                                       sequences = [ at.arange( ndata) ], 
                                       non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw], 
                                             profile=True)

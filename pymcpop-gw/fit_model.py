@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--simplex_repair", default=0, type=int, required=False)
 
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
+    parser.add_argument("--norm_gauss", default='uplow', type=str, required=False)
     
     
     
@@ -753,6 +754,7 @@ def main():
                                     smoothing=FLAGS.smoothing,
                                     simplex_repair=FLAGS.simplex_repair,
                                     has_m2_break=FLAGS.has_m2_break,
+                                    norm_gauss=FLAGS.norm_gauss,
                                     interp_mass = FLAGS.interp_mass,
                                     interp_z = FLAGS.interp_z,
                                     spin_model = FLAGS.spin_model,
