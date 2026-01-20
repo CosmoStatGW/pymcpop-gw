@@ -551,7 +551,8 @@ def make_model(  priors,
         U = at.as_tensor_variable( U ) #2.5)         # upper bound for σ with high probability
         
         alpha = at.as_tensor_variable(0.01)    # small tail probability
-        lambda_ = at.log(1 / alpha) / U
+        
+        = at.log(1 / alpha) / U
         
         alpha_ell = at.as_tensor_variable(0.005)
         alpha_large = at.as_tensor_variable(0.01)

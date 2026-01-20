@@ -251,7 +251,7 @@ def main():
                 if FLAGS.U == 0:
                     raise ValueError("Insert U in prior for Gaussian Process or pass U as input arg")
                 else:
-                    print("Prior for from input U=%s"%FLAGS.U)
+                    print("Prior for U from input U=%s"%FLAGS.U)
                     Uprior = FLAGS.U
 
                 
