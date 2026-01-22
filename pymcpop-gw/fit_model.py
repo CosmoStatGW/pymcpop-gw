@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--fin_data", nargs='+', type=str, required=True)
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
+    parser.add_argument("--priors_for_mmin", default='', type=str, required=True)
+    
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
     parser.add_argument("--nev_min", default=0, type=int, required=False)
     parser.add_argument("--nev_max", default=-1, type=int, required=False)
@@ -394,6 +396,13 @@ def main():
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
+
+    if priors_for_mmin!='':
+        with open(FLAGS.priors_for_mmin) as json_file:
+            priors_for_mmin = json.load(json_file)
+
+        with open(os.path.join(FLAGS.fout, 'priors_for_mmin.json' ), 'w') as fp:
+            json.dump(priors_for_mmin, fp)
     
     # save input params for memory
     with open(os.path.join(FLAGS.fout, 'input_args.json' ), 'w') as fp:
@@ -818,7 +827,7 @@ def main():
                                 debug_sel_batch=FLAGS.debug_sel_batch,
                                 reparam_z = FLAGS.reparam_z,
                                  reparam_mass = FLAGS.reparam_mass,
-                                
+                                priors_for_mmin=FLAGS.priors_for_mmin
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

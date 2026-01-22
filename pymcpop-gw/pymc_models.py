@@ -1699,6 +1699,7 @@ def make_model(  priors,
                  debug_sel_batch=False,
                  reparam_z = True,
                  reparam_mass = False,
+                 priors_for_mmin=''
                 ):
 
 
@@ -2026,11 +2027,16 @@ def make_model(  priors,
                 raise ValueError()
             print("Pre-filtering injections to exclude those with mass<%s solar masses."%mmin_inj)
 
+            if priors_for_mmin==''s:
+                priors_for_mmin = priors
+                print("Comupting source-frame mass across prior range equal to your prior")
+            else:
+                print("Comupting source-frame mass across prior range with input file %s"%priors_for_mmin)
             dL_min, dL_max = dLinj[0].min(), dLinj[0].max()
             
             # 1) build envelope once 
             dL_grid, zmax_grid = putils.build_zmax_envelope_from_corners(
-                z_from_dL_fn, dL_min, dL_max, priors, n_grid=4096
+                z_from_dL_fn, dL_min, dL_max, priors_for_mmin, n_grid=4096
             )
             
             # 2) apply safe filter once

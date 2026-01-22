@@ -1105,7 +1105,7 @@ def _log_ndtr(z):
 
 
 def truncGausslowerupper_at_lpdf_safe(x, loc, scale, xmin=0.0, xmax=1.0,
-                                     eps_scale=1e-12, eps_Z=1e-300):
+                                     eps_scale=1e-12, eps_Z=1e-300, truncate=False):
     """
     Logpdf of N(loc, scale) truncated to [xmin, xmax], returning -inf outside.
     Numerically stable normalizer using log-space CDF difference.
@@ -1140,10 +1140,58 @@ def truncGausslowerupper_at_lpdf_safe(x, loc, scale, xmin=0.0, xmax=1.0,
             - 0.5 * at.log(2.0 * PI)
             - 0.5 * z**2
             - logZ)
+    if truncate:
+        in_bounds = (x >= xmin) & (x <= xmax)
+        return at.where(in_bounds, logp, -np.inf)
+    else:
+        # assume truncation will be done outside. 
+        return logp
 
-    in_bounds = (x >= xmin) & (x <= xmax)
-    return at.where(in_bounds, logp, -np.inf)
 
+
+
+def truncGausslower_at_lpdf_safe(x, loc, scale, xmin=0.0, 
+                                     eps_scale=1e-12, eps_Z=1e-300, truncate=False):
+    """
+    Logpdf of N(loc, scale) truncated to [xmin, inf], returning -inf outside.
+    Numerically stable normalizer using log-space CDF difference.
+
+    - eps_scale prevents division by 0 in gradients
+    - eps_Z prevents log(0) or log(negative) from producing NaN;
+      when the truncation mass is truly ~0, you get a large negative logZ,
+      which correctly makes the density extremely small / problematic but finite.
+    """
+    # ensure positive scale (still keep gradients sane)
+    scale_pos = at.maximum(scale, eps_scale)
+
+    # standardized bounds
+    za = (xmin - loc) / scale_pos
+    #zb = (xmax - loc) / scale_pos
+
+    logPhia = _log_ndtr(za)
+    logPhib = 0. #_log_ndtr(zb)
+
+    # enforce ordering for numerical safety (should already be true since xmax>=xmin)
+    hi = logPhib #at.maximum(logPhib, logPhia)
+    lo = logPhia #at.minimum(logPhib, logPhia)
+
+    logZ = logdiffexp(hi, lo)
+
+    # floor logZ to avoid NaNs when Z underflows / becomes 0
+    logZ = at.maximum(logZ, at.log(eps_Z))
+
+    # base normal logpdf
+    z = (x - loc) / scale_pos
+    logp = (-at.log(scale_pos)
+            - 0.5 * at.log(2.0 * PI)
+            - 0.5 * z**2
+            - logZ)
+    if truncate:
+        in_bounds = (x >= xmin) & (x <= xmax)
+        return at.where(in_bounds, logp, -np.inf)
+    else:
+        # assume truncation will be done outside. 
+        return logp
 
 
 def truncGausslower_at(x, loc, scale, xmin=0, ):    
@@ -1220,7 +1268,7 @@ def logpdf_gauss_cond(theta, lambdaBBHmass):
     return logpdfm1+logpdfm2
 
 
-def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None, eps=1e-06):
+def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None, eps=1e-06, mins=None, maxs=None):
     """
     Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
     means mu and std-devs sd.
@@ -1252,6 +1300,7 @@ def gaussian_logpdf_pair(m1s, m2s, mu, sd, z=None, eps=1e-06):
 
     logp1 = const - 0.5 * at.log(var1) - 0.5 * (diff1 * diff1 / var1)
     logp2 = const - 0.5 * at.log(var2) - 0.5 * (diff2 * diff2 / var2)
+
 
     if z is not None:
         z = z[None, :]
@@ -2522,6 +2571,13 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
         print("gaussian components truncated and normalized at lower and upper end")
         log_pnorm1 = truncGausslowerupper_at_lpdf_safe(m1, mu1, sigma1, xmin=m1_low, xmax=m_high)
         log_pnorm2 = truncGausslowerupper_at_lpdf_safe(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)
+   
+    elif norm_gauss=='low-once':
+        print("low gaussian component normalized at lower end, but truncation done outside. Upper gaussian not normalized nor truncated - ensure this is consistent with priors")
+        log_pnorm1 = truncGausslower_at_lpdf_safe(m1, mu1, sigma1, xmin=m1_low, )
+        #log_pnorm2 = truncGausslowerupper_at_lpdf_safe(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)
+        log_pnorm2 = -0.5*((m1-mu2)/sigma2)**2 - at.log(sigma2) - 0.5*at.log(2*PI)
+        
     elif norm_gauss=='low':
         print("gaussian components normalized only at lower end")
         raise NotImplementedError()
@@ -2530,7 +2586,7 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
         log_pnorm1 = -0.5*((m1-mu1)/sigma1)**2 - at.log(sigma1) - 0.5*at.log(2*PI)
         log_pnorm2 = -0.5*((m1-mu2)/sigma2)**2 - at.log(sigma2) - 0.5*at.log(2*PI)
     else:
-        raise ValueError("norm_gauss can be uplow, low, or none")
+        raise ValueError("norm_gauss can be uplow, low, low-once, or none")
         
 
     if smoothing == 'LVK':
