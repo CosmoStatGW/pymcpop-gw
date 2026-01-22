@@ -66,7 +66,7 @@ def main():
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
-    parser.add_argument("--eps_init", default=0.01, type=float, required=False)
+    parser.add_argument("--eps_init", default=0.1, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=0, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
@@ -137,6 +137,8 @@ def main():
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
+
+    parser.add_argument("--fix_mass", default=0, type=int, required=False)
     
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
@@ -671,7 +673,8 @@ def main():
                                 ell_min=FLAGS.ell_min,
                                         res_lowz=FLAGS.res_lowz,
                                         res_highz=FLAGS.res_highz,
-                                    fine_res=FLAGS.fine_res
+                                    fine_res=FLAGS.fine_res,
+                                        fix_mass=FLAGS.fix_mass
                                 )
 
     print('Done.')

@@ -111,6 +111,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
                                                      at.as_tensor_variable(-1.), at.as_tensor_variable(1.), 
                                                      at.as_tensor_variable(0.), at.as_tensor_variable(1.) 
                                                     )
+        istart_spin = istart+5
 
     elif spin_model=='chieffchip_uc':
         
@@ -121,18 +122,22 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
         lpchip = atools.truncGausslowerupper_at_lpdf(chip, muP, sigP, xmin=at.as_tensor_variable(0), xmax=at.as_tensor_variable(1))
 
         lpspin = lpchie+lpchip
+        istart_spin = istart+4
 
     elif spin_model=='default':
 
         alphaChi, betaChi, zeta, sigmat = Lambda[istart:istart+4]
         lpspin = atools.logpdf_default_spin(spins, [alphaChi, betaChi, zeta, sigmat])
+        istart_spin = istart+4
     
     elif spin_model=='default_gauss':
         muChi, sigmaChi, zeta, sigmat = Lambda[istart:istart+4]
         lpspin = atools.logpdf_default_spin_gauss(spins, [muChi, sigmaChi, zeta, sigmat])
+        istart_spin = istart+4
    
     else:
         lpspin = at.zeros( z.shape )
+        istart_spin = istart
 
     
     ###################################
@@ -146,7 +151,22 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
 
     elif mass_model=='DPLDP':
         
-        lambdaBBHmass = Lambda[-20:]
+        #lambdaBBHmass = Lambda[-20:]
+         #x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20 = Lambda[-20:]
+        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+        x21 = Lambda[istart_spin + 20]
+
+        lambdaBBHmass = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
+        
         lpmass = atools.logpdf_DPLDP([m1s, m2s], lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=has_m2_break, smoothing=smoothing )
         
         
@@ -416,7 +436,8 @@ def make_model(  priors,
                 ell_min=0.05,
                  res_lowz = 0.1,
                  res_highz = 0.1,
-                 fine_res = 0.01
+                 fine_res = 0.01,
+                 fix_mass=0
                 ):
 
     ################################################
@@ -552,7 +573,7 @@ def make_model(  priors,
         
         alpha = at.as_tensor_variable(0.01)    # small tail probability
         
-        = at.log(1 / alpha) / U
+        lambda_ = at.log(1 / alpha) / U
         
         alpha_ell = at.as_tensor_variable(0.005)
         alpha_large = at.as_tensor_variable(0.01)
@@ -964,39 +985,77 @@ def make_model(  priors,
 
             print('Modeling mass distribution with Double Power Law + Double Peak ')
 
-            alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
-            alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
-            mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
-            mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
-            sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
-            mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
-            sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
-            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
-            m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
-            v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
-            m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype('float64')  )
-            delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
-            lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
-            lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
-            lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
-            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
-            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
-            if has_m2_break:
-                print("Including gap for secondary mass")
-                m_g_     = at.as_tensor_variable(45.)#.astype('float64')
-                w_g_     = at.as_tensor_variable(70.)#.astype('float64')
-                sig_g_l_ = at.as_tensor_variable(1e-04)
-                sig_g_h_ = at.as_tensor_variable(1e-04)
+            if not fix_mass:
+
+                alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+                alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
+                mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+                mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+                sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
+                mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
+                sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
+                u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+                m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+                v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+                m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+                m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype('float64')  )
+                delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+                lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
+                lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+                lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+                lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+                beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+                delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+                epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
+                if has_m2_break:
+                    print("Including gap for secondary mass")
+                    m_g_     = at.as_tensor_variable(45.)#.astype('float64')
+                    w_g_     = at.as_tensor_variable(70.)#.astype('float64')
+                    sig_g_l_ = at.as_tensor_variable(1e-04)
+                    sig_g_h_ = at.as_tensor_variable(1e-04)
+                else:
+                    m_g_     = at.as_tensor_variable(45.)#.astype('float64')
+                    w_g_     = at.as_tensor_variable(70.)#.astype('float64')
+                    sig_g_l_ = at.as_tensor_variable(1e-04)
+                    sig_g_h_ = at.as_tensor_variable(1e-04)
+
             else:
+                print("Fix mass model")
+                alpha1_   = pm.Deterministic("alpha1",   at.as_tensor_variable(1.7) )
+                #alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+                #alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
+                alpha2_   = pm.Deterministic("alpha2",   at.as_tensor_variable(4.5))
+                mb_       = pm.Deterministic("mb",       at.as_tensor_variable(36 ))
+                #mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+                
+                #mu1_      = pm.Deterministic("mu1",     at.as_tensor_variable(9.8)  )
+                mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+                
+                sigma1_   = pm.Deterministic("sigma1",    at.as_tensor_variable(0.65)  )
+                mu2_      = pm.Deterministic("mu2",      at.as_tensor_variable(33)  )
+                sigma2_   = pm.Deterministic("sigma2",  at.as_tensor_variable(3.9)  )
+                #u         = pm.Deterministic("u", 0, 1, initval=ivals.get("u"))
+                m1_low_   = pm.Deterministic("m1_low", at.as_tensor_variable(5.1) )
+                #v         = pm.Deterministic("v", 0, 1, initval=ivals.get("v"))
+                m2_low_   = pm.Deterministic("m2_low", at.as_tensor_variable(3.6) )
+                m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype('float64')  )
+                delta_m1_ = pm.Deterministic("delta_m1", at.as_tensor_variable(4.3) )
+                #lambda_vec = pm.Dirichlet("lambda", a=np.array([1, 1, 1]), initval=ivals.get("lambda"))
+                lambda0_  = pm.Deterministic("lambda0",   at.as_tensor_variable(0.36) )
+                lambda1_  = pm.Deterministic("lambda1",  at.as_tensor_variable(0.59) )
+                lambda2_  = pm.Deterministic("lambda2", at.as_tensor_variable(1- 0.36- 0.59)) 
+                beta_     = pm.Deterministic("beta",     at.as_tensor_variable(1.2) )
+                delta_m2_ = pm.Deterministic("delta_m2", at.as_tensor_variable(4.9) )
+                epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01))
+
                 m_g_     = at.as_tensor_variable(45.)#.astype('float64')
                 w_g_     = at.as_tensor_variable(70.)#.astype('float64')
                 sig_g_l_ = at.as_tensor_variable(1e-04)
                 sig_g_h_ = at.as_tensor_variable(1e-04)
+
+                
             
-            Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
+            Lambda_ += [alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_]
 
         ### BNS
         elif 'BNSgauss' in mass_model:

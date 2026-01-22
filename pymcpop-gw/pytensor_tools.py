@@ -6,6 +6,7 @@
 
 import pytensor.tensor as at
 import jax.numpy as np
+import numpy as onp
 import pymc as pm
 import jax
 from pytensor.graph import Apply, Op
@@ -465,6 +466,37 @@ def atinterp1(x, xs, ys, return_grad=False):
         return y_interp, dy_dx
     else:
         return y_interp
+
+
+
+def atinterp_uniform(x, x0, x1, n, yp):
+    """
+    Uniform-grid linear interpolation: xp must be uniformly spaced and increasing.
+    JAX-friendly: uses int32 indices.
+    """
+    # x = at.as_tensor_variable(x)
+    # xp = at.as_tensor_variable(xp)
+    # yp = at.as_tensor_variable(yp)
+
+    #n = xp.shape[0]
+    # dx = (xp[-1] - xp[0]) / (n-1)
+    dx = (x1 - x0)  / (n - 1)
+
+    # t in [0, n-1]
+    t = (x - x0) / dx
+    t = at.clip( t, 0.0,  n - 1 )
+
+    j = at.floor(t).astype("int32") #.astype("int32")
+    j = at.clip(j, 0, n - 2)
+
+    r = t - j #.astype(t.dtype)
+
+    y0 = yp[j]
+    y1 = yp[j + 1]
+    return (1.0 - r) * y0 + r * y1
+
+
+
 
 def atinterp(x, xs, ys, return_grad=False):
     """
@@ -1636,6 +1668,56 @@ def truncGausslowerupper_at_lpdf(x, loc, scale, xmin=0, xmax=1):
                     -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
 
 
+def _log_ndtr(z):
+    """
+    log Phi(z) computed as log(0.5*erfc(-z/sqrt(2))).
+    This is reasonably stable and returns -inf in extreme left tail (OK).
+    """
+    sqrt2 = at.sqrt(2.0)
+    return at.log(0.5) + at.log(at.erfc(-z / sqrt2))
+
+
+def truncGausslowerupper_at_lpdf_safe(x, loc, scale, xmin=0.0, xmax=1.0,
+                                     eps_scale=1e-12, eps_Z=1e-300):
+    """
+    Logpdf of N(loc, scale) truncated to [xmin, xmax], returning -inf outside.
+    Numerically stable normalizer using log-space CDF difference.
+
+    - eps_scale prevents division by 0 in gradients
+    - eps_Z prevents log(0) or log(negative) from producing NaN;
+      when the truncation mass is truly ~0, you get a large negative logZ,
+      which correctly makes the density extremely small / problematic but finite.
+    """
+    # ensure positive scale (still keep gradients sane)
+    scale_pos = at.maximum(scale, eps_scale)
+
+    # standardized bounds
+    za = (xmin - loc) / scale_pos
+    zb = (xmax - loc) / scale_pos
+
+    logPhia = _log_ndtr(za)
+    logPhib = _log_ndtr(zb)
+
+    # enforce ordering for numerical safety (should already be true since xmax>=xmin)
+    hi = at.maximum(logPhib, logPhia)
+    lo = at.minimum(logPhib, logPhia)
+
+    logZ = logdiffexp(hi, lo)
+
+    # floor logZ to avoid NaNs when Z underflows / becomes 0
+    logZ = at.maximum(logZ, at.log(eps_Z))
+
+    # base normal logpdf
+    z = (x - loc) / scale_pos
+    logp = (-at.log(scale_pos)
+            - 0.5 * at.log(2.0 * PI)
+            - 0.5 * z**2
+            - logZ)
+
+    in_bounds = (x >= xmin) & (x <= xmax)
+    return at.where(in_bounds, logp, -np.inf)
+
+
 def truncGausslowerupper_at_lpdf_nonly(x, loc, scale, xmin=0, xmax=1):    
 
     Phialpha = 0.5*(1.+at.erf((xmin-loc)/(at.sqrt(2.)*scale)))
@@ -1843,6 +1925,30 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
     return 1/(1-alpha)*(mmax**(1-alpha)-mmin**(1-alpha))
 
 
+
+def log_norm_truncated_pl_num_alpha1_safe(alpha, mmin, mmax, eps=1e-12, t_floor=1e-12):
+    """
+    Wrapper around your log_norm_truncated_pl_num that is well-defined at alpha==1.
+    Uses a tiny floor on t = 1 - alpha only when |t| is extremely small.
+    This preserves the correct continuous limit and avoids log(0).
+    """
+    # sanitize bounds similarly to your function
+    mmin_c = at.clip(mmin, eps, np.inf)
+    mmax_c = at.clip(mmax, eps, np.inf)
+    mmax_c = at.maximum(mmax_c, mmin_c * (1.0 + 1e-12))
+
+    t = 1.0 - alpha
+    # ensure t is never exactly 0 (for numerical definition)
+    t_safe = at.where(at.abs(t) < t_floor, at.sign(t) * t_floor + t_floor, t)
+
+    b = at.log(mmin_c)
+    delta = at.log(mmax_c) - b
+
+    return (t_safe * b
+            + at.log(at.abs(at.expm1(t_safe * delta)))
+            - at.log(at.abs(t_safe)))
+
+
 def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
     """
     log ∫_{mmin}^{mmax} m^{-alpha} dm
@@ -2018,88 +2124,218 @@ def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoot
 ####### double Power Law + double Peak  LVK low-end ########
 
 
-def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, sh=0.05, sl=0.05, epsilon=0.01):
+def log_broken_pl_norm_DPLDP(alpha1, alpha2, mb, m1_low, m_high,
+                            eps=1e-12, t_floor=1e-12):
     """
-    Log of the broken power-law PDF 
-    """    
-    
-    # Compute log normalization constant
-    norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
-    norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
-    log_N = at.log(norm1 + norm2)
+    Log normalization for broken PL defined as:
+      p(m) ∝ (m/mb)^(-alpha1) for m <= mb
+      p(m) ∝ (m/mb)^(-alpha2) for m >= mb
+    integrated over m in [m1_low, m_high].
 
+    Uses u = m/mb, so:
+      N = mb * [ ∫_{u_low}^{1} u^{-alpha1} du + ∫_{1}^{u_high} u^{-alpha2} du ]
+    with stable log integrals and a well-defined alpha==1 case (via t_floor).
+    """
+    mb_pos = at.maximum(mb, eps)
 
-    # log(pdf) in each regime
-    log_val1 = -alpha1 * at.log(m1 / mb)
-    log_val2 = -alpha2 * at.log(m1 / mb)
+    u_low = at.maximum(m1_low / mb_pos, eps)
+    u_high = at.maximum(m_high / mb_pos, u_low * (1.0 + 1e-12))
 
-  
-    # Smooth weight function (sigmoid transition)
-    w = safe_sigmoid( -m1, -mb, epsilon)
+    one = at.as_tensor_variable(1.0, dtype=getattr(mb, "dtype", "float64"))
 
-    # Use log-sum-exp to compute:
-    # log(w * exp(log_val1) + (1-w) * exp(log_val2))
-    log_mix_val = logsumexp(
-        at.log(w) + log_val1,
-        at.log1p(-w) + log_val2
+    # Left side exists only if u_low < 1
+    logI1 = at.switch(
+        u_low < one,
+        log_norm_truncated_pl_num_alpha1_safe(alpha1, u_low, one, eps=eps, t_floor=t_floor),
+        -np.inf
     )
 
-    
-    s1 = at.log1p(-safe_sigmoid(m1, m_high, sh))
-    s2 = at.log(safe_sigmoid(m1, m1_low, sl))
+    # Right side exists only if u_high > 1
+    logI2 = at.switch(
+        u_high > one,
+        log_norm_truncated_pl_num_alpha1_safe(alpha2, one, u_high, eps=eps, t_floor=t_floor),
+        -np.inf
+    )
 
-    return log_mix_val - log_N + s1 + s2
+    # log( mb * (I1 + I2) )
+    return at.log(mb_pos) + at.logaddexp(logI1, logI2)
 
 
-def logpdfm1_DPLDP(
-    m1, alpha1, alpha2, mb,
+def log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high,
+                                  sh=0.05, sl=0.05, epsilon=0.01,
+                                  eps=1e-12, eps_w=1e-12, t_floor=1e-12):
+    """
+    Broken-PL component logpdf (no outer low/high gating here).
+    Uses safe log normalization that is well-defined at alpha==1.
+
+    NOTE:
+      If you have moved the low/high sigmoid envelope to logpdfm1_DPLDP (recommended),
+      do NOT re-add s1/s2 here (to avoid double gating).
+    """
+    # Keep logs safe (masses positive by construction, but guard anyway)
+    mb_pos = at.maximum(mb, eps)
+    m1_pos = at.maximum(m1, eps)
+
+    # log normalization (safe)
+    log_N = log_broken_pl_norm_DPLDP(alpha1, alpha2, mb_pos, m1_low, m_high,
+                                    eps=eps, t_floor=t_floor)
+
+    # log(m1/mb)
+    log_m1_over_mb = at.log(m1_pos / mb_pos)
+    log_val1 = -alpha1 * log_m1_over_mb
+    log_val2 = -alpha2 * log_m1_over_mb
+
+    # Smooth transition weight (already clipped in your sigmoid, but clip again here)
+    w = safe_sigmoid(-m1_pos, -mb_pos, epsilon)
+    w = at.clip(w, eps_w, 1.0 - eps_w)
+
+    log_w = at.log(w)
+    log_1mw = at.log1p(-w)
+
+    # stable mixture
+    log_mix_val = at.logaddexp(log_w + log_val1, log_1mw + log_val2)
+
+    return log_mix_val - log_N 
+
+def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     mu1, sigma1, mu2, sigma2,
     m1_low, m_high, delta_m1,
-    lambda0, lambda1,
-    epsilon, 
-    smoothing='LVK'
-    ):
-    """
-    Log of the mixture model. Assumes other components return log-probabilities.
-    """
-    
-    log_lambda0 = at.log(lambda0)
-    log_lambda1 = at.log(lambda1)
-    log_lambda2 = at.log1p(-lambda0 - lambda1)  # log(1 - λ0 - λ1)
+    lambda0, lambda1, lambda2,
+    epsilon,
+    smoothing='LVK', simplex_repair=False, eps_w=1e-15, sl=0.05, sh=0.05,
+    norm_gauss='uplow'
+                  ):
 
-    log_ppl = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
-    
-    log_pnorm1 = truncGausslowerupper_at_lpdf(m1, mu1, sigma1, xmin=m1_low, xmax=m_high) # low-mass peak
-    log_pnorm2 = truncGausslowerupper_at_lpdf(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)   # mid-mass peak
-    
-    if smoothing=='LVK':
-        log_S = logS_PLP_LVK(m1, delta_m1, m1_low,)
+
+    #work_dtype = getattr(m1, "dtype", "float64")
+
+    #one = at.as_tensor_variable(1.0, dtype=work_dtype)
+
+    # eps_w = at.as_tensor_variable(
+    #     1e-6 if str(work_dtype) == "float32" else 1e-12,
+    #     dtype=work_dtype
+    # )
+
+    if not simplex_repair:
+        log_lambda0 = at.log(lambda0)
+        log_lambda1 = at.log(lambda1)
+        log_lambda2 = at.log(lambda2)
+
+        #log_lambda0 = at.log(at.clip(lambda0, eps_w, 1.0-eps_w))
+        #log_lambda1 = at.log(at.clip(lambda1, eps_w, 1.0-eps_w))
+        #log_lambda2 = at.log(at.clip(lambda2, eps_w, 1.0-eps_w))
+
+        #lambda2_raw  = 1. - lambda0 - lambda1
+        #lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0-eps_w)
+        #log_lambda2  = at.log(lambda2_safe)
+
     else:
-        log_S = logS_PLP(m1, delta_m1, m1_low,)
+        # ---- Simplex repair (same math as your version; just dtype-safe) ----
+        lam0 = at.clip(lambda0, eps_w, 1.-eps_w)
+        lam1 = at.clip(lambda1, eps_w, 1.-eps_w)
+        lam2_raw = 1. - lam0 - lam1
 
-    # logsumexp of the weighted logs
+        lam2 = eps_w + at.softplus(lam2_raw - eps_w)
+
+        denom = lam0 + lam1 + lam2
+        lam0 = lam0 / denom
+        lam1 = lam1 / denom
+        lam2 = lam2 / denom
+
+        log_lambda0 = at.log(lam0)
+        log_lambda1 = at.log(lam1)
+        log_lambda2 = at.log(lam2)
+
+    log_ppl    = log_broken_power_law_DPLDP_pdf(m1, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon)
+
+    if norm_gauss=='uplow':
+        print("gaussian components truncated and normalized at lower and upper end")
+        log_pnorm1 = truncGausslowerupper_at_lpdf_safe(m1, mu1, sigma1, xmin=m1_low, xmax=m_high)
+        log_pnorm2 = truncGausslowerupper_at_lpdf_safe(m1, mu2, sigma2, xmin=m1_low, xmax=m_high)
+    elif norm_gauss=='low':
+        print("gaussian components normalized only at lower end")
+        raise NotImplementedError()
+    elif norm_gauss=='none':
+        print("gaussian components not truncated and not normalized")
+        log_pnorm1 = -0.5*((m1-mu1)/sigma1)**2 - at.log(sigma1) - 0.5*at.log(2*PI)
+        log_pnorm2 = -0.5*((m1-mu2)/sigma2)**2 - at.log(sigma2) - 0.5*at.log(2*PI)
+    else:
+        raise ValueError("norm_gauss can be uplow, low, or none")
+        
+
+    if smoothing == 'LVK':
+        log_S = logS_PLP_LVK(m1, delta_m1, m1_low)
+    else:
+        log_S = logS_PLP(m1, delta_m1, m1_low)
+
+    term0 = log_lambda0 + log_ppl
+    term1 = log_lambda1 + log_pnorm1
+    term2 = log_lambda2 + log_pnorm2
+
+    #log_mix = safe_logsumexp3(term0, term1, term2)
+    
     log_mix = logsumexp(
-        logsumexp(log_lambda0 + log_ppl, log_lambda1 + log_pnorm1),
-        log_lambda2 + log_pnorm2
+        logsumexp(term0, term1),
+        term2
     )
 
-    return log_S + log_mix 
+    log_gate = log_sigmoid(m1, m1_low, sl) + at.log1p(-safe_sigmoid(m1, m_high, sh)) 
+
+    return log_S + log_mix + log_gate
 
 
-def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK'):
+
+
+def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False, smoothing='LVK', resC=100, resN=500, interp_vals=None, interp_grids=None, norm=True, simplex_repair=False, norm_gauss='uplow'):
     
         m1, m2 = theta
-        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
+        alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
                 
 
-        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
-    
-        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
+        if interp_vals is None:
+            
+            lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, simplex_repair=simplex_repair, norm_gauss=norm_gauss)
         
-        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing) 
-   
-        ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing)
-    
+            lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
+            
+            lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
+            if norm:
+                ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, res=resN, norm_gauss=norm_gauss )
+            else:
+                ln=0.
+        else:
+
+            m1_grid = interp_grids[0]
+            m2_grid = interp_grids[1]
+            lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
+
+
+            ############ Faster, v3
+            # ----- M1 interpolation indices computed once -----
+            x0_1 = m1_grid[0]
+            x1_1 = m1_grid[-1]
+            nU_1 = m1_grid.shape[0]
+            
+            j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
+            
+            # interpolate logpdf(m1)
+            lpdfm1 = (1 - r1) * lp_m1_grid[j1] + r1 * lp_m1_grid[j1 + 1]
+            
+            # interpolate C(m1)
+            lC     = (1 - r1) * lC_of_m1[j1]   + r1 * lC_of_m1[j1 + 1]
+            
+            # ----- M2 interpolation indices computed once -----
+            x0_2 = m2_grid[0]
+            x1_2 = m2_grid[-1]
+            nU_2 = m2_grid.shape[0]
+            
+            j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
+            
+            # interpolate logpdf(m2)
+            lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
+        
+
+
         lpdf = lpdfm1 + lpdfm2 -lC -ln
     
         #lpdf = at.switch(
@@ -2111,47 +2347,81 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
-            return at.where(eval, lpdf, MIN)
+            return at.where(eval, lpdf, -np.inf)
         else:
-            return lpdf
-        
+            return lpdf        
      
 
-def logC_DPLDP( m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high = 5, has_m2_break=False, res=5000, smoothing='LVK'):
-    '''
-    Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
-    '''
+def logC_DPLDP(m, beta, deltam, m2_low,
+              m_g=45, w_g=80, sig_g_low=5, sig_g_high=5,
+              has_m2_break=False, res=500, smoothing='LVK'):
 
-    _tgrid = _get_t_grid()
-    
-    xx = m2_low + (max_m - m2_low) * _tgrid 
-        
-    p2 = at.exp( logpdfm2_PLP_noreg( xx , beta, deltam, m2_low, m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing))
-    
-    cdf = atcumtrapz( p2, xx, )
+    if res != 500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
 
-    itr = atinterp( m, xx[1:], at.log(cdf) )
-    
+    xx = m2_low + (max_m - m2_low) * _tgrid
+
+    l2 = logpdfm2_PLP_reg(xx, beta, deltam, m2_low,
+                         m_g=m_g, w_g=w_g, sig_g_low=sig_g_low, sig_g_high=sig_g_high,
+                         has_m2_break=has_m2_break, smoothing=smoothing)
+
+    a = at.max(l2)
+    p2 = at.exp(l2 - a)
+
+    cdf = atcumtrapz(p2, xx)
+    cdf = at.clip(cdf, 1e-300, np.inf)
+
+    x0 = xx[1]
+    x1 = xx[-1]
+    nU = xx.shape[0] - 1
+
+    # log(cdf_scaled) + a gives log(cdf_original)
+    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf) + a)
+
     return itr
 
 
 
 
 
-def logNorm_DPLDP( alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, res=2000, smoothing='LVK'):
-    
-    '''
-        Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
-    '''
-    
-    _tgrid = _get_t_grid()
-    
-    ms = m1_low + (m_high - m1_low) * _tgrid 
-            
-    lpdf = logpdfm1_DPLDP( ms , alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, epsilon, smoothing=smoothing  )
-    ps = at.exp( lpdf)
-    
-    return at.log( attrapzvec(ps, ms) )
+def logNorm_DPLDP(alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
+                  m1_low, m_high, delta_m1,
+                  lambda0, lambda1, lambda2,
+                  epsilon,
+                  res=500, smoothing='LVK', simplex_repair=False,
+                  eps_int=1e-300, norm_gauss='uplow'):
+    """
+    Overflow-safe log normalization:
+      log ∫ exp(logpdfm1_DPLDP(ms)) dms
+    using max-subtraction.
+    """
+    if res != 500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+
+    ms = m1_low + (m_high - m1_low) * _tgrid
+
+    lpdf = logpdfm1_DPLDP(
+        ms, alpha1, alpha2, mb,
+        mu1, sigma1, mu2, sigma2,
+        m1_low, m_high, delta_m1,
+        lambda0, lambda1, lambda2,
+        epsilon,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+        norm_gauss=norm_gauss
+    )
+
+    a = at.max(lpdf)
+    ps = at.exp(lpdf - a)                 # <= 1, avoids overflow
+    integ = attrapzvec(ps, ms)
+    integ = at.clip(integ, eps_int, np.inf)
+
+    return a + at.log(integ)
+
 
 
 
