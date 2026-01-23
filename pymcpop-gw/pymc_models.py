@@ -2027,9 +2027,9 @@ def make_model(  priors,
                 raise ValueError()
             print("Pre-filtering injections to exclude those with mass<%s solar masses."%mmin_inj)
 
-            if priors_for_mmin==''s:
+            if priors_for_mmin=='':
                 priors_for_mmin = priors
-                print("Comupting source-frame mass across prior range equal to your prior")
+                print("Computing source-frame mass across prior range equal to your prior")
             else:
                 print("Comupting source-frame mass across prior range with input file %s"%priors_for_mmin)
             dL_min, dL_max = dLinj[0].min(), dLinj[0].max()
