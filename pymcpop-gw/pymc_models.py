@@ -401,7 +401,7 @@ def make_model(  priors,
                  monotonicity_scale = 1. ,
                  zmin_mono = 0, 
                  zres=150,
-                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.5, zmax_c=10.0, hi_boost=0.20,
+                zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.5, zmax_c=100.0, hi_boost=0.20,
                  find_z_bounds = False,
                 nu = 0.25,
                  lam = 10,
@@ -653,7 +653,7 @@ def make_model(  priors,
         zmin_a = min( zmin_a, min(min_z, z_min_data))
         
         zmid_b = min( zmid_b, z_max_data )
-        zmax_c = max(z_max_data, max_z)*(1+0.05)
+        zmax_c = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
 
         print("Redshift values found, overwriting default:")
         print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
@@ -1466,7 +1466,12 @@ def make_model(  priors,
                         out_type='fine'
                     )
 
-                    
+                    # after building dLGrid_at and before inversion
+                    oob = at.any((dval < dLGrid_at[0]) | (dval > dLGrid_at[-1]))
+                    pm.Potential("interp_oob_penalty", at.switch(oob, -1e6, 0.0))
+
+                    print("oob constraint is %s "%oob.eval())
+
                     
                     # Event-level z
                     zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_fine_), dims="event_index")

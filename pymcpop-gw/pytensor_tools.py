@@ -420,6 +420,66 @@ def meshgrid_at(x, y):
 
 from pytensor.gradient import disconnected_grad  # <- correct import
 
+
+
+def _interp_indices_nonuniform_safe(x, x_grid):
+    """
+    Robust index+weight for non-uniform 1D interpolation.
+
+    Returns:
+      j  in [1, N-1]
+      r  in [0, 1]
+    such that:
+      xL = x_grid[j-1], xR = x_grid[j]
+      y(x) ~ (1-r)*y[j-1] + r*y[j]
+    """
+    N = x_grid.shape[0]
+
+    # clip x into grid domain (avoid out-of-bounds indices and extrapolation)
+    x_clip = at.clip(x, x_grid[0], x_grid[-1])
+
+    # insertion index in [0..N]
+    j = at.searchsorted(x_grid, x_clip, side="right")
+
+    # clamp to valid interpolation interval [1..N-1]
+    j = at.clip(j, 1, N - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = at.maximum(xR - xL, 1e-30)
+
+    r = (x_clip - xL) / denom
+    r = at.clip(r, 0.0, 1.0)
+
+    return j, r
+
+
+def atinterp(x, xs, ys, eps=1e-30):
+    """
+    1D linear interpolation of y(x) given monotone non-uniform grid xs and values ys.
+
+    - Clips x to [xs[0], xs[-1]] to avoid extrapolation.
+    - Safe for non-uniform grids.
+    - eps prevents division by zero if xs has repeated points.
+    """
+    # Ensure tensors
+    #x  = at.as_tensor_variable(x)
+    #xs = at.as_tensor_variable(xs)
+    #ys = at.as_tensor_variable(ys)
+
+    print("\nTHis is the new atinterp")
+
+    # Get safe interval indices and weights
+    j, r = _interp_indices_nonuniform_safe(x, xs)
+
+    yL = ys[j - 1]
+    yR = ys[j]
+
+    # Linear interp
+    return (1.0 - r) * yL + r * yR
+
+
+
 def atinterp1(x, xs, ys, return_grad=False):
     #x  = at.as_tensor_variable(x).astype("float64").ravel()
     #xs = at.as_tensor_variable(xs).astype("float64").ravel()
@@ -498,7 +558,7 @@ def atinterp_uniform(x, x0, x1, n, yp):
 
 
 
-def atinterp(x, xs, ys, return_grad=False):
+def atinterp_00(x, xs, ys, return_grad=False):
     """
     Linearly interpolate ys(x) from (xs, ys) to x.
     Optionally returns gradient dy/dx.

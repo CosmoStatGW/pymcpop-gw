@@ -70,7 +70,7 @@ def main():
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=0, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
-    parser.add_argument("--map_init", default=0, type=int, required=False)
+    parser.add_argument("--MAP_init", default=0, type=int, required=False)
     
     parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
     parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
     parser.add_argument("--zmid_b", default=3., type=float, required=False)
-    parser.add_argument("--zmax_c", default=10., type=float, required=False)
+    parser.add_argument("--zmax_c", default=100., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
     
     parser.add_argument("--nu", default=0.5, type=float, required=False)
@@ -726,152 +726,177 @@ def main():
 
         with model:
 
-            ip = model.initial_point()
+            #ip = model.initial_point()
 
-            N = gmm_means.shape[0]
-            nd = gmm_means.shape[2]
+            vnames = [v.name for v in model.free_RVs]
 
-            ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
-
-
-            wts = onp.exp(gmm_log_wts)
-            idx = onp.argmax(wts, axis=1)
             
-            if FLAGS.sampling_gw=='gmm_cat':
-                ip['idx'] = idx.astype(int)
-
-            elif FLAGS.sampling_gw=='gmm':
-                cdf = onp.cumsum(wts, axis=1)
-                
-                # pick v in the open interval [CDF_{i-1}, CDF_i)
-                lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
-                hi = cdf[onp.arange(len(idx)), idx]
-                v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
-                
-                # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
-                u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
-                ip['u_gmm'] =  u_init
-
-                # print("init gaussian pdf so that idx is argmax(w)")
-                # print("True argmax:")
-                # print(idx)
-                # print("init argmax:")
-                # from scipy.special import ndtr  # standard normal CDF Φ
-                # v = np.clip(ndtr(u_init), 1e-9, 1 - 1e-9)
-
-                # # same logic as (v[:, None] < cdf).argmax(axis=1)
-                # idx_from_u = (v[:, None] < cdf).argmax(axis=1)
-                # print(idx_from_u)
-
-            if FLAGS.is_GP_dL:
-                if 'f_rotated_' not in ivals.keys():
-
-                    import scipy.linalg as la
-                    if True:
-                        print("Initializing f_rotated_ to linear function....")
-                        
-            
-                       
-                        #z_grid = atools.zGridGlobals   # (N,)
-                        z_grid = onp.asarray(z_grid.eval())
-                        N = z_grid.size
-                        z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
-                        
-                        Xn = z_grid[:, None]
-                        Xm = z_mid[:,  None]
-                        
-                        # 2) Hyperparams (same you used for the node init)
-                        try:
-                            ell0 = ivals['ℓ']
-                            eta0 = ivals['η']
-                            print("Found ℓ, η in prior")
-                        except Exception:
-                            eta0 = 0.2
-                            ell0 = 0.3
-                            print("ℓ, η not found, using η=0.2, ℓ=0.3")
-                        
-                        jitter = 1e-4
-                        
-                        # 3) Kernels
-                        Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
-                        Kmm = atools.matern52_1d(Xm, Xm, eta0, ell0) + jitter * np.eye(N - 1)
-                        Kmn = atools.matern52_1d(Xm, Xn, eta0, ell0)              # (N-1, N)
-                        
-                        # 4) The node function you used to build f_rotated_ (same as your snippet)
-                        z0 = z_grid[0]
-                        s0 = 0.0001
-                        f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
-    
-                        
-                        # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
-                        #    Use Cholesky solves for stability; reuse Knn factorization
-                        c_nn = la.cho_factor(Knn, lower=True, check_finite=False)
-                        f_mid_init = Kmn @ la.cho_solve(c_nn, f_nodes_init)       # (N-1,)
-                        
-                        # 6) Whiten both with their own Cholesky factors:
-                        Ln = la.cholesky(Knn, lower=True, check_finite=False)
-                        Lm = la.cholesky(Kmm, lower=True, check_finite=False)
-                        
-                        u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True, check_finite=False)  # (N,)
-                        u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
-                        
-    
-                        ip["f_rotated_"]     = u_nodes_init + 1e-4 * onp.random.randn(u_nodes_init.size)
-                        #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
-                    
-                    else:
-                        def inv_softplus_stable(y):
-                                    # stable inverse softplus
-                                    return np.where(
-                                        y > 20,
-                                        y + np.log1p(-np.exp(-y)),
-                                        np.log(np.expm1(y))
-                                    )
-    
-                        # 1) grids
-                        z_grid = atools.zGridGlobals
-                        N = z_grid.size
-                        
-                        # 2) hyperparameters for init
-                        ell0 = ivals.get("ℓ", 0.3)
-                        eta0 = ivals.get("η", 0.2)
-                        
-                        jitter = 1e-4
-                        
-                        # 3) kernels
-                        Xn = z_grid[:, None]
-                        Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
-                        
-                        # 4) compute b_em
-                        dc = atools.dcfun_at(z_grid, 67.7, 0.31, -1).eval()
-                        b_em = atools.d_log_dLEM_dz(z_grid, 67.7, 0.31, -1, dc=dc).eval()
-                        
-                        # 5) target q = b_em - eps
-                        eps = 1e-3
-                        q_target = np.clip(b_em - eps, 1e-6, None)
-                        
-                        # 6) invert softplus
-                        f_nodes_init = inv_softplus_stable(q_target)
-                        
-                        # 7) small noise
-                        f_nodes_init += onp.random.normal(scale=0.03, size=f_nodes_init.shape)
-                        
-                        # 8) whiten
-                        Ln = la.cholesky(Knn, lower=True)
-                        u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True)
-                        
-                        # 9) normalize to match N(0,1)
-                        u_nodes_init = (u_nodes_init - u_nodes_init.mean()) / u_nodes_init.std()
-                        
-                        # 10) add tiny noise
-                        u_nodes_init += 1e-3 * onp.random.randn(N)
-                        
-                        ip["f_rotated_"] = u_nodes_init
-    
+            if FLAGS.ivals == "":
+                if FLAGS.MAP_init:
+                    print("No ivals provided; using MAP estimate as init..")
+                    MAP = pm.find_MAP()   # CPU backend, no JAX involved
+                    print("Initial point with MAP:")
+                    ip_tmp_ = model.initial_point()
+                    ip = { k:MAP[k] for k in ip_tmp_.keys()}
+                    ip_vals = {k:MAP[k] for k in vnames if k not in ('beta', 'mulMc', 'mulq', 'eps1', 'eps2', 'x', 'idx')}
+                    print(ip_vals)
+                    MAP_init=True
                 else:
-                    print("Initializing f_rotated_ from file....")
-                    ip["f_rotated_"] = ivals["f_rotated_"]
-                    #ip["f_mid_rotated_"] = ivals["f_mid_rotated_"]
+                    print("No ivals provided; MAP init is False. Using default init.")
+                    MAP_init=False
+                    ip = model.initial_point()
+            else:                    
+                #print("Using model init point as init")
+                MAP_init=False
+                ip = model.initial_point()
+                
+
+                N = gmm_means.shape[0]
+                nd = gmm_means.shape[2]
+    
+                ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+    
+    
+                wts = onp.exp(gmm_log_wts)
+                idx = onp.argmax(wts, axis=1)
+                
+                if FLAGS.sampling_gw=='gmm_cat':
+                    ip['idx'] = idx.astype(int)
+    
+                elif FLAGS.sampling_gw=='gmm':
+                    cdf = onp.cumsum(wts, axis=1)
+                    
+                    # pick v in the open interval [CDF_{i-1}, CDF_i)
+                    lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                    hi = cdf[onp.arange(len(idx)), idx]
+                    v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                    
+                    # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                    u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                    ip['u_gmm'] =  u_init
+    
+                    # print("init gaussian pdf so that idx is argmax(w)")
+                    # print("True argmax:")
+                    # print(idx)
+                    # print("init argmax:")
+                    # from scipy.special import ndtr  # standard normal CDF Φ
+                    # v = np.clip(ndtr(u_init), 1e-9, 1 - 1e-9)
+    
+                    # # same logic as (v[:, None] < cdf).argmax(axis=1)
+                    # idx_from_u = (v[:, None] < cdf).argmax(axis=1)
+                    # print(idx_from_u)
+    
+                if FLAGS.is_GP_dL:
+    
+                    if ivals != {}:
+                        if 'f_rotated_' not in ivals.keys():
+        
+                            import scipy.linalg as la
+                            if True:
+                                print("Initializing f_rotated_ to linear function....")
+                                
+                    
+                               
+                                #z_grid = atools.zGridGlobals   # (N,)
+                                z_grid = onp.asarray(z_grid.eval())
+                                N = z_grid.size
+                                z_mid = 0.5 * (z_grid[1:] + z_grid[:-1])                   # (N-1,)
+                                
+                                Xn = z_grid[:, None]
+                                Xm = z_mid[:,  None]
+                                
+                                # 2) Hyperparams (same you used for the node init)
+                                try:
+                                    ell0 = ivals['ℓ']
+                                    eta0 = ivals['η']
+                                    print("Found ℓ, η in prior")
+                                except Exception:
+                                    eta0 = 0.2
+                                    ell0 = 0.3
+                                    print("ℓ, η not found, using η=0.2, ℓ=0.3")
+                                
+                                jitter = 1e-4
+                                
+                                # 3) Kernels
+                                Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
+                                Kmm = atools.matern52_1d(Xm, Xm, eta0, ell0) + jitter * np.eye(N - 1)
+                                Kmn = atools.matern52_1d(Xm, Xn, eta0, ell0)              # (N-1, N)
+                                
+                                # 4) The node function you used to build f_rotated_ (same as your snippet)
+                                z0 = z_grid[0]
+                                s0 = 0.0001
+                                f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
+            
+                                
+                                # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes
+                                #    Use Cholesky solves for stability; reuse Knn factorization
+                                c_nn = la.cho_factor(Knn, lower=True, check_finite=False)
+                                f_mid_init = Kmn @ la.cho_solve(c_nn, f_nodes_init)       # (N-1,)
+                                
+                                # 6) Whiten both with their own Cholesky factors:
+                                Ln = la.cholesky(Knn, lower=True, check_finite=False)
+                                Lm = la.cholesky(Kmm, lower=True, check_finite=False)
+                                
+                                u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True, check_finite=False)  # (N,)
+                                u_mid_init   = la.solve_triangular(Lm, f_mid_init,   lower=True, check_finite=False)  # (N-1,)
+                                
+            
+                                ip["f_rotated_"]     = u_nodes_init + 1e-4 * onp.random.randn(u_nodes_init.size)
+                                #ip["f_mid_rotated_"] = u_mid_init   + 1e-3 * np.random.randn(u_mid_init.size)
+                            
+                            else:
+                                def inv_softplus_stable(y):
+                                            # stable inverse softplus
+                                            return np.where(
+                                                y > 20,
+                                                y + np.log1p(-np.exp(-y)),
+                                                np.log(np.expm1(y))
+                                            )
+            
+                                # 1) grids
+                                z_grid = atools.zGridGlobals
+                                N = z_grid.size
+                                
+                                # 2) hyperparameters for init
+                                ell0 = ivals.get("ℓ", 0.3)
+                                eta0 = ivals.get("η", 0.2)
+                                
+                                jitter = 1e-4
+                                
+                                # 3) kernels
+                                Xn = z_grid[:, None]
+                                Knn = atools.matern52_1d(Xn, Xn, eta0, ell0) + jitter * np.eye(N)
+                                
+                                # 4) compute b_em
+                                dc = atools.dcfun_at(z_grid, 67.7, 0.31, -1).eval()
+                                b_em = atools.d_log_dLEM_dz(z_grid, 67.7, 0.31, -1, dc=dc).eval()
+                                
+                                # 5) target q = b_em - eps
+                                eps = 1e-3
+                                q_target = np.clip(b_em - eps, 1e-6, None)
+                                
+                                # 6) invert softplus
+                                f_nodes_init = inv_softplus_stable(q_target)
+                                
+                                # 7) small noise
+                                f_nodes_init += onp.random.normal(scale=0.03, size=f_nodes_init.shape)
+                                
+                                # 8) whiten
+                                Ln = la.cholesky(Knn, lower=True)
+                                u_nodes_init = la.solve_triangular(Ln, f_nodes_init, lower=True)
+                                
+                                # 9) normalize to match N(0,1)
+                                u_nodes_init = (u_nodes_init - u_nodes_init.mean()) / u_nodes_init.std()
+                                
+                                # 10) add tiny noise
+                                u_nodes_init += 1e-3 * onp.random.randn(N)
+                                
+                                ip["f_rotated_"] = u_nodes_init
+            
+                        else:
+                            print("Initializing f_rotated_ from file....")
+                            ip["f_rotated_"] = ivals["f_rotated_"]
+                            #ip["f_mid_rotated_"] = ivals["f_mid_rotated_"]
 
             
             if FLAGS.debug:
