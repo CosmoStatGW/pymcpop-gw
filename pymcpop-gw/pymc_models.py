@@ -321,10 +321,13 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                             )
 
 
-    if 'DP' in mass_model:
+    if mass_model in ('DP', 'DPUC'):
         # remove jacobian m1, m2 --> log(Mc), logit(q)
         log_p_pop += (- at.log(m2Src) - at.log(m1Src-m2Src) - at.log1p(zinj) )
-
+        print("remove jacobian m1, m2 --> log(Mc), logit(q) in sel. bias")
+    else:
+        print("No jacobian m1, m2 --> log(Mc), logit(q) in sel. bias")
+        
     log_sel_b = log_p_pop-log_p_draw
   
     
