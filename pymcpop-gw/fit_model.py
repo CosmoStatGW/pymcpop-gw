@@ -66,6 +66,10 @@ def main():
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
     
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
+    parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
+    
+
+    
     parser.add_argument("--nev_min", default=0, type=int, required=False)
     parser.add_argument("--nev_max", default=-1, type=int, required=False)
     
@@ -231,16 +235,9 @@ def main():
     # 1️⃣ Environment setup BEFORE importing JAX / NumPyro / PyMC
     # ----------------------------------------------------
 
-    #set_pytensor_flag("jax__enable_x64", "True")
 
-    
-    # base = os.environ.get("PYTENSOR_FLAGS", "")
     extra = [ "optimizer=fast_run" ]
     
-    #if FLAGS.use_float32:
-    #    extra.append( "floatX=float32")
-    
-    # os.environ["PYTENSOR_FLAGS"] = (base + "," + extra).strip(",")
 
     for f in extra:
         if "=" in f:
@@ -248,9 +245,7 @@ def main():
             set_pytensor_flag(k.strip(), v.strip())
         else:
             set_pytensor_flag(f.strip(), "True")
-    
-    # and (re)assert the one you care about:
-    #set_pytensor_flag("jax__enable_x64", "True")
+
 
     print("\nInitial PYTENSOR_FLAGS =", os.environ.get("PYTENSOR_FLAGS"))
 
@@ -262,7 +257,6 @@ def main():
     
         if FLAGS.chain_method == "parallel":
             # Must set before importing numpyro/jax/pymc
-            #os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
             add = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
             os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " " + add).strip()
 
@@ -339,7 +333,6 @@ def main():
             #"jax__enable_x64=True", 
         ]
         
-        #os.environ["PYTENSOR_FLAGS"] = ",".join(flags)
 
         for f in flags:
             if "=" in f:
@@ -348,8 +341,6 @@ def main():
             else:
                 set_pytensor_flag(f.strip(), "True")
         
-        # and (re)assert the one you care about:
-        #set_pytensor_flag("jax__enable_x64", "True")
 
         print("\nPYTENSOR_FLAGS for recompile =", os.environ.get("PYTENSOR_FLAGS"))
 
@@ -361,7 +352,6 @@ def main():
 
     if uses_jax:
         print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
-        #print("PyTensor jax__enable_x64:", getattr(pytensor.config, "jax__enable_x64", None))
     
     
 
@@ -397,7 +387,7 @@ def main():
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
 
-    if priors_for_mmin!='':
+    if FLAGS.priors_for_mmin!='':
         with open(FLAGS.priors_for_mmin) as json_file:
             priors_for_mmin = json.load(json_file)
 
@@ -849,8 +839,9 @@ def main():
         from pymc.backends.zarr import ZarrTrace
         
         spath=os.path.join(FLAGS.fout, "trace_backup.zarr")
-        backend = ZarrTrace(store=spath)
+        backend = ZarrTrace(store=spath, draws_per_chunk=FLAGS.draws_per_chunk)
         print("Intermediate trace will be stored at %s"%spath)
+        print("Saving every %s steps"%FLAGS.draws_per_chunk)
         print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
     else:
         raise ValueError("backend can be disk or ztrace, got %s"%FLAGS.backend)
@@ -1547,9 +1538,11 @@ def main():
         try:
             idata = autils.load_pymc_zarr_trace_robust(spath)  # your working loader
             print( "idata loaded." )
+            idata.sample_stats = idata.sample_stats.drop_vars(["sampler_0__warning"], errors="ignore")
             #idata_clean = autils.drop_object_vars(idata)
             #print( "idata cleaned." )
-            az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+            #az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+            idata.to_netcdf(os.path.join(FLAGS.fout, "trace.nc"))
             print( "trace saved." )
 
         except Exception as e:

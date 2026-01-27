@@ -2396,7 +2396,7 @@ def logC_PLP_reg_0( m, beta, deltam, ml, res=500, smoothing='LVK'):
 
 
 
-def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=500):
+def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=500, eps_int=1e-300, ):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
