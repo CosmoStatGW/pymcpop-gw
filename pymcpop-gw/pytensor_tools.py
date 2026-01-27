@@ -2159,11 +2159,11 @@ def norm_truncated_pl_num(alpha, mmin, mmax):
 
 def log_norm_truncated_pl_num_alpha1_safe(alpha, mmin, mmax, eps=1e-12, t_floor=1e-12):
     """
-    Wrapper around your log_norm_truncated_pl_num that is well-defined at alpha==1.
+    Wrapper around log_norm_truncated_pl_num that is well-defined at alpha==1.
     Uses a tiny floor on t = 1 - alpha only when |t| is extremely small.
     This preserves the correct continuous limit and avoids log(0).
     """
-    # sanitize bounds similarly to your function
+    # sanitize bounds 
     mmin_c = at.clip(mmin, eps, np.inf)
     mmax_c = at.clip(mmax, eps, np.inf)
     mmax_c = at.maximum(mmax_c, mmin_c * (1.0 + 1e-12))
@@ -2191,8 +2191,8 @@ def log_norm_truncated_pl_num(alpha, mmin, mmax, eps=1e-12):
       a = log(mmax), b = log(mmin), Δ = a - b > 0
       log integral = t*b + log(|expm1(t*Δ)|) - log(|t|)
 
-    NOTE: Like your original, this expression is numerically well-behaved near t~0,
-    but if t is *exactly* 0 it becomes log(0)-log(0). (Same behavior as your code.)
+    NOTE: this expression is numerically well-behaved near t~0,
+    but if t is *exactly* 0 it becomes log(0)-log(0). 
     """
     import numpy as np
     import pytensor.tensor as at
@@ -2284,7 +2284,7 @@ def logpdfm1_PLP_noreg(m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, 
     #half_ = at.as_tensor_variable(0.5, dtype=m.dtype)
     #two_pi_ = at.as_tensor_variable(2*PI, dtype=m.dtype)
     
-    log_norm = log_norm_truncated_pl_num(alpha, ml, mh) #norm_truncated_pl_num(alpha, ml, mh)
+    log_norm = log_norm_truncated_pl_num_alpha1_safe(alpha, ml, mh) #norm_truncated_pl_num(alpha, ml, mh)
     log_trunc_component =  -alpha*at.log(m) - log_norm #1./(m**alpha)/norm
     log_gauss_component = -0.5 * at.square((m - muMass) / sigmaMass) - at.log(sigmaMass) - 0.5 * at.log(2*PI)
 
@@ -2333,8 +2333,35 @@ def logpdfm2_PLP_noreg(m, beta, deltam, ml,  m_g=45, w_g = 80, sig_g_low = 5., s
 
 
 
-
 def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
+
+    if res != 500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+
+    xx = ml + (max_m - ml) * _tgrid 
+
+    l2 = logpdfm2_PLP_reg(xx, beta, deltam, ml,
+                         smoothing=smoothing)
+
+    a = at.max(l2)
+    p2 = at.exp(l2 - a)
+
+    cdf = atcumtrapz(p2, xx)
+    cdf = at.clip(cdf, 1e-300, np.inf)
+
+    x0 = xx[1]
+    x1 = xx[-1]
+    nU = xx.shape[0] - 1
+
+    # log(cdf_scaled) + a gives log(cdf_original)
+    itr = atinterp_uniform(m, x0, x1, nU, at.log(cdf) + a)
+
+    return itr
+
+
+def logC_PLP_reg_0( m, beta, deltam, ml, res=500, smoothing='LVK'):
     '''
     Gives log integral of  p(m1, m2) dm2 (i.e. log C(m1) in the LVC notation )
     '''
@@ -2370,6 +2397,32 @@ def logC_PLP_reg( m, beta, deltam, ml, res=500, smoothing='LVK'):
 
 
 def logNorm_PLP_reg( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=500):
+    
+    '''
+        Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
+
+    '''
+
+    if res != 500:
+        _tgrid = at.linspace(0, 1, res)
+    else:
+        _tgrid = _get_t_grid()
+
+    ms = ml + (mh - ml) * _tgrid 
+
+    lpdf = logpdfm1_PLP_reg(ms, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, sl=0.05, sh=0.05, smoothing=smoothing)
+    #logpdfm1_PLP_noreg( ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  )
+
+    a = at.max(lpdf)
+    ps = at.exp(lpdf - a)                 # <= 1, avoids overflow
+    integ = attrapzvec(ps, ms)
+    integ = at.clip(integ, eps_int, np.inf)
+
+    return a + at.log(integ)
+
+
+
+def logNorm_PLP_reg_0( lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', res=500):
     
     '''
         Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
