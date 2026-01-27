@@ -1930,12 +1930,12 @@ def make_model(  priors,
     
             
             
-            zmin_b = max(min_z, z_min_data)
+            zmin_b = min(zmin_b, max(min_z, z_min_data))
     
             zmin_a = min( zmin_a, min(min_z, z_min_data))
             
-            zmid_b = z_max_data
-            zmax_c = max(z_max_data, max_z)*(1+0.05)
+            zmid_b = min( zmid_b, z_max_data )
+            zmax_c = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
     
             print("Redshift values found, overwriting default:")
             print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
