@@ -90,6 +90,8 @@ def main():
     parser.add_argument("--L_small_3", default=0.5, type=float, required=False)
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
     parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
+    parser.add_argument("--q_mbound", default=0.05, type=float, required=False)
+
 
     parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
     parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
@@ -777,6 +779,7 @@ def main():
                                     alpha_inv_params = FLAGS.alpha_inv_params,
                                     s_local = FLAGS.s_local,
                                     find_m_bounds = FLAGS.find_m_bounds,
+                                    q_mbound = FLAGS.q_mbound,
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
@@ -1540,7 +1543,7 @@ def main():
             print( "idata loaded." )
             idata.sample_stats = idata.sample_stats.drop_vars(["sampler_0__warning"], errors="ignore")
             #idata_clean = autils.drop_object_vars(idata)
-            #print( "idata cleaned." )
+            print( "idata cleaned." )
             #az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
             idata.to_netcdf(os.path.join(FLAGS.fout, "trace.nc"))
             print( "trace saved." )

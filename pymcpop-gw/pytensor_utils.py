@@ -321,10 +321,16 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                           trials=1000, 
                       s0=0.10  ,
                               is_observed=False,
-                      rng=onp.random.default_rng()
+                      rng=onp.random.default_rng(),
+                              q_mbound = 0.05
                          ):
 
+    if q_mbound==0:
+        print("Search for min and max mass scale with min and max posterior samples values")
+    else:
+        print("Search for min and max mass scale with quantile q=%s"%q_mbound)
 
+    
     H0_max = H0_range[1]
     H0_min = H0_range[0]
 
@@ -462,6 +468,9 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
     m2_maxs = []
     m1_mins = []
     m2_mins = []
+
+    print("H0_range used in prior search will  be %s"%str(H0_range))
+    print("Om_range used in prior search will  be %s"%str(Om_range))
     
     for _ in tqdm(range(trials)):
         #Xwhite = rng.standard_normal((N, nd))
@@ -499,6 +508,8 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
             nXi0 = rng.uniform(*nXi0_range)
         else:
             nXi0=nXi0_range[0]
+
+        
                 
                   
 
@@ -521,31 +532,44 @@ def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
         #print(log_Mc_src.max())
         
         logit_q = samples[:, 1]
-
-        logz_data_max = onp.max(logz_data) 
-        logz_data_min = onp.min(logz_data) 
-
-        lMc_data_max = onp.max(log_Mc_src) 
-        lMc_data_min = onp.min(log_Mc_src) 
-
-        lq_data_max = onp.max(logit_q) 
-        lq_data_min = onp.min(logit_q) 
-
-        # logz_data_max = onp.quantile(z_data, 0.99)
-        # logz_data_min = onp.quantile(z_data, 0.01)
-
-        # lMc_data_max = onp.quantile(log_Mc_src, 0.99)
-        # lMc_data_min = onp.quantile(log_Mc_src, 0.01)
-
-        # lq_data_max = onp.quantile(logit_q, 0.99)
-        # lq_data_min = onp.quantile(logit_q, 0.01)
-
-
         m1_src, m2_src = atools.m1m2_from_Mcq_at( onp.exp(log_Mc_src), atools.inv_logit(logit_q) )
-        m1_data_min = onp.min(m1_src)
-        m2_data_min = onp.min(m2_src)
-        m1_data_max = onp.max(m1_src)
-        m2_data_max = onp.max(m2_src)
+
+
+        if q_mbound==0:
+            logz_data_max = onp.max(logz_data) 
+            logz_data_min = onp.min(logz_data) 
+    
+            lMc_data_max = onp.max(log_Mc_src) 
+            lMc_data_min = onp.min(log_Mc_src) 
+    
+            lq_data_max = onp.max(logit_q) 
+            lq_data_min = onp.min(logit_q) 
+    
+            m1_data_min = onp.min(m1_src)
+            m2_data_min = onp.min(m2_src)
+            m1_data_max = onp.max(m1_src)
+            m2_data_max = onp.max(m2_src)
+
+        # q = 0.05
+        else:
+            qup = 1-q_mbound
+    
+            logz_data_max = onp.quantile(z_data, qup)
+            logz_data_min = onp.quantile(z_data, q_mbound)
+    
+            lMc_data_max = onp.quantile(log_Mc_src, qup)
+            lMc_data_min = onp.quantile(log_Mc_src, q_mbound)
+    
+            lq_data_max = onp.quantile(logit_q, qup)
+            lq_data_min = onp.quantile(logit_q, q_mbound)
+            
+            m1_data_min = onp.quantile(m1_src, q_mbound) 
+            m2_data_min =  onp.quantile(m2_src, q_mbound) 
+            
+            m1_data_max =  onp.quantile(m1_src, qup) 
+            m2_data_max =  onp.quantile(m2_src, qup) 
+
+        
         
         # print("m1 src: ")
         # print(m1_src)

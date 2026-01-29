@@ -1660,6 +1660,7 @@ def make_model(  priors,
                  L_small_3 = 0.1,
                  s_local = 0.5,
                  find_m_bounds = False,
+                 q_mbound = 0.05,
                  alpha_inv_params = (1, 1),
                  fix_H0 = True,
                 fix_Om = True,
@@ -1954,8 +1955,9 @@ def make_model(  priors,
                               z_from_dL_fn,
                               sampling_GW,
                               trials=1000, 
-                            is_observed = False #is_observed
+                            is_observed = False, #is_observed
                           #rng=onp.random.default_rng(123)
+                            q_mbound=q_mbound
                              )
     
             lowmu1 = scales['lMc_min_data']#.astype(X)
