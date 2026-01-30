@@ -96,6 +96,7 @@ def load_data_interp(fin, events_use=[]):
     allNgm_dict = {}
     nevs_dict = {}
     allnames_dict = {}
+    evsuse_dict = {}
 
     nevs_all = 0
     Ngm_max = 0
@@ -103,11 +104,11 @@ def load_data_interp(fin, events_use=[]):
     for i,fid in enumerate(fin):
 
         print("\nLoading data from %s"%fid)
+        allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
 
         if events_use!=[]:
 
-            #print('Loading names...')
-            allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )#.astype('str') 
+          
     
             #print('Done.')
             evs_use_ = onp.loadtxt( events_use[i], dtype=str )
@@ -122,9 +123,18 @@ def load_data_interp(fin, events_use=[]):
                 )
 
             mask_ = onp.isin(allnames_, evs_use_)
+            allnames_dict[fid] = allnames_
+            evsuse_dict[fid] = evs_use_
             #print("mask_ is ")
             #print(mask_)
+            if i==0:
+                allnames_use = evs_use_
+            else:
+                allnames_use = onp.concatenate([allnames_use, evs_use_])
 
+        else:
+            mask_ = onp.full(len(allnames_), True )
+        
         print('Loading sample means and covs...')
 
         try:
@@ -155,27 +165,40 @@ def load_data_interp(fin, events_use=[]):
         # load samples interpolants 
     
         print('Loading gmm parameters...')
+
+        Ngmm_all = onp.loadtxt( fid+'allNgm.txt' ).astype('int')
+        Ngmm_mask = Ngmm_all[mask_]
+        
+        allNgm_dict[fid] = Ngmm_mask #onp.loadtxt( fid+'allNgm.txt' ).astype('int')[mask_] 
+        print("max nGmm is %s"%max(Ngmm_all))
+        print("event with max gmm is %s"%allnames_[onp.argmax(Ngmm_all)])
+        print("max nGmm after mask is is %s"%max(allNgm_dict[fid]) )
+
+        #if max(Ngmm_all)!=max(Ngmm_mask):
+
+        max_gmm = max(allNgm_dict[fid]) #min( max(Ngmm_all), max(Ngmm_mask) ) 
+
+        
     
-        gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' )[mask_] 
-        gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' )[mask_] 
-        gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' )[mask_] 
+        gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' )[mask_, :max_gmm] 
+        gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' )[mask_, :max_gmm] 
+        gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' )[mask_, :max_gmm] 
         try:
-            gmm_cho_covs_dict[fid] =  onp.load( fid+'gmm_cho_covs.npy' )[mask_]
+            gmm_cho_covs_dict[fid] =  onp.load( fid+'gmm_cho_covs.npy' )[mask_, :max_gmm]
         except:
             print('Cholesky not available.')
             gmm_cho_covs = onp.zeros(gmm_icovs_dict[fid].shape)
             gmm_cho_covs_dict[fid] = onp.asarray(gmm_cho_covs)
         try:
-            gmm_covs_dict[fid] =  onp.load( fid+'gmm_covs.npy' )[mask_]
+            gmm_covs_dict[fid] =  onp.load( fid+'gmm_covs.npy' )[mask_, :max_gmm]
         except:
             print('Covariance not available.')
             gmm_covs = onp.zeros(gmm_icovs_dict[fid].shape)
             gmm_covs_dict[fid] = onp.asarray(gmm_covs)
             
-        gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' )[mask_] 
-        allNgm_dict[fid] = onp.loadtxt( fid+'allNgm.txt' ).astype('int')[mask_] 
-
-
+        gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' )[mask_, :max_gmm] 
+        
+        
         if i==0:
             allNgm = allNgm_dict[fid]
         else:
@@ -215,13 +238,19 @@ def load_data_interp(fin, events_use=[]):
 
     iev = 0
     for k,fid in enumerate(fin):
-
+        #print("THis is %s"%fid)
         for i in range(nevs_dict[fid]):
             try:
                 ngm_  =  max(allNgm_dict[fid]) 
             except TypeError:
+                print("TypeError found! ")
                 ngm_  =  allNgm_dict[fid]
-    
+
+            #print("Event %s"%allnames_use[iev])
+            #print("gmm_log_wts shape is %s"%str(gmm_log_wts.shape))
+            #print("gmm_log_wts_dict[fid] shape is %s"%str(gmm_log_wts_dict[fid].shape))
+            #print("gmm_log_wts[iev, :ngm_] shape is %s"%str(gmm_log_wts[iev, :ngm_].shape))
+            #print("gmm_log_wts_dict[fid][i] shape is %s"%str(gmm_log_wts_dict[fid][i].shape))
             gmm_log_wts[iev, :ngm_] = gmm_log_wts_dict[fid][i]
             gmm_means[iev, :ngm_] = gmm_means_dict[fid][i]
             gmm_icovs[iev, :ngm_] = gmm_icovs_dict[fid][i]
