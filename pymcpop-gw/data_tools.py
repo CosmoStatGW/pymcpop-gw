@@ -104,15 +104,36 @@ def load_data_interp(fin, events_use=[]):
 
         print("\nLoading data from %s"%fid)
 
+        if events_use!=[]:
+
+            #print('Loading names...')
+            allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )#.astype('str') 
+    
+            #print('Done.')
+            evs_use_ = onp.loadtxt( events_use[i], dtype=str )
+            print("For %s, requested explicitly to use the following events, total %s:"%(fid, len(evs_use_)))
+            print(evs_use_)
+
+            missing = onp.setdiff1d(evs_use_, allnames_)
+
+            if missing.size > 0:
+                raise ValueError(
+                    f"The following events are not in allnames_: {missing.tolist()}"
+                )
+
+            mask_ = onp.isin(allnames_, evs_use_)
+            #print("mask_ is ")
+            #print(mask_)
+
         print('Loading sample means and covs...')
 
         try:
-            samples_means_ =  onp.load( fid+'cho-means.npy' ) 
-            samples_cho_covs_ = onp.load( fid+'cho-covs.npy' )
+            samples_means_ =  onp.load( fid+'cho-means.npy' )[mask_]
+            samples_cho_covs_ = onp.load( fid+'cho-covs.npy' )[mask_]
         except:
                 try:
-                    samples_means_ =  onp.load( fid+'cho_means.npy' ) 
-                    samples_cho_covs_ = onp.load( fid+'cho_covs.npy' )
+                    samples_means_ =  onp.load( fid+'cho_means.npy' )[mask_]
+                    samples_cho_covs_ = onp.load( fid+'cho_covs.npy' )[mask_]
                 except Exception as e:
                     print(e)
                     samples_means_ = onp.zeros( (1,1,1) )
@@ -135,24 +156,24 @@ def load_data_interp(fin, events_use=[]):
     
         print('Loading gmm parameters...')
     
-        gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' ) 
-        gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' ) 
-        gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' ) 
+        gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' )[mask_] 
+        gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' )[mask_] 
+        gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' )[mask_] 
         try:
-            gmm_cho_covs_dict[fid] =  onp.load( fid+'gmm_cho_covs.npy' )
+            gmm_cho_covs_dict[fid] =  onp.load( fid+'gmm_cho_covs.npy' )[mask_]
         except:
             print('Cholesky not available.')
             gmm_cho_covs = onp.zeros(gmm_icovs_dict[fid].shape)
             gmm_cho_covs_dict[fid] = onp.asarray(gmm_cho_covs)
         try:
-            gmm_covs_dict[fid] =  onp.load( fid+'gmm_covs.npy' )
+            gmm_covs_dict[fid] =  onp.load( fid+'gmm_covs.npy' )[mask_]
         except:
             print('Covariance not available.')
             gmm_covs = onp.zeros(gmm_icovs_dict[fid].shape)
             gmm_covs_dict[fid] = onp.asarray(gmm_covs)
             
-        gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' ) 
-        allNgm_dict[fid] = onp.loadtxt( fid+'allNgm.txt' ).astype('int') 
+        gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' )[mask_] 
+        allNgm_dict[fid] = onp.loadtxt( fid+'allNgm.txt' ).astype('int')[mask_] 
 
 
         if i==0:
@@ -168,28 +189,15 @@ def load_data_interp(fin, events_use=[]):
             if allNgm_dict[fid] > Ngm_max:
                 Ngm_max = allNgm_dict[fid]
 
+       
+
+        
         nevs_dict[fid] = len(gmm_log_wts_dict[fid])
         nevs_all += len(gmm_log_wts_dict[fid])
 
         nd = gmm_means_dict[fid][0].shape[1]
 
         print('Done.')
-        
-        # load samples interpolants 
-    
-        
-
-        if events_use!=[]:
-
-            #print('Loading names...')
-            allnames_ = onp.loadtxt( fid+'allNames.txt' )#.astype('str') 
-    
-            #print('Done.')
-            evs_use_ = onp.loadtxt( events_use[i] )
-            print("For %s, requested explicitly to use the following events:"%fid)
-            print(evs_use_)
-
-            #mask_ = 
 
     nevs_arr = onp.asarray([ nevs_dict[k] for k in nevs_dict.keys() ])
     print('\nDone. Events:%s. Total: %s events. Max GMM number: %s. Number of dimensions: %s'%(nevs_arr,nevs_all, Ngm_max, nd))
