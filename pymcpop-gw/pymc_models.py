@@ -1700,7 +1700,8 @@ def make_model(  priors,
                  debug_sel_batch=False,
                  reparam_z = True,
                  reparam_mass = False,
-                 priors_for_mmin=''
+                 priors_for_mmin='',
+                 normalize_PE_prior=True
                 ):
 
 
@@ -2221,8 +2222,18 @@ def make_model(  priors,
 
         zgrid_dLp = stop_grad(  at.as_tensor_variable(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
 
-        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.90, 0.3065, -1., interp=False)#.astype(work_dtype)
-        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.90, 0.3065, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla')#.astype(work_dtype)
+        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.74, 0.3075, -1., interp=False)#.astype(work_dtype)
+        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.74, 0.3075, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla')#.astype(work_dtype)
+
+        if normalize_PE_prior:
+            z_bounds = atools.z_from_dL_at( np.asarray([0.1/1000, 40000/1000]), 67.74, 0.3075, -1., 1., 0. , interp=False)
+            z_min_PE_prior, z_max_PE_prior = float(z_bounds[0].eval() ), float(z_bounds[1].eval())
+            print(
+    f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
+    f"i.e. z=[{z_min_PE_prior}, {z_max_PE_prior}]"
+)
+            
+            log_norm_PE_prior = float(atools.compute_log_norm_UniformSourceFrame(z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1.).eval())
         
 
     ################################################
@@ -3921,7 +3932,7 @@ def make_model(  priors,
         elif vol_in_prior:
 
             zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
-            dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.90, 0.3065, -1., interp=False)
+            dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
 
             lpi = at.zeros_like(log_p_pop )
 
@@ -3951,7 +3962,7 @@ def make_model(  priors,
                         print('chunk is UniformComovingVolume')
                         print(sl)
                         chunk = atools.log_dV_dz_at(
-                            zs_Planck15[sl], 67.90, 0.3065, -1., dc=dc_Planck15[sl]
+                            zs_Planck15[sl], 67.74, 0.3075, -1., dc=dc_Planck15[sl]
                         )
 
                     elif base == 'UniformSourceFrame':
@@ -3959,7 +3970,7 @@ def make_model(  priors,
                         print(sl)
                         chunk = (
                             atools.log_dV_dz_at(
-                                zs_Planck15[sl], 67.90, 0.3065, -1., dc=dc_Planck15[sl]
+                                zs_Planck15[sl], 67.74, 0.3075, -1., dc=dc_Planck15[sl]
                             )
                             - at.log1p(zs_Planck15[sl])
                         )
@@ -3970,9 +3981,13 @@ def make_model(  priors,
                     if use_J:
                         print('removing log_ddL_dz ')
                         chunk -= atools.log_ddL_dz(
-                            zs_Planck15[sl], 67.90, 0.3065, -1., 1., 0.,
+                            zs_Planck15[sl], 67.74, 0.3075, -1., 1., 0.,
                             dc=dc_Planck15[sl], interp=False, param='vanilla'
                         )
+
+                    if normalize_PE_prior:
+                        print('normalizing PE prior')
+                        chunk -= log_norm_PE_prior
 
                 lpi = at.set_subtensor(lpi[sl], chunk)
             

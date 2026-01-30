@@ -64,6 +64,8 @@ def main():
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
+    parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
+    
     
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
     parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
@@ -111,6 +113,7 @@ def main():
     
     
     parser.add_argument("--dLprior", nargs='+', default=['none'], type=str, required=False)
+    parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
@@ -175,10 +178,10 @@ def main():
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
-    parser.add_argument("--zres", default=150, type=int, required=False)
+    parser.add_argument("--zres", default=1000, type=int, required=False)
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
-    parser.add_argument("--zmid_b", default=3., type=float, required=False)
+    parser.add_argument("--zmid_b", default=5., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
     parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
@@ -428,7 +431,7 @@ def main():
     
     if not FLAGS.pop_only:
 
-        data = dt.load_data_interp(FLAGS.fin_data)
+        data = dt.load_data_interp(FLAGS.fin_data, events_use=FLAGS.events_use)
 
         # samples_means_at = at.as_tensor_variable(data['samples_means'])
         # samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
@@ -454,6 +457,9 @@ def main():
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
+            if FLAGS.FLAGS.events_use!=[]:
+                raise ValueError("Cannot select by index and name at the same time")
+                
             N_or = Nevents
 
             if FLAGS.nev_max == -1 :
@@ -763,6 +769,7 @@ def main():
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
+                                    normalize_PE_prior=FLAGS.normalize_PE_prior,
                                     sel_method=FLAGS.sel,
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     use_float32 = FLAGS.use_float32,

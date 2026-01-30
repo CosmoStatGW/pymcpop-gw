@@ -81,7 +81,7 @@ def load_data_samples(fin, nmax=None):
         
 
 
-def load_data_interp(fin):
+def load_data_interp(fin, events_use=[]):
 
 
     samples_means_dict =  {}
@@ -95,6 +95,7 @@ def load_data_interp(fin):
     gmm_log_dets_dict = {}
     allNgm_dict = {}
     nevs_dict = {}
+    allnames_dict = {}
 
     nevs_all = 0
     Ngm_max = 0
@@ -172,8 +173,28 @@ def load_data_interp(fin):
 
         nd = gmm_means_dict[fid][0].shape[1]
 
+        print('Done.')
+        
+        # load samples interpolants 
+    
+        
+
+        if events_use!=[]:
+
+            #print('Loading names...')
+            allnames_ = onp.loadtxt( fid+'allNames.txt' )#.astype('str') 
+    
+            #print('Done.')
+            evs_use_ = onp.loadtxt( events_use[i] )
+            print("For %s, requested explicitly to use the following events:"%fid)
+            print(evs_use_)
+
+            #mask_ = 
+
     nevs_arr = onp.asarray([ nevs_dict[k] for k in nevs_dict.keys() ])
     print('\nDone. Events:%s. Total: %s events. Max GMM number: %s. Number of dimensions: %s'%(nevs_arr,nevs_all, Ngm_max, nd))
+    #print("Names: ")
+    #print(allnames_dict)
 
     print("\nConcatenating data...")
 

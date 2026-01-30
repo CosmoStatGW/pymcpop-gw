@@ -857,6 +857,19 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False, param='vanilla'):
     return res
 
 
+def compute_log_norm_UniformSourceFrame(z_min, z_max, H0, Om0, w0):
+    
+    z = at.linspace(z_min, z_max, 10000)
+
+    dc = dcfun_at(z, H0, Om0,  w0, interp=False)
+    log_dVdz = log_dV_dz_at(z, H0, Om0, w0, dc=dc, interp=False)
+
+    integrand = at.exp(log_dVdz) / (1.0 + z)
+
+    norm = attrapzvec(integrand, z)
+    return at.log(norm)
+
+
 # no dependence on H0 (as in Finke et.al.)
 # dc * H0/c
 def u_z_at(z, Om, w0):
