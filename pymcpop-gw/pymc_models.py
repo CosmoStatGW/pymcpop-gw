@@ -1669,6 +1669,7 @@ def make_model(  priors,
                  z_pivot=0.5,
                pade=False,
                zres=150,
+                z_grid_mode='cheb',
                 zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
                  find_z_bounds = False,
                params_fix=None,
@@ -1722,7 +1723,6 @@ def make_model(  priors,
     ################################################
     # Read in data and set dimensions
     ################################################
-
 
     
     ## GW data
@@ -2140,10 +2140,10 @@ def make_model(  priors,
         log_onepz_init = np.log1p(z_init)#.astype(X)
         log_Mc_src_init = (log_Mc_det_init - log_onepz_init)#.astype(X)
 
+    # stop_grad(  at.as_tensor_variable(
+    zgrid_ = stop_grad(  at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode) ))
 
-    zgrid_ =  stop_grad(  at.as_tensor_variable(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
-
-    zgrid_mass_ =  stop_grad( at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) )
+    zgrid_mass_ =  stop_grad(  at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode) ))
     
     print("z grid for interpolation built. Resolution: %s"%zres)
     print("z min: %s , z max: %s"%(zmin_a, zmax_c))
@@ -2239,19 +2239,22 @@ def make_model(  priors,
     ################################################
     # Build model
     ################################################
+
+    # if sampling_GW=='gauss':
+    
+#     # we sample single-event parameters from broad gaussian approximations of the posteriors
+#     mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s, dtype=work_dtype), at.as_tensor_variable(cho_s, dtype=work_dtype), at.as_tensor_variable(log_wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(icovs_l, dtype=work_dtype), at.as_tensor_variable(log_dets_l, dtype=work_dtype)
+
+            
+    if 'gmm' in sampling_GW:
+        # we sample single-event parameters from the actual single-event posteriors
+        # need tensor variables to correctly slice inside model
+        wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
     
     with pm.Model(coords=coords) as model:
 
 
-        # if sampling_GW=='gauss':
-            
-        #     # we sample single-event parameters from broad gaussian approximations of the posteriors
-        #     mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s, dtype=work_dtype), at.as_tensor_variable(cho_s, dtype=work_dtype), at.as_tensor_variable(log_wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(icovs_l, dtype=work_dtype), at.as_tensor_variable(log_dets_l, dtype=work_dtype)
 
-            
-        # elif 'gmm' in sampling_GW:
-        #     # we sample single-event parameters from the actual single-event posteriors
-        #     wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l, dtype=work_dtype), at.as_tensor_variable(mus_l, dtype=work_dtype), at.as_tensor_variable(cho_covs_l, dtype=work_dtype)
 
         
         ################################################
@@ -3146,7 +3149,9 @@ def make_model(  priors,
         # Precompute cosmology pieces 
         # One grid build to interpolate later
         dc_grid = atools.dcfun_at(zgrid_, H0_, Om_, w0_, interp=pade)
+        
         dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade, dc=dc_grid, param=param)
+        
         log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade, param=param)
 
         
@@ -3732,12 +3737,14 @@ def make_model(  priors,
     
                 # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
                 zs = atools.atinterp(d, dL_grid, zgrid_)
-                one_plus_zs = 1+zs
+                one_plus_zs = 1. + zs
                 m1src = m1det/one_plus_zs 
                 m2src = m2det/one_plus_zs  
-    
-                log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid) 
-                dc = atools.atinterp( zs, zgrid_, dc_grid) 
+
+                # Computed already later
+                #log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid) 
+                #dc = atools.atinterp( zs, zgrid_, dc_grid) 
+                #dc =  d/one_plus_zs/atools.Xifun_at(zs, Xi0_, nXi0_)
                 
                 if save_thetas:
                     d = pm.Deterministic('dL', d , dims="event_index")
@@ -3798,7 +3805,7 @@ def make_model(  priors,
                 # dirichelet processs will be for log(Mc_src), logit(q) ...
                 logMc_src =  log_Mc_det - at.log1p(zs)
                 
-                log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=dc,  log_ddL_dz_pre=log_ddL_dz, z_grid = zgrid_ )
+                log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=None ,  log_ddL_dz_pre = None, z_grid = zgrid_ )
                 
                 
                 # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
@@ -3826,12 +3833,12 @@ def make_model(  priors,
                                            simplex_repair=simplex_repair,
                                            has_m2_break=has_m2_break, 
                                             norm_gauss=norm_gauss,
-                                           dc=dc, 
-                                           log_ddL_dz_pre=log_ddL_dz,
+                                           dc = None, 
+                                           log_ddL_dz_pre = None,
                                            interp_vals_mass = interp_vals_mass,
                                            interp_grids_mass = interp_grids_mass,
                                            is_observed = is_observed,
-                                           z_grid = zgrid_,
+                                           z_grid = None,
                                            #K=N_DP_comp_max
                                          )
                         

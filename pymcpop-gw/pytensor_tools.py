@@ -63,6 +63,16 @@ except:
 zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
+def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15, mode='cheb'):
+
+    if mode=='man':
+        return zGridGlobals
+    elif mode=='cheb':
+        return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)
+    else:
+        raise ValueError()
+
+
 def log_cheb(a, b, N):
     """
     Chebyshev nodes mapped to log10-space between a and b (a<b).
@@ -74,7 +84,7 @@ def log_cheb(a, b, N):
     logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
     return 10 ** logz
 
-def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15):
+def make_z_grid_cheb(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15):
     """
     Generic grid builder:
       total   : total number of points (e.g., 150, 500)

@@ -144,7 +144,7 @@ def main():
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default='scan-GPU', type=str, required=False)
-    parser.add_argument("--interp_inj", default=1, type=int, required=False)
+    parser.add_argument("--interp_inj", default=0, type=int, required=False)
     
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
@@ -179,9 +179,11 @@ def main():
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
     parser.add_argument("--zres", default=1000, type=int, required=False)
+    parser.add_argument("--z_grid_mode", default='cheb', type=str, required=False)
+    
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
-    parser.add_argument("--zmid_b", default=5., type=float, required=False)
+    parser.add_argument("--zmid_b", default=3., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
     parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
@@ -793,6 +795,7 @@ def main():
                                     fix_Xi0n = FLAGS.fix_Xi0n,
                                     z_pivot=FLAGS.z_pivot,
                                     zres = FLAGS.zres,
+                                    z_grid_mode=FLAGS.z_grid_mode,
                                     zmin_a=FLAGS.zmin_a, 
                                     zmin_b=FLAGS.zmin_b, 
                                     zmid_b=FLAGS.zmid_b, 
