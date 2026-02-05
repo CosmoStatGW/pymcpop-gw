@@ -13,10 +13,14 @@ import pytensor
 import numpy as onp
 import numpy as np
 
+from pytensor.tensor.type import TensorType
+
 
 from pytensor.gradient import disconnected_grad as stop_grad
 from pymc.distributions.dist_math import check_parameters
 
+
+_INV_INTERP_OP_CACHE = {}
 
 
 # def _const_like(x, v):
@@ -471,7 +475,7 @@ def meshgrid_at(x, y):
 
 
 
-def atinterp(x, xs, ys, eps=1e-12, side="right"):
+def atinterp_base(x, xs, ys, eps=1e-12, side="right"):
     # xs, ys tensors; x can be scalar or tensor
     idxs = at.searchsorted(xs, x, side=side)
     idxs = at.clip(idxs, 1, xs.shape[0] - 1)
@@ -511,6 +515,157 @@ def atinterp_uniform(x, x0, x1, n, yp):
     y0 = yp[j]
     y1 = yp[j + 1]
     return (1.0 - r) * y0 + r * y1
+
+
+
+class _InvInterpConstYGradOp(Op):
+    """
+    NumPy VJP for inverse interpolation with constant ys=zgrid.
+    Inputs: x, xs, g_out
+    Outputs: dx, gxs
+    """
+
+    def __init__(self, ys_const, eps=1e-12, side="right"):
+        self.ys = np.asarray(ys_const, dtype=np.float64)
+        self.eps = float(eps)
+        self.side = side
+
+    def make_node(self, x, xs, g_out):
+        x = at.as_tensor_variable(x)
+        xs = at.as_tensor_variable(xs)
+        g_out = at.as_tensor_variable(g_out)
+
+        # Output dtypes/shapes follow x and xs
+        dx_t = x.type()
+        gxs_t = xs.type()
+        return Apply(self, [x, xs, g_out], [dx_t, gxs_t])
+
+    def perform(self, node, inputs, outputs):
+        x, xs, g = inputs
+        ys = self.ys
+        eps = self.eps
+        side = self.side
+
+        # Ensure arrays
+        x_arr = np.asarray(x)
+        g_arr = np.asarray(g)
+        xs_arr = np.asarray(xs)
+
+        # We support any shape for x; treat it as flat for indexing then reshape back
+        x_flat = x_arr.ravel()
+        g_flat = g_arr.ravel()
+
+        idx = np.searchsorted(xs_arr, x_flat, side=side)
+        idx = np.clip(idx, 1, xs_arr.shape[0] - 1)
+
+        xl = xs_arr[idx - 1]
+        xh = xs_arr[idx]
+        yl = ys[idx - 1]
+        yh = ys[idx]
+
+        denom = np.maximum(xh - xl, eps)
+        dz = (yh - yl)
+
+        # dx: g * dz/denom
+        dx_flat = g_flat * dz / denom
+
+        # gradients w.r.t. xs at the two neighboring grid points
+        # coeff = g*dz/denom^2
+        coeff = g_flat * dz / (denom * denom)
+
+        # g_xl and g_xh as derived from linear interpolation
+        g_xl = coeff * (x_flat - xh)
+        g_xh = coeff * (xl - x_flat)
+
+        gxs = np.zeros_like(xs_arr, dtype=xs_arr.dtype)
+        # scatter-add into size zres (~1000)
+        np.add.at(gxs, idx - 1, g_xl)
+        np.add.at(gxs, idx, g_xh)
+
+        # reshape dx back to x shape
+        dx = dx_flat.reshape(x_arr.shape)
+
+        outputs[0][0] = dx
+        outputs[1][0] = gxs
+
+
+class _InvInterpConstYOp(Op):
+    """
+    Inverse interpolation Op for y = interp(x, xs, ys_const),
+    where ys_const is a fixed numpy array (zgrid).
+    Forward and VJP both computed in NumPy to avoid symbolic SearchsortedOp.
+    """
+
+    def __init__(self, ys_const, eps=1e-12, side="right"):
+        self.ys = np.asarray(ys_const, dtype=np.float64)
+        self.eps = float(eps)
+        self.side = side
+        self._grad_op = _InvInterpConstYGradOp(self.ys, eps=self.eps, side=self.side)
+
+    def make_node(self, x, xs):
+        x = at.as_tensor_variable(x)
+        xs = at.as_tensor_variable(xs)
+        # Output has same type/shape as x
+        return Apply(self, [x, xs], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        x, xs = inputs
+        ys = self.ys
+        eps = self.eps
+        side = self.side
+
+        x_arr = np.asarray(x)
+        xs_arr = np.asarray(xs)
+
+        x_flat = x_arr.ravel()
+        idx = np.searchsorted(xs_arr, x_flat, side=side)
+        idx = np.clip(idx, 1, xs_arr.shape[0] - 1)
+
+        xl = xs_arr[idx - 1]
+        xh = xs_arr[idx]
+        yl = ys[idx - 1]
+        yh = ys[idx]
+
+        denom = np.maximum(xh - xl, eps)
+        r = (x_flat - xl) / denom
+        y_flat = (1.0 - r) * yl + r * yh
+
+        y = y_flat.reshape(x_arr.shape)
+        outputs[0][0] = y
+
+    def grad(self, inputs, gout):
+        x, xs = inputs
+        g = gout[0]
+        dx, gxs = self._grad_op(x, xs, g)
+        return [dx, gxs]
+
+
+def atinterp(x, xs, ys, eps=1e-12, side="right"):
+    """
+    Specialized inverse interpolation:
+      - If ys is a TensorConstant (your zgrid), dispatch to NumPy Op.
+      - Else fallback to symbolic implementation.
+    """
+    ys_var = at.as_tensor_variable(ys)
+
+    if isinstance(ys_var, pytensor.tensor.TensorConstant):
+        key = (ys_var.data.tobytes(), float(eps), side)
+        op = _INV_INTERP_OP_CACHE.get(key)
+        if op is None:
+            op = _InvInterpConstYOp(ys_const=ys_var.data, eps=eps, side=side)
+            _INV_INTERP_OP_CACHE[key] = op
+        return op(x, xs)
+
+    # fallback (should not happen in your code anymore)
+    idxs = at.searchsorted(xs, x, side=side)
+    idxs = at.clip(idxs, 1, xs.shape[0] - 1)
+    xl = xs[idxs - 1]
+    xh = xs[idxs]
+    yl = ys[idxs - 1]
+    yh = ys[idxs]
+    denom = at.maximum(xh - xl, eps)
+    r = (x - xl) / denom
+    return (1 - r) * yl + r * yh
 
 
 
@@ -567,6 +722,269 @@ def uniform_interp_indices(x, x0, x1, n_pts, eps=1e-30):
     #r = at.cast(r, dtype)
 
     return j, r
+
+
+
+
+_INTERP1D_OP_CACHE = {}
+
+
+class _Interp1DNonUniformGradOp(Op):
+    """
+    NumPy VJP for 1D non-uniform linear interpolation.
+    Inputs: x, x_grid, y_grid, g_out
+    Outputs: dx, dx_grid, dy_grid
+      - dx_grid is returned as zeros (we do NOT differentiate through grid geometry)
+      - dy_grid is scatter-add weights into y_grid
+    """
+    def __init__(self, eps=1e-30, side="right"):
+        self.eps = float(eps)
+        self.side = side
+
+    def make_node(self, x, x_grid, y_grid, g_out):
+        x = at.as_tensor_variable(x)
+        x_grid = at.as_tensor_variable(x_grid)
+        y_grid = at.as_tensor_variable(y_grid)
+        g_out = at.as_tensor_variable(g_out)
+        return Apply(self, [x, x_grid, y_grid, g_out], [x.type(), x_grid.type(), y_grid.type()])
+
+    def perform(self, node, inputs, outputs):
+        x, xg, yg, g = inputs
+        eps = self.eps
+        side = self.side
+
+        x = np.asarray(x)
+        xg = np.asarray(xg)
+        yg = np.asarray(yg)
+        g = np.asarray(g)
+
+        x_flat = x.ravel()
+        g_flat = g.ravel()
+
+        # clip to grid support
+        x0 = xg[0]
+        x1 = xg[-1]
+        x_clip = np.clip(x_flat, x0, x1)
+
+        # indices
+        j = np.searchsorted(xg, x_clip, side=side)
+        j = np.clip(j, 1, xg.shape[0] - 1)
+
+        xL = xg[j - 1]
+        xR = xg[j]
+        yL = yg[j - 1]
+        yR = yg[j]
+
+        denom = np.maximum(xR - xL, eps)
+        r = (x_clip - xL) / denom
+        r = np.clip(r, 0.0, 1.0)
+
+        # dy/dx = (yR-yL)/(xR-xL)
+        slope = (yR - yL) / denom
+        dx_flat = g_flat * slope
+
+        # dy/dy_grid: weights (1-r), r
+        dy_grid = np.zeros_like(yg, dtype=yg.dtype)
+        np.add.at(dy_grid, j - 1, g_flat * (1.0 - r))
+        np.add.at(dy_grid, j,     g_flat * r)
+
+        # we DO NOT propagate gradients to x_grid (geometry detached)
+        dx_grid = np.zeros_like(xg, dtype=xg.dtype)
+
+        outputs[0][0] = dx_flat.reshape(x.shape)
+        outputs[1][0] = dx_grid
+        outputs[2][0] = dy_grid
+
+
+class _Interp1DNonUniformOp(Op):
+    """
+    NumPy 1D non-uniform linear interpolation y(x) from (x_grid, y_grid).
+    Forward and VJP computed in NumPy; no symbolic searchsorted.
+    """
+    def __init__(self, eps=1e-30, side="right"):
+        self.eps = float(eps)
+        self.side = side
+        self._grad_op = _Interp1DNonUniformGradOp(eps=self.eps, side=self.side)
+
+    def make_node(self, x, x_grid, y_grid):
+        x = at.as_tensor_variable(x)
+        x_grid = at.as_tensor_variable(x_grid)
+        y_grid = at.as_tensor_variable(y_grid)
+        return Apply(self, [x, x_grid, y_grid], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        x, xg, yg = inputs
+        eps = self.eps
+        side = self.side
+
+        x = np.asarray(x)
+        xg = np.asarray(xg)
+        yg = np.asarray(yg)
+
+        x_flat = x.ravel()
+        x0 = xg[0]
+        x1 = xg[-1]
+        x_clip = np.clip(x_flat, x0, x1)
+
+        j = np.searchsorted(xg, x_clip, side=side)
+        j = np.clip(j, 1, xg.shape[0] - 1)
+
+        xL = xg[j - 1]
+        xR = xg[j]
+        yL = yg[j - 1]
+        yR = yg[j]
+
+        denom = np.maximum(xR - xL, eps)
+        r = (x_clip - xL) / denom
+        r = np.clip(r, 0.0, 1.0)
+
+        y_flat = (1.0 - r) * yL + r * yR
+        outputs[0][0] = y_flat.reshape(x.shape)
+
+    def grad(self, inputs, gout):
+        x, xg, yg = inputs
+        g = gout[0]
+        dx, dxg, dyg = self._grad_op(x, xg, yg, g)
+        return [dx, dxg, dyg]
+
+
+def interp_1d_nonuniform_numpyop(x, x_grid, y_grid, eps=1e-30, side="right"):
+    key = (float(eps), side)
+    op = _INTERP1D_OP_CACHE.get(key)
+    if op is None:
+        op = _Interp1DNonUniformOp(eps=eps, side=side)
+        _INTERP1D_OP_CACHE[key] = op
+    return op(x, x_grid, y_grid)
+
+
+
+
+_MULTI_INTERP_OP_CACHE = {}
+
+class _Interp1DNonUniformMultiYGradOp(Op):
+    """
+    VJP for multi-y interpolation.
+    Inputs: x, x_grid, Y (K,N), g_out (K, x.shape)
+    Outputs: dx, dx_grid(zeros), dY (K,N)
+    """
+    def __init__(self, eps=1e-30, side="right"):
+        self.eps = float(eps)
+        self.side = side
+
+    def make_node(self, x, x_grid, Y, g_out):
+        x = at.as_tensor_variable(x)
+        x_grid = at.as_tensor_variable(x_grid)
+        Y = at.as_tensor_variable(Y)
+        g_out = at.as_tensor_variable(g_out)
+        return Apply(self, [x, x_grid, Y, g_out], [x.type(), x_grid.type(), Y.type()])
+
+    def perform(self, node, inputs, outputs):
+        x, xg, Y, g = inputs
+        eps = self.eps
+        side = self.side
+
+        x = np.asarray(x)
+        xg = np.asarray(xg)
+        Y  = np.asarray(Y)      # shape (K,N)
+        g  = np.asarray(g)      # shape (K, *x.shape)
+
+        x_flat = x.ravel()
+        x_clip = np.clip(x_flat, xg[0], xg[-1])
+
+        j = np.searchsorted(xg, x_clip, side=side)
+        j = np.clip(j, 1, xg.shape[0] - 1)
+
+        xL = xg[j - 1]
+        xR = xg[j]
+        denom = np.maximum(xR - xL, eps)
+        r = (x_clip - xL) / denom
+        r = np.clip(r, 0.0, 1.0)
+
+        # Forward slopes per K
+        YL = Y[:, j - 1]   # (K, M)
+        YR = Y[:, j]       # (K, M)
+        slopes = (YR - YL) / denom[None, :]  # (K, M)
+
+        g_flat = g.reshape((Y.shape[0], -1))  # (K, M)
+
+        dx_flat = np.sum(g_flat * slopes, axis=0)  # (M,)
+        dx = dx_flat.reshape(x.shape)
+
+        dY = np.zeros_like(Y)
+        np.add.at(dY, (slice(None), j - 1), g_flat * (1.0 - r)[None, :])
+        np.add.at(dY, (slice(None), j),     g_flat * r[None, :])
+
+        dxg = np.zeros_like(xg)
+
+        outputs[0][0] = dx
+        outputs[1][0] = dxg
+        outputs[2][0] = dY
+
+
+class _Interp1DNonUniformMultiYOp(Op):
+    """
+    Forward: interpolate K y-grids at once, sharing the same indices.
+    Inputs: x, x_grid, Y(K,N)
+    Output: out(K, *x.shape)
+    """
+    def __init__(self, eps=1e-30, side="right"):
+        self.eps = float(eps)
+        self.side = side
+        self._grad_op = _Interp1DNonUniformMultiYGradOp(eps=self.eps, side=self.side)
+
+    def make_node(self, x, x_grid, Y):
+        x = at.as_tensor_variable(x)
+        x_grid = at.as_tensor_variable(x_grid)
+        Y = at.as_tensor_variable(Y)
+    
+        # If Y is (K, Ngrid) and x is (N,), output is (K, N)
+        out_ndim = 1 + x.ndim  # leading K dim + x dims
+        out_type = TensorType(dtype=Y.dtype, broadcastable=(False,) * out_ndim)()
+
+        return Apply(self, [x, x_grid, Y], [out_type])
+    
+    def perform(self, node, inputs, outputs):
+        x, xg, Y = inputs
+        eps = self.eps
+        side = self.side
+
+        x = np.asarray(x)
+        xg = np.asarray(xg)
+        Y  = np.asarray(Y)   # (K,N)
+
+        x_flat = x.ravel()
+        x_clip = np.clip(x_flat, xg[0], xg[-1])
+
+        j = np.searchsorted(xg, x_clip, side=side)
+        j = np.clip(j, 1, xg.shape[0] - 1)
+
+        xL = xg[j - 1]
+        xR = xg[j]
+        denom = np.maximum(xR - xL, eps)
+        r = (x_clip - xL) / denom
+        r = np.clip(r, 0.0, 1.0)
+
+        YL = Y[:, j - 1]  # (K, M)
+        YR = Y[:, j]      # (K, M)
+        out_flat = (1.0 - r)[None, :] * YL + r[None, :] * YR  # (K,M)
+
+        out = out_flat.reshape((Y.shape[0],) + x.shape)
+        outputs[0][0] = out
+
+    def grad(self, inputs, gout):
+        x, xg, Y = inputs
+        g = gout[0]  # (K, *x.shape)
+        dx, dxg, dY = self._grad_op(x, xg, Y, g)
+        return [dx, dxg, dY]
+
+
+def interp_1d_nonuniform_multiY_numpyop(x, x_grid, Y, eps=1e-30, side="right"):
+    key = (float(eps), side)
+    op = _MULTI_INTERP_OP_CACHE.get(key)
+    if op is None:
+        op = _Interp1DNonUniformMultiYOp(eps=eps, side=side)
+        _MULTI_INTERP_OP_CACHE[key] = op
+    return op(x, x_grid, Y)
 
 
 
@@ -867,18 +1285,6 @@ def log_ddL_dz(z, H0, Om0,  w0, Xi0, n, dc=None, interp=False, param='vanilla'):
     return res
 
 
-def compute_log_norm_UniformSourceFrame(z_min, z_max, H0, Om0, w0):
-    
-    z = at.linspace(z_min, z_max, 10000)
-
-    dc = dcfun_at(z, H0, Om0,  w0, interp=False)
-    log_dVdz = log_dV_dz_at(z, H0, Om0, w0, dc=dc, interp=False)
-
-    integrand = at.exp(log_dVdz) / (1.0 + z)
-
-    norm = attrapzvec(integrand, z)
-    return at.log(norm)
-
 
 # no dependence on H0 (as in Finke et.al.)
 # dc * H0/c
@@ -900,6 +1306,20 @@ def log_j_z_at_norm(z, Om, w0, zmax):
     zz = at.geomspace(1e-7, zmax, 10000) # fixed (zmin, zmax)
     log_norm = at.log(attrapzvec(at.exp(log_j_z_at(zz, Om, w0)), zz))
     return logj - log_norm
+
+
+
+def compute_log_norm_UniformSourceFrame(z_min, z_max, H0, Om0, w0):
+    
+    z = at.linspace(z_min, z_max, 10000)
+
+    dc = dcfun_at(z, H0, Om0,  w0, interp=False)
+    log_dVdz = log_dV_dz_at(z, H0, Om0, w0, dc=dc, interp=False)
+
+    integrand = at.exp(log_dVdz) / (1.0 + z)
+
+    norm = attrapzvec(integrand, z)
+    return at.log(norm)
 
 
 ##########################
@@ -962,11 +1382,8 @@ def p_z_MD(z, gamma, kappa, zp, Om, normalize=True, zmax=20, dc=None):
 
 
 def log_p_z_MD_unnorm(z, gamma, kappa, zp, H0, Om, w0, dc=None):
-    #lC0 = at.log( 1+(1+zp)**(-gamma-kappa))
-    # work_dtype = getattr(z, "dtype", "float64")
-    # print("work_dtype in log_p_z_MD_unnorm is %s"%work_dtype)
-    
-    log_psiz = log_psi_z_MD(z, gamma, kappa, zp) #gamma*at.log1p(z)-at.log(1+((1+z)/(1+zp))**(gamma+kappa))
+     
+    log_psiz = log_psi_z_MD(z, gamma, kappa, zp) 
     
     log_dVdz = log_dV_dz_at(z, H0, Om, w0, dc=dc )
 
@@ -982,9 +1399,6 @@ def N_per_year( gamma, kappa, zp, H0, Om, w0, R0=1., dc=None, z_max = 100, res=1
 
 def log_psi_z_MD(z, gamma, kappa, zp):
     
-    # work_dtype = getattr(z, "dtype", "float64")
-    # print("work_dtype in log_psi_z_MD is %s"%work_dtype)
-    # one_ = at.as_tensor_variable(1., dtype=work_dtype)
     
     lC0 = at.log( 1.+(1.+zp)**(-gamma-kappa))
     log_psiz = lC0+gamma*at.log1p(z)-at.log(1.+((1.+z)/(1.+zp))**(gamma+kappa))
@@ -2602,27 +3016,11 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
                   ):
 
 
-    #work_dtype = getattr(m1, "dtype", "float64")
-
-    #one = at.as_tensor_variable(1.0, dtype=work_dtype)
-
-    # eps_w = at.as_tensor_variable(
-    #     1e-6 if str(work_dtype) == "float32" else 1e-12,
-    #     dtype=work_dtype
-    # )
-
     if not simplex_repair:
         log_lambda0 = at.log(lambda0)
         log_lambda1 = at.log(lambda1)
         log_lambda2 = at.log(lambda2)
 
-        #log_lambda0 = at.log(at.clip(lambda0, eps_w, 1.0-eps_w))
-        #log_lambda1 = at.log(at.clip(lambda1, eps_w, 1.0-eps_w))
-        #log_lambda2 = at.log(at.clip(lambda2, eps_w, 1.0-eps_w))
-
-        #lambda2_raw  = 1. - lambda0 - lambda1
-        #lambda2_safe = at.clip(lambda2_raw, eps_w, 1.0-eps_w)
-        #log_lambda2  = at.log(lambda2_safe)
 
     else:
         # ---- Simplex repair (same math as your version; just dtype-safe) ----
@@ -2674,7 +3072,6 @@ def logpdfm1_DPLDP(m1, alpha1, alpha2, mb,
     term1 = log_lambda1 + log_pnorm1
     term2 = log_lambda2 + log_pnorm2
 
-    #log_mix = safe_logsumexp3(term0, term1, term2)
     
     log_mix = logsumexp(
         logsumexp(term0, term1),
@@ -2784,6 +3181,38 @@ def logpdf_DPLDP_from_interp_bound(
 
 
 def logpdf_DPLDP_from_interp(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
+
+    m1, m2 = theta
+
+    m1_grid, m2_grid = interp_grids
+    lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
+
+    ok = (
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1]) &
+        (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+    )
+
+    if force_m2_less_than_m1:
+        ok = ok & (m2 <= m1)
+
+    # avoid C(m1)=0 zone (logC=-inf -> +inf in joint)
+    ok = ok & (m1 > m2_grid[0])
+
+    #lpdfm1 = interp_1d_nonuniform_numpyop(m1, m1_grid, lp_m1_grid)
+    #lC     = interp_1d_nonuniform_numpyop(m1, m1_grid, lC_of_m1)
+    Y_m1 = at.stack([lp_m1_grid, lC_of_m1], axis=0)   # shape (2, Nm1)
+
+    out = interp_1d_nonuniform_multiY_numpyop(m1, m1_grid, Y_m1)
+    lpdfm1 = out[0]
+    lC     = out[1]
+
+    lpdfm2 = interp_1d_nonuniform_numpyop(m2, m2_grid, lp_m2_grid)
+    
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+    return at.where(ok, lpdf, -1e30)
+
+
+def logpdf_DPLDP_from_interp_at(theta, interp_vals, interp_grids, force_m2_less_than_m1=False):
     """
     Interpolation-only evaluator for the non-evolving DPLDP model,
     on non-uniform m1 and m2 grids.
@@ -2955,59 +3384,21 @@ def logpdf_DPLDP(theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break
         alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
                 
 
-        if interp_vals is None:
             
-            lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, simplex_repair=simplex_repair, norm_gauss=norm_gauss)
+        lpdfm1 = logpdfm1_DPLDP( m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, simplex_repair=simplex_repair, norm_gauss=norm_gauss)
+    
+        lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
         
-            lpdfm2 = logpdfm2_PLP_reg(m2, beta, delta_m2, m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing)
-            
-            lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
-            if norm:
-                ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, res=resN, norm_gauss=norm_gauss )
-            else:
-                ln=0.
+        lC = logC_DPLDP(m1, beta, delta_m2,  m2_low, m_g=m_g, w_g=w_g, sig_g_low = sig_g_low, sig_g_high = sig_g_high, has_m2_break=has_m2_break, smoothing=smoothing, res=resC) 
+        if norm:
+            ln = logNorm_DPLDP(  alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon, smoothing=smoothing, res=resN, norm_gauss=norm_gauss )
         else:
-
-            m1_grid = interp_grids[0]
-            m2_grid = interp_grids[1]
-            lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals
-
-
-            ############ Faster, v3
-            # ----- M1 interpolation indices computed once -----
-            x0_1 = m1_grid[0]
-            x1_1 = m1_grid[-1]
-            nU_1 = m1_grid.shape[0]
-            
-            j1, r1 = uniform_interp_indices(m1, x0_1, x1_1, nU_1)
-            
-            # interpolate logpdf(m1)
-            lpdfm1 = (1 - r1) * lp_m1_grid[j1] + r1 * lp_m1_grid[j1 + 1]
-            
-            # interpolate C(m1)
-            lC     = (1 - r1) * lC_of_m1[j1]   + r1 * lC_of_m1[j1 + 1]
-            
-            # ----- M2 interpolation indices computed once -----
-            x0_2 = m2_grid[0]
-            x1_2 = m2_grid[-1]
-            nU_2 = m2_grid.shape[0]
-            
-            j2, r2 = uniform_interp_indices(m2, x0_2, x1_2, nU_2)
-            
-            # interpolate logpdf(m2)
-            lpdfm2 = (1 - r2) * lp_m2_grid[j2] + r2 * lp_m2_grid[j2 + 1]
-        
+            ln=0.
 
 
         lpdf = lpdfm1 + lpdfm2 -lC -ln
     
-        #lpdf = at.switch(
-        #                    (at.isinf(lpdfm1) & (lpdfm1 < 0)) | (at.isinf(lpdfm2) & (lpdfm2 < 0)),
-        #                    MIN,
-        #                    lpdfm1 + lpdfm2 - lC - ln
-        #                )
-        
-
+ 
         if force_m2_less_than_m1:
             eval = at.and_(at.and_(m2 <= m1, m2 > 0), m1 > 0)
             return at.where(eval, lpdf, -np.inf)

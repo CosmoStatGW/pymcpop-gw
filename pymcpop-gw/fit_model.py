@@ -65,24 +65,21 @@ def main():
     parser.add_argument("--fin_priors", default='', type=str, required=True)
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
     parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
-    
-    
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
     parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
     
 
-    
     parser.add_argument("--nev_min", default=0, type=int, required=False)
     parser.add_argument("--nev_max", default=-1, type=int, required=False)
     
     parser.add_argument("--pop_only", default=0, type=int, required=False)
     
-    
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
-    parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
+    parser.add_argument("--mass_model", default='DPLDP', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
     parser.add_argument("--interp_mass", default=0, type=int, required=False)
     parser.add_argument("--interp_z", default=0, type=int, required=False)
+
     
     parser.add_argument("--N_DP_comp_max", default=30, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
@@ -93,8 +90,6 @@ def main():
     parser.add_argument("--s_local", default=0.5, type=float, required=False)
     parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
     parser.add_argument("--q_mbound", default=0.05, type=float, required=False)
-
-
     parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
     parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
     parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
@@ -124,13 +119,13 @@ def main():
     parser.add_argument("--MAP_init", default=0, type=int, required=False)
     parser.add_argument("--eps_init", default=0.5, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
-    parser.add_argument("--check_init", default=1, type=int, required=False)
+    parser.add_argument("--check_init", default=0, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
     parser.add_argument("--debug_sel_batch", default=0, type=int, required=False)
     parser.add_argument("--profile", default=0, type=int, required=False)
     parser.add_argument("--recompile", default=0, type=int, required=False)
 
-    parser.add_argument("--save_thetas", default=0, type=int, required=False)
+    parser.add_argument("--save_thetas", default=1, type=int, required=False)
     
     
     
@@ -164,7 +159,7 @@ def main():
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.9, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
-    parser.add_argument("--jax_debug_nans", default=1, type=int, required=False)
+    parser.add_argument("--jax_debug_nans", default=0, type=int, required=False)
     parser.add_argument("--dense_mass", default=0, type=int, required=False)
     parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
     
@@ -367,7 +362,7 @@ def main():
     import pymc_models as models
     import data_tools as dt
     import pytensor_tools as atools
-    import pytensor_utils as autils
+    import pytensor_utils_old as autils
 
 
 
