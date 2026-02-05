@@ -199,22 +199,30 @@ def sel_bias_with_uncertainty(
     subtract_log_p_incl=True,
     eps_interp=1e-12,
     side_interp="right",
+    # -------- NEW optional precomputed cosmology at injections --------
+    zinj=None,
+    dcinj=None,
+    log_ddL_dz_inj=None,
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
 
-    Inputs match SelectionBiasJAXOp._f signature (+ zgrid + config).
-    Returns: (log_mu, var_log_lik_u) scalars.
+    If zinj/dcinj/log_ddL_dz_inj are provided, internal inversions/interps are skipped.
     """
 
-    # z(dL): xp=dL_grid, fp=zgrid
-    i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid, eps=eps_interp, side=side_interp)
-    zinj = _interp_apply_bk(bk, i_dL, t_dL, zgrid)
+    # ---- if not precomputed, compute zinj, dcinj, log_ddL_dz_inj by interpolation ----
+    if zinj is None:
+        # z(dL): xp=dL_grid, fp=zgrid
+        i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid, eps=eps_interp, side=side_interp)
+        zinj = _interp_apply_bk(bk, i_dL, t_dL, zgrid)
 
-    # dc(z), log_ddL_dz(z): xp=zgrid, fp=grids
-    i_z, t_z = _interp_prepare_bk(bk, zinj, zgrid, eps=eps_interp, side=side_interp)
-    dcinj = _interp_apply_bk(bk, i_z, t_z, dc_grid)
-    log_ddL_dz_inj = _interp_apply_bk(bk, i_z, t_z, log_ddL_dz_grid)
+    if (dcinj is None) or (log_ddL_dz_inj is None):
+        # dc(z), log_ddL_dz(z): xp=zgrid, fp=grids
+        i_z, t_z = _interp_prepare_bk(bk, zinj, zgrid, eps=eps_interp, side=side_interp)
+        if dcinj is None:
+            dcinj = _interp_apply_bk(bk, i_z, t_z, dc_grid)
+        if log_ddL_dz_inj is None:
+            log_ddL_dz_inj = _interp_apply_bk(bk, i_z, t_z, log_ddL_dz_grid)
 
     onepz = 1.0 + zinj
     m1Src = m1inj / onepz

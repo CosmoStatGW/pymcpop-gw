@@ -14,7 +14,7 @@ import os
 #os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 os.environ.setdefault("JAX_DEFAULT_DTYPE_BITS", "64")
-
+#os.environ["JAX_LOG_COMPILES"] = "1"
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -24,8 +24,8 @@ os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 os.environ.setdefault("OMP_PROC_BIND", "FALSE")
 os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
 
-
-
+from jax.experimental.compilation_cache import compilation_cache as cc
+cc.set_cache_dir("/tmp/jax_cache")
 
 import argparse
 import json
@@ -1616,7 +1616,6 @@ def main():
     myLog.close()
 
 
-
     
 if __name__=='__main__':
 
@@ -1627,6 +1626,7 @@ if __name__=='__main__':
     except RuntimeError:
         pass  # already set
 
+    
     main()
     
     

@@ -475,7 +475,7 @@ def meshgrid_at(x, y):
 
 
 
-def atinterp_base(x, xs, ys, eps=1e-12, side="right"):
+def atinterp(x, xs, ys, eps=1e-12, side="right"):
     # xs, ys tensors; x can be scalar or tensor
     idxs = at.searchsorted(xs, x, side=side)
     idxs = at.clip(idxs, 1, xs.shape[0] - 1)
@@ -640,7 +640,7 @@ class _InvInterpConstYOp(Op):
         return [dx, gxs]
 
 
-def atinterp(x, xs, ys, eps=1e-12, side="right"):
+def atinterp_from_op(x, xs, ys, eps=1e-12, side="right"):
     """
     Specialized inverse interpolation:
       - If ys is a TensorConstant (your zgrid), dispatch to NumPy Op.
