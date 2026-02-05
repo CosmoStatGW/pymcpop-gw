@@ -1255,9 +1255,12 @@ class _PopAndSelJAXVJPOp(Op):
 
             # events
             z_evt = z_from_dL_interp(dLdet, theta5, cosmo_zgrid, dL_grid, x01_jax, w01_jax)
-            iz, tz = _interp_prepare_jax(z_evt, cosmo_zgrid, eps=eps_interp, side=side_interp)
-            dc_evt = _interp_apply_jax(iz, tz, dc_grid)
-            log_ddL_dz_evt = _interp_apply_jax(iz, tz, log_ddL_dz_grid)
+            # iz, tz = _interp_prepare_jax(z_evt, cosmo_zgrid, eps=eps_interp, side=side_interp)
+            # dc_evt = _interp_apply_jax(iz, tz, dc_grid)
+            # log_ddL_dz_evt = _interp_apply_jax(iz, tz, log_ddL_dz_grid)
+            dc_evt = z_from_dL_interp.interp_pt(z_evt, cosmo_zgrid, dc_grid)
+            log_ddL_dz_evt = z_from_dL_interp.interp_pt(z_evt, cosmo_zgrid, log_ddL_dz_grid)
+
 
             onepz = 1.0 + z_evt
             m1src = m1det / onepz
@@ -1278,9 +1281,11 @@ class _PopAndSelJAXVJPOp(Op):
 
             # injections (precompute and pass)
             z_inj = z_from_dL_interp(dLinj, theta5, cosmo_zgrid, dL_grid, x01_jax, w01_jax)
-            iz2, tz2 = _interp_prepare_jax(z_inj, cosmo_zgrid, eps=eps_interp, side=side_interp)
-            dc_inj = _interp_apply_jax(iz2, tz2, dc_grid)
-            log_ddL_dz_inj = _interp_apply_jax(iz2, tz2, log_ddL_dz_grid)
+            # iz2, tz2 = _interp_prepare_jax(z_inj, cosmo_zgrid, eps=eps_interp, side=side_interp)
+            # dc_inj = _interp_apply_jax(iz2, tz2, dc_grid)
+            # log_ddL_dz_inj = _interp_apply_jax(iz2, tz2, log_ddL_dz_grid)
+            dc_inj = z_from_dL_interp.interp_pt(z_inj, cosmo_zgrid, dc_grid)
+            log_ddL_dz_inj = z_from_dL_interp.interp_pt(z_inj, cosmo_zgrid, log_ddL_dz_grid)
 
             log_mu, var_u = sel_bias_with_uncertainty(
                 bk,
@@ -1458,9 +1463,12 @@ class PopAndSelJAXOp(Op):
 
             # event
             z_evt = z_from_dL_interp(dLdet, theta5, zgrid, dL_grid, x01, w01)
-            iz, tz = _interp_prepare_jax(z_evt, zgrid, eps=eps_interp, side=side_interp)
-            dc_evt = _interp_apply_jax(iz, tz, dc_grid)
-            log_ddL_dz_evt = _interp_apply_jax(iz, tz, log_ddL_dz_grid)
+            #iz, tz = _interp_prepare_jax(z_evt, zgrid, eps=eps_interp, side=side_interp)
+            #dc_evt = _interp_apply_jax(iz, tz, dc_grid)
+            #log_ddL_dz_evt = _interp_apply_jax(iz, tz, log_ddL_dz_grid)
+            dc_evt = z_from_dL_interp.interp_pt(z_evt, zgrid, dc_grid)
+            log_ddL_dz_evt = z_from_dL_interp.interp_pt(z_evt, zgrid, log_ddL_dz_grid)
+
 
             onepz = 1.0 + z_evt
             m1src = m1det / onepz
@@ -1485,9 +1493,11 @@ class PopAndSelJAXOp(Op):
 
             # inj (precompute cosmology pieces; passed into sel_bias)
             z_inj = z_from_dL_interp(dLinj, theta5, zgrid, dL_grid, x01, w01)
-            iz2, tz2 = _interp_prepare_jax(z_inj, zgrid, eps=eps_interp, side=side_interp)
-            dc_inj = _interp_apply_jax(iz2, tz2, dc_grid)
-            log_ddL_dz_inj = _interp_apply_jax(iz2, tz2, log_ddL_dz_grid)
+            #iz2, tz2 = _interp_prepare_jax(z_inj, zgrid, eps=eps_interp, side=side_interp)
+            #dc_inj = _interp_apply_jax(iz2, tz2, dc_grid)
+            #log_ddL_dz_inj = _interp_apply_jax(iz2, tz2, log_ddL_dz_grid)
+            dc_inj = z_from_dL_interp.interp_pt(z_inj, zgrid, dc_grid)
+            log_ddL_dz_inj = z_from_dL_interp.interp_pt(z_inj, zgrid, log_ddL_dz_grid)
 
             log_mu, var_u = sel_bias_with_uncertainty(
                 bk,
@@ -1837,26 +1847,164 @@ def _interp1d_sorted(x, xp, fp, *, eps=1e-18):
 
 
 
+# def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
+#     """
+#     Match PyTensor 'standard' atinterp semantics:
+
+#       - forward: piecewise-linear interpolation with idx clipped
+#                 (=> extrapolates outside grid, does NOT clamp x)
+#       - backward: VJP of the same piecewise-linear map wrt:
+#             * dL (query)
+#             * dL_grid (knot locations)
+#         with denom = max(dl_hi - dl_lo, eps) (NO 'safe' mask, NO in_range mask)
+
+#     This is the closest JAX analogue to:
+#         idx = stop_grad(clip(searchsorted(xs,x),1,n-1))
+#         denom = max(xh-xl, eps)
+#         y = (1-r)*yl + r*yh
+#     """
+
+#     side = str(side)
+
+#     def _forward(dL, dL_grid, zgrid):
+#         n = dL_grid.shape[0]
+#         idx = jnp.searchsorted(dL_grid, dL, side=side)
+#         idx = jnp.clip(idx, 1, n - 1)
+
+#         dl_lo = dL_grid[idx - 1]
+#         dl_hi = dL_grid[idx]
+#         z_lo  = zgrid[idx - 1]
+#         z_hi  = zgrid[idx]
+
+#         denom = jnp.maximum(dl_hi - dl_lo, eps)
+#         r = (dL - dl_lo) / denom
+#         z = (1.0 - r) * z_lo + r * z_hi
+
+#         # cache everything needed for backward
+#         return z, (idx, dL, dl_lo, dl_hi, z_lo, z_hi, denom, dL_grid.shape)
+
+#     @jax.custom_vjp
+#     def z_from_dL_grid(dL, theta5, zgrid, dL_grid, x01, w01):
+#         z, _ = _forward(dL, dL_grid, zgrid)
+#         return z
+
+#     def fwd(dL, theta5, zgrid, dL_grid, x01, w01):
+#         z, res = _forward(dL, dL_grid, zgrid)
+#         return z, res
+
+#     def bwd(res, g_z):
+#         idx, dL, dl_lo, dl_hi, z_lo, z_hi, denom, dL_grid_shape = res
+
+#         dz = (z_hi - z_lo)
+
+#         # dz/ddL = dz/denom
+#         g_dL = g_z * dz / denom
+
+#         # grads wrt knot positions (matches your NumPy/PT derivation)
+#         denom2 = denom * denom
+#         g_dl_lo = g_z * dz * (dL - dl_hi) / denom2
+#         g_dl_hi = g_z * dz * (dl_lo - dL) / denom2
+
+#         g_dL_grid = jnp.zeros(dL_grid_shape, dtype=g_z.dtype)
+#         g_dL_grid = g_dL_grid.at[idx - 1].add(g_dl_lo)
+#         g_dL_grid = g_dL_grid.at[idx].add(g_dl_hi)
+
+#         # grads for (dL, theta5, zgrid, dL_grid, x01, w01)
+#         return (g_dL, None, None, g_dL_grid, None, None)
+
+#     z_from_dL_grid.defvjp(fwd, bwd)
+#     return z_from_dL_grid
+
+
+
+
 def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
     """
-    Match PyTensor 'standard' atinterp semantics:
+    EXACT PyTensor 'standard' atinterp semantics, but for BOTH:
+      (A) inverse map  dL -> z   (xp=dL_grid, fp=zgrid)
+      (B) forward map  z  -> f(z) (xp=zgrid, fp=fp_grid) used later for dc/log_ddL_dz
 
-      - forward: piecewise-linear interpolation with idx clipped
-                (=> extrapolates outside grid, does NOT clamp x)
-      - backward: VJP of the same piecewise-linear map wrt:
-            * dL (query)
-            * dL_grid (knot locations)
-        with denom = max(dl_hi - dl_lo, eps) (NO 'safe' mask, NO in_range mask)
+    IMPORTANT:
+      - This function keeps the SAME signature you already use:
+            z_from_dL(dL, theta5, zgrid, dL_grid, x01, w01) -> z
+      - Additionally, it attaches a helper:
+            z_from_dL.interp_pt(x, xp, fp) -> y
+        which you should use instead of (_interp_prepare_jax/_interp_apply_jax).
 
-    This is the closest JAX analogue to:
-        idx = stop_grad(clip(searchsorted(xs,x),1,n-1))
-        denom = max(xh-xl, eps)
-        y = (1-r)*yl + r*yh
+    PyTensor semantics matched:
+      idx = stop_grad(clip(searchsorted(xp, x, side), 1, n-1))
+      denom = max(xh-xl, eps)
+      r = (x-xl)/denom
+      y = (1-r)*yl + r*yh
+
+    Gradients:
+      - No gradient through the discrete interval choice (searchsorted / idx)
+      - Piecewise-linear gradients inside the chosen interval
+      - For inverse: gradients w.r.t. dL (query) and dL_grid (knot positions)
+      - For forward interp: gradients w.r.t. x (query) and fp (values);
+        (xp gradients are returned as None, matching the usual PyTensor case where xp is constant)
     """
-
     side = str(side)
 
-    def _forward(dL, dL_grid, zgrid):
+    # ------------------------------------------------------------------
+    # Generic forward interpolation with PyTensor semantics:
+    #   y = interp(x; xp, fp), with idx clipped (no clamp of x)
+    #   and stop-grad through idx.
+    # ------------------------------------------------------------------
+    def _interp_forward(x, xp, fp):
+        n = xp.shape[0]
+        idx = jnp.searchsorted(xp, x, side=side)
+        idx = jnp.clip(idx, 1, n - 1)
+
+        x0 = xp[idx - 1]
+        x1 = xp[idx]
+        y0 = fp[idx - 1]
+        y1 = fp[idx]
+
+        denom = jnp.maximum(x1 - x0, eps)
+        r = (x - x0) / denom
+        y = (1.0 - r) * y0 + r * y1
+
+        # cache; idx is treated as constant in backward (PyTensor stop_grad)
+        return y, (idx, x, x0, x1, y0, y1, denom, r, fp.shape)
+
+    @jax.custom_vjp
+    def interp_pt(x, xp, fp):
+        y, _ = _interp_forward(x, xp, fp)
+        return y
+
+    def interp_pt_fwd(x, xp, fp):
+        y, res = _interp_forward(x, xp, fp)
+        return y, res
+
+    def interp_pt_bwd(res, g):
+        idx, x, x0, x1, y0, y1, denom, r, fp_shape = res
+
+        dy = (y1 - y0)
+
+        # dy/dx = (y1 - y0)/denom
+        gx = g * dy / denom
+
+        # grads wrt fp (values at knots)
+        g_y0 = g * (1.0 - r)
+        g_y1 = g * r
+
+        gfp = jnp.zeros(fp_shape, dtype=g.dtype)
+        gfp = gfp.at[idx - 1].add(g_y0)
+        gfp = gfp.at[idx].add(g_y1)
+
+        # No grad wrt xp (interval locations) for forward interp helper
+        gxp = None
+        return (gx, gxp, gfp)
+
+    interp_pt.defvjp(interp_pt_fwd, interp_pt_bwd)
+
+    # ------------------------------------------------------------------
+    # Your inverse: z = interp(dL; xp=dL_grid, fp=zgrid)
+    # BUT with gradient also wrt dL_grid (knot positions) because dL_grid(theta).
+    # This matches your existing implementation, with PyTensor semantics.
+    # ------------------------------------------------------------------
+    def _inv_forward(dL, dL_grid, zgrid):
         n = dL_grid.shape[0]
         idx = jnp.searchsorted(dL_grid, dL, side=side)
         idx = jnp.clip(idx, 1, n - 1)
@@ -1870,19 +2018,18 @@ def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
         r = (dL - dl_lo) / denom
         z = (1.0 - r) * z_lo + r * z_hi
 
-        # cache everything needed for backward
         return z, (idx, dL, dl_lo, dl_hi, z_lo, z_hi, denom, dL_grid.shape)
 
     @jax.custom_vjp
-    def z_from_dL_grid(dL, theta5, zgrid, dL_grid, x01, w01):
-        z, _ = _forward(dL, dL_grid, zgrid)
+    def z_from_dL(dL, theta5, zgrid, dL_grid, x01, w01):
+        z, _ = _inv_forward(dL, dL_grid, zgrid)
         return z
 
-    def fwd(dL, theta5, zgrid, dL_grid, x01, w01):
-        z, res = _forward(dL, dL_grid, zgrid)
+    def z_from_dL_fwd(dL, theta5, zgrid, dL_grid, x01, w01):
+        z, res = _inv_forward(dL, dL_grid, zgrid)
         return z, res
 
-    def bwd(res, g_z):
+    def z_from_dL_bwd(res, g_z):
         idx, dL, dl_lo, dl_hi, z_lo, z_hi, denom, dL_grid_shape = res
 
         dz = (z_hi - z_lo)
@@ -1890,7 +2037,7 @@ def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
         # dz/ddL = dz/denom
         g_dL = g_z * dz / denom
 
-        # grads wrt knot positions (matches your NumPy/PT derivation)
+        # grads wrt knot positions (dl_lo, dl_hi)
         denom2 = denom * denom
         g_dl_lo = g_z * dz * (dL - dl_hi) / denom2
         g_dl_hi = g_z * dz * (dl_lo - dL) / denom2
@@ -1902,5 +2049,11 @@ def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
         # grads for (dL, theta5, zgrid, dL_grid, x01, w01)
         return (g_dL, None, None, g_dL_grid, None, None)
 
-    z_from_dL_grid.defvjp(fwd, bwd)
-    return z_from_dL_grid
+    z_from_dL.defvjp(z_from_dL_fwd, z_from_dL_bwd)
+
+    # expose helper so you can do:
+    #   dc_evt = z_from_dL.interp_pt(z_evt, zgrid, dc_grid)
+    #   log_dd_evt = z_from_dL.interp_pt(z_evt, zgrid, log_ddL_dz_grid)
+    z_from_dL.interp_pt = interp_pt
+
+    return z_from_dL
