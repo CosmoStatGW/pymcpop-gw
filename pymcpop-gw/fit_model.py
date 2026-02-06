@@ -27,6 +27,15 @@ os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
 from jax.experimental.compilation_cache import compilation_cache as cc
 cc.set_cache_dir("/tmp/jax_cache")
 
+
+import jaxify_ops
+
+from pytensor.link.jax.dispatch.basic import jax_funcify
+from pytensor_tools_new import PopAndSelJAXOp  # same import path as in jaxify_ops
+
+assert PopAndSelJAXOp in jax_funcify.registry, "jax_funcify registration did not stick"
+print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
+
 import argparse
 import json
 import sys
@@ -1213,6 +1222,8 @@ def main():
                     "progressbar": True,
                     "trace": backend,
                     #"chain_method":'parallel'
+                
+                
                 }
 
             if MAP_init:
@@ -1309,9 +1320,12 @@ def main():
                     },
                 })
             else:
-                ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
-                sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
 
+                
+                ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
+                sampler_kwargs["step"] = pm.NUTS(target_accept=ta, max_treedepth=FLAGS.max_tree_depth)
+
+    
 
 
 
@@ -1384,9 +1398,14 @@ def main():
                     print(f"[MEM] peak RSS: {peak_gb:.2f} GB")
 
             else:
+
+
+    
                 t0 = time.time()
                 log_mem("before pm.sample main")
-                
+
+
+                sampler_kwargs["progressbar"] =False
                 
                 
                 trace = pm.sample(nuts_sampler=FLAGS.sampler, 

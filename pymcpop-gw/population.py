@@ -130,11 +130,7 @@ def log_p_pop(
 
             # Use fast JAX custom-VJP interp when running under JAX arrays,
             # otherwise fall back to backend-agnostic interp used in sel_bias.
-            use_jax = (
-                _JAX_INTERP_PT is not None
-                and jnp is not None
-                and (type(m1_grid).__module__.startswith("jax") or type(m1s).__module__.startswith("jax"))
-            )
+            use_jax = jnp is not None
 
             ok = (
                     (m1s >= m1_grid[0]) & (m1s <= m1_grid[-1]) &
