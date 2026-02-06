@@ -9,13 +9,13 @@ import pytensor_utils_old as putils
 
 from pytensor_utils import atinterp
 
-from pytensor_tools_new import LogPPopJAXOp, SelectionBiasJAXOp, CosmoFromDLJAXOp, PopAndSelJAXOp, cosmo_from_dL_grids
+from pytensor_tools_new import PopAndSelJAXOp
 import cosmology as cosmo
 from backends import NPBackend
 import constants
 
 import pymc_models_or as pmmor
-
+import mass_models as mm
 
 
 import pytensor.tensor as at
@@ -1675,78 +1675,82 @@ def make_model(  priors,
             elif mass_model=='DPLDP':
 
                     
-                eps_m = 1e-5
-                n2 = 500
-                n2_taper = 100
+                # eps_m = 1e-5
+                # n2 = 500
+                # n2_taper = 100
                 
-                m2_lo = m2_low_ + eps_m
-                m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
+                # m2_lo = m2_low_ + eps_m
+                # m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
                 
-                u1 = at.linspace(0.0, 1.0, n2_taper)
+                # u1 = at.linspace(0.0, 1.0, n2_taper)
                 
-                eps_t = 1e-4
-                t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                # eps_t = 1e-4
+                # t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                # t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                # seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
                 
-                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
-                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                # u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
+                # seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
                 
-                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
+                # m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
 
 
             
-                m1_grid_ = atools.build_m1_grid_DPLDP(
-                                            alpha1=alpha1_,
-                                            alpha2=alpha2_,
-                                            mb=mb_,
-                                            mu1=mu1_,
-                                            sigma1=sigma1_,
-                                            mu2=mu2_,
-                                            sigma2=sigma2_,
-                                            m1_low=m1_low_,
-                                            m_high=m_high_,
-                                            delta_m1=delta_m1_,
-                                            n_peak=interp_mass,      # or smaller if you want
-                                            n_tail_low=interp_mass//5,
-                                            n_tail_high=interp_mass//5,
-                                            #k_sigma=4.0,
-                                            n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
-                                            n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
-                                        )
+                # m1_grid_ = atools.build_m1_grid_DPLDP(
+                #                             alpha1=alpha1_,
+                #                             alpha2=alpha2_,
+                #                             mb=mb_,
+                #                             mu1=mu1_,
+                #                             sigma1=sigma1_,
+                #                             mu2=mu2_,
+                #                             sigma2=sigma2_,
+                #                             m1_low=m1_low_,
+                #                             m_high=m_high_,
+                #                             delta_m1=delta_m1_,
+                #                             n_peak=interp_mass,      # or smaller if you want
+                #                             n_tail_low=interp_mass//5,
+                #                             n_tail_high=interp_mass//5,
+                #                             #k_sigma=4.0,
+                #                             n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
+                #                             n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
+                #                         )
                 
-                lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
+                # lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
 
 
-                lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
+                # lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
 
 
-                # CDF over m2
-                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
-                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
+                # # CDF over m2
+                # cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
+                # cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
                 
-                # CDF lives on m2_grid_[1:]
-                m2_cdf_grid = m2_grid_[1:]
-                logcdf_m2   = at.log(cdf_m2)
+                # # CDF lives on m2_grid_[1:]
+                # m2_cdf_grid = m2_grid_[1:]
+                # logcdf_m2   = at.log(cdf_m2)
                 
-                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
-                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                # # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                # mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
-                # NON-UNIFORM interpolation (must match your test)
-                lC_of_m1 = atools.interp_1d_nonuniform_numpyop(mcap, m2_cdf_grid, logcdf_m2)
-                #atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
+                # # NON-UNIFORM interpolation (must match your test)
+                # lC_of_m1 = atools.interp_1d_nonuniform_numpyop(mcap, m2_cdf_grid, logcdf_m2)
+                # #atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
                 
-                # Normalization for m1
-                #p1 = at.exp(lp_m1_grid)
-                #ln = at.log(atools.attrapzvec(p1, m1_grid_))
-                lp_max = at.max(lp_m1_grid)
-                p_shift = at.exp(lp_m1_grid - lp_max)
-                I = atools.attrapzvec(p_shift, m1_grid_)
-                I = at.clip(I, 1e-300, np.inf)
-                ln = at.log(I) + lp_max
+                # # Normalization for m1
+                # #p1 = at.exp(lp_m1_grid)
+                # #ln = at.log(atools.attrapzvec(p1, m1_grid_))
+                # lp_max = at.max(lp_m1_grid)
+                # p_shift = at.exp(lp_m1_grid - lp_max)
+                # I = atools.attrapzvec(p_shift, m1_grid_)
+                # I = at.clip(I, 1e-300, np.inf)
+                # ln = at.log(I) + lp_max
                 
-                # Pack for later use
-                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                # # Pack for later use
+                # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+
+                m1_grid_ = mm.build_m1_grid_DPLDP_np(m1_low=3.0, m1_high=300.0, n_total=interp_mass )
+                m2_grid_ = mm.build_m2_grid_np(m2_low=3.0, delta_m2_taper=8.0)
+            
                 interp_grids_mass = [m1_grid_, m2_grid_]
 
             elif mass_model=='DPLDP-z':
@@ -2288,7 +2292,7 @@ def make_model(  priors,
                 has_m2_break=has_m2_break,
                 norm_gauss=norm_gauss,
                 param=param,
-                interp_vals_mass=interp_vals_mass,
+               #interp_vals_mass=interp_vals_mass,
                 interp_grids_mass=interp_grids_mass,
                 is_observed=is_observed,
                 z_grid=zgrid_np,                 # ok; or None depending how you use it
@@ -2337,6 +2341,9 @@ def make_model(  priors,
 
                     theta5 = Lambda_[:5]
                     H0, Om, w0, Xi0, nXi0 = theta5
+
+                    print("H0, Om, w0, Xi0, n")
+                    print([i.eval() for i in theta5])
                     
                     dc_grid_pt = atools.dcfun_at(zgrid_, H0, Om, w0, )  # or your existing pt version
                     dL_grid_pt = atools.dLfun_at(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_pt, param=param, )
@@ -2372,7 +2379,8 @@ def make_model(  priors,
                     
                     print("\nDEBUG GRAD LOG P POP (max abs diff)")
                     for name, go, gs in zip(["m1det", "m2det", "d", "Lambda"], g_op, g_std):
-                        print(name, go.eval(), gs.eval())
+                        if name=="Lambda":
+                            print(name, go.eval(), gs.eval())
                         print(name, pt.max(pt.abs(gs - go)).eval())
                     print()
 
@@ -2588,6 +2596,19 @@ def make_model(  priors,
                         print(name, go.eval(), gs.eval())
                         print(name, pt.max(pt.abs(gs - go)).eval())
                     print()
+
+                    goL = g_op[0].eval()
+                    gsL = g_std[0].eval()
+                    diff = np.abs(gsL - goL)
+                    
+                    idx = np.where(diff > 1e-6)[0]   # choose threshold
+                    print("bad idx:", idx.tolist())
+                    print("diff at idx:", diff[idx])
+                    print("go at idx:", goL[idx])
+                    print("gs at idx:", gsL[idx])
+                    
+                    print("max idx:", int(diff.argmax()), "max diff:", diff.max())
+                    
                     
                 if not marginal_R0:
                     # This is really the number of expected events 
@@ -2682,4 +2703,3 @@ def make_model(  priors,
             
 
     return model
-

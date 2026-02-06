@@ -7,12 +7,15 @@ from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_b
 from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
 from pytensor_utils import logdiffexp as logdiffexp_bk
 from pytensor_utils import logsumexp as _logsumexp
+from jax_utils import _searchsorted_bk, _interp_prepare_bk, _interp_apply_bk
 
-import numpy as np
+import jax.numpy as jnp
+
 try:
-    import jax.numpy as jnp
+    from jax_utils import make_interp_pt_cached_dy as _make_interp_pt_cached_dy
+    _JAX_INTERP_PT = _make_interp_pt_cached_dy(eps=1e-30, side="right")
 except Exception:
-    jnp = None
+    _JAX_INTERP_PT = None
 
 
 def log_p_pop(
@@ -108,10 +111,41 @@ def log_p_pop(
             x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
             x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21
         )
-
+        
         if interp_vals_mass is not None:
-            raise NotImplementedError("DPLDP mass interpolation path not implemented in this rewrite.")
+            #print("Log p_pop using interp_vals_mass")
+            # Expected packing (matches your PyMC construction):
+            # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1_grid, ln_m1]
+            # interp_grids_mass = [m1_grid,  m2_grid]
+            lp_m1_grid, lp_m2_grid, lC_of_m1_grid, ln_m1 = interp_vals_mass
+            m1_grid, m2_grid = interp_grids_mass
+
+            # Use fast JAX custom-VJP interp when running under JAX arrays,
+            # otherwise fall back to backend-agnostic interp used in sel_bias.
+            use_jax = (
+                _JAX_INTERP_PT is not None
+                and jnp is not None
+                and (type(m1_grid).__module__.startswith("jax") or type(m1s).__module__.startswith("jax"))
+            )
+
+            if use_jax:
+                lpm1 = _JAX_INTERP_PT(m1s, m1_grid, lp_m1_grid)
+                lpm2 = _JAX_INTERP_PT(m2s, m2_grid, lp_m2_grid)
+                lC   = _JAX_INTERP_PT(m1s, m1_grid, lC_of_m1_grid)
+            else:
+                i1, t1 = _interp_prepare_bk(bk, m1s, m1_grid, eps=1e-30, side="right")
+                lpm1 = _interp_apply_bk(bk, i1, t1, lp_m1_grid)
+
+                i2, t2 = _interp_prepare_bk(bk, m2s, m2_grid, eps=1e-30, side="right")
+                lpm2 = _interp_apply_bk(bk, i2, t2, lp_m2_grid)
+
+                i3, t3 = _interp_prepare_bk(bk, m1s, m1_grid, eps=1e-30, side="right")
+                lC = _interp_apply_bk(bk, i3, t3, lC_of_m1_grid)
+
+            lpmass = lpm1 + lpm2 - lC - ln_m1
+
         else:
+            #print("Log p_pop using logpdf_DPLDP_bk")
             lpmass = logpdf_DPLDP_bk(
                 bk,
                 (m1s, m2s),
@@ -146,26 +180,8 @@ def log_p_pop(
     return lp
 
 
-def _searchsorted_bk(bk, xp, x, side="right"):
-    # Selection Op is JAX; still keep a safe fallback
-    if jnp is not None and (type(xp).__module__.startswith("jax") or type(x).__module__.startswith("jax")):
-        return jnp.searchsorted(xp, x, side=side)
-    # numpy fallback (mostly for tests)
-    return np.searchsorted(np.asarray(xp), np.asarray(x), side=side)
 
-def _interp_prepare_bk(bk, x, xp, eps=1e-12, side="right"):
-    idx = _searchsorted_bk(bk, xp, x, side=side)
-    idx = bk.clip(idx, 1, xp.shape[0] - 1)
-    x0 = xp[idx - 1]
-    x1 = xp[idx]
-    denom = bk.maximum(x1 - x0, eps)
-    t = (x - x0) / denom
-    return idx, t
 
-def _interp_apply_bk(bk, idx, t, fp):
-    y0 = fp[idx - 1]
-    y1 = fp[idx]
-    return (1.0 - t) * y0 + t * y1
 
 
 def sel_bias_with_uncertainty(

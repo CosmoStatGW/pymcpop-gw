@@ -9,7 +9,7 @@ import pytensor_utils_old as putils
 
 from pytensor_utils import atinterp
 
-from pytensor_tools_new import LogPPopJAXOp, SelectionBiasJAXOp, CosmoFromDLJAXOp, cosmo_from_dL_grids
+#from pytensor_tools_new import LogPPopJAXOp, SelectionBiasJAXOp, CosmoFromDLJAXOp, cosmo_from_dL_grids
 import cosmology as cosmo
 from backends import NPBackend
 import constants
