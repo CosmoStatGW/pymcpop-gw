@@ -5,9 +5,21 @@ import jax.numpy as jnp
 
 import jax_utils
 import jax
+from pytensor_utils import atinterp
+
 
 
 def make_z_from_dL_interp(bk, *, eps=1e-12, side="right", param="vanilla"):
+    
+
+    def z_from_dL(dL, theta5, zgrid, dL_grid, x01, w01):
+        return atinterp(bk, dL, dL_grid, zgrid, eps=eps, side=side)
+
+    return z_from_dL
+
+
+
+def make_z_from_dL_interp_long(bk, *, eps=1e-12, side="right", param="vanilla"):
     """
     JAX-only inverse map dL -> z that matches your PyTensor 'standard' atinterp semantics.
 

@@ -8,13 +8,20 @@ from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
 from pytensor_utils import logdiffexp as logdiffexp_bk
 from pytensor_utils import logsumexp as _logsumexp
 from jax_utils import _searchsorted_bk, _interp_prepare_bk, _interp_apply_bk
+from pytensor_utils import atinterp
 
 import jax.numpy as jnp
 
 try:
-    from jax_utils import make_interp_pt_cached_dy as _make_interp_pt_cached_dy
-    _JAX_INTERP_PT = _make_interp_pt_cached_dy(eps=1e-30, side="right")
-except Exception:
+    from jax_utils import make_interp_pt_like_multiY, make_interp_pt_like #make_interp_pt_cached_dy as _make_interp_pt_cached_dy
+    _JAX_INTERP_PT = make_interp_pt_like(eps=1e-12, side="right")
+    _JAX_INTERP_PT_MULT = make_interp_pt_like_multiY(eps=1e-12, side="right")
+    
+    import jax
+    
+except Exception as e:
+    print(e)
+    raise ValueError()
     _JAX_INTERP_PT = None
 
 
@@ -120,6 +127,7 @@ def log_p_pop(
             lp_m1_grid, lp_m2_grid, lC_of_m1_grid, ln_m1 = interp_vals_mass
             m1_grid, m2_grid = interp_grids_mass
 
+
             # Use fast JAX custom-VJP interp when running under JAX arrays,
             # otherwise fall back to backend-agnostic interp used in sel_bias.
             use_jax = (
@@ -128,11 +136,37 @@ def log_p_pop(
                 and (type(m1_grid).__module__.startswith("jax") or type(m1s).__module__.startswith("jax"))
             )
 
+            ok = (
+                    (m1s >= m1_grid[0]) & (m1s <= m1_grid[-1]) &
+                    (m2s >= m2_grid[0]) & (m2s <= m2_grid[-1])
+                )
+            # avoid C(m1)=0 zone (logC=-inf -> +inf in joint)
+            ok = ok & (m1s > m2_grid[0])
+
+
             if use_jax:
-                lpm1 = _JAX_INTERP_PT(m1s, m1_grid, lp_m1_grid)
-                lpm2 = _JAX_INTERP_PT(m2s, m2_grid, lp_m2_grid)
-                lC   = _JAX_INTERP_PT(m1s, m1_grid, lC_of_m1_grid)
+
+                 
+                lpm1 = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lp_m1_grid)
+                lpm2 = atinterp(bk, m2s, jax.lax.stop_gradient(m2_grid), lp_m2_grid)
+                lC   = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lC_of_m1_grid)
+
+                # print("log p pop debug")
+                # interp = make_interp_pt_like(eps=1e-12, side="right")
+                # interpK = make_interp_pt_like_multiY(eps=1e-12, side="right")
+
+                # # 1D table should have zero grad w.r.t xg
+                # f = lambda xg: jnp.sum(interp(m1s, xg, lp_m1_grid))
+                # print(jnp.max(jnp.abs(jax.grad(f)(m1_grid))))  # should be 0
+                
+                # # MultiY table should also have zero grad w.r.t xg
+                # Y = jnp.stack([lp_m1_grid, lC_of_m1_grid], axis=0)  # (K,N)
+                # g = lambda xg: jnp.sum(interpK(m1s, xg, Y))
+                # print(jnp.max(jnp.abs(jax.grad(g)(m1_grid)))) 
+
+    
             else:
+                raise ValueError()
                 i1, t1 = _interp_prepare_bk(bk, m1s, m1_grid, eps=1e-30, side="right")
                 lpm1 = _interp_apply_bk(bk, i1, t1, lp_m1_grid)
 
@@ -142,7 +176,8 @@ def log_p_pop(
                 i3, t3 = _interp_prepare_bk(bk, m1s, m1_grid, eps=1e-30, side="right")
                 lC = _interp_apply_bk(bk, i3, t3, lC_of_m1_grid)
 
-            lpmass = lpm1 + lpm2 - lC - ln_m1
+            lpdf = lpm1 + lpm2 - lC - ln_m1
+            lpmass =  bk.where(ok, lpdf, -1e30)
 
         else:
             #print("Log p_pop using logpdf_DPLDP_bk")
@@ -198,7 +233,7 @@ def sel_bias_with_uncertainty(
     Lambda,
     Ndraw,
     *,
-    zgrid,
+    #zgrid,
     rate_model,
     mass_model,
     spin_model,
@@ -215,7 +250,7 @@ def sel_bias_with_uncertainty(
     subtract_log_p_incl=True,
     eps_interp=1e-12,
     side_interp="right",
-    # -------- NEW optional precomputed cosmology at injections --------
+    # -------- optional precomputed cosmology at injections --------
     zinj=None,
     dcinj=None,
     log_ddL_dz_inj=None,
@@ -230,11 +265,11 @@ def sel_bias_with_uncertainty(
     if zinj is None:
         # z(dL): xp=dL_grid, fp=zgrid
         i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid, eps=eps_interp, side=side_interp)
-        zinj = _interp_apply_bk(bk, i_dL, t_dL, zgrid)
+        zinj = _interp_apply_bk(bk, i_dL, t_dL, z_grid)
 
     if (dcinj is None) or (log_ddL_dz_inj is None):
         # dc(z), log_ddL_dz(z): xp=zgrid, fp=grids
-        i_z, t_z = _interp_prepare_bk(bk, zinj, zgrid, eps=eps_interp, side=side_interp)
+        i_z, t_z = _interp_prepare_bk(bk, zinj, z_grid, eps=eps_interp, side=side_interp)
         if dcinj is None:
             dcinj = _interp_apply_bk(bk, i_z, t_z, dc_grid)
         if log_ddL_dz_inj is None:

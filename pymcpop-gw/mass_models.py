@@ -4,6 +4,7 @@ import numpy as np
 from pytensor_utils import attrapzvec, atcumtrapz, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform
 from constants import _PI as PI
 from constants import max_m, _tgrid_np
+from pytensor_utils import atinterp
 
 try:
     import jax.numpy as jnp
@@ -11,11 +12,30 @@ except Exception:
     jnp = None
     
 try:
-    from jax_utils import make_interp_pt_cached_dy as _make_interp_pt_cached_dy
-    _JAX_INTERP_PT = _make_interp_pt_cached_dy(eps=1e-30, side="right")
-except Exception:
-    _JAX_INTERP_PT = None
+    #from jax_utils import make_interp_pt_like #make_interp_pt_cached_dy as _make_interp_pt_cached_dy
+    #_JAX_INTERP_PT = make_interp_pt_like(eps=1e-12, side="right")
+    #_JAX_INTERP_PT_MULT = make_interp_pt_like_multiY(eps=1e-12, side="right")
+    import jax
+except Exception as e:
+    print(e)
+    raise ValueError()
+    #_JAX_INTERP_PT = None
 
+
+
+def grid_diagnostics(name, x):
+    import numpy as np
+    x = np.asarray(x, dtype=np.float64)
+    dx = np.diff(x)
+    print(f"{name}: N={x.size}")
+    print(f"  min dx = {dx.min():.3e}")
+    print(f"  1% dx  = {np.quantile(dx, 0.01):.3e}")
+    print(f"  median = {np.median(dx):.3e}")
+    print(f"  max dx = {dx.max():.3e}")
+    print(f"  any non-increasing? {np.any(dx <= 0)}")
+    # near-duplicates relative to eps
+    print(f"  dx < 1e-12: {np.sum(dx < 1e-12)}")
+    print(f"  dx < 1e-10: {np.sum(dx < 1e-10)}")
     
 # ---------------------------------------------------------------------
 # Gaussians
@@ -648,25 +668,26 @@ def precompute_DPLDP_mass_interp(
     # Evaluate log C(m1) on m1_grid by interpolating logcdf(m2) at m2=m1
     mcap = bk.clip(m1_grid, m2_cdf_grid[0], m2_cdf_grid[-1])
 
-    # use_jax = (
-    #     _JAX_INTERP_PT is not None
-    #     and jnp is not None
-    #     and type(mcap).__module__.startswith("jax")
-    # )
+    use_jax = (
+        #_JAX_INTERP_PT is not None
+         jnp is not None
+        and type(mcap).__module__.startswith("jax")
+    )
 
-    #if use_jax:
-    lC_of_m1 = _JAX_INTERP_PT(mcap, m2_cdf_grid, logcdf_m2)
-    # else:
-    #     # backend-agnostic fallback (same semantics as your sel_bias interpolation helpers)
-    #     idx = np.searchsorted(np.asarray(m2_cdf_grid), np.asarray(mcap), side=side_interp)
-    #     idx = np.clip(idx, 1, np.asarray(m2_cdf_grid).shape[0] - 1)
-    #     x0 = m2_cdf_grid[idx - 1]
-    #     x1 = m2_cdf_grid[idx]
-    #     y0 = logcdf_m2[idx - 1]
-    #     y1 = logcdf_m2[idx]
-    #     denom = bk.maximum(x1 - x0, eps_interp)
-    #     r = (mcap - x0) / denom
-    #     lC_of_m1 = (1.0 - r) * y0 + r * y1
+    if use_jax:
+        lC_of_m1 = atinterp(bk, mcap, jax.lax.stop_gradient(m2_cdf_grid), logcdf_m2)
+    else:
+        raise ValueError()
+        # backend-agnostic fallback (same semantics as your sel_bias interpolation helpers)
+        idx = np.searchsorted(np.asarray(m2_cdf_grid), np.asarray(mcap), side=side_interp)
+        idx = np.clip(idx, 1, np.asarray(m2_cdf_grid).shape[0] - 1)
+        x0 = m2_cdf_grid[idx - 1]
+        x1 = m2_cdf_grid[idx]
+        y0 = logcdf_m2[idx - 1]
+        y1 = logcdf_m2[idx]
+        denom = bk.maximum(x1 - x0, eps_interp)
+        r = (mcap - x0) / denom
+        lC_of_m1 = (1.0 - r) * y0 + r * y1
 
     # ---- normalization ln = log ∫ exp(lp_m1) dm1 ----
     lp_max = bk.max(lp_m1_grid)
@@ -679,212 +700,520 @@ def precompute_DPLDP_mass_interp(
 
 
 
-def build_m1_grid_DPLDP_np(
+def build_m1_grid_DPLDP_bk(
+    bk,
+    # --- hyperparameters (defaults are plausible; override in your model) ---
+    alpha1=2.0, alpha2=4.0, mb=35.0,
+    mu1=10.0, sigma1=3.0, mu2=35.0, sigma2=6.0,
+    m1_low=3.0, m_high=300.0,
+    delta_m1=9.0,
+    # --- resolution controls ---
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss1=0.2,
+    frac_gauss2=0.2,
+    k_sigma_gauss=3.0,
+    k_sigma_band=4.0,
+    n_taper=10,
+    n_taper_eff=200,  # kept for API parity (not used here)
+    # --- numerics / validation ---
+    eps=1e-4,
+    ramp_step=1e-6,
+    validate=False,   # only validates when result is a NumPy array
+):
+    """
+    Backend-agnostic version of your PyTensor build_m1_grid_DPLDP.
+
+    Same structure/semantics:
+      - stop_grad through grid geometry
+      - fixed-length tails
+      - gaussian windows with fallbacks if degenerate
+      - combine -> clip -> sort -> tiny ramp for strict monotonicity
+
+    Notes:
+      - alpha1/alpha2 are accepted for signature parity but not used in geometry.
+      - validate=True only checks if the output is a NumPy ndarray.
+    """
+
+    # ---- detach hyperparameters for grid geometry (no grad through geometry) ----
+    mb_sg       = bk.stop_grad(mb)
+    mu1_sg      = bk.stop_grad(mu1)
+    sigma1_sg   = bk.stop_grad(sigma1)
+    mu2_sg      = bk.stop_grad(mu2)
+    sigma2_sg   = bk.stop_grad(sigma2)
+    m1_low_sg   = bk.stop_grad(m1_low)
+    m_high_sg   = bk.stop_grad(m_high)
+    delta_m1_sg = bk.stop_grad(delta_m1)
+
+    # gentle boundary offset (avoid exact endpoints)
+    xmin = m1_low_sg + eps
+    xmax = m_high_sg - eps
+    span = bk.maximum(xmax - xmin, 1e-6)
+
+    # ------------------------------------------------------------
+    # 0) Taper grid: clustered near xmin
+    # ------------------------------------------------------------
+    taper_hi = bk.clip(xmin + bk.maximum(delta_m1_sg, 1e-6), xmin, xmax)
+    taper_w  = bk.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 1:
+        eps_t = 1e-4
+        u = bk.linspace(0.0, 1.0, int(n_taper))  # [0,1]
+        t = bk.exp(bk.log(eps_t) * (1.0 - u))    # eps_t -> 1
+        t = (t - eps_t) / (1.0 - eps_t)          # -> [0,1]
+        m1_taper = xmin + taper_w * t
+    else:
+        m1_taper = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 1) Gaussian windows (clip to support)
+    # ------------------------------------------------------------
+    k_g = k_sigma_gauss
+    k_b = k_sigma_band  # kept for parity; band envelope uses raw mins/maxs below
+
+    g1_min_raw = mu1_sg - k_g * bk.abs(sigma1_sg)
+    g1_max_raw = mu1_sg + k_g * bk.abs(sigma1_sg)
+    g2_min_raw = mu2_sg - k_g * bk.abs(sigma2_sg)
+    g2_max_raw = mu2_sg + k_g * bk.abs(sigma2_sg)
+
+    g1_min = bk.clip(g1_min_raw, xmin, xmax)
+    g1_max = bk.clip(g1_max_raw, xmin, xmax)
+    g2_min = bk.clip(g2_min_raw, xmin, xmax)
+    g2_max = bk.clip(g2_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+
+    has_g1 = bk.gt(g1_width, tiny)
+    has_g2 = bk.gt(g2_width, tiny)
+
+    # ------------------------------------------------------------
+    # 2) Envelope "interesting band" over peaks + mb
+    # ------------------------------------------------------------
+    peak_min_raw = bk.minimum(g1_min_raw, g2_min_raw)
+    peak_min_raw = bk.minimum(peak_min_raw, mb_sg)
+
+    peak_max_raw = bk.maximum(g1_max_raw, g2_max_raw)
+    peak_max_raw = bk.maximum(peak_max_raw, mb_sg)
+
+    band_min = bk.clip(peak_min_raw, xmin, xmax)
+    band_max = bk.clip(peak_max_raw, xmin, xmax)
+
+    band_width = bk.maximum(band_max - band_min, tiny)
+
+    # ------------------------------------------------------------
+    # 3) Split n_peak between Gaussians + mid band (Python ints)
+    # ------------------------------------------------------------
+    n_g1 = int(n_peak * frac_gauss1)
+    n_g2 = int(n_peak * frac_gauss2)
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak and (n_g1 + n_g2) > 0:
+        scale = n_peak / n_g1 + n_g2
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # ------------------------------------------------------------
+    # 4) Low tail: start AFTER taper, fixed length
+    # ------------------------------------------------------------
+    if n_tail_low > 0:
+        denom_low = n_tail_low + 1
+        t_low = (bk.arange(int(n_tail_low)) + 1.0) / denom_low  # in (0,1)
+
+        low_start = taper_hi
+        low_width = band_min - low_start
+
+        fallback_w = bk.maximum(taper_w / bk.maximum(n_taper, 1), 1e-3)
+
+        tail_good = low_start + low_width * t_low
+        tail_fallback = low_start + fallback_w * t_low
+
+        m1_low_tail = bk.switch(bk.gt(low_width, 0), tail_good, tail_fallback)
+    else:
+        m1_low_tail = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 5) Gaussian 1 segment (fallback if degenerate)
+    # ------------------------------------------------------------
+    if n_g1 > 0:
+        denom_g1 = max(n_g1 - 1, 1)
+        t_g1 = bk.arange(int(n_g1)) / denom_g1
+        m1_g1 = g1_min + g1_width * t_g1
+
+        fallback_width = 1e-8 * span
+        g1_center = 0.5 * (g1_min + g1_max)
+        g1_center = bk.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g1 = g1_center + fallback_width * (t_g1 - 0.5)
+
+        m1_g1 = bk.switch(has_g1, m1_g1, fallback_g1)
+    else:
+        m1_g1 = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 6) Gaussian 2 segment (fallback if degenerate)
+    # ------------------------------------------------------------
+    if n_g2 > 0:
+        denom_g2 = max(n_g2 - 1, 1)
+        t_g2 = bk.arange(int(n_g2)) / denom_g2
+        m1_g2 = g2_min + g2_width * t_g2
+
+        fallback_width = 1e-8 * span
+        g2_center = 0.5 * (g2_min + g2_max)
+        g2_center = bk.clip(g2_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g2 = g2_center + fallback_width * (t_g2 - 0.5)
+
+        m1_g2 = bk.switch(has_g2, m1_g2, fallback_g2)
+    else:
+        m1_g2 = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 7) Mid band segment
+    # ------------------------------------------------------------
+    if n_mid > 0:
+        denom_mid = max(n_mid - 1, 1)
+        t_mid = bk.arange(int(n_mid)) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 8) High tail: endpoint excluded (avoid exact xmax)
+    # ------------------------------------------------------------
+    if n_tail_high > 0:
+        denom_high = max(n_tail_high, 1)  # not (n_tail_high - 1)
+        t_high = bk.arange(int(n_tail_high)) / denom_high  # in [0,1)
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # Combine -> clip -> sort -> tiny ramp
+    # ------------------------------------------------------------
+    m1_grid_raw = bk.concatenate(
+        [m1_taper, m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+
+    m1_grid_clipped = bk.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = bk.sort(m1_grid_clipped)
+
+    ramp = ramp_step * bk.arange(m1_grid_sorted.shape[0], dtype=getattr(m1_grid_sorted, "dtype", None))
+    m1_grid_strict = bk.clip(m1_grid_sorted + ramp, xmin, xmax)
+
+    # Optional validation (only for NumPy arrays)
+    if validate:
+        import numpy as _np
+        if isinstance(m1_grid_strict, _np.ndarray):
+            if not _np.all(_np.isfinite(m1_grid_strict)):
+                raise ValueError("m1_grid contains non-finite values")
+            if _np.any(_np.diff(m1_grid_strict) <= 0):
+                raise ValueError("m1_grid is not strictly increasing")
+            # “unique-ish” check
+            tol = 10.0 * _np.finfo(m1_grid_strict.dtype).eps * max(1.0, _np.max(m1_grid_strict - _np.min(m1_grid_strict)))
+            if _np.any(_np.diff(m1_grid_strict) <= tol):
+                raise ValueError("m1_grid has (near-)duplicates")
+
+    return m1_grid_strict
+
+
+
+def build_m2_grid_bk(
+    bk,
     *,
-    m1_low: float = 3.0,
-    m1_high: float = 350.0,
-    eps: float = 1e-4,
-    dtype=np.float64,
-    # ---- total points control ----
-    n_total: int = 1200,
-    # ---- segment boundaries (tweakable) ----
-    rise_hi: float = 10.0,          # low-mass rise capture (m1_low..~10)
-    peak1_lo: float = 5.0,          # peak around ~10 window
-    peak1_hi: float = 15.0,
-    bg_lo: float = 10.0,            # background PL (10..break)
-    bg_hi: float = 45.0,
-    break_lo: float = 25.0,         # break / peak2 window (~30-40)
-    break_hi: float = 50.0,
-    tail_lo: float = 45.0,          # tail start
-    tail_hi: float | None = None,   # defaults to m1_high
-    # ---- how to split n_total across segments (normalized) ----
-    # You can pass your own weights; they will be normalized.
-    weights: tuple[float, float, float, float, float] = (0.18, 0.20, 0.14, 0.28, 0.20),
-    # ---- spacing controls ----
-    rise_cluster: bool = True,
-    rise_eps_t: float = 1e-4,       # smaller => more clustering near m1_low
-    tail_cluster: bool = True,
-    tail_eps_t: float = 2e-3,       # smaller => more clustering near tail_lo
-) -> np.ndarray:
+    m2_low=3.0,
+    m2_high=300.0,
+    delta_m2=8.0,
+    # resolution controls
+    n_total=500,
+    n_taper=100,
+    # numerics
+    eps_m=1e-5,
+    eps_t=1e-4,
+    ramp_step=1e-12,
+    validate=False,  # only validates when result is a NumPy array
+):
     """
-    Fixed non-uniform m1 grid with a single knob n_total.
+    Backend-agnostic translation of your PyTensor m2 grid:
 
-    Segments (in order):
-      1) rise:   [m1_low, rise_hi] (optionally clustered near m1_low)
-      2) peak1:  [peak1_lo, peak1_hi]
-      3) bg:     [bg_lo, bg_hi]
-      4) break:  [break_lo, break_hi]
-      5) tail:   [tail_lo, tail_hi] (optionally clustered near tail_lo)
+      m2_lo        = m2_low + eps_m
+      m2_taper_hi  = m2_lo + max(delta_m2, 1e-6)
 
-    n_total is allocated across segments via 'weights' (normalized).
+      seg1: log-ramp clustered near m2_lo over [m2_lo, m2_taper_hi] with n_taper points
+      seg2: linear from m2_taper_hi to m2_high with (n_total - n_taper) points
+
+      grid = concat(seg1[:-1], seg2)
+
+    Guarantees (as in your PT version + tiny ramp):
+      - inside (m2_low, m2_high] up to eps_m shift
+      - non-decreasing then forced strictly increasing with tiny ramp
     """
-    m1_low = float(m1_low)
-    m1_high = float(m1_high)
-    if m1_high <= m1_low:
-        raise ValueError("m1_high must be > m1_low")
 
     n_total = int(n_total)
-    if n_total < 10:
-        raise ValueError("n_total must be >= 10 (practically)")
-
-    xmin = m1_low + float(eps)
-    xmax = m1_high - float(eps)
-    if xmax <= xmin:
-        raise ValueError("m1_high - m1_low too small after eps")
-
-    if tail_hi is None:
-        tail_hi = xmax
-    else:
-        tail_hi = min(float(tail_hi), xmax)
-
-    # ---- allocate point counts ----
-    if len(weights) != 5:
-        raise ValueError("weights must have length 5 (rise, peak1, bg, break, tail)")
-    w = np.asarray(weights, dtype=np.float64)
-    if np.any(w < 0):
-        raise ValueError("weights must be non-negative")
-    s = float(w.sum())
-    if s <= 0:
-        raise ValueError("weights must sum to > 0")
-    w = w / s
-
-    raw = w * n_total
-    n = np.floor(raw).astype(int)
-    # distribute remainder by largest fractional parts
-    rem = n_total - int(n.sum())
-    if rem > 0:
-        frac = raw - np.floor(raw)
-        order = np.argsort(-frac)
-        n[order[:rem]] += 1
-
-    # guarantee at least 2 points in segments that are valid
-    # (we’ll later drop invalid segments automatically)
-    n = np.maximum(n, 2)
-
-    n_rise, n_peak1, n_bg, n_break, n_tail = map(int, n.tolist())
-
-    # ---- helpers ----
-    def _seg(lo, hi):
-        lo = max(float(lo), xmin)
-        hi = min(float(hi), xmax)
-        if hi <= lo:
-            return None
-        return lo, hi
-
-    def _lin(lo, hi, npts):
-        npts = int(npts)
-        if npts <= 0:
-            return np.zeros((0,), dtype=dtype)
-        if npts == 1:
-            return np.array([(lo + hi) * 0.5], dtype=dtype)
-        return np.linspace(lo, hi, npts, dtype=dtype)
-
-    def _log_ramp(lo, hi, npts, eps_t):
-        npts = int(npts)
-        if npts <= 0:
-            return np.zeros((0,), dtype=dtype)
-        if npts == 1:
-            return np.array([(lo + hi) * 0.5], dtype=dtype)
-        u = np.linspace(0.0, 1.0, npts, dtype=dtype)
-        eps_t = float(eps_t)
-        t = np.exp(np.log(eps_t) * (1.0 - u))  # eps_t -> 1
-        t = (t - eps_t) / (1.0 - eps_t)        # -> [0,1]
-        return (lo + (hi - lo) * t).astype(dtype, copy=False)
-
-    # ---- build segments ----
-    segs = []
-
-    s = _seg(xmin, rise_hi)
-    if s is not None:
-        segs.append(_log_ramp(s[0], s[1], n_rise, rise_eps_t) if rise_cluster else _lin(s[0], s[1], n_rise))
-
-    s = _seg(peak1_lo, peak1_hi)
-    if s is not None:
-        segs.append(_lin(s[0], s[1], n_peak1))
-
-    s = _seg(bg_lo, bg_hi)
-    if s is not None:
-        segs.append(_lin(s[0], s[1], n_bg))
-
-    s = _seg(break_lo, break_hi)
-    if s is not None:
-        segs.append(_lin(s[0], s[1], n_break))
-
-    s = _seg(tail_lo, tail_hi)
-    if s is not None:
-        segs.append(_log_ramp(s[0], s[1], n_tail, tail_eps_t) if tail_cluster else _lin(s[0], s[1], n_tail))
-
-    if not segs:
-        raise ValueError("No valid segments after clamping; check boundaries.")
-
-    grid = np.concatenate(segs).astype(dtype, copy=False)
-    grid = np.clip(grid, xmin, xmax)
-    grid = np.sort(grid)
-
-    # ---- deduplicate (tolerance) ----
-    tol = 10.0 * np.finfo(dtype).eps * max(1.0, xmax - xmin)
-    keep = np.ones_like(grid, dtype=bool)
-    keep[1:] = (grid[1:] - grid[:-1]) > tol
-    grid = grid[keep]
-
-    # ---- enforce strict monotonicity (tiny ramp) ----
-    ramp = np.linspace(0.0, 1e-12, grid.size, dtype=dtype)
-    grid = np.clip(grid + ramp, xmin, xmax)
-
-    return grid
-
-
-
-def build_m2_grid_np(
-    *,
-    m2_low: float,
-    m2_high: float = 300.0,
-    eps_m: float = 1e-5,
-    # taper region: [m2_low+eps, m2_low+eps+delta_m2_taper]
-    delta_m2_taper: float = 5.0,
-    n_taper: int = 100,
-    n_total: int = 500,
-    eps_t: float = 1e-4,
-    dtype=np.float64,
-) -> np.ndarray:
-    """
-    Fixed non-uniform m2 grid:
-      - clustered (log-ramp) near m2_low over a taper width delta_m2_taper
-      - then linear out to m2_high
-
-    This mirrors your PyTensor construction but with fixed numeric params.
-    """
+    n_taper = int(n_taper)
     if n_total < 2:
         raise ValueError("n_total must be >= 2")
     if n_taper < 2:
         raise ValueError("n_taper must be >= 2")
     if n_taper >= n_total:
         raise ValueError("n_taper must be < n_total")
-    if delta_m2_taper <= 0:
-        raise ValueError("delta_m2_taper must be > 0")
-    if m2_high <= m2_low:
-        raise ValueError("m2_high must be > m2_low")
 
-    m2_lo = float(m2_low) + float(eps_m)
-    m2_taper_hi = m2_lo + max(float(delta_m2_taper), 1e-6)
+    # detach geometry if m2_low/delta_m2 are symbolic in a backend that supports stop_grad
+    m2_low_sg   = bk.stop_grad(m2_low)
+    delta_m2_sg = bk.stop_grad(delta_m2)
 
-    # segment 1: clustered in [m2_lo, m2_taper_hi]
-    u1 = np.linspace(0.0, 1.0, int(n_taper), dtype=dtype)
-    t = np.exp(np.log(float(eps_t)) * (1.0 - u1))  # eps_t -> 1
-    t = (t - float(eps_t)) / (1.0 - float(eps_t))  # -> [0, 1]
+    m2_lo = m2_low_sg + eps_m
+    m2_taper_hi = m2_lo + bk.maximum(delta_m2_sg, 1e-6)
+
+    m2_taper_hi = bk.minimum(m2_taper_hi, m2_high - eps_m)
+    m2_taper_hi = bk.maximum(m2_taper_hi, m2_lo + 1e-6)
+
+    # seg1: clustered in [m2_lo, m2_taper_hi]
+    u1 = bk.linspace(0.0, 1.0, n_taper)
+    t = bk.exp(bk.log(eps_t) * (1.0 - u1))      # eps_t -> 1
+    t = (t - eps_t) / (1.0 - eps_t)      # -> [0,1]
     seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
 
-    # segment 2: linear in [m2_taper_hi, m2_high]
-    n2 = int(n_total) - int(n_taper)
-    u2 = np.linspace(0.0, 1.0, n2, dtype=dtype)
-    seg2 = m2_taper_hi + (float(m2_high) - m2_taper_hi) * u2
+    # seg2: linear to m2_high
+    n2 = n_total - n_taper
+    u2 = bk.linspace(0.0, 1.0, n2)
+    seg2 = m2_taper_hi + ( m2_high - m2_taper_hi) * u2
 
-    # avoid duplicate at the join
-    grid = np.concatenate([seg1[:-1], seg2]).astype(dtype, copy=False)
+    # concat without duplicating the join point
+    # (backend-agnostic slice: use Python slicing on the tensor)
+    grid = bk.concatenate([seg1[:-1], seg2], axis=0)
 
-    # enforce strictly increasing (tiny ramp)
-    grid = np.maximum.accumulate(grid)
-    ramp = np.linspace(0.0, 1e-12, grid.size, dtype=dtype)
+    # enforce monotonic + strict (tiny ramp)
+    # if your backend has cummax / maximum_accumulate, use it; else rely on ramp only
+    try:
+        grid = bk.maximum_accumulate(grid)
+    except Exception:
+        pass
+
+    ramp = ramp_step * bk.arange(grid.shape[0], dtype=getattr(grid, "dtype", None))
     grid = grid + ramp
 
+    # Optional validation (only for NumPy arrays)
+    if validate:
+        import numpy as _np
+        if isinstance(grid, _np.ndarray):
+            if not _np.all(_np.isfinite(grid)):
+                raise ValueError("m2_grid contains non-finite values")
+            if _np.any(_np.diff(grid) <= 0):
+                raise ValueError("m2_grid is not strictly increasing")
+
     return grid
+
+
+    
+# def build_m1_grid_DPLDP_np(
+#     *,
+#     m1_low: float = 3.0,
+#     m1_high: float = 350.0,
+#     eps: float = 1e-4,
+#     dtype=np.float64,
+#     # ---- total points control ----
+#     n_total: int = 1200,
+#     # ---- segment boundaries (tweakable) ----
+#     rise_hi: float = 10.0,          # low-mass rise capture (m1_low..~10)
+#     peak1_lo: float = 5.0,          # peak around ~10 window
+#     peak1_hi: float = 15.0,
+#     bg_lo: float = 10.0,            # background PL (10..break)
+#     bg_hi: float = 45.0,
+#     break_lo: float = 25.0,         # break / peak2 window (~30-40)
+#     break_hi: float = 50.0,
+#     tail_lo: float = 45.0,          # tail start
+#     tail_hi: float | None = None,   # defaults to m1_high
+#     # ---- how to split n_total across segments (normalized) ----
+#     # You can pass your own weights; they will be normalized.
+#     weights: tuple[float, float, float, float, float] = (0.18, 0.20, 0.14, 0.28, 0.20),
+#     # ---- spacing controls ----
+#     rise_cluster: bool = True,
+#     rise_eps_t: float = 1e-4,       # smaller => more clustering near m1_low
+#     tail_cluster: bool = True,
+#     tail_eps_t: float = 2e-3,       # smaller => more clustering near tail_lo
+# ) -> np.ndarray:
+#     """
+#     Fixed non-uniform m1 grid with a single knob n_total.
+
+#     Segments (in order):
+#       1) rise:   [m1_low, rise_hi] (optionally clustered near m1_low)
+#       2) peak1:  [peak1_lo, peak1_hi]
+#       3) bg:     [bg_lo, bg_hi]
+#       4) break:  [break_lo, break_hi]
+#       5) tail:   [tail_lo, tail_hi] (optionally clustered near tail_lo)
+
+#     n_total is allocated across segments via 'weights' (normalized).
+#     """
+#     m1_low = float(m1_low)
+#     m1_high = float(m1_high)
+#     if m1_high <= m1_low:
+#         raise ValueError("m1_high must be > m1_low")
+
+#     n_total = int(n_total)
+#     if n_total < 10:
+#         raise ValueError("n_total must be >= 10 (practically)")
+
+#     xmin = m1_low + float(eps)
+#     xmax = m1_high - float(eps)
+#     if xmax <= xmin:
+#         raise ValueError("m1_high - m1_low too small after eps")
+
+#     if tail_hi is None:
+#         tail_hi = xmax
+#     else:
+#         tail_hi = min(float(tail_hi), xmax)
+
+#     # ---- allocate point counts ----
+#     if len(weights) != 5:
+#         raise ValueError("weights must have length 5 (rise, peak1, bg, break, tail)")
+#     w = np.asarray(weights, dtype=np.float64)
+#     if np.any(w < 0):
+#         raise ValueError("weights must be non-negative")
+#     s = float(w.sum())
+#     if s <= 0:
+#         raise ValueError("weights must sum to > 0")
+#     w = w / s
+
+#     raw = w * n_total
+#     n = np.floor(raw).astype(int)
+#     # distribute remainder by largest fractional parts
+#     rem = n_total - int(n.sum())
+#     if rem > 0:
+#         frac = raw - np.floor(raw)
+#         order = np.argsort(-frac)
+#         n[order[:rem]] += 1
+
+#     # guarantee at least 2 points in segments that are valid
+#     # (we’ll later drop invalid segments automatically)
+#     n = np.maximum(n, 2)
+
+#     n_rise, n_peak1, n_bg, n_break, n_tail = map(int, n.tolist())
+
+#     # ---- helpers ----
+#     def _seg(lo, hi):
+#         lo = max(float(lo), xmin)
+#         hi = min(float(hi), xmax)
+#         if hi <= lo:
+#             return None
+#         return lo, hi
+
+#     def _lin(lo, hi, npts):
+#         npts = int(npts)
+#         if npts <= 0:
+#             return np.zeros((0,), dtype=dtype)
+#         if npts == 1:
+#             return np.array([(lo + hi) * 0.5], dtype=dtype)
+#         return np.linspace(lo, hi, npts, dtype=dtype)
+
+#     def _log_ramp(lo, hi, npts, eps_t):
+#         npts = int(npts)
+#         if npts <= 0:
+#             return np.zeros((0,), dtype=dtype)
+#         if npts == 1:
+#             return np.array([(lo + hi) * 0.5], dtype=dtype)
+#         u = np.linspace(0.0, 1.0, npts, dtype=dtype)
+#         eps_t = float(eps_t)
+#         t = np.exp(np.log(eps_t) * (1.0 - u))  # eps_t -> 1
+#         t = (t - eps_t) / (1.0 - eps_t)        # -> [0,1]
+#         return (lo + (hi - lo) * t).astype(dtype, copy=False)
+
+#     # ---- build segments ----
+#     segs = []
+
+#     s = _seg(xmin, rise_hi)
+#     if s is not None:
+#         segs.append(_log_ramp(s[0], s[1], n_rise, rise_eps_t) if rise_cluster else _lin(s[0], s[1], n_rise))
+
+#     s = _seg(peak1_lo, peak1_hi)
+#     if s is not None:
+#         segs.append(_lin(s[0], s[1], n_peak1))
+
+#     s = _seg(bg_lo, bg_hi)
+#     if s is not None:
+#         segs.append(_lin(s[0], s[1], n_bg))
+
+#     s = _seg(break_lo, break_hi)
+#     if s is not None:
+#         segs.append(_lin(s[0], s[1], n_break))
+
+#     s = _seg(tail_lo, tail_hi)
+#     if s is not None:
+#         segs.append(_log_ramp(s[0], s[1], n_tail, tail_eps_t) if tail_cluster else _lin(s[0], s[1], n_tail))
+
+#     if not segs:
+#         raise ValueError("No valid segments after clamping; check boundaries.")
+
+#     grid = np.concatenate(segs).astype(dtype, copy=False)
+#     grid = np.clip(grid, xmin, xmax)
+#     grid = np.sort(grid)
+
+#     # ---- deduplicate (tolerance) ----
+#     tol = 10.0 * np.finfo(dtype).eps * max(1.0, xmax - xmin)
+#     keep = np.ones_like(grid, dtype=bool)
+#     keep[1:] = (grid[1:] - grid[:-1]) > tol
+#     grid = grid[keep]
+
+#     # ---- enforce strict monotonicity (tiny ramp) ----
+#     ramp = np.linspace(0.0, 1e-12, grid.size, dtype=dtype)
+#     grid = np.clip(grid + ramp, xmin, xmax)
+
+#     return grid
+
+
+
+# def build_m2_grid_np(
+#     *,
+#     m2_low: float,
+#     m2_high: float = 300.0,
+#     eps_m: float = 1e-5,
+#     # taper region: [m2_low+eps, m2_low+eps+delta_m2_taper]
+#     delta_m2_taper: float = 5.0,
+#     n_taper: int = 100,
+#     n_total: int = 500,
+#     eps_t: float = 1e-4,
+#     dtype=np.float64,
+# ) -> np.ndarray:
+#     """
+#     Fixed non-uniform m2 grid:
+#       - clustered (log-ramp) near m2_low over a taper width delta_m2_taper
+#       - then linear out to m2_high
+
+#     This mirrors your PyTensor construction but with fixed numeric params.
+#     """
+#     if n_total < 2:
+#         raise ValueError("n_total must be >= 2")
+#     if n_taper < 2:
+#         raise ValueError("n_taper must be >= 2")
+#     if n_taper >= n_total:
+#         raise ValueError("n_taper must be < n_total")
+#     if delta_m2_taper <= 0:
+#         raise ValueError("delta_m2_taper must be > 0")
+#     if m2_high <= m2_low:
+#         raise ValueError("m2_high must be > m2_low")
+
+#     m2_lo = float(m2_low) + float(eps_m)
+#     m2_taper_hi = m2_lo + max(float(delta_m2_taper), 1e-6)
+
+#     # segment 1: clustered in [m2_lo, m2_taper_hi]
+#     u1 = np.linspace(0.0, 1.0, int(n_taper), dtype=dtype)
+#     t = np.exp(np.log(float(eps_t)) * (1.0 - u1))  # eps_t -> 1
+#     t = (t - float(eps_t)) / (1.0 - float(eps_t))  # -> [0, 1]
+#     seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+
+#     # segment 2: linear in [m2_taper_hi, m2_high]
+#     n2 = int(n_total) - int(n_taper)
+#     u2 = np.linspace(0.0, 1.0, n2, dtype=dtype)
+#     seg2 = m2_taper_hi + (float(m2_high) - m2_taper_hi) * u2
+
+#     # avoid duplicate at the join
+#     grid = np.concatenate([seg1[:-1], seg2]).astype(dtype, copy=False)
+
+#     # enforce strictly increasing (tiny ramp)
+#     grid = np.maximum.accumulate(grid)
+#     ramp = np.linspace(0.0, 1e-12, grid.size, dtype=dtype)
+#     grid = grid + ramp
+
+#     return grid

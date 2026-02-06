@@ -117,6 +117,55 @@ def make_z_grid_cheb(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=1
     return z
 
 
+def make_z_grid_fixed(
+    total=300,
+    zmin_a=1e-5, zmin_b=1e-3, zmid_b=3.0, zmax_c=10.0,
+    mid_boost=8.0,
+    end_boost=0.5,
+    edge_frac=0.08,
+    oversample=80000,
+):
+    total = int(total)
+    if total < 2:
+        raise ValueError("total must be >= 2")
+    if not (zmin_a < zmin_b < zmid_b < zmax_c):
+        raise ValueError("Require zmin_a < zmin_b < zmid_b < zmax_c")
+
+    x0, x1 = np.log10(zmin_a), np.log10(zmax_c)
+    xb, xm = np.log10(zmin_b), np.log10(zmid_b)
+    x = np.linspace(x0, x1, oversample)
+
+    width = max(edge_frac * (x1 - x0), 1e-6)
+    def sstep(t):
+        return 1.0 / (1.0 + np.exp(-t))
+
+    # smooth “top-hat” bump between xb and xm
+    band = sstep((x - xb)/width) - sstep((x - xm)/width)
+
+    ends = 0.0
+    if end_boost > 0:
+        ends = np.exp(-0.5*((x - x0)/(2*width))**2) + np.exp(-0.5*((x - x1)/(2*width))**2)
+
+    w = 1.0 + mid_boost * band + end_boost * ends  # density in log-space
+
+    dx = x[1] - x[0]
+    cdf = np.cumsum(w) * dx
+    cdf = (cdf - cdf[0]) / (cdf[-1] - cdf[0])
+
+    u = np.linspace(0.0, 1.0, total)
+    x_nodes = np.interp(u, cdf, x)
+    z = 10.0 ** x_nodes
+
+    z[0] = zmin_a
+    z[-1] = zmax_c
+
+    # enforce strict monotone (rare edge-case)
+    for i in range(1, len(z)):
+        if z[i] <= z[i-1]:
+            z[i] = np.nextafter(z[i-1], np.inf)
+
+    return z
+
 
 zGridGlobals_low = make_z_grid()
 

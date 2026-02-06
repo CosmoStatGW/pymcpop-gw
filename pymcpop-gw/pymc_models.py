@@ -11,7 +11,7 @@ from pytensor_utils import atinterp
 
 from pytensor_tools_new import PopAndSelJAXOp
 import cosmology as cosmo
-from backends import NPBackend
+from backends import NPBackend, JAXBackend
 import constants
 
 import pymc_models_or as pmmor
@@ -552,24 +552,32 @@ def make_model(  priors,
         log_onepz_init = np.log1p(z_init)#.astype(X)
         log_Mc_src_init = (log_Mc_det_init - log_onepz_init)#.astype(X)
 
-    # stop_grad(  at.as_tensor_variable(
-    #zgrid_ = stop_grad(  at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode) ))
 
-    zgrid_np = atools.make_z_grid(
-        total=zres,
-        zmin_a=zmin_a,
-        zmin_b=zmin_b,
-        zmid_b=zmid_b,
-        zmax_c=zmax_c,
-        hi_boost=hi_boost,
-        mode=z_grid_mode,
-    )
-    
-    zgrid_ = at.constant(zgrid_np)
-    
+    # zgrid_np = atools.make_z_grid(
+    #     total=zres,
+    #     zmin_a=zmin_a,
+    #     zmin_b=zmin_b,
+    #     zmid_b=zmid_b,
+    #     zmax_c=zmax_c,
+    #     hi_boost=hi_boost,
+    #     mode=z_grid_mode,
+    # )
 
-    #zgrid_mass_ =  stop_grad(  at.as_tensor_variable( atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode) ))
+    zgrid_np = atools.make_z_grid_fixed(
+    total=zres,
+    zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c,
+    mid_boost=8.0, edge_frac=0.08, end_boost=0.5
+)
+    
+        
     zgrid_mass_np = atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode)
+
+    # zgrid_np = np.geomspace(zmin_a, zmax_c, interp_z)
+    # zgrid_mass_np = np.geomspace(zmin_a, zmax_c, interp_z)
+    
+
+
+    zgrid_ = at.constant(zgrid_np)
     zgrid_mass_ = at.constant(zgrid_mass_np)
     
 
@@ -1748,10 +1756,30 @@ def make_model(  priors,
                 # # Pack for later use
                 # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
 
-                m1_grid_ = mm.build_m1_grid_DPLDP_np(m1_low=3.0, m1_high=300.0, n_total=interp_mass )
-                m2_grid_ = mm.build_m2_grid_np(m2_low=3.0, delta_m2_taper=8.0)
-            
-                interp_grids_mass = [m1_grid_, m2_grid_]
+                # m1_grid_ = mm.build_m1_grid_DPLDP_np( NPBackend(), 
+                #                                       n_peak=interp_mass,   
+                #                                  delta_m1=6.0,
+                #                              n_tail_low=interp_mass//3,
+                #                              n_tail_high=interp_mass//4,
+                #                              n_taper=interp_mass//2,   #  used for tie-only ramp scale 
+                # )
+                # m2_grid_ = mm.build_m2_grid_np( NPBackend(), 
+                #                                   n_total=500,
+                #                                     n_taper=200,)
+                                              
+                                              
+
+                # m1_grid_ = np.geomspace(3., 300, interp_mass)
+                # m2_grid_ = np.geomspace(3., 300, interp_mass)
+
+
+                # mm.grid_diagnostics("m1_grid", m1_grid_)
+                # mm.grid_diagnostics("m2_grid", m2_grid_)
+                # mm.grid_diagnostics("m2_cdf_grid", m2_grid_[1:])
+
+
+                # interp_grids_mass = [m1_grid_, m2_grid_]
+                interp_grids_mass= None
 
             elif mass_model=='DPLDP-z':
 
@@ -2170,7 +2198,7 @@ def make_model(  priors,
     
                 # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
                 #zs = atools.atinterp(d, dL_grid, zgrid_)
-                zs = atinterp(d, dL_grid, zgrid_)
+                zs = atools.atinterp(d, dL_grid, zgrid_)
                 
                 
                 # cosmo_ev_op = CosmoFromDLJAXOp(
@@ -2189,8 +2217,8 @@ def make_model(  priors,
                 #dc = atools.atinterp( zs, zgrid_, dc_grid) 
                 #dc =  d/one_plus_zs/atools.Xifun_at(zs, Xi0_, nXi0_)
                 
-                log_ddL_dz = atinterp(zs, zgrid_, log_ddL_dz_grid)
-                dc = atinterp(zs, zgrid_, dc_grid)
+                log_ddL_dz = atools.atinterp(zs, zgrid_, log_ddL_dz_grid)
+                dc = atools.atinterp(zs, zgrid_, dc_grid)
                                           
                 m1src = m1det/one_plus_zs 
                 m2src = m2det/one_plus_zs  
@@ -2293,9 +2321,9 @@ def make_model(  priors,
                 norm_gauss=norm_gauss,
                 param=param,
                #interp_vals_mass=interp_vals_mass,
-                interp_grids_mass=interp_grids_mass,
+                interp_mass=interp_mass,
                 is_observed=is_observed,
-                z_grid=zgrid_np,                 # ok; or None depending how you use it
+                #z_grid=zgrid_np,                 # ok; or None depending how you use it
                 subtract_log_p_incl=False,        # match your previous setting
                 )
                 
@@ -2332,9 +2360,16 @@ def make_model(  priors,
                                            is_observed = is_observed,
                                            z_grid = zgrid_,
                                            #K=N_DP_comp_max
+
+                                                        
                                          )
+
+                    print("\ncheck dL")
+                    print(interp_diagnostics(d.eval(), dL_grid.eval(), eps=1e-12, side="right"))
+                    
                     print("\nDEBUG LOG P POP")
-                    print((log_p_pop_std - log_p_pop).max().eval())
+                    print((log_p_pop_std - log_p_pop).max().eval())            
+
                     print()
 
                     import pytensor.tensor as pt
@@ -2345,34 +2380,9 @@ def make_model(  priors,
                     print("H0, Om, w0, Xi0, n")
                     print([i.eval() for i in theta5])
                     
-                    dc_grid_pt = atools.dcfun_at(zgrid_, H0, Om, w0, )  # or your existing pt version
-                    dL_grid_pt = atools.dLfun_at(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_pt, param=param, )
-                    log_ddL_dz_grid_pt = atools.log_ddL_dz(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_pt, param=param, )
-                    
-                    # invert d -> z the SAME way as your reference (pt interp)
-                    zs_pt = atools.atinterp(d, dL_grid_pt, zgrid_)
-                    dc_pt = atools.atinterp(zs_pt, zgrid_, dc_grid_pt)
-                    log_ddL_dz_pt = atools.atinterp(zs_pt, zgrid_, log_ddL_dz_grid_pt)
-                    
-                    m1src_pt = m1det / (1.0 + zs_pt)
-                    m2src_pt = m2det / (1.0 + zs_pt)
-                    
-                    log_p_pop_std2 = pmmor.log_p_pop_at(
-                        m1src_pt, m2src_pt, zs_pt, d,
-                        [chi1, chi2, cost1, cost2],
-                        Lambda_,
-                        rate_model, mass_model, spin_model,
-                        smoothing=smoothing, simplex_repair=simplex_repair,
-                        has_m2_break=has_m2_break, norm_gauss=norm_gauss,
-                        dc=dc_pt, log_ddL_dz_pre=log_ddL_dz_pt,
-                        interp_vals_mass=None, #interp_vals_mass,
-                        interp_grids_mass=None,
-                        is_observed=is_observed,
-                        z_grid=zgrid_,
-                    )
                     
                     obj_op  = pt.sum(log_p_pop)
-                    obj_std = pt.sum(log_p_pop_std2)
+                    obj_std = pt.sum(log_p_pop_std)
                     wrt = [m1det, m2det, d, Lambda_]
                     g_op  = pt.grad(obj_op,  wrt=wrt, disconnected_inputs="raise")
                     g_std = pt.grad(obj_std, wrt=wrt, disconnected_inputs="raise")
@@ -2388,14 +2398,244 @@ def make_model(  priors,
                     gsL = g_std[3].eval()
                     diff = np.abs(gsL - goL)
                     
-                    idx = np.where(diff > 1e-6)[0]   # choose threshold
+                    idx = np.where(diff > 5e-2)[0]   # choose threshold
                     print("bad idx:", idx.tolist())
                     print("diff at idx:", diff[idx])
                     print("go at idx:", goL[idx])
                     print("gs at idx:", gsL[idx])
                     
                     print("max idx:", int(diff.argmax()), "max diff:", diff.max())
+
+
+
+                    # # --- numeric theta at this debug point ---
+                    # theta5_np = np.array([i.eval() for i in Lambda_[:5]], dtype=np.float64)
+                    # H0, Om, w0, Xi0, nXi0 = theta5_np
                     
+                    # # --- compute grids in JAX numerically (same zgrid as used everywhere) ---
+                    # from cosmology import dcfun_quad, dLfun, log_ddL_dz
+                    # import jax.numpy as jnp
+
+                    # bk_j = JAXBackend()
+                    # zj = jnp.asarray(zgrid_np, dtype=jnp.float64)
+                    # x01j = jnp.asarray(constants._x01_np, dtype=jnp.float64)
+                    # w01j = jnp.asarray(constants._w01_np, dtype=jnp.float64)
+                    
+                    # dc_grid_j = dcfun_quad(bk_j, zj, H0, Om, w0, x01j, w01j)
+                    # dL_grid_j = dLfun(bk_j, zj, H0, Om, w0, Xi0, nXi0, dc=dc_grid_j, param=param, x01=x01j, w01=w01j)
+                    # log_ddL_dz_grid_j = log_ddL_dz(bk_j, zj, H0, Om, w0, Xi0, nXi0, dc=dc_grid_j, x01=x01j, w01=w01j, param=param)
+                    
+                    # # bring to numpy
+                    # dc_grid_j_np = np.asarray(dc_grid_j, dtype=np.float64)
+                    # dL_grid_j_np = np.asarray(dL_grid_j, dtype=np.float64)
+                    # log_ddL_dz_grid_j_np = np.asarray(log_ddL_dz_grid_j, dtype=np.float64)
+                    
+                    # # --- make PyTensor constants from the JAX grids ---
+                    # dc_grid_j_pt = pt.as_tensor_variable(dc_grid_j_np)
+                    # dL_grid_j_pt = pt.as_tensor_variable(dL_grid_j_np)
+                    # log_ddL_dz_grid_j_pt = pt.as_tensor_variable(log_ddL_dz_grid_j_np)
+                    # zgrid_pt = zgrid_  # you already have pt.constant(zgrid_np)
+                    
+                    # # --- now do the "std" pipeline BUT using JAX-produced grids ---
+                    # zs_jgrid = atools.atinterp(d, dL_grid_j_pt, zgrid_pt)
+                    # dc_jgrid = atools.atinterp(zs_jgrid, zgrid_pt, dc_grid_j_pt)
+                    # log_ddL_dz_jgrid = atools.atinterp(zs_jgrid, zgrid_pt, log_ddL_dz_grid_j_pt)
+                    
+                    # log_p_pop_std_jgrid = pmmor.log_p_pop_at(
+                    #     m1src, m2src, zs_jgrid, d,
+                    #     [chi1, chi2, cost1, cost2],
+                    #     Lambda_,
+                    #     rate_model, mass_model, spin_model,
+                    #     smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break, norm_gauss=norm_gauss,
+                    #     dc=dc_jgrid,
+                    #     log_ddL_dz_pre=log_ddL_dz_jgrid,
+                    #     interp_vals_mass=None,
+                    #     interp_grids_mass=None,
+                    #     is_observed=is_observed,
+                    #     z_grid=zgrid_pt,
+                    # )
+                    
+                    # # compare gradients again
+                    # obj_std_jgrid = pt.sum(log_p_pop_std_jgrid)
+                    # obj_op = pt.sum(log_p_pop)
+                    
+                    # wrt = [m1det, m2det, d, Lambda_]
+                    # g_op  = pt.grad(obj_op, wrt=wrt, disconnected_inputs="raise")
+                    # g_std_jgrid = pt.grad(obj_std_jgrid, wrt=wrt, disconnected_inputs="raise")
+                    
+                    # print("\nDEBUG GRAD (std uses JAX grids as constants) max abs diff")
+                    # for name, go, gs in zip(["m1det", "m2det", "d", "Lambda"], g_op, g_std_jgrid):
+                    #     print(name, pt.max(pt.abs(gs - go)).eval())
+
+
+                    #1) Freeze all non-Lambda inputs at the current numeric point
+                    m1det0 = np.asarray(m1det.eval(), dtype=np.float64)
+                    m2det0 = np.asarray(m2det.eval(), dtype=np.float64)
+                    d0     = np.asarray(d.eval(), dtype=np.float64)
+                    sp0    = np.asarray(spins.eval(), dtype=np.float64)
+                    
+                    m1inj0 = np.asarray(m1inj[0], dtype=np.float64)
+                    m2inj0 = np.asarray(m2inj[0], dtype=np.float64)
+                    dLinj0 = np.asarray(dLinj[0], dtype=np.float64)
+                    spinj0 = spinsInj #[np.asarray(s, dtype=np.float64) for s in spinsInj]
+                    
+                    lpd0   = np.asarray(lpdinj[0], dtype=np.float64)
+                    lpi0   = log_p_incl_ #np.asarray(log_p_incl_, dtype=np.float64)
+                    Ndraw0 = float(np.asarray(Ndraw).reshape(()))
+                    
+                    Lambda0 = np.asarray(Lambda_.eval(), dtype=np.float64)
+                    
+                    # 2) Build a PyTensor function for the Op forward: F(Lambda) = sum(log_p_pop_op)
+                    Lam_sym = pt.dvector("Lam_sym")
+                    
+                    log_p_pop_op_sym, log_mu_sym, var_u_sym = fused(
+                        pt.constant(m1det0), pt.constant(m2det0), pt.constant(d0), pt.constant(sp0),
+                        pt.constant(m1inj0), pt.constant(m2inj0), pt.constant(dLinj0), spinj0,
+                        pt.constant(lpd0),   lpi0, #pt.constant(lpi0),
+                        Lam_sym, pt.constant(Ndraw0),
+                    )
+                    
+                    F_op_sym = pt.sum(log_p_pop_op_sym)
+                    
+                    F_op = pytensor.function([Lam_sym], F_op_sym)
+                    
+                    # 3) Also build the Op analytic gradient wrt Lambda at this frozen point
+                    g_op_sym = pt.grad(F_op_sym, Lam_sym)
+                    G_op = pytensor.function([Lam_sym], g_op_sym)
+                    
+                    # 4) Finite difference on H0 (idx 0) and Om (idx 1)
+                    def fd_component(func, lam0, k, h):
+                        e = np.zeros_like(lam0)
+                        e[k] = 1.0
+                        return (func(lam0 + h*e) - func(lam0 - h*e)) / (2.0*h)
+                    
+                    def choose_h(val):
+                        return 1e-6 * max(1.0, abs(float(val)))
+
+
+                    # Optional: provide names if you have them; otherwise indices are used
+                    lambda_names = (
+                        ["H0","Om","w0","Xi0","nXi0"] +
+                        [f"Lambda[{k}]" for k in range(5, Lambda0.shape[0])]
+                    )
+                    
+                    g0 = G_op(Lambda0)
+                    
+                    print("\n=== OP: grad vs FD for all Lambda ===")
+                    for k in range(Lambda0.shape[0]):
+                        name = lambda_names[k] if k < len(lambda_names) else f"Lambda[{k}]"
+                        h = choose_h(Lambda0[k])
+                        fd = fd_component(F_op, Lambda0, k, h)
+                        go = g0[k]
+                        print(f"{name:>10s}  k={k:2d}  Op grad={go:.12g}   FD={fd:.12g}   |diff|={abs(go-fd):.3g}   h={h:.3g}")
+
+    
+                    # for k, name in [(0, "H0"), (1, "Om")]:
+                    #     h = choose_h(Lambda0[k])
+                    #     fd = fd_component(F_op, Lambda0, k, h)
+                    #     go = G_op(Lambda0)[k]
+                    #     print(f"{name}: Op grad={go:.12g}   FD={fd:.12g}   |diff|={abs(go-fd):.3g}   h={h:.3g}")
+
+
+        
+
+
+
+                    Lam_sym = pt.TensorType("float64", shape=(Lambda0.shape[0],))("Lam_sym")
+
+
+                    # rebuild your "std" graph with frozen inputs but symbolic Lambda
+                    theta5 = Lam_sym[:5]
+                    H0  = theta5[0]
+                    Om  = theta5[1]
+                    w0  = theta5[2]
+                    Xi0 = theta5[3]
+                    nXi0= theta5[4]
+                    
+                    # IMPORTANT: use the same builders you use in the std branch
+                    # (these names match what you showed earlier)
+                    dc_grid_std = atools.dcfun_at(zgrid_, H0, Om, w0,) #dcfun_quad_pt(zgrid_, H0, Om, w0, constants._x01, constants._w01)   # <-- your PyTensor version
+                    dL_grid_std = atools.dLfun_at(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,) #dLfun_pt(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std, param=param,x01=constants._x01, w01=constants._w01)                   # <-- your PyTensor version
+                    log_ddL_dz_grid_std = atools.log_ddL_dz(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,) #log_ddL_dz_pt(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,x01=constants._x01, w01=constants._w01, param=param)  # <-- your PyTensor version
+                    
+                    zs_std = atools.atinterp(pt.constant(d0), dL_grid_std, zgrid_)
+                    dc_std = atools.atinterp(zs_std, zgrid_, dc_grid_std)
+                    log_ddL_dz_std = atools.atinterp(zs_std, zgrid_, log_ddL_dz_grid_std)
+                    
+                    # reconstruct m1src/m2src from frozen det masses (same as your std branch)
+                    onepz = 1.0 + zs_std
+                    m1src_std = pt.constant(m1det0) / onepz
+                    m2src_std = pt.constant(m2det0) / onepz
+                    
+                    log_p_pop_std_sym = pmmor.log_p_pop_at(
+                        m1src_std, m2src_std, zs_std, pt.constant(d0),
+                        [chi1, chi2, cost1, cost2],          # if these are pt vars, freeze them similarly
+                        Lam_sym,
+                        rate_model, mass_model, spin_model,
+                        smoothing=smoothing,
+                        simplex_repair=simplex_repair,
+                        has_m2_break=has_m2_break,
+                        norm_gauss=norm_gauss,
+                        dc=dc_std,
+                        log_ddL_dz_pre=log_ddL_dz_std,
+                        interp_vals_mass=None,
+                        interp_grids_mass=None,
+                        is_observed=is_observed,
+                        z_grid=zgrid_,
+                    )
+                    
+                    F_std_sym = pt.sum(log_p_pop_std_sym)
+                    
+                    F_std = pytensor.function([Lam_sym], F_std_sym)
+                    G_std = pytensor.function([Lam_sym], pt.grad(F_std_sym, Lam_sym))
+                    
+                    # 2) Finite difference helpers
+                    def fd_component(func, lam0, k, h):
+                        e = np.zeros_like(lam0)
+                        e[k] = 1.0
+                        return (func(lam0 + h*e) - func(lam0 - h*e)) / (2.0*h)
+                    
+                    def choose_h(val):
+                        return 1e-6 * max(1.0, abs(float(val)))
+                    
+                    # # 3) Check H0 and Om
+                    # for k, name in [(0, "H0"), (1, "Om")]:
+                    #     h = choose_h(Lambda0[k])
+                    #     fd = fd_component(F_std, Lambda0, k, h)
+                    #     gs = G_std(Lambda0)[k]
+                    #     print(f"{name}: std grad={gs:.12g}   FD={fd:.12g}   |diff|={abs(gs-fd):.3g}   h={h:.3g}")
+
+                    g0 = G_std(Lambda0)
+
+                    print("\n=== STD: grad vs FD for all Lambda ===")
+                    for k in range(Lambda0.shape[0]):
+                        name = lambda_names[k] if k < len(lambda_names) else f"Lambda[{k}]"
+                        h = choose_h(Lambda0[k])
+                        fd = fd_component(F_std, Lambda0, k, h)
+                        gs = g0[k]
+                        print(f"{name:>10s}  k={k:2d}  std grad={gs:.12g}   FD={fd:.12g}   |diff|={abs(gs-fd):.3g}   h={h:.3g}")
+
+
+                    print("\n=== STD VS OP ===")
+                    for k, name in enumerate(lambda_names):
+                        h = choose_h(Lambda0[k])
+                        fd_op  = fd_component(F_op,  Lambda0, k, h)
+                        fd_std = fd_component(F_std, Lambda0, k, h)
+                        f0_op  = F_op(Lambda0)
+                        f0_std = F_std(Lambda0)
+                        print(f"{name}: F_op-F_std at Lambda0 = {f0_op - f0_std:.6g}")
+                        print(f"{name}: FD_op={fd_op:.12g}   FD_std={fd_std:.12g}   |diff|={abs(fd_op-fd_std):.3g}   h={h:.3g}")
+
+
+
+                    print()
+                    gop = G_op(Lambda0)
+                    gs  = G_std(Lambda0)
+                    print("max |G_op - G_std|:", np.max(np.abs(gop - gs)))
+                    print("idx max:", int(np.argmax(np.abs(gop-gs))))
+                    
+
+
         
         
         else:
@@ -2601,7 +2841,7 @@ def make_model(  priors,
                     gsL = g_std[0].eval()
                     diff = np.abs(gsL - goL)
                     
-                    idx = np.where(diff > 1e-6)[0]   # choose threshold
+                    idx = np.where(diff > 5e-2)[0]   # choose threshold
                     print("bad idx:", idx.tolist())
                     print("diff at idx:", diff[idx])
                     print("go at idx:", goL[idx])
@@ -2703,3 +2943,42 @@ def make_model(  priors,
             
 
     return model
+
+
+
+
+def interp_diagnostics(x, xp, eps=1e-12, side="right"):
+    x  = np.atleast_1d(np.asarray(x))
+    xp = np.asarray(xp)
+
+    idx = np.searchsorted(xp, x, side=side)
+    idx = np.clip(idx, 1, xp.size - 1)
+
+    xl = xp[idx-1]
+    xh = xp[idx]
+    dx = xh - xl
+
+    # (2) how close are queries to a knot?
+    # distance to nearest knot among the two bracketing knots
+    dist_to_knot = np.minimum(np.abs(x - xl), np.abs(x - xh))
+
+    # normalized proximity: "how many dx away from a knot"
+    # small values mean you're near a bracket boundary => idx can flip with tiny numerical changes
+    rel = dist_to_knot / np.maximum(dx, eps)
+
+    # (3) are we clamping denom?
+    clamped = dx <= eps
+
+    out = {
+        "xp_dtype": xp.dtype,
+        "x_dtype": x.dtype,
+        "N": x.size,
+        "min_dx": float(dx.min()),
+        "clamped_count": int(clamped.sum()),
+        "min_dist_to_knot": float(dist_to_knot.min()),
+        "pct_rel_lt_1e-12": float(np.mean(rel < 1e-12) * 100.0),
+        "pct_rel_lt_1e-9":  float(np.mean(rel < 1e-9)  * 100.0),
+        "pct_rel_lt_1e-6":  float(np.mean(rel < 1e-6)  * 100.0),
+        "pct_rel_lt_1e-3":  float(np.mean(rel < 1e-3)  * 100.0),
+    }
+    return out

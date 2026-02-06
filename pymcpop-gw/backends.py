@@ -14,6 +14,8 @@ class NPBackend:
     def asarray(x, dtype=None):
         return np.asarray(x, dtype=dtype)
 
+
+
     @staticmethod
     def constant(x, dtype=None):
         return np.asarray(x, dtype=dtype)
@@ -128,6 +130,73 @@ class NPBackend:
         if not keepdims and axis is not None:
             out = np.squeeze(out, axis=axis)
         return out
+
+
+    # ---- comparisons (elementwise) ----
+    @staticmethod
+    def gt(a, b):  # >
+        return np.greater(a, b)
+
+    @staticmethod
+    def ge(a, b):  # >=
+        return np.greater_equal(a, b)
+
+    @staticmethod
+    def lt(a, b):  # <
+        return np.less(a, b)
+
+    @staticmethod
+    def le(a, b):  # <=
+        return np.less_equal(a, b)
+
+    @staticmethod
+    def eq(a, b):  # ==
+        return np.equal(a, b)
+
+    @staticmethod
+    def ne(a, b):  # !=
+        return np.not_equal(a, b)
+
+    # ---- logical (elementwise) ----
+    @staticmethod
+    def logical_and(a, b):
+        return np.logical_and(a, b)
+
+    @staticmethod
+    def logical_or(a, b):
+        return np.logical_or(a, b)
+
+    @staticmethod
+    def logical_not(a):
+        return np.logical_not(a)
+
+    # ---- control-flow style helpers ----
+    @staticmethod
+    def switch(cond, x, y):
+        # your code uses at.switch semantics; np.where matches elementwise
+        return np.where(cond, x, y)
+
+    # ---- extra array ops commonly needed in your code ----
+    @staticmethod
+    def concatenate(xs, axis=0):
+        return np.concatenate(xs, axis=axis)
+
+    @staticmethod
+    def stack(xs, axis=0):
+        return np.stack(xs, axis=axis)
+
+    @staticmethod
+    def floor(x):
+        return np.floor(x)
+
+    @staticmethod
+    def arctan2(y, x):
+        return np.arctan2(y, x)
+
+    @staticmethod
+    def maximum_accumulate(x, axis=0):
+        return np.maximum.accumulate(x, axis=axis)
+
 
 
 class ATBackend:
@@ -312,6 +381,79 @@ class ATBackend:
         from pytensor.tensor import special as tspecial
         return tspecial.logsumexp(x, axis=axis, keepdims=keepdims)
 
+    # ---- comparisons ----
+    @staticmethod
+    def gt(a, b):
+        at = ATBackend._at()
+        return at.gt(a, b)
+
+    @staticmethod
+    def ge(a, b):
+        at = ATBackend._at()
+        return at.ge(a, b)
+
+    @staticmethod
+    def lt(a, b):
+        at = ATBackend._at()
+        return at.lt(a, b)
+
+    @staticmethod
+    def le(a, b):
+        at = ATBackend._at()
+        return at.le(a, b)
+
+    @staticmethod
+    def eq(a, b):
+        at = ATBackend._at()
+        return at.eq(a, b)
+
+    @staticmethod
+    def ne(a, b):
+        at = ATBackend._at()
+        return at.neq(a, b)
+
+    # ---- logical ----
+    @staticmethod
+    def logical_and(a, b):
+        at = ATBackend._at()
+        return at.logical_and(a, b)
+
+    @staticmethod
+    def logical_or(a, b):
+        at = ATBackend._at()
+        return at.logical_or(a, b)
+
+    @staticmethod
+    def logical_not(a):
+        at = ATBackend._at()
+        return at.logical_not(a)
+
+    # ---- switch (at.switch semantics) ----
+    @staticmethod
+    def switch(cond, x, y):
+        at = ATBackend._at()
+        return at.switch(cond, x, y)
+
+    # ---- missing array ops you already use elsewhere ----
+    @staticmethod
+    def concatenate(xs, axis=0):
+        at = ATBackend._at()
+        return at.concatenate(xs, axis=axis)
+
+    @staticmethod
+    def stack(xs, axis=0):
+        at = ATBackend._at()
+        return at.stack(xs, axis=axis)
+
+    @staticmethod
+    def floor(x):
+        at = ATBackend._at()
+        return at.floor(x)
+
+    @staticmethod
+    def maximum_accumulate(x, axis=0):
+        at = ATBackend._at()
+        return at.maximum_accumulate(x, axis=axis)
 
 
 
@@ -335,6 +477,9 @@ class JAXBackend:
     maximum = staticmethod(jnp.maximum)
     clip = staticmethod(jnp.clip)
     where = staticmethod(jnp.where)
+    @staticmethod
+    def searchsorted(a, v, side="left"):
+        return jnp.searchsorted(a, v, side=side)
 
     # array creation / shape
     asarray = staticmethod(jnp.asarray)
@@ -342,6 +487,10 @@ class JAXBackend:
     reshape = staticmethod(jnp.reshape)
     concatenate = staticmethod(jnp.concatenate)
     stack = staticmethod(jnp.stack)
+    
+    @staticmethod
+    def sort(x, axis=-1):
+        return jnp.sort(x, axis=axis)
 
     # misc
     floor = staticmethod(jnp.floor)
@@ -354,3 +503,34 @@ class JAXBackend:
 
     stop_grad = staticmethod(jax.lax.stop_gradient)
 
+
+    # comparisons
+    gt = staticmethod(jnp.greater)
+    ge = staticmethod(jnp.greater_equal)
+    lt = staticmethod(jnp.less)
+    le = staticmethod(jnp.less_equal)
+    eq = staticmethod(jnp.equal)
+    ne = staticmethod(jnp.not_equal)
+
+    # logical
+    logical_and = staticmethod(jnp.logical_and)
+    logical_or  = staticmethod(jnp.logical_or)
+    logical_not = staticmethod(jnp.logical_not)
+
+    # switch
+    switch = staticmethod(jnp.where)
+
+    # shape / creation
+    zeros = staticmethod(jnp.zeros)
+    ones  = staticmethod(jnp.ones)
+    arange = staticmethod(jnp.arange)
+
+    # needed by your grid helpers
+    any = staticmethod(jnp.any)
+    all = staticmethod(jnp.all)
+
+    # monotone enforcement helper
+    @staticmethod
+    def maximum_accumulate(x, axis=0):
+        # jnp.maximum.accumulate exists and is JIT-friendly
+        return jnp.maximum.accumulate(x, axis=axis)
