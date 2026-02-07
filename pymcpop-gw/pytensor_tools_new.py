@@ -122,10 +122,9 @@ class _PopAndSelJAXVJPOp(Op):
     def __init__(self, *, zgrid, x01, w01, rate_model, mass_model, spin_model,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla", 
-                 #interp_vals_mass=None, 
                  interp_mass=0,
                  is_observed=False, 
-                 #z_grid=None, 
+                 mass_grids = None,
                  verbose=False,
                  subtract_log_p_incl=False, eps_interp=1e-12, side_interp="right"):
         super().__init__()
@@ -149,7 +148,8 @@ class _PopAndSelJAXVJPOp(Op):
 
         self.interp_mass = interp_mass
         self.has_interp_mass = bool(interp_mass>0)
-        #self.z_grid = None if z_grid is None else np.asarray(z_grid)
+        self.has_mass_grids = bool(mass_grids is not None)
+        self.mass_grids = mass_grids
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -178,10 +178,10 @@ class _PopAndSelJAXVJPOp(Op):
         side_interp = self.side_interp
         interp_mass = self.interp_mass
         has_interp_mass = self.has_interp_mass
+        has_mass_grids = self.has_mass_grids
+        mass_grids = self.mass_grids
 
         
-        #pop_z_grid = None if self.z_grid is None else jnp.asarray(self.z_grid, dtype=jnp.float64)
-
         cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
         
         x01_jax = jnp.asarray(self.x01, dtype=jnp.float64)
@@ -213,35 +213,44 @@ class _PopAndSelJAXVJPOp(Op):
             
 
             if has_interp_mass:
-                alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
-                
-                m1_grid = mass_models.build_m1_grid_DPLDP_bk(
-                            bk,
 
-                            alpha1=alpha1, alpha2=alpha2, mb=mb,
-                            mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2,
-                            m1_low=m1_low, m_high=m_high,
-                            delta_m1=delta_m1,
-                        
-                              n_peak=interp_mass,   
-                     n_tail_low=interp_mass//3,
-                     n_tail_high=interp_mass//4,
-                     n_taper=interp_mass//2,
-                    frac_gauss1=0.4,
-                        )
-                        
-                m2_grid = mass_models.build_m2_grid_bk(
-                            bk,
-                            m2_low=m2_low,
-                            m2_high=m_high,
-                            delta_m2=delta_m2,
-                            # resolution controls
-                            n_total=500,
-                            n_taper=200,
-                        )
-
+                if not has_mass_grids:
+                    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
+                    
+                    m1_grid = mass_models.build_m1_grid_DPLDP_bk(
+                                bk,
     
+                                alpha1=alpha1, alpha2=alpha2, mb=mb,
+                                mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2,
+                                m1_low=m1_low, m_high=m_high,
+                                delta_m1=delta_m1,
+                            
+                                  n_peak=interp_mass,   
+                         n_tail_low=interp_mass//3,
+                         n_tail_high=interp_mass//4,
+                         n_taper=interp_mass//2,
+                        frac_gauss1=0.4,
+                            )
+                            
+                    m2_grid = mass_models.build_m2_grid_bk(
+                                bk,
+                                m2_low=m2_low,
+                                m2_high=m_high,
+                                delta_m2=delta_m2,
+                                # resolution controls
+                                n_total=500,
+                                n_taper=200,
+                            )
+    
+        
+            
+                else:
+                    # mass grids fixed from outside
+                    m1_grid, m2_grid = self.mass_grids
+                
                 interp_grids_mass_jax = tuple( jnp.asarray(g, dtype=jnp.float64) for g in (m1_grid, m2_grid) )
+            
+            
             else:
                 interp_grids_mass_jax = None
                 
@@ -257,7 +266,7 @@ class _PopAndSelJAXVJPOp(Op):
             )
    
             # events
-            z_evt = atinterp(bk, dLdet, dL_grid, cosmo_zgrid) #z_from_dL_interp(dLdet, theta5, cosmo_zgrid, dL_grid, x01_jax, w01_jax)
+            z_evt = atinterp(bk, dLdet, dL_grid, cosmo_zgrid)
             dc_evt = atinterp(bk, z_evt, cosmo_zgrid, dc_grid)
             log_ddL_dz_evt = atinterp(bk, z_evt, cosmo_zgrid, log_ddL_dz_grid)
 
@@ -280,7 +289,7 @@ class _PopAndSelJAXVJPOp(Op):
             )
 
             # injections (precompute and pass)
-            z_inj = atinterp(bk, dLinj, dL_grid, cosmo_zgrid ) #z_from_dL_interp(dLinj, theta5, cosmo_zgrid, dL_grid, x01_jax, w01_jax)
+            z_inj = atinterp(bk, dLinj, dL_grid, cosmo_zgrid )
             dc_inj = atinterp(bk, z_inj, cosmo_zgrid, dc_grid)
             log_ddL_dz_inj = atinterp(bk, z_inj, cosmo_zgrid, log_ddL_dz_grid)
 
@@ -355,9 +364,7 @@ class _PopAndSelJAXVJPOp(Op):
         else:
             g_logp_pop = g_logp_pop.reshape(m1det.shape)
         
-        
-        #print("g_logp_pop ndim/shape:", np.asarray(g_logp_pop).ndim, np.asarray(g_logp_pop).shape)
-        
+                
         
         g_log_mu = np.asarray(g_log_mu, dtype=np.float64).reshape(())
         g_var_u = np.asarray(g_var_u, dtype=np.float64).reshape(())
@@ -399,10 +406,9 @@ class PopAndSelJAXOp(Op):
     def __init__(self, *, zgrid, x01, w01, rate_model, mass_model, spin_model,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla", 
-                 #interp_vals_mass=None, 
                  interp_mass=None,
+                 mass_grids=None,
                  is_observed=False, 
-                 #z_grid=None, 
                  verbose=False,
                  subtract_log_p_incl=False, eps_interp=1e-12, side_interp="right"):
         super().__init__()
@@ -410,17 +416,16 @@ class PopAndSelJAXOp(Op):
         self.x01 = np.asarray(x01, dtype="float64")
         self.w01 = np.asarray(w01, dtype="float64")
         self.has_interp_mass=bool(interp_mass>0)
+        self.has_mass_grids = bool(mass_grids is not None)
 
         self.kw = dict(
             zgrid=self.zgrid, x01=self.x01, w01=self.w01,
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break,
             norm_gauss=norm_gauss, param=param,
-            #interp_vals_mass=interp_vals_mass, 
             interp_mass=interp_mass,
-            #has_interp_mass=bool(interp_mass>0),
+            mass_grids=mass_grids,
             is_observed=is_observed, 
-            #z_grid=z_grid, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             eps_interp=eps_interp, side_interp=side_interp,
@@ -432,13 +437,7 @@ class PopAndSelJAXOp(Op):
 
     def _build_jax_fwd(self):
         bk = JAXBackend()
-        # z_from_dL_interp = make_z_from_dL_interp(
-        #     bk,
-        #     eps=self.kw["eps_interp"],
-        #     side=self.kw["side_interp"],
-        #     param=self.kw["param"],
-        # )
-
+ 
         zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
         x01   = jnp.asarray(self.x01,   dtype=jnp.float64)
         w01   = jnp.asarray(self.w01,   dtype=jnp.float64)
@@ -459,12 +458,9 @@ class PopAndSelJAXOp(Op):
 
         interp_mass = self.kw["interp_mass"]
         has_interp_mass = self.has_interp_mass
-        #z_grid = self.kw["z_grid"]
 
-    
-        
-
-        #z_grid_jax = None if z_grid is None else jnp.asarray(z_grid, dtype=jnp.float64)
+        mass_grids = self.kw["mass_grids"]
+        has_mass_grids = self.has_mass_grids
 
         spins_unpack_evt = lambda s: spin_models._spins_as_list(s, spin_model)
         spins_unpack_inj = lambda s: spin_models._spins_as_list(s, spin_model)
@@ -489,32 +485,37 @@ class PopAndSelJAXOp(Op):
             )
 
             if has_interp_mass:
-                alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
                 
-                m1_grid = mass_models.build_m1_grid_DPLDP_bk(
-                            bk,
-
-                            alpha1=alpha1, alpha2=alpha2, mb=mb,
-                            mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2,
-                            m1_low=m1_low, m_high=m_high,
-                            delta_m1=delta_m1,
-                        
-                              n_peak=interp_mass,   
-                     n_tail_low=interp_mass//3,
-                     n_tail_high=interp_mass//4,
-                     n_taper=interp_mass//2,
-                    frac_gauss1=0.4,
-                        )
-                        
-                m2_grid = mass_models.build_m2_grid_bk(
-                            bk,
-                             m2_low=m2_low,
-                            m2_high=m_high,
-                            delta_m2=delta_m2,
-                            # resolution controls
-                            n_total=500,
-                            n_taper=200,
-                        )
+                if not has_mass_grids:
+                    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_low, sig_g_high = lambdaBBHmass
+                    
+                    m1_grid = mass_models.build_m1_grid_DPLDP_bk(
+                                bk,
+    
+                                alpha1=alpha1, alpha2=alpha2, mb=mb,
+                                mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2,
+                                m1_low=m1_low, m_high=m_high,
+                                delta_m1=delta_m1,
+                            
+                                  n_peak=interp_mass,   
+                         n_tail_low=interp_mass//3,
+                         n_tail_high=interp_mass//4,
+                         n_taper=interp_mass//2,
+                        frac_gauss1=0.4,
+                            )
+                            
+                    m2_grid = mass_models.build_m2_grid_bk(
+                                bk,
+                                 m2_low=m2_low,
+                                m2_high=m_high,
+                                delta_m2=delta_m2,
+                                # resolution controls
+                                n_total=500,
+                                n_taper=200,
+                            )
+                else:
+                    # mass grids from outside
+                    m1_grid, m2_grid = mass_grids
 
                 interp_grids_mass_jax = tuple( jnp.asarray(g, dtype=jnp.float64) for g in (m1_grid, m2_grid) )
             else:
@@ -535,7 +536,7 @@ class PopAndSelJAXOp(Op):
 
             
             # event
-            z_evt = atinterp(bk, dLdet, dL_grid, zgrid ) #z_from_dL_interp(dLdet, theta5, zgrid, dL_grid, x01, w01)
+            z_evt = atinterp(bk, dLdet, dL_grid, zgrid )
             dc_evt = atinterp(bk, z_evt, zgrid, dc_grid)
             log_ddL_dz_evt = atinterp(bk, z_evt, zgrid, log_ddL_dz_grid)
 
@@ -562,7 +563,7 @@ class PopAndSelJAXOp(Op):
             )
 
             # inj (precompute cosmology pieces; passed into sel_bias)
-            z_inj = atinterp(bk, dLinj, dL_grid, zgrid ) #z_from_dL_interp(dLinj, theta5, zgrid, dL_grid, x01, w01)
+            z_inj = atinterp(bk, dLinj, dL_grid, zgrid )
             dc_inj = atinterp(bk, z_inj, zgrid, dc_grid)
             log_ddL_dz_inj = atinterp(bk, z_inj, zgrid, log_ddL_dz_grid)
 

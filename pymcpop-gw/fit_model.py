@@ -182,7 +182,7 @@ def main():
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
-    parser.add_argument("--zres", default=1000, type=int, required=False)
+    parser.add_argument("--zres", default=500, type=int, required=False)
     parser.add_argument("--z_grid_mode", default='cheb', type=str, required=False)
     
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
