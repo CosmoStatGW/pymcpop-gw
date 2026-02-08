@@ -6,16 +6,9 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def _searchsorted_bk(bk, xp, x, side="right"):
-    # Selection Op is JAX; still keep a safe fallback
-    if jnp is not None and (type(xp).__module__.startswith("jax") or type(x).__module__.startswith("jax")):
-        return jnp.searchsorted(xp, x, side=side)
-    # numpy fallback (mostly for tests)
-    return np.searchsorted(np.asarray(xp), np.asarray(x), side=side)
-
 def _interp_prepare_bk(bk, x, xp, eps=1e-12, side="right"):
-    idx = _searchsorted_bk(bk, xp, x, side=side)
-    idx = bk.clip(idx, 1, xp.shape[0] - 1)
+    idx = bk.searchsorted( xp, x, side=side)
+    idx = bk.clip(idx, 1, xp.shape[0] - 1) #bk.stop_grad( bk.clip(idx, 1, xp.shape[0] - 1) )
     x0 = xp[idx - 1]
     x1 = xp[idx]
     denom = bk.maximum(x1 - x0, eps)
@@ -29,7 +22,14 @@ def _interp_apply_bk(bk, idx, t, fp):
 
 
 
-
+def _interp_apply_multi_bk(bk, idx, t, fps):
+    """
+    fps: array of shape (K, Ngrid)  (stacked tables)
+    returns: array of shape (K, ...) matching idx/t broadcast
+    """
+    y0 = fps[:, idx - 1]
+    y1 = fps[:, idx]
+    return (1.0 - t) * y0 + t * y1
 
 
 def make_interp_pt_like_multiY(eps=1e-12, side="right"):

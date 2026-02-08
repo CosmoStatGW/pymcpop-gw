@@ -529,7 +529,7 @@ def atinterp(x, xs, ys, eps=1e-12, side="right"):
     idxs = at.searchsorted(xs, x, side=side)
     idxs = at.clip(idxs, 1, xs.shape[0] - 1)
     # <-- stop grad through the discrete selection -->
-    idxs = stop_grad(idxs)
+    #idxs = stop_grad(idxs)
 
     xl = xs[idxs - 1]; xh = xs[idxs]
     yl = ys[idxs - 1]; yh = ys[idxs]

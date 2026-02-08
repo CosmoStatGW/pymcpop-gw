@@ -116,7 +116,7 @@ def atinterp(bk, x, xp, fp_const, eps=1e-12, side="right"):
     n = xp.shape[0]
     idx = bk.searchsorted(xp, x, side=side)
     idx = bk.clip(idx, 1, n - 1)
-    idx = bk.stop_grad(idx)  # <- matches your stop_grad(idxs)
+    #idx = bk.stop_grad(idx) 
 
     xl = xp[idx - 1]; xh = xp[idx]
     yl = fp_const[idx - 1]; yh = fp_const[idx]

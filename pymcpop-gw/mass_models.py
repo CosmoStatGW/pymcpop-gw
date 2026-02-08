@@ -23,6 +23,22 @@ except Exception as e:
 
 
 
+
+# Precompute a few sizes you will use
+_LEGGAUSS_NP = {
+    8:  np.polynomial.legendre.leggauss(8),
+    16: np.polynomial.legendre.leggauss(16),
+    32: np.polynomial.legendre.leggauss(32),
+}
+
+def leggauss_const(n: int):
+    t_np, w_np = _LEGGAUSS_NP[int(n)]  # pure dict lookup, no mutation
+    # Convert to JAX arrays (constants captured by XLA)
+    t = jnp.asarray(t_np, dtype=jnp.float64)
+    w = jnp.asarray(w_np, dtype=jnp.float64)
+    return t, w
+
+
 def grid_diagnostics(name, x):
     import numpy as np
     x = np.asarray(x, dtype=np.float64)
@@ -187,11 +203,636 @@ def logpdfm2_PLP_reg(
     )
 
 
+def _int_power(a, b, p):
+    """
+    Analytic integral ∫_a^b m^p dm, with the special case p = -1 -> log(b/a).
+    Works with JAX arrays (a,b can be scalars or arrays with broadcastable shapes).
+    """
+    a = jnp.asarray(a)
+    b = jnp.asarray(b)
+
+    # Handle p == -1 exactly (or very close) in a stable way.
+    # If you want an exact branch only at p == -1, replace the isclose with (p == -1.0).
+    is_m1 = jnp.isclose(p, -1.0)
+
+    # general case
+    out_gen = (b ** (p + 1.0) - a ** (p + 1.0)) / (p + 1.0)
+    # p == -1
+    out_m1 = jnp.log(b) - jnp.log(a)
+
+    return jnp.where(is_m1, out_m1, out_gen)
+
+
+def _smoothstep_poly_coeffs(ml, d):
+    """
+    Smoothstep S(t)=3t^2-2t^3 with t=(m-ml)/d.
+    Returns coefficients a0..a3 such that on the ramp interval:
+        S(m) = a0 + a1*m + a2*m^2 + a3*m^3
+    """
+    ml = jnp.asarray(ml)
+    d  = jnp.asarray(d)
+
+    # Expand:
+    # S = 3((m-ml)^2/d^2) - 2((m-ml)^3/d^3)
+    #   = (3/d^2)(m^2 - 2ml m + ml^2) - (2/d^3)(m^3 - 3ml m^2 + 3ml^2 m - ml^3)
+    a3 = -(2.0 / d**3)
+    a2 = (3.0 / d**2) + (6.0 * ml / d**3)
+    a1 = (-6.0 * ml / d**2) - (6.0 * ml**2 / d**3)
+    a0 = (3.0 * ml**2 / d**2) + (2.0 * ml**3 / d**3)
+    return a0, a1, a2, a3
+
+
+def unnorm_cdf_powerlaw_smoothstep(x, *, beta, ml, d, mmax):
+    """
+    Unnormalized CDF for the (hard-truncated) density proportional to:
+        f(m) = m^beta * S(m)
+    with:
+        S(m)=0 for m<=ml
+        S(m)=3t^2-2t^3 for ml<m<ml+d, t=(m-ml)/d
+        S(m)=1 for m>=ml+d
+    and hard truncation at mmax (i.e. support ends at mmax).
+
+    Returns:
+        F(x) = ∫_{ml}^{min(x,mmax)} m^beta S(m) dm
+    This is analytic and JAX-friendly.
+
+    x can be scalar or array.
+    """
+    x = jnp.asarray(x)
+    ml = jnp.asarray(ml)
+    d  = jnp.asarray(d)
+    mmax = jnp.asarray(mmax)
+
+    # Clamp upper integration limit
+    xu = jnp.minimum(x, mmax)
+
+    ramp_end = ml + d
+
+    # Precompute ramp polynomial coefficients
+    a0, a1, a2, a3 = _smoothstep_poly_coeffs(ml, d)
+
+    # Helper: integral over ramp [ml, y] where y in (ml, ml+d)
+    def _ramp_int(y):
+        # ∫ ml^y m^beta * (a0 + a1 m + a2 m^2 + a3 m^3) dm
+        # = Σ a_k ∫ ml^y m^(beta+k) dm, k=0..3
+        return (
+            a0 * _int_power(ml, y, beta + 0.0) +
+            a1 * _int_power(ml, y, beta + 1.0) +
+            a2 * _int_power(ml, y, beta + 2.0) +
+            a3 * _int_power(ml, y, beta + 3.0)
+        )
+
+    # Constant contribution from the full ramp [ml, ml+d]
+    ramp_full = _ramp_int(ramp_end)
+
+    # Bulk integral ∫_{ramp_end}^{xu} m^beta dm (only if xu>ramp_end)
+    bulk_int = _int_power(ramp_end, xu, beta)
+
+    # Piecewise:
+    # x <= ml            -> 0
+    # ml < x < ramp_end  -> ramp integral to xu
+    # x >= ramp_end      -> full ramp + bulk integral
+    out = jnp.where(
+        xu <= ml,
+        0.0,
+        jnp.where(
+            xu < ramp_end,
+            _ramp_int(xu),
+            ramp_full + jnp.where(xu > ramp_end, bulk_int, 0.0),
+        ),
+    )
+    return out
+
+
+def unnorm_norm_powerlaw_smoothstep(*, beta, ml, d, mmax):
+    """
+    Unnormalized normalization constant:
+        Z = ∫_{ml}^{mmax} m^beta S(m) dm
+    """
+    return unnorm_cdf_powerlaw_smoothstep(mmax, beta=beta, ml=ml, d=d, mmax=mmax)
+
+
+def logC_powerlaw_smoothstep(m1, *, beta, ml, d, mmax, eps=1e-300):
+    """
+    logC(m1) = log( ∫_{ml}^{min(m1,mmax)} m^beta S(m) dm )
+    with a tiny eps guard to avoid log(0) for m1<=ml.
+    """
+    F = unnorm_cdf_powerlaw_smoothstep(m1, beta=beta, ml=ml, d=d, mmax=mmax)
+    return jnp.log(jnp.clip(F, eps, jnp.inf))
+
+
+def logNorm_powerlaw_smoothstep(*, beta, ml, d, mmax, eps=1e-300):
+    """
+    logZ = log( ∫_{ml}^{mmax} m^beta S(m) dm )
+    """
+    Z = unnorm_norm_powerlaw_smoothstep(beta=beta, ml=ml, d=d, mmax=mmax)
+    return jnp.log(jnp.clip(Z, eps, jnp.inf))
+
+
 # ---------------------------------------------------------------------
 # Double Power Law plus Double Peak (DPLDP)
 # ---------------------------------------------------------------------
 
 
+from jax.scipy.special import ndtr  # Normal CDF
+
+# -----------------------------
+# Basic analytic integrals
+# -----------------------------
+
+def _int_power(a, b, p):
+    """
+    ∫_a^b m^p dm, analytic, with p=-1 handled as log(b/a).
+    a,b can be scalars or arrays (broadcastable).
+    """
+    a = jnp.asarray(a)
+    b = jnp.asarray(b)
+    p = jnp.asarray(p)
+
+    # Ensure sensible ordering
+    b = jnp.maximum(b, a)
+
+    is_m1 = jnp.isclose(p, -1.0)
+    out_gen = (b ** (p + 1.0) - a ** (p + 1.0)) / (p + 1.0)
+    out_m1 = jnp.log(b) - jnp.log(a)
+    return jnp.where(is_m1, out_m1, out_gen)
+
+
+def _smoothstep_poly_coeffs(ml, d):
+    """
+    Smoothstep S(t)=3t^2-2t^3 with t=(m-ml)/d on the ramp [ml, ml+d].
+    Returns a0..a3 such that:
+        S(m) = a0 + a1*m + a2*m^2 + a3*m^3   (valid only on the ramp)
+    """
+    ml = jnp.asarray(ml)
+    d  = jnp.asarray(d)
+
+    a3 = -(2.0 / d**3)
+    a2 = (3.0 / d**2) + (6.0 * ml / d**3)
+    a1 = (-6.0 * ml / d**2) - (6.0 * ml**2 / d**3)
+    a0 = (3.0 * ml**2 / d**2) + (2.0 * ml**3 / d**3)
+    return a0, a1, a2, a3
+
+
+def _int_power_times_smoothstep_ramp(a, b, p, *, ml, d):
+    """
+    ∫_a^b m^p * S(m) dm, where [a,b] is assumed within the ramp [ml, ml+d].
+    S(m) is the smoothstep polynomial on the ramp.
+    """
+    a0, a1, a2, a3 = _smoothstep_poly_coeffs(ml, d)
+    return (
+        a0 * _int_power(a, b, p + 0.0) +
+        a1 * _int_power(a, b, p + 1.0) +
+        a2 * _int_power(a, b, p + 2.0) +
+        a3 * _int_power(a, b, p + 3.0)
+    )
+
+
+# -----------------------------
+# Truncated Gaussian moments (pdf-integrals)
+# -----------------------------
+
+def _phi(z):
+    # standard normal pdf
+    return jnp.exp(-0.5 * z * z) / jnp.sqrt(2.0 * jnp.pi)
+
+def _gauss_J0J1J2J3_over_interval(a, b, mu, sig):
+    """
+    For a normal N(x; mu, sig) (properly normalized density),
+    returns unnormalized integrals:
+        Jk = ∫_a^b x^k N(x;mu,sig) dx    for k=0..3.
+    NOTE: N(x)dx maps to phi(z)dz, so these are stable and analytic.
+    """
+    a = jnp.asarray(a); b = jnp.asarray(b)
+    mu = jnp.asarray(mu); sig = jnp.asarray(sig)
+
+    # Ensure ordering
+    b = jnp.maximum(b, a)
+
+    za = (a - mu) / sig
+    zb = (b - mu) / sig
+
+    I0 = ndtr(zb) - ndtr(za)
+    I1 = _phi(za) - _phi(zb)
+    I2 = I0 - (zb * _phi(zb) - za * _phi(za))
+    I3 = (za * za + 2.0) * _phi(za) - (zb * zb + 2.0) * _phi(zb)
+
+    J0 = I0
+    J1 = mu * I0 + sig * I1
+    J2 = (mu * mu) * I0 + 2.0 * mu * sig * I1 + (sig * sig) * I2
+    J3 = (mu ** 3) * I0 + 3.0 * (mu ** 2) * sig * I1 + 3.0 * mu * (sig ** 2) * I2 + (sig ** 3) * I3
+    return J0, J1, J2, J3
+
+
+def _int_trunc_gauss_times_S(a, b, *, mu, sig, ml, d, low, high):
+    """
+    Compute ∫_low^high S(m) * p_trunc(m) dm for a truncated Gaussian component,
+    where p_trunc is the Gaussian density normalized on [low, high].
+
+    We do it by:
+      - compute numerator: ∫ S(m) * N(m;mu,sig) dm on [low,high]
+      - divide by denom:   ∫ N(m;mu,sig) dm on [low,high]
+    S(m) is the smoothstep taper at ml with width d (0 below ml, polynomial on [ml,ml+d], 1 above ml+d).
+
+    Assumes hard truncation at low/high (no sigmoids).
+    """
+    low = jnp.asarray(low); high = jnp.asarray(high)
+    ml = jnp.asarray(ml); d = jnp.asarray(d)
+    ramp_end = ml + d
+
+    # Denominator: prob mass in [low,high]
+    J0_tot, _, _, _ = _gauss_J0J1J2J3_over_interval(low, high, mu, sig)
+    # Guard
+    J0_tot = jnp.maximum(J0_tot, 1e-300)
+
+    # Region 1 (ramp): intersection of [low,high] with [ml, ramp_end]
+    r_a = jnp.maximum(low, ml)
+    r_b = jnp.minimum(high, ramp_end)
+    has_ramp = r_b > r_a
+
+    # On ramp, S is cubic polynomial: integrate polynomial * N.
+    a0, a1, a2, a3 = _smoothstep_poly_coeffs(ml, d)
+    J0, J1, J2, J3 = _gauss_J0J1J2J3_over_interval(r_a, r_b, mu, sig)
+    ramp_num = a0 * J0 + a1 * J1 + a2 * J2 + a3 * J3
+    ramp_num = jnp.where(has_ramp, ramp_num, 0.0)
+
+    # Region 2 (bulk): intersection of [low,high] with [ramp_end, high]
+    b_a = jnp.maximum(low, ramp_end)
+    b_b = high
+    has_bulk = b_b > b_a
+    bulk_J0, _, _, _ = _gauss_J0J1J2J3_over_interval(b_a, b_b, mu, sig)
+    bulk_num = jnp.where(has_bulk, bulk_J0, 0.0)  # S=1
+
+    num = ramp_num + bulk_num  # below ml => S=0
+    return num / J0_tot
+
+
+# -----------------------------
+# Broken power-law (sharp break) with low-end smoothstep taper
+# -----------------------------
+
+def _broken_pl_sharp_norm(alpha1, alpha2, mb, low, high):
+    """
+    Normalization for sharp broken power law:
+      p(m) ∝ (m/mb)^(-alpha1) for m in [low, min(mb,high)]
+           ∝ (m/mb)^(-alpha2) for m in [max(mb,low), high]
+    Returns N such that ∫ p(m) dm = 1.
+    """
+    mb = jnp.asarray(mb)
+    low = jnp.asarray(low)
+    high = jnp.asarray(high)
+
+    mb = jnp.maximum(mb, 1e-300)
+    high = jnp.maximum(high, low * (1.0 + 1e-12))
+
+    # Segment endpoints
+    a1 = low
+    b1 = jnp.minimum(high, mb)
+    a2 = jnp.maximum(low, mb)
+    b2 = high
+
+    # Integral of (m/mb)^(-alpha) dm = mb^alpha ∫ m^{-alpha} dm
+    I1 = jnp.where(b1 > a1, (mb ** alpha1) * _int_power(a1, b1, -alpha1), 0.0)
+    I2 = jnp.where(b2 > a2, (mb ** alpha2) * _int_power(a2, b2, -alpha2), 0.0)
+    N = I1 + I2
+    N = jnp.maximum(N, 1e-300)
+    return N
+
+
+def _E_smoothstep_under_broken_pl(
+    *,
+    alpha1, alpha2, mb,
+    low, high,
+    ml, d,
+):
+    """
+    Compute E[S(m)] under the sharp broken power-law on [low,high],
+    where S is the smoothstep low-end taper at ml=low and width d.
+
+    Assumes hard truncation at [low,high] and that taper is at ml (typically ml==low).
+    """
+    low = jnp.asarray(low); high = jnp.asarray(high)
+    ml = jnp.asarray(ml); d = jnp.asarray(d)
+    ramp_end = ml + d
+
+    N = _broken_pl_sharp_norm(alpha1, alpha2, mb, low, high)
+
+    # helper: integrate m^{-alpha} * S(m) over an interval [a,b] that lies within ramp
+    def _int_seg_ramp(a, b, alpha, mb):
+        return (mb ** alpha) * _int_power_times_smoothstep_ramp(a, b, -alpha, ml=ml, d=d)
+
+    # helper: integrate m^{-alpha} (no S) over bulk
+    def _int_seg_bulk(a, b, alpha, mb):
+        return (mb ** alpha) * _int_power(a, b, -alpha)
+
+    # We integrate S * (broken-PL) over [low,high], splitting by:
+    #  - break mb
+    #  - ramp boundary ramp_end
+    # S=0 below ml, polynomial on [ml,ramp_end], 1 above ramp_end.
+
+    # Segment 1: m in [low, min(mb,high)] with alpha1
+    s1_a = low
+    s1_b = jnp.minimum(high, mb)
+
+    # Segment 2: m in [max(low,mb), high] with alpha2
+    s2_a = jnp.maximum(low, mb)
+    s2_b = high
+
+    def _int_component(a, b, alpha):
+        # ramp part: intersection with [ml, ramp_end]
+        r_a = jnp.maximum(a, ml)
+        r_b = jnp.minimum(b, ramp_end)
+        has_ramp = r_b > r_a
+        ramp = jnp.where(has_ramp, _int_seg_ramp(r_a, r_b, alpha, mb), 0.0)
+
+        # bulk part: intersection with [ramp_end, b]
+        b_a = jnp.maximum(a, ramp_end)
+        b_b = b
+        has_bulk = b_b > b_a
+        bulk = jnp.where(has_bulk, _int_seg_bulk(b_a, b_b, alpha, mb), 0.0)
+
+        return ramp + bulk
+
+    I = 0.0
+    I += jnp.where(s1_b > s1_a, _int_component(s1_a, s1_b, alpha1), 0.0)
+    I += jnp.where(s2_b > s2_a, _int_component(s2_a, s2_b, alpha2), 0.0)
+
+    return I / N
+
+
+# -----------------------------
+# Full m1 normalization for your mixture with low-end smoothstep
+# -----------------------------
+
+def logNorm_m1_DPLDP_smoothstep_hard(
+    # broken PL params
+    alpha1, alpha2, mb,
+    # gaussian params
+    mu1, sigma1, mu2, sigma2,
+    # domain + taper
+    m1_low, m_high, delta_m1,
+    # mixture weights (assumed already valid, sum≈1)
+    lambda0, lambda1, lambda2,
+    # which gaussian normalization you want
+    norm_gauss="uplow",
+    # eps safety
+    eps=1e-300,
+):
+    """
+    Analytic log normalization for the *m1* mixture density in logpdfm1_DPLDP,
+    under the assumptions you stated:
+      - ignore the sigmoid 'log_gate' regularizers (hard truncation at [m1_low, m_high])
+      - use non-LVK low-mass taper S = smoothstep on [m1_low, m1_low+delta_m1], S=1 above
+      - treat the broken power law as a SHARP break at mb (ignore epsilon smoothing sigmoid)
+      - Gaussian components are either truncated on [m1_low,m_high] ('uplow'),
+        or as in your other modes.
+
+    This returns:
+        log Z = log ∫_{m1_low}^{m_high} [ S(m) * (lambda0*p_bpl(m) + lambda1*p_g1(m) + lambda2*p_g2(m)) ] dm
+
+    Where each component p_* is normalized according to norm_gauss and the broken-PL normalization.
+    """
+    low = jnp.asarray(m1_low)
+    high = jnp.asarray(m_high)
+
+    # E[S] under broken power law
+    Epl = _E_smoothstep_under_broken_pl(
+        alpha1=alpha1, alpha2=alpha2, mb=mb,
+        low=low, high=high,
+        ml=low, d=delta_m1
+    )
+
+    # Gaussian expectations depend on how they are normalized in your logpdfm1_DPLDP
+    if norm_gauss == "uplow":
+        Eg1 = _int_trunc_gauss_times_S(
+            low, high, mu=mu1, sig=sigma1, ml=low, d=delta_m1, low=low, high=high
+        )
+        Eg2 = _int_trunc_gauss_times_S(
+            low, high, mu=mu2, sig=sigma2, ml=low, d=delta_m1, low=low, high=high
+        )
+    elif norm_gauss == "low-once":
+        # g1: lower-truncated at low (and effectively infinite upper, but we still hard-truncate at high)
+        # Your original "low-once" mixes a lower-trunc g1 and an *untruncated* g2.
+        # Under the "hard truncation" assumption, both should be truncated to [low, high] for normalization.
+        Eg1 = _int_trunc_gauss_times_S(
+            low, high, mu=mu1, sig=sigma1, ml=low, d=delta_m1, low=low, high=high
+        )
+        Eg2 = _int_trunc_gauss_times_S(
+            low, high, mu=mu2, sig=sigma2, ml=low, d=delta_m1, low=low, high=high
+        )
+    elif norm_gauss == "none":
+        # Same note: under hard truncation, they should be truncated.
+        Eg1 = _int_trunc_gauss_times_S(
+            low, high, mu=mu1, sig=sigma1, ml=low, d=delta_m1, low=low, high=high
+        )
+        Eg2 = _int_trunc_gauss_times_S(
+            low, high, mu=mu2, sig=sigma2, ml=low, d=delta_m1, low=low, high=high
+        )
+    else:
+        raise ValueError("norm_gauss must be 'uplow', 'low-once', or 'none' for this analytic norm.")
+
+    # Mixture integral
+    Z = lambda0 * Epl + lambda1 * Eg1 + lambda2 * Eg2
+    Z = jnp.maximum(Z, eps)
+    return jnp.log(Z)
+
+
+
+# ---- Gauss–Legendre quadrature helpers (JAX-friendly) ----
+from functools import lru_cache
+import numpy as _np
+import jax.numpy as jnp
+from jax.scipy.special import logsumexp as _logsumexp
+
+
+@lru_cache(maxsize=32)
+def _leggauss_cached(n: int):
+    """
+    Return (t, w) for Gauss–Legendre on [-1, 1], as float64 JAX arrays.
+    Cached once per n.
+    """
+    t_np, w_np = _np.polynomial.legendre.leggauss(int(n))
+    t = jnp.asarray(t_np, dtype=jnp.float64)
+    w = jnp.asarray(w_np, dtype=jnp.float64)
+    return t, w
+
+
+def _log_integral_gl_1d(logf, a, b, *, n=32):
+    """
+    Compute log ∫_a^b exp(logf(x)) dx using n-point Gauss–Legendre.
+    Works with JAX tracers for a,b.
+
+    logf: callable x -> log density (broadcastable over x)
+    a,b: scalars (can be JAX tracers)
+    """
+    a = jnp.asarray(a, dtype=jnp.float64)
+    b = jnp.asarray(b, dtype=jnp.float64)
+
+    # ensure ordering
+    a0 = jnp.minimum(a, b)
+    b0 = jnp.maximum(a, b)
+
+    # if interval is empty, return -inf
+    length = b0 - a0
+    empty = length <= 0.0
+
+    t, w = leggauss_const(int(n))  # constants
+
+    # map nodes to [a0, b0]
+    mid  = 0.5 * (a0 + b0)
+    half = 0.5 * (b0 - a0)
+    x = mid + half * t
+
+    # log-integrand at nodes
+    lv = logf(x)
+
+    # include weights + Jacobian
+    logw = jnp.log(w) + jnp.log(half)
+    out = _logsumexp(lv + logw)
+
+    return jnp.where(empty, -jnp.inf, out)
+
+
+def _logaddexp(a, b):
+    return jnp.logaddexp(a, b)
+
+
+# ---- Fast replacements for logNorm_DPLDP and logC_DPLDP using GL ----
+
+def logNorm_m1_DPLDP_GL(
+    bk,
+    alpha1,
+    alpha2,
+    mb,
+    mu1,
+    sigma1,
+    mu2,
+    sigma2,
+    m1_low,
+    m_high,
+    delta_m1,
+    lambda0,
+    lambda1,
+    lambda2,
+    epsilon,
+    *,
+    smoothing="LVK",
+    simplex_repair=False,
+    eps_w=1e-15,
+    sl=0.05,
+    sh=0.05,
+    norm_gauss="uplow",
+    n_gl=32,
+):
+    """
+    logZ = log ∫_{m1_low}^{m_high} exp(logpdfm1_DPLDP(..., m1)) dm1
+    computed by Gauss–Legendre on a small number of intervals.
+
+    This keeps your EXACT model (soft break epsilon + gates + smoothing choice).
+    """
+    m1_low = jnp.asarray(m1_low, dtype=jnp.float64)
+    m_high = jnp.asarray(m_high, dtype=jnp.float64)
+    mb     = jnp.asarray(mb, dtype=jnp.float64)
+
+    # fixed split point for taper end
+    m_taper_end = jnp.minimum(m1_low + jnp.asarray(delta_m1, dtype=jnp.float64), m_high)
+
+    # clamp break into [m_taper_end, m_high] so segments are ordered
+    mb_c = jnp.clip(mb, m_taper_end, m_high)
+
+    def _logf(x):
+        return logpdfm1_DPLDP(
+            bk,
+            x,
+            alpha1, alpha2, mb,
+            mu1, sigma1, mu2, sigma2,
+            m1_low, m_high, delta_m1,
+            lambda0, lambda1, lambda2,
+            epsilon,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            eps_w=eps_w,
+            sl=sl,
+            sh=sh,
+            norm_gauss=norm_gauss,
+        )
+
+    # Segment 1: [m1_low, m_taper_end]
+    logI1 = _log_integral_gl_1d(_logf, m1_low, m_taper_end, n=n_gl)
+
+    # Segment 2: [m_taper_end, mb_c]
+    logI2 = _log_integral_gl_1d(_logf, m_taper_end, mb_c, n=n_gl)
+
+    # Segment 3: [mb_c, m_high]
+    logI3 = _log_integral_gl_1d(_logf, mb_c, m_high, n=n_gl)
+
+    # Total = log(exp(logI1)+exp(logI2)+exp(logI3))
+    logZ = _logaddexp(_logaddexp(logI1, logI2), logI3)
+    return logZ
+
+
+def logC_m2_PLP_GL(
+    bk,
+    m1,
+    beta,
+    deltam,
+    ml,
+    *,
+    sig_l=0.05,
+    m_g=45.0,
+    w_g=80.0,
+    sig_g_low=5.0,
+    sig_g_high=5.0,
+    has_m2_break=False,
+    smoothing="LVK",
+    m_high=None,
+    n_gl=32,
+):
+    """
+    Compute logC(m1) = log ∫_{ml}^{min(m1, m_high)} exp(logpdfm2_PLP_reg(m)) dm
+    with Gauss–Legendre quadrature.
+
+    - Keeps your EXACT model (including LVK vs non-LVK smoothing, and has_m2_break mask)
+    - Vectorizable over m1 (m1 can be array); uses vmap-style broadcasting internally.
+    """
+    m1 = jnp.asarray(m1, dtype=jnp.float64)
+    ml = jnp.asarray(ml, dtype=jnp.float64)
+
+    if m_high is None:
+        raise ValueError("Pass m_high (hard truncation upper bound) for m2 integral.")
+
+    m_high = jnp.asarray(m_high, dtype=jnp.float64)
+    upper = jnp.minimum(m1, m_high)
+
+    # Optional split at taper end for better accuracy (esp. non-LVK smoothstep)
+    taper_end = jnp.minimum(ml + jnp.asarray(deltam, dtype=jnp.float64), upper)
+
+    def _logf(x):
+        return logpdfm2_PLP_reg(
+            bk,
+            x,
+            beta,
+            deltam,
+            ml,
+            sig_l=sig_l,
+            m_g=m_g,
+            w_g=w_g,
+            sig_g_low=sig_g_low,
+            sig_g_high=sig_g_high,
+            has_m2_break=has_m2_break,
+            smoothing=smoothing,
+        )
+
+    # integrate on [ml, taper_end] and [taper_end, upper]
+    # Both are safe even if taper_end==ml or taper_end==upper (helper returns -inf on empty)
+    logI1 = _log_integral_gl_1d(_logf, ml, taper_end, n=n_gl)
+    logI2 = _log_integral_gl_1d(_logf, taper_end, upper, n=n_gl)
+
+    logC = _logaddexp(logI1, logI2)
+    return logC
+
+
+    
 def logpdfm1_DPLDP(
     bk,
     m1,
@@ -442,28 +1083,85 @@ def logpdf_DPLDP(
         smoothing=smoothing,
     )
 
+#     lC = logC_powerlaw_smoothstep(
+#     m1,
+#     beta=beta,
+#     ml=m2_low,     # this is your low-mass cutoff for m2
+#     d=delta_m2,    # taper width
+#     mmax=m_high,   # hard high cutoff
+# )
+
+#     lC = logC_m2_PLP_GL(
+#     bk,
+#     m1,
+#     beta,
+#     delta_m2,
+#     m2_low,
+#     #sig_l=sig_l,
+#     has_m2_break=has_m2_break,
+#     smoothing=smoothing,
+#     m_high=m_high,
+#     n_gl=16,
+# )
+
+
     if norm:
-        ln = logNorm_DPLDP(
-            bk,
-            alpha1,
-            alpha2,
-            mb,
-            mu1,
-            sigma1,
-            mu2,
-            sigma2,
-            m1_low,
-            m_high,
-            delta_m1,
-            lambda0,
-            lambda1,
-            lambda2,
-            epsilon,
-            smoothing=smoothing,
-            res=resN,
-            simplex_repair=simplex_repair,
-            norm_gauss=norm_gauss,
-        )
+        # ln = logNorm_DPLDP(
+        #     bk,
+        #     alpha1,
+        #     alpha2,
+        #     mb,
+        #     mu1,
+        #     sigma1,
+        #     mu2,
+        #     sigma2,
+        #     m1_low,
+        #     m_high,
+        #     delta_m1,
+        #     lambda0,
+        #     lambda1,
+        #     lambda2,
+        #     epsilon,
+        #     smoothing=smoothing,
+        #     res=resN,
+        #     simplex_repair=simplex_repair,
+        #     norm_gauss=norm_gauss,
+        #)
+ 
+        # ln = logNorm_m1_DPLDP_smoothstep_hard(
+        #     alpha1,
+        #     alpha2,
+        #     mb,
+        #     mu1,
+        #     sigma1,
+        #     mu2,
+        #     sigma2,
+        #     m1_low,
+        #     m_high,
+        #     delta_m1,
+        #     lambda0,
+        #     lambda1,
+        #     lambda2,
+        #     #smoothing=smoothing,
+        #     #res=resN,
+        #     #simplex_repair=simplex_repair,
+        #     norm_gauss=norm_gauss,
+        # )
+
+        ln  = logNorm_m1_DPLDP_GL(
+                bk,
+                alpha1, alpha2, mb,
+                mu1, sigma1, mu2, sigma2,
+                m1_low, m_high, delta_m1,
+                lambda0, lambda1, lambda2,
+                epsilon,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                #sl=sl, sh=sh,
+                norm_gauss=norm_gauss,
+                n_gl=16,   # try 16 first if you want
+            )
+        
     else:
         ln = 0.0
 

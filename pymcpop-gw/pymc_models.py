@@ -178,6 +178,7 @@ def make_model(  priors,
     ndata_np = ndata #ndata.eval()
     ninj = m1inj.shape[1] # max number of injections
     ninj_np = ninj #ninj.eval()
+    Ndraw = float(Ndraw)
 
     if not use_sel_spin and spin_model!='none':
         raise ValueError("You are using spin_model=%s but not use_sel_spin. "%spin_model)

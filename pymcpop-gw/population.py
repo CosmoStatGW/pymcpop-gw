@@ -7,22 +7,17 @@ from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_b
 from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
 from pytensor_utils import logdiffexp as logdiffexp_bk
 from pytensor_utils import logsumexp as _logsumexp
-from jax_utils import _searchsorted_bk, _interp_prepare_bk, _interp_apply_bk
+from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk
 from pytensor_utils import atinterp
 
 import jax.numpy as jnp
 
 try:
-    from jax_utils import make_interp_pt_like_multiY, make_interp_pt_like #make_interp_pt_cached_dy as _make_interp_pt_cached_dy
-    _JAX_INTERP_PT = make_interp_pt_like(eps=1e-12, side="right")
-    _JAX_INTERP_PT_MULT = make_interp_pt_like_multiY(eps=1e-12, side="right")
-    
-    import jax
-    
+    import jax    
 except Exception as e:
     print(e)
     raise ValueError()
-    _JAX_INTERP_PT = None
+
 
 
 def log_p_pop(
@@ -121,7 +116,7 @@ def log_p_pop(
         
         if interp_vals_mass is not None:
             #print("Log p_pop using interp_vals_mass")
-            # Expected packing (matches your PyMC construction):
+            # Expected packing:
             # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1_grid, ln_m1]
             # interp_grids_mass = [m1_grid,  m2_grid]
             lp_m1_grid, lp_m2_grid, lC_of_m1_grid, ln_m1 = interp_vals_mass
@@ -143,22 +138,24 @@ def log_p_pop(
             if use_jax:
 
                  
-                lpm1 = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lp_m1_grid)
-                lpm2 = atinterp(bk, m2s, jax.lax.stop_gradient(m2_grid), lp_m2_grid)
-                lC   = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lC_of_m1_grid)
+                # lpm1 = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lp_m1_grid)
+                # lpm2 = atinterp(bk, m2s, jax.lax.stop_gradient(m2_grid), lp_m2_grid)
+                # lC   = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lC_of_m1_grid)
 
-                # print("log p pop debug")
-                # interp = make_interp_pt_like(eps=1e-12, side="right")
-                # interpK = make_interp_pt_like_multiY(eps=1e-12, side="right")
-
-                # # 1D table should have zero grad w.r.t xg
-                # f = lambda xg: jnp.sum(interp(m1s, xg, lp_m1_grid))
-                # print(jnp.max(jnp.abs(jax.grad(f)(m1_grid))))  # should be 0
+                m1g = m1_grid #jax.lax.stop_gradient(m1_grid)
+                i1, t1 = _interp_prepare_bk(bk, m1s, m1g, eps=1e-12, side="right")
+                #i1 = bk.stop_grad(i1)
                 
-                # # MultiY table should also have zero grad w.r.t xg
-                # Y = jnp.stack([lp_m1_grid, lC_of_m1_grid], axis=0)  # (K,N)
-                # g = lambda xg: jnp.sum(interpK(m1s, xg, Y))
-                # print(jnp.max(jnp.abs(jax.grad(g)(m1_grid)))) 
+                # stack once
+                m1_tables = jnp.stack([lp_m1_grid, lC_of_m1_grid], axis=0)  # (2, N)
+                vals = _interp_apply_multi_bk(bk, i1, t1, m1_tables)
+                lpm1 = vals[0]
+                lC   = vals[1]
+
+                m2g = m2_grid #jax.lax.stop_gradient(m2_grid)
+                i2, t2 = _interp_prepare_bk(bk, m2s, m2g, eps=1e-12, side="right")
+                i2 = i2 #bk.stop_grad(i2)
+                lpm2 = _interp_apply_bk(bk, i2, t2, lp_m2_grid)
 
     
             else:
