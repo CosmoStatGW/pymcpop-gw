@@ -564,11 +564,13 @@ def make_model(  priors,
     #     mode=z_grid_mode,
     # )
 
-    zgrid_np = atools.make_z_grid_fixed(
-    total=zres,
-    zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c,
-    mid_boost=8.0, edge_frac=0.08, end_boost=0.5
-)
+#     zgrid_np = atools.make_z_grid_fixed(
+#     total=zres,
+#     zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c,
+#     mid_boost=8.0, edge_frac=0.08, end_boost=0.5
+# )
+
+    zgrid_np = np.linspace(zmin_a, zmax_c, zres)
     
         
     zgrid_mass_np = atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode)

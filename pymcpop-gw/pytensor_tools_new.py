@@ -24,7 +24,7 @@ import jax.scipy as jsp
 
 from backends import JAXBackend
 from population import log_p_pop, sel_bias_with_uncertainty
-from jax_utils import _interp_prepare_bk, _interp_apply_bk
+from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_prepare_uniform_bk
 
 from pytensor.gradient import DisconnectedType, grad_not_implemented
 
@@ -435,30 +435,34 @@ def _make_pop_and_sel_core(
         # --- event likelihood
         spins_evt_list = spin_models._spins_as_list(spins_evt, spin_model)
 
-        z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
-        z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+        # z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+        # z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
 
-        # dL_u, z_u = make_dL_to_z_table(
-        #     bk,
-        #     dL_grid,
-        #     zgrid,
-        #     NdL=1024,
-        #     eps=eps_interp,
-        #     side=side_interp,
-        #     logspace=True,      # usually best for wide dL ranges
-        # )
+        dL_u, z_u = make_dL_to_z_table(
+            bk,
+            dL_grid,
+            zgrid,
+            NdL=1024,
+            eps=eps_interp,
+            side=side_interp,
+            logspace=False,      # usually best for wide dL ranges
+        )
         
-        # # 2) use *uniform* interp for the million-point calls (no searchsorted)
-        # z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
-        # z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
+        # 2) use *uniform* interp for the million-point calls (no searchsorted)
+        z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
+        z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
         
         #dc_evt = atinterp(bk, z_evt, zgrid, dc_grid, eps=eps_interp, side=side_interp)
         #log_ddL_dz_evt = atinterp(bk, z_evt, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
         # Reuse a single searchsorted for any z->grid interpolations we need downstream
-        idx_z_evt, t_z_evt = _interp_prepare_bk(bk, z_evt, zgrid, eps=eps_interp, side=side_interp)
-        #idx_z_evt = bk.stop_grad(idx_z_evt)
+        # idx_z_evt, t_z_evt = _interp_prepare_bk(bk, z_evt, zgrid, eps=eps_interp, side=side_interp)
+        # dc_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, dc_grid)
+        # log_ddL_dz_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, log_ddL_dz_grid)
+
+        idx_z_evt, t_z_evt = _interp_prepare_uniform_bk(bk, z_evt, zgrid, eps=eps_interp)
         dc_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, dc_grid)
         log_ddL_dz_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, log_ddL_dz_grid)
+
 
 
         onepz = 1.0 + z_evt
@@ -487,9 +491,12 @@ def _make_pop_and_sel_core(
         
         #dc_inj = atinterp(bk, z_inj, zgrid, dc_grid, eps=eps_interp, side=side_interp)
         #log_ddL_dz_inj = atinterp(bk, z_inj, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
-        idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid, eps=eps_interp, side=side_interp)
-        #idx_z_inj = bk.stop_grad(idx_z_inj)  # optional: affects grads, not values
-        
+    
+        # idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid, eps=eps_interp, side=side_interp)
+        # dc_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, dc_grid)
+        # log_ddL_dz_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, log_ddL_dz_grid)
+
+        idx_z_inj, t_z_inj = _interp_prepare_uniform_bk(bk, z_inj, zgrid, eps=eps_interp)
         dc_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, dc_grid)
         log_ddL_dz_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, log_ddL_dz_grid)
 
