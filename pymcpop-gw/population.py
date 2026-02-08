@@ -8,7 +8,7 @@ from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
 from pytensor_utils import logdiffexp as logdiffexp_bk
 from pytensor_utils import logsumexp as _logsumexp
 from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk
-from pytensor_utils import atinterp
+from pytensor_utils import atinterp, atinterp_uniform
 
 import jax.numpy as jnp
 
@@ -138,24 +138,24 @@ def log_p_pop(
             if use_jax:
 
                  
-                # lpm1 = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lp_m1_grid)
-                # lpm2 = atinterp(bk, m2s, jax.lax.stop_gradient(m2_grid), lp_m2_grid)
-                # lC   = atinterp(bk, m1s, jax.lax.stop_gradient(m1_grid), lC_of_m1_grid)
+                lpm1 = atinterp_uniform(bk, m1s, m1_grid, lp_m1_grid)
+                lpm2 = atinterp_uniform(bk, m2s, m2_grid, lp_m2_grid)
+                lC   = atinterp_uniform(bk, m1s, m1_grid, lC_of_m1_grid)
 
-                m1g = m1_grid #jax.lax.stop_gradient(m1_grid)
-                i1, t1 = _interp_prepare_bk(bk, m1s, m1g, eps=1e-12, side="right")
-                #i1 = bk.stop_grad(i1)
+                # m1g = m1_grid #jax.lax.stop_gradient(m1_grid)
+                # i1, t1 = _interp_prepare_bk(bk, m1s, m1g, eps=1e-12, side="right")
+                # #i1 = bk.stop_grad(i1)
                 
-                # stack once
-                m1_tables = jnp.stack([lp_m1_grid, lC_of_m1_grid], axis=0)  # (2, N)
-                vals = _interp_apply_multi_bk(bk, i1, t1, m1_tables)
-                lpm1 = vals[0]
-                lC   = vals[1]
+                # # stack once
+                # m1_tables = jnp.stack([lp_m1_grid, lC_of_m1_grid], axis=0)  # (2, N)
+                # vals = _interp_apply_multi_bk(bk, i1, t1, m1_tables)
+                # lpm1 = vals[0]
+                # lC   = vals[1]
 
-                m2g = m2_grid #jax.lax.stop_gradient(m2_grid)
-                i2, t2 = _interp_prepare_bk(bk, m2s, m2g, eps=1e-12, side="right")
-                i2 = i2 #bk.stop_grad(i2)
-                lpm2 = _interp_apply_bk(bk, i2, t2, lp_m2_grid)
+                # m2g = m2_grid #jax.lax.stop_gradient(m2_grid)
+                # i2, t2 = _interp_prepare_bk(bk, m2s, m2g, eps=1e-12, side="right")
+                # i2 = i2 #bk.stop_grad(i2)
+                # lpm2 = _interp_apply_bk(bk, i2, t2, lp_m2_grid)
 
     
             else:

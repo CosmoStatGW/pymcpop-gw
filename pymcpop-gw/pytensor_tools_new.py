@@ -11,7 +11,7 @@ import spin_models
 import mass_models
 from cosmology import dcfun_quad, dLfun, log_ddL_dz
 #from cosmology_jax import make_z_from_dL_interp
-from pytensor_utils import atinterp
+from pytensor_utils import atinterp, make_dL_to_z_table, atinterp_uniform
 
 
 import jax
@@ -436,6 +436,22 @@ def _make_pop_and_sel_core(
         spins_evt_list = spin_models._spins_as_list(spins_evt, spin_model)
 
         z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+        z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+
+        # dL_u, z_u = make_dL_to_z_table(
+        #     bk,
+        #     dL_grid,
+        #     zgrid,
+        #     NdL=1024,
+        #     eps=eps_interp,
+        #     side=side_interp,
+        #     logspace=True,      # usually best for wide dL ranges
+        # )
+        
+        # # 2) use *uniform* interp for the million-point calls (no searchsorted)
+        # z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
+        # z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
+        
         #dc_evt = atinterp(bk, z_evt, zgrid, dc_grid, eps=eps_interp, side=side_interp)
         #log_ddL_dz_evt = atinterp(bk, z_evt, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
         # Reuse a single searchsorted for any z->grid interpolations we need downstream
@@ -466,7 +482,9 @@ def _make_pop_and_sel_core(
         # --- selection (injections)
         spins_inj_list = spin_models._spins_as_list(spins_inj, spin_model)
 
-        z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+        
+        
+        
         #dc_inj = atinterp(bk, z_inj, zgrid, dc_grid, eps=eps_interp, side=side_interp)
         #log_ddL_dz_inj = atinterp(bk, z_inj, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
         idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid, eps=eps_interp, side=side_interp)

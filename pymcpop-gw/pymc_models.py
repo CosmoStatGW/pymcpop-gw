@@ -1757,25 +1757,25 @@ def make_model(  priors,
                 # # Pack for later use
                 # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
 
-                m1_grid_ = mm.build_m1_grid_DPLDP_bk(
-                                NPBackend(),
-                                  n_peak=interp_mass,   
-                         n_tail_low=interp_mass//3,
-                         n_tail_high=interp_mass//4,
-                         n_taper=interp_mass//2,
-                        frac_gauss1=0.4,
-                            )
+                # m1_grid_ = mm.build_m1_grid_DPLDP_bk(
+                #                 NPBackend(),
+                #                   n_peak=interp_mass,   
+                #          n_tail_low=interp_mass//3,
+                #          n_tail_high=interp_mass//4,
+                #          n_taper=interp_mass//2,
+                #         frac_gauss1=0.4,
+                #             )
                 
-                m2_grid_ = mm.build_m2_grid_bk( NPBackend(), 
+                # m2_grid_ = mm.build_m2_grid_bk( NPBackend(), 
                                                  
-                                # resolution controls
-                                n_total=500,
-                                n_taper=200,)
+                #                 # resolution controls
+                #                 n_total=500,
+                #                 n_taper=200,)
                                               
                                               
 
-                # m1_grid_ = np.geomspace(3., 300, interp_mass)
-                # m2_grid_ = np.geomspace(3., 300, interp_mass)
+                m1_grid_ = np.linspace(3., 300, interp_mass)
+                m2_grid_ = np.linspace(3., 300, interp_mass)
 
 
                 # mm.grid_diagnostics("m1_grid", m1_grid_)

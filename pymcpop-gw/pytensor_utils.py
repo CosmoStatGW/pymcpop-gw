@@ -81,31 +81,57 @@ def logdiffexp(bk, a, b, *, eps=1e-16):
 # Uniform grid interpolation 
 
 
-def atinterp_uniform(bk, x, x0, x1, n, yp):
+def atinterp_uniform(bk, x, xp, fp_const, eps=1e-12, side="right"):
     """
-    Uniform-grid linear interpolation: xp must be uniformly spaced and increasing.
-    Backend-agnostic version (works for NumPy + PyTensor).
+    Uniform-grid linear interpolation with the SAME signature as atinterp().
 
-    Inputs:
-      x: query points
-      x0, x1: grid endpoints
-      n: number of grid points (same meaning as your legacy)
-      yp: values on the grid (length n)
+    Assumptions:
+      - xp is 1D, strictly increasing, and (approximately) uniformly spaced.
+      - fp_const has the same leading length as xp.
+
+    Notes:
+      - `side` is ignored (kept only for signature compatibility).
+      - We do NOT use searchsorted; index is computed by arithmetic.
+      - Index is clipped to [0, n-2] so we always access fp_const[j] and fp_const[j+1].
+      - If bk exposes stop_grad, we stop gradients through the integer index.
     """
-    dx = (x1 - x0) / (n - 1)
+    n = xp.shape[0]
 
+    # Endpoints / spacing from the grid (NOT from the query points)
+    x0 = xp[0]
+    dx = xp[1] - xp[0]
+    dx = bk.maximum(dx, eps)
+
+    # Continuous index in grid units
     t = (x - x0) / dx
-    t = bk.clip(t, 0.0, n - 1)
+    # Keep within grid support so j in [0, n-2]
+    t = bk.clip(t, 0.0, (n - 1) * 1.0)
 
-    # integer index
-    j = bk.asarray(bk.floor(t), dtype="int32") if hasattr(bk, "asarray") else bk.floor(t).astype("int32")
+    # Integer bin index j = floor(t), clipped to [0, n-2]
+    j = bk.floor(t)
+    # Cast to int32 (backend-dependent)
+    if hasattr(bk, "asarray"):
+        j = bk.asarray(j, dtype="int32")
+    else:
+        # works for numpy / jax arrays
+        j = j.astype("int32")
     j = bk.clip(j, 0, n - 2)
 
-    r = t - j
+    # Do not differentiate through discrete indices (if available)
+    if hasattr(bk, "stop_grad"):
+        j = bk.stop_grad(j)
 
-    y0 = yp[j]
-    y1 = yp[j + 1]
-    return (1.0 - r) * y0 + r * y1
+    # Left/right x and y
+    xl = x0 + j * dx
+    yl = fp_const[j]
+    yh = fp_const[j + 1]
+
+    # Fraction within the cell
+    r = (x - xl) / dx
+    # Numerical guard (optional, but safe)
+    r = bk.clip(r, 0.0, 1.0)
+
+    return (1.0 - r) * yl + r * yh
 
 
 # ---------------------------------------------------------------------
@@ -187,3 +213,49 @@ def atcumtrapz(bk, y, x, *, axis=-1):
 
     pieces = d * (y[tuple(sl1)] + y[tuple(sl2)]) * 0.5
     return bk.cumsum(pieces, axis=axis)
+
+
+
+
+def make_dL_to_z_table(
+    bk,
+    dL_grid,
+    zgrid,
+    *,
+    NdL=1024,
+    eps=1e-12,
+    side="right",
+    logspace=True,
+):
+    """
+    Build a uniform (or log-uniform) dL axis and the corresponding inverse table z(dL_u),
+    using your existing atinterp(dL_u, dL_grid, zgrid).
+
+    This does NOT change cosmology: dL_grid is still computed from zgrid.
+    It only amortizes searchsorted by moving it to a small table (NdL points).
+
+    Returns:
+      dL_u (uniform in dL or log(dL))
+      z_u  (same length)
+    """
+    dLmin = dL_grid[0]
+    dLmax = dL_grid[-1]
+
+    # Build uniform axis in dL (or in log dL)
+    if logspace:
+        # guard against <=0
+        dLmin_g = bk.maximum(dLmin, eps)
+        dLmax_g = bk.maximum(dLmax, dLmin_g * (1.0 + 1e-12))
+        # need exp/log; bk should provide these (JAXBackend does)
+        u0 = bk.log(dLmin_g)
+        u1 = bk.log(dLmax_g)
+        u = bk.linspace(u0, u1, NdL)
+        dL_u = bk.exp(u)
+    else:
+        dL_u = bk.linspace(dLmin, dLmax, NdL)
+
+    # Invert once using your existing general interp (searchsorted on NdL points only)
+    z_u = atinterp(bk, dL_u, dL_grid, zgrid, eps=eps, side=side)
+
+    return dL_u, z_u
+
