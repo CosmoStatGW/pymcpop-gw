@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import partial
 
 from typing import Tuple
 import numpy as np
@@ -23,7 +24,7 @@ import jax.scipy as jsp
 
 
 from backends import JAXBackend
-from population import log_p_pop, sel_bias_with_uncertainty, make_sel_bias_with_uncertainty_cuvjp
+from population import log_p_pop, sel_bias_with_uncertainty, make_dL_to_z_cuvjp, make_dL_to_z_cuvjp_uniform
 from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_prepare_uniform_bk, _interp_apply_multi_bk
 
 from pytensor.gradient import DisconnectedType, grad_not_implemented
@@ -121,10 +122,70 @@ def _maybe_precompute_mass_tables(
     raise NotImplementedError
 
 
-    
+def make_mass_tables_cuvjp(*, bk, mass_model, smoothing, simplex_repair, has_m2_break, norm_gauss):
+    @jax.custom_vjp
+    def mass_tables(lambdaBBHmass, interp_grids_mass_jax):
+        vals = _maybe_precompute_mass_tables(
+            bk,
+            lambdaBBHmass,
+            interp_grids_mass_jax=interp_grids_mass_jax,
+            mass_model=mass_model,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+        )
+        return vals
+
+    def fwd(lambdaBBHmass, interp_grids_mass_jax):
+        vals = _maybe_precompute_mass_tables(
+            bk,
+            lambdaBBHmass,
+            interp_grids_mass_jax=interp_grids_mass_jax,
+            mass_model=mass_model,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+        )
+        # save the *computed tables* as residuals
+        return vals, (lambdaBBHmass, interp_grids_mass_jax, vals)
+
+    def bwd(res, g_vals):
+        lambdaBBHmass, interp_grids_mass_jax, vals = res
+
+        # IMPORTANT: compute gradient w.r.t lambdaBBHmass exactly,
+        # but reuse saved `vals` to avoid recomputation in backward wherever possible.
+        #
+        # If _maybe_precompute_mass_tables is pure JAX, you can vjp it:
+        def fn(lmb):
+            return _maybe_precompute_mass_tables(
+                bk,
+                lmb,
+                interp_grids_mass_jax=interp_grids_mass_jax,
+                mass_model=mass_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                norm_gauss=norm_gauss,
+            )
+
+        _, pull = jax.vjp(fn, lambdaBBHmass)
+        (g_lambda,) = pull(g_vals)
+
+        # no grads for grids (they’re treated constant here)
+        return (g_lambda, jax.tree_util.tree_map(jnp.zeros_like, interp_grids_mass_jax))
+
+    mass_tables.defvjp(fwd, bwd)
+    return mass_tables 
 
 
-
+# @partial(jax.jit, static_argnames=(
+#         "rate_model","mass_model","spin_model","smoothing","param",
+#         "simplex_repair","has_m2_break","norm_gauss",
+#         "is_observed","subtract_log_p_incl","linear_mass", "x01", "w01", "verbose", "eps_interp", "side_interp",
+#     "interp_mass", "has_interp_mass", "has_mass_grids", "mass_grids_jax", "linear_mass", "linear_z", "use_cuvjp"
+#     ))
 def _make_pop_and_sel_core(
     *,
     bk,
@@ -159,26 +220,11 @@ def _make_pop_and_sel_core(
     """
 
     if use_cuvjp:
-        sel_bias_cuvjp = make_sel_bias_with_uncertainty_cuvjp(
-            bk=bk,
-            rate_model=rate_model,
-            mass_model=mass_model,
-            spin_model=spin_model,
-            smoothing=smoothing,
-            simplex_repair=simplex_repair,
-            has_m2_break=has_m2_break,
-            norm_gauss=norm_gauss,
-            param=param,
-            is_observed=is_observed,
-            z_grid=zgrid,
-            verbose=verbose,
-            subtract_log_p_incl=subtract_log_p_incl,
-            eps_interp=eps_interp,
-            side_interp=side_interp,
-            linear_mass=linear_mass,
-            linear_z=linear_z,
-        )
-    
+        if not linear_z:
+            inv_dL_to_z = make_dL_to_z_cuvjp(bk=bk, eps_interp=eps_interp, side_interp=side_interp)
+        else:
+            inv_dL_to_z = make_dL_to_z_cuvjp_uniform(bk=bk, eps_interp=eps_interp)
+
     def _f(
         m1det, m2det, dLdet, spins_evt,
         m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
@@ -303,18 +349,31 @@ def _make_pop_and_sel_core(
             else:
                 # mass_grids are static: preconverted once outside and captured here
                 interp_grids_mass_jax = mass_grids_jax
+
+
+                mass_tables = make_mass_tables_cuvjp(
+                    bk=bk,
+                    mass_model=mass_model,
+                    smoothing=smoothing,
+                    simplex_repair=simplex_repair,
+                    has_m2_break=has_m2_break,
+                    norm_gauss=norm_gauss,
+                )
+                interp_vals_mass_jax = mass_tables(lambdaBBHmass, interp_grids_mass_jax)
+
+
             
-            interp_vals_mass_jax = _maybe_precompute_mass_tables(
-                bk,
-                lambdaBBHmass,
-                interp_grids_mass_jax=interp_grids_mass_jax,
-                mass_model=mass_model,
-                smoothing=smoothing,
-                simplex_repair=simplex_repair,
-                has_m2_break=has_m2_break,
-                norm_gauss=norm_gauss,
-                #is_observed=is_observed,
-            )
+            # interp_vals_mass_jax = _maybe_precompute_mass_tables(
+            #     bk,
+            #     lambdaBBHmass,
+            #     interp_grids_mass_jax=interp_grids_mass_jax,
+            #     mass_model=mass_model,
+            #     smoothing=smoothing,
+            #     simplex_repair=simplex_repair,
+            #     has_m2_break=has_m2_break,
+            #     norm_gauss=norm_gauss,
+            #     #is_observed=is_observed,
+            # )
         else:
             interp_grids_mass_jax = None
             interp_vals_mass_jax = None
@@ -324,51 +383,35 @@ def _make_pop_and_sel_core(
 
 
         if not linear_z:
-            
-            z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
-            #dc_evt = atinterp(bk, z_evt, zgrid, dc_grid, eps=eps_interp, side=side_interp)
-            #log_ddL_dz_evt = atinterp(bk, z_evt, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
-            
+
+            if use_cuvjp:
+                z_evt = inv_dL_to_z(dLdet, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda)
+                z_inj = inv_dL_to_z(dLinj, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda)
+
+
+            else:
+                
+                z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+                z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+
+             
             # Reuse a single searchsorted for any z->grid interpolations we need downstream
-            
+
+            # prepare indices once
             idx_z_evt, t_z_evt = _interp_prepare_bk(bk, z_evt, zgrid, eps=eps_interp, side=side_interp)
-            #dc_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, dc_grid)
-            #log_ddL_dz_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, log_ddL_dz_grid)
-            #E_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, E_grid)
-            #Xi_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, Xi_grid)
-            fps_evt = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)
-            vals_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, fps_evt)
-            dc_evt, log_ddL_dz_evt, E_evt, Xi_evt = vals_evt[0], vals_evt[1], vals_evt[2], vals_evt[3]
-
-            z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
-            #dc_inj = atinterp(bk, z_inj, zgrid, dc_grid, eps=eps_interp, side=side_interp)
-            #log_ddL_dz_inj = atinterp(bk, z_inj, zgrid, log_ddL_dz_grid, eps=eps_interp, side=side_interp)
-        
             idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid, eps=eps_interp, side=side_interp)
-            #dc_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, dc_grid)
-            #log_ddL_dz_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, log_ddL_dz_grid)
-            #E_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, E_grid)
-            #Xi_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, Xi_grid)
-            fps = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)
-            vals = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, fps)
-            dc_inj, log_ddL_dz_inj, E_inj, Xi_inj = vals[0], vals[1], vals[2], vals[3]
+            
+            # build stacked fps ONCE
+            fps4 = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)  # (4, Nz)
+            
+            # interpolate for events
+            vals_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, fps4)
+            dc_evt, log_ddL_dz_evt, E_evt, Xi_evt = vals_evt[0], vals_evt[1], vals_evt[2], vals_evt[3]
+            
+            # interpolate for injections (reuse fps4)
+            vals_inj = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, fps4)
+            dc_inj, log_ddL_dz_inj, E_inj, Xi_inj = vals_inj[0], vals_inj[1], vals_inj[2], vals_inj[3]
 
-            # ------------------------------------------------------------------
-            # Interpolate d(dL)/dtheta to events/injections and compute dz/dtheta
-            # via implicit differentiation:
-            #   dz/dtheta = - (d(dL)/dtheta) / (d(dL)/dz)
-            # We already have log_ddL_dz_{evt,inj}, so d(dL)/dz = exp(log_ddL_dz).
-            # ------------------------------------------------------------------
-    
-            # (5, N_evt)
-            dL_dtheta_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, dL_dtheta_grid)
-            ddL_dz_evt = bk.exp(log_ddL_dz_evt)
-            dz_dtheta_evt = -dL_dtheta_evt / ddL_dz_evt  # broadcast over first axis
-    
-            # (5, N_inj)
-            dL_dtheta_inj = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, dL_dtheta_grid)
-            ddL_dz_inj = bk.exp(log_ddL_dz_inj)
-            dz_dtheta_inj = -dL_dtheta_inj / ddL_dz_inj
 
 
         else:
@@ -384,41 +427,31 @@ def _make_pop_and_sel_core(
             )
             
             # 2) use *uniform* interp for the million-point calls (no searchsorted)
-            
-            z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
-    
+            if use_cuvjp:
+                z_evt = inv_dL_to_z(dLdet, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda)
+                z_inj = inv_dL_to_z(dLinj, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda)
+            else: 
+                z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
+                z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
+
+
+            # Uniform grids, no searchsorted
             idx_z_evt, t_z_evt = _interp_prepare_uniform_bk(bk, z_evt, zgrid, eps=eps_interp)
-            dc_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, dc_grid)
-            log_ddL_dz_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, log_ddL_dz_grid)
-            E_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, E_grid)
-            Xi_evt = _interp_apply_bk(bk, idx_z_evt, t_z_evt, Xi_grid)
-            #####
-
-            ##### Uniform grids, no searchsorted
-            z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
+            
+            fps_evt = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)  # (4, Nz)
+            vals_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, fps_evt)
+            dc_evt, log_ddL_dz_evt, E_evt, Xi_evt = vals_evt[0], vals_evt[1], vals_evt[2], vals_evt[3]
+            
             idx_z_inj, t_z_inj = _interp_prepare_uniform_bk(bk, z_inj, zgrid, eps=eps_interp)
-            dc_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, dc_grid)
-            log_ddL_dz_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, log_ddL_dz_grid)
-            E_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, E_grid)
-            Xi_inj = _interp_apply_bk(bk, idx_z_inj, t_z_inj, Xi_grid)
-            #####
+            
+            # IMPORTANT: reuse the same stacked fps (don’t rebuild it)
+            vals_inj = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, fps_evt)
+            dc_inj, log_ddL_dz_inj, E_inj, Xi_inj = vals_inj[0], vals_inj[1], vals_inj[2], vals_inj[3]
+            
+            
+    
 
-             # ------------------------------------------------------------------
-            # Interpolate d(dL)/dtheta to events/injections and compute dz/dtheta
-            # via implicit differentiation:
-            #   dz/dtheta = - (d(dL)/dtheta) / (d(dL)/dz)
-            # We already have log_ddL_dz_{evt,inj}, so d(dL)/dz = exp(log_ddL_dz).
-            # ------------------------------------------------------------------
-    
-            # (5, N_evt)
-            dL_dtheta_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, dL_dtheta_grid)
-            ddL_dz_evt = bk.exp(log_ddL_dz_evt)
-            dz_dtheta_evt = -dL_dtheta_evt / ddL_dz_evt  # broadcast over first axis
-    
-            # (5, N_inj)
-            dL_dtheta_inj = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, dL_dtheta_grid)
-            ddL_dz_inj = bk.exp(log_ddL_dz_inj)
-            dz_dtheta_inj = -dL_dtheta_inj / ddL_dz_inj
+
 
  
         onepz = 1.0 + z_evt
@@ -441,8 +474,7 @@ def _make_pop_and_sel_core(
                 linear_mass=linear_mass
         )
 
-        if not use_cuvjp:
-            log_mu, var_u = sel_bias_with_uncertainty(
+        log_mu, var_u = sel_bias_with_uncertainty(
                 bk,
                     m1inj, m2inj, dLinj,
                     spins_inj_list,
@@ -462,16 +494,19 @@ def _make_pop_and_sel_core(
                     Einj=E_inj, XiInj=Xi_inj,
                     linear_mass=linear_mass
             )
-        else:
-            log_mu, var_u = sel_bias_cuvjp(
-                m1inj, m2inj, dLinj, spins_inj_list,
-                log_p_draw, log_p_incl,
-                zgrid, dc_grid, log_ddL_dz_grid,
-                z_inj, dc_inj, log_ddL_dz_inj, Xi_inj, E_inj,
-                Lambda, Ndraw,
-                dz_dtheta_inj,
-                idx_z_inj, t_z_inj,
-            )
+
+        if False:
+                t0 = time.time()
+                z = inv_dL_to_z(...)
+                jax.block_until_ready(z)
+                t1 = time.time()
+                
+                out = sel_bias_with_uncertainty(...)
+                jax.block_until_ready(out[0])
+                t2 = time.time()
+                
+                print("inv:", t1-t0, "sel:", t2-t1)
+
 
         return (
             logp_pop_evt,

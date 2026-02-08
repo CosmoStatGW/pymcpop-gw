@@ -330,235 +330,184 @@ def sel_bias_with_uncertainty(
     return log_mu, var_log_lik_u
 
 
-def make_sel_bias_with_uncertainty_cuvjp(
-    *,
-    bk,
-    rate_model,
-    mass_model,
-    spin_model,
-    smoothing="LVK",
-    simplex_repair=False,
-    has_m2_break=False,
-    norm_gauss="uplow",
-    param="vanilla",
-    is_observed=False,
-    z_grid=None,
-    verbose=False,
-    subtract_log_p_incl=True,
-    eps_interp=1e-12,
-    side_interp="right",
-    linear_mass=False,
-    linear_z=False,
-):
+
+def make_dL_to_z_cuvjp(*, bk, eps_interp=1e-12, side_interp="right"):
     """
-    Fast selection custom VJP.
+    Fast custom VJP for z = z(dL) using the *dL-grid bracketing* only.
+    Avoids a second z->grid searchsorted/interp in the backward.
 
-    Backward strategy:
-      - Use jax.vjp on sel_bias_with_uncertainty treating zinj constant,
-        to get gradients wrt (dcinj, log_ddL_dz_inj, XiInj, Einj, Lambda).
-      - Compute g_zinj via cheap chain rule:
-            g_z = g_dc * d(dc)/dz + g_logdd * d(logdd)/dz + g_Xi * dXi/dz + g_E * dE/dz
-        using precomputed (idx_z_inj, t_z_inj) and the grids.
-      - Add implicit correction into Lambda[:5] using dz_dtheta_inj.
-      - Do NOT propagate gradients to zinj itself (we replace that path).
+    Signature matches your call:
+      inv_dL_to_z(dL, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda) -> z
 
-    Requires caller to pass (idx_z_inj, t_z_inj) from core.
+    Gradients:
+      - g_dL exact for the chosen linear inversion: dz/ddL = (dz/dk)/(ddL/dk)
+      - g_Lambda[:5] via implicit: dz/dtheta = -(dL_dtheta)/(ddL/dz)
+      - no grads to grids (return zeros)
     """
-
-    # --- helpers ---
-    def _zeros_like_tree(x):
-        # x may be ndarray or list/tuple of ndarrays
-        if isinstance(x, (list, tuple)):
-            return type(x)([_zeros_like_tree(xx) for xx in x])
-        return jnp.zeros_like(x)
-
-    # We assume zgrid is 1D and strictly increasing
-    # Use mean dz for slope scaling (safe for near-uniform grids);
-    # if not uniform you can replace with local dz from zgrid[idx+1]-zgrid[idx].
-    def _local_dz(zgrid, idx):
-        # idx is int array in [0, Nz-2]
-        return zgrid[idx + 1] - zgrid[idx]
-
-    def _interp_slope_1d(zgrid, fp, idx, t):
-        """
-        For linear interp:
-            f(z) = (1-t) fp[idx] + t fp[idx+1]
-        derivative wrt z:
-            df/dz = (fp[idx+1]-fp[idx]) / (zgrid[idx+1]-zgrid[idx])
-        """
-        dz = _local_dz(zgrid, idx)
-        dz = jnp.maximum(dz, eps_interp)
-        return (fp[idx + 1] - fp[idx]) / dz
+    import jax
+    import jax.numpy as jnp
 
     @jax.custom_vjp
-    def sel_cuvjp(
-        m1inj, m2inj, dLinj, spinsInj,
-        log_p_draw, log_p_incl,
-        zgrid, dc_grid, log_ddL_dz_grid,
-        zinj, dcinj, log_ddL_dz_inj, XiInj, Einj,
-        Lambda, Ndraw,
-        dz_dtheta_inj,
-        idx_z_inj, t_z_inj,   # <-- REQUIRED for fast bwd
-    ):
-        log_mu, var_u = sel_bias_with_uncertainty(
-            bk,
-            m1inj, m2inj, dLinj,
-            spinsInj,
-            log_p_draw,
-            log_p_incl,
-            dL_grid=None,
-            dc_grid=dc_grid,
-            log_ddL_dz_grid=log_ddL_dz_grid,
-            Lambda=Lambda,
-            Ndraw=Ndraw,
-            rate_model=rate_model,
-            mass_model=mass_model,
-            spin_model=spin_model,
-            smoothing=smoothing,
-            simplex_repair=simplex_repair,
-            has_m2_break=has_m2_break,
-            norm_gauss=norm_gauss,
-            param=param,
-            interp_vals_mass=None,
-            interp_grids_mass=None,
-            is_observed=is_observed,
-            z_grid=zgrid,
-            verbose=verbose,
-            subtract_log_p_incl=subtract_log_p_incl,
-            eps_interp=eps_interp,
-            side_interp=side_interp,
-            zinj=zinj,
-            dcinj=dcinj,
-            log_ddL_dz_inj=log_ddL_dz_inj,
-            XiInj=XiInj,
-            Einj=Einj,
-            linear_mass=linear_mass,
-        )
-        return log_mu, var_u
+    def inv_dL_to_z(dL, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda):
+        # Use your standard interpolator in dL space
+        return atinterp(bk, dL, dL_grid, zgrid, eps=eps_interp, side=side_interp)
 
-    def sel_fwd(*args):
-        out = sel_cuvjp(*args)
-        return out, args
+    def fwd(dL, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda):
+        # Build dL-space bracketing once
+        # i, t satisfy: dL_grid[i] <= dL < dL_grid[i+1] (depending on side)
+        i, t = _interp_prepare_bk(bk, dL, dL_grid, eps=eps_interp, side=side_interp)
 
-    def sel_bwd(saved_args, g_out):
-        (g_log_mu, g_var_u) = g_out
+        # z(dL) by applying same weights to zgrid (1-1 correspondence with dL_grid)
+        z = _interp_apply_bk(bk, i, t, zgrid)
 
-        (
-            m1inj, m2inj, dLinj, spinsInj,
-            log_p_draw, log_p_incl,
-            zgrid, dc_grid, log_ddL_dz_grid,
-            zinj, dcinj, log_ddL_dz_inj, XiInj, Einj,
-            Lambda, Ndraw,
-            dz_dtheta_inj,
-            idx_z_inj, t_z_inj,
-        ) = saved_args
+        # Build dz/ddL using slopes on the same bracket.
+        # dz/ddL = (z[i+1]-z[i]) / (dL[i+1]-dL[i])
+        # Need gathers at i and i+1
+        i1 = i + 1
 
-        # ---------- Part 1: autodiff wrt (dcinj, logdd_inj, XiInj, Einj, Lambda) with zinj held constant ----------
-        def psi(dcinj_, logdd_inj_, XiInj_, Einj_, Lambda_):
-            return sel_bias_with_uncertainty(
-                bk,
-                m1inj, m2inj, dLinj,
-                spinsInj,
-                log_p_draw,
-                log_p_incl,
-                dL_grid=None,
-                dc_grid=dc_grid,
-                log_ddL_dz_grid=log_ddL_dz_grid,
-                Lambda=Lambda_,
-                Ndraw=Ndraw,
-                rate_model=rate_model,
-                mass_model=mass_model,
-                spin_model=spin_model,
-                smoothing=smoothing,
-                simplex_repair=simplex_repair,
-                has_m2_break=has_m2_break,
-                norm_gauss=norm_gauss,
-                param=param,
-                interp_vals_mass=None,
-                interp_grids_mass=None,
-                is_observed=is_observed,
-                z_grid=zgrid,
-                verbose=False,  # keep bwd lighter
-                subtract_log_p_incl=subtract_log_p_incl,
-                eps_interp=eps_interp,
-                side_interp=side_interp,
-                zinj=zinj,  # CONSTANT HERE
-                dcinj=dcinj_,
-                log_ddL_dz_inj=logdd_inj_,
-                XiInj=XiInj_,
-                Einj=Einj_,
-                linear_mass=linear_mass,
-            )
+        z0  = jnp.take(zgrid,    i,  mode="clip")
+        z1  = jnp.take(zgrid,    i1, mode="clip")
+        dL0 = jnp.take(dL_grid,  i,  mode="clip")
+        dL1 = jnp.take(dL_grid,  i1, mode="clip")
 
-        # psi returns (log_mu, var_u)
-        (log_mu0, var_u0), pull = jax.vjp(psi, dcinj, log_ddL_dz_inj, XiInj, Einj, Lambda)
-        g_dcinj, g_logdd_inj, g_XiInj, g_Einj, g_Lambda = pull((g_log_mu, g_var_u))
+        dz = z1 - z0
+        ddL = dL1 - dL0
 
-        # ---------- Part 2: cheap g_zinj via chain rule ----------
-        # slopes from grids
-        idx = idx_z_inj.astype(jnp.int32)
+        # Safe divide (monotonic dL_grid => ddL>0, but keep eps for robustness)
+        dz_ddL = dz / (ddL + eps_interp)  # (N,)
 
-        ddc_dz = _interp_slope_1d(zgrid, dc_grid, idx, t_z_inj)
-        dlogdd_dz = _interp_slope_1d(zgrid, log_ddL_dz_grid, idx, t_z_inj)
+        # Interpolate dL_dtheta_grid[:, i] in the SAME bracket using t
+        # dL_dtheta_grid shape (5, Nz)
+        dLth0 = jnp.take(dL_dtheta_grid, i,  axis=1, mode="clip")  # (5,N)
+        dLth1 = jnp.take(dL_dtheta_grid, i1, axis=1, mode="clip")  # (5,N)
+        dL_dtheta_at = (1.0 - t)[None, :] * dLth0 + t[None, :] * dLth1
 
-        # analytic derivatives
-        # E(z) = sqrt( Om (1+z)^3 + (1-Om) (1+z)^{3(1+w0)} )
-        H0, Om, w0, Xi0, nXi0 = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
-        onepz = 1.0 + zinj
-        a3 = onepz ** 3.0
-        a3w = onepz ** (3.0 * (1.0 + w0))
-        S = Om * a3 + (1.0 - Om) * a3w
-        E = jnp.sqrt(S)
-        # dS/dz = 3 Om (1+z)^2 + (1-Om) * a3w * 3(1+w0)/(1+z)
-        dS_dz = 3.0 * Om * (onepz ** 2.0) + (1.0 - Om) * a3w * (3.0 * (1.0 + w0) / onepz)
-        dE_dz = 0.5 * dS_dz / jnp.maximum(E, eps_interp)
+        # dz/dtheta = -(dL/dtheta) / (ddL/dz)  and dz/ddL = 1/(ddL/dz)
+        dz_dtheta = -dL_dtheta_at * dz_ddL[None, :]  # (5,N)
 
-        if param == "vanilla":
-            # Xi(z)=Xi0 + (1-Xi0)*(1+z)^(-n)
-            dXi_dz = (1.0 - Xi0) * (-nXi0) * (onepz ** (-nXi0 - 1.0))
-        else:
-            # If polexp, implement analytic derivative here.
-            # If you don't, you must NOT include g_Xi term (or define Xi derivative properly).
-            raise NotImplementedError("Need dXi/dz for param='polexp' to keep gradients exact.")
+        # Save small things + small grids for zeros_like in bwd
+        saved = (dz_ddL, dz_dtheta, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda)
+        return z, saved
 
-        # chain rule
-        g_zinj = g_dcinj * ddc_dz + g_logdd_inj * dlogdd_dz + g_XiInj * dXi_dz + g_Einj * dE_dz
+    def bwd(saved, g_z):
+        dz_ddL, dz_dtheta, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda = saved
 
-        # ---------- Part 3: implicit correction into Lambda[:5] ----------
-        # dz_dtheta_inj: (5, Ninj)
-        g_theta5_from_inv = jnp.sum(g_zinj[None, :] * dz_dtheta_inj, axis=1)  # (5,)
-        g_Lambda = g_Lambda.at[:5].add(g_theta5_from_inv)
+        # g_dL
+        g_dL = g_z * dz_ddL
 
-        # ---------- Return cotangents for ALL inputs ----------
-        z_m1inj = jnp.zeros_like(m1inj)
-        z_m2inj = jnp.zeros_like(m2inj)
-        z_dLinj = jnp.zeros_like(dLinj)
-        z_spins = _zeros_like_tree(spinsInj)
-        z_lpd   = jnp.zeros_like(log_p_draw)
-        z_lpi   = jnp.zeros_like(log_p_incl)
+        # Only first 5 Lambda entries affected by inversion path
+        g_theta5 = jnp.sum(dz_dtheta * g_z[None, :], axis=1)  # (5,)
+        g_Lambda = jnp.zeros_like(Lambda)
+        g_Lambda = g_Lambda.at[:5].set(g_theta5)
 
-        z_zgrid = jnp.zeros_like(zgrid)
-        z_dcgrid = jnp.zeros_like(dc_grid)
-        z_logddgrid = jnp.zeros_like(log_ddL_dz_grid)
+        # No grads for the grids (treated as constants in this op)
+        g_dL_grid = jnp.zeros_like(dL_grid)
+        g_zgrid = jnp.zeros_like(zgrid)
+        g_logdd = jnp.zeros_like(log_ddL_dz_grid)
+        g_dLdth = jnp.zeros_like(dL_dtheta_grid)
 
-        z_zinj = jnp.zeros_like(zinj)         # IMPORTANT: we do not backprop to zinj
-        z_Ndraw = jnp.zeros_like(Ndraw)
-        z_dz_dtheta = jnp.zeros_like(dz_dtheta_inj)
-        z_idx = jnp.zeros_like(idx_z_inj)
-        z_t   = jnp.zeros_like(t_z_inj)
+        return (g_dL, g_dL_grid, g_zgrid, g_logdd, g_dLdth, g_Lambda)
 
-        return (
-            z_m1inj, z_m2inj, z_dLinj, z_spins,
-            z_lpd, z_lpi,
-            z_zgrid, z_dcgrid, z_logddgrid,
-            z_zinj, g_dcinj, g_logdd_inj, g_XiInj, g_Einj,
-            g_Lambda, z_Ndraw,
-            z_dz_dtheta,
-            z_idx, z_t,
-        )
+    inv_dL_to_z.defvjp(fwd, bwd)
+    return inv_dL_to_z
 
-    sel_cuvjp.defvjp(sel_fwd, sel_bwd)
-    return sel_cuvjp
+
+def make_dL_to_z_cuvjp_uniform(*, bk, eps_interp=1e-12):
+    """
+    Custom VJP for z = atinterp_uniform(dL; dL_u, z_u).
+
+    Inputs:
+      dL: (N,)
+      dL_u: (NdL,)    uniform in dL
+      z_u:  (NdL,)
+      zgrid: (Nz,)    uniform in z (only used to interpolate dL_dtheta_grid to z)
+      dL_dtheta_grid: (5, Nz)
+      Lambda: (33,)
+
+    Output:
+      z: (N,)
+
+    Gradients:
+      - g_dL exact for the chosen linear interpolation on (dL_u, z_u)
+      - g_Lambda[:5] via implicit: dz/dtheta = -(dL_dtheta(z)) * dz/ddL
+      - no grads to tables/grids
+    """
+    import jax
+    import jax.numpy as jnp
+
+    def _prep_uniform(x, x_u):
+        # x_u must be 1D increasing, uniform spacing
+        x0 = x_u[0]
+        dx = x_u[1] - x_u[0]
+        # fractional index
+        r = (x - x0) / (dx + eps_interp)
+        i = jnp.floor(r).astype(jnp.int32)
+        # clip to valid [0, n-2]
+        n = x_u.shape[0]
+        i = jnp.clip(i, 0, n - 2)
+        t = r - i.astype(r.dtype)
+        # clip t for safety (can happen due to eps)
+        t = jnp.clip(t, 0.0, 1.0)
+        return i, t, dx
+
+    def _apply_uniform(i, t, fp):
+        fp0 = jnp.take(fp, i, mode="clip")
+        fp1 = jnp.take(fp, i + 1, mode="clip")
+        return (1.0 - t) * fp0 + t * fp1
+
+    @jax.custom_vjp
+    def inv_dL_to_z_uniform(dL, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda):
+        # your canonical forward for this branch
+        return atinterp_uniform(bk, dL, dL_u, z_u, eps=eps_interp, side="right")
+
+    def fwd(dL, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda):
+        # ---- invert on uniform dL table
+        i, t, ddL = _prep_uniform(dL, dL_u)
+        z = _apply_uniform(i, t, z_u)
+
+        # dz/ddL from local slope in the same bracket
+        z0 = jnp.take(z_u, i, mode="clip")
+        z1 = jnp.take(z_u, i + 1, mode="clip")
+        dz_ddL = (z1 - z0) / (ddL + eps_interp)  # (N,)
+
+        # ---- interpolate dL_dtheta_grid to *z* (zgrid is uniform in this branch)
+        # First: build dL_dtheta_u = dL_dtheta_grid evaluated at z_u (NdL ~ 4096 => cheap)
+        iz, tz, _dz = _prep_uniform(z_u, zgrid)  # z_u is (NdL,)
+        # gather (5, NdL)
+        dLth0 = jnp.take(dL_dtheta_grid, iz, axis=1, mode="clip")
+        dLth1 = jnp.take(dL_dtheta_grid, iz + 1, axis=1, mode="clip")
+        dL_dtheta_u = (1.0 - tz)[None, :] * dLth0 + tz[None, :] * dLth1  # (5,NdL)
+
+        # Then: interpolate dL_dtheta_u along the same dL bracket used for inversion
+        dLth_u0 = jnp.take(dL_dtheta_u, i, axis=1, mode="clip")      # (5,N)
+        dLth_u1 = jnp.take(dL_dtheta_u, i + 1, axis=1, mode="clip")  # (5,N)
+        dL_dtheta_at = (1.0 - t)[None, :] * dLth_u0 + t[None, :] * dLth_u1  # (5,N)
+
+        # Implicit: dz/dtheta = -(dL/dtheta) * dz/ddL
+        dz_dtheta = -dL_dtheta_at * dz_ddL[None, :]  # (5,N)
+
+        saved = (dz_ddL, dz_dtheta, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda)
+        return z, saved
+
+    def bwd(saved, g_z):
+        dz_ddL, dz_dtheta, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda = saved
+
+        g_dL = g_z * dz_ddL  # (N,)
+
+        g_theta5 = jnp.sum(dz_dtheta * g_z[None, :], axis=1)  # (5,)
+        g_Lambda = jnp.zeros_like(Lambda)
+        g_Lambda = g_Lambda.at[:5].set(g_theta5)
+
+        # No grads to tables/grids
+        g_dL_u = jnp.zeros_like(dL_u)
+        g_z_u = jnp.zeros_like(z_u)
+        g_zgrid = jnp.zeros_like(zgrid)
+        g_dL_dtheta_grid = jnp.zeros_like(dL_dtheta_grid)
+
+        return (g_dL, g_dL_u, g_z_u, g_zgrid, g_dL_dtheta_grid, g_Lambda)
+
+    inv_dL_to_z_uniform.defvjp(fwd, bwd)
+    return inv_dL_to_z_uniform
 
 
 
