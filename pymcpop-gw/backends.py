@@ -84,6 +84,10 @@ class NPBackend:
     @staticmethod
     def all(x, axis=None, keepdims=False):
         return np.all(x, axis=axis, keepdims=keepdims)
+    
+    @staticmethod
+    def ceil(x):
+        return np.ceil(x)
 
     # ---- utils ----
     @staticmethod
@@ -304,6 +308,11 @@ class ATBackend:
         return at.clip(x, a_min, a_max)
 
     @staticmethod
+    def ceil(x):
+        at = ATBackend._at()
+        return at.ceil(x)
+
+    @staticmethod
     def where(cond, x, y):
         at = ATBackend._at()
         return at.where(cond, x, y)
@@ -477,6 +486,7 @@ class JAXBackend:
     maximum = staticmethod(jnp.maximum)
     clip = staticmethod(jnp.clip)
     where = staticmethod(jnp.where)
+    ceil = staticmethod(jnp.ceil)
     @staticmethod
     def searchsorted(a, v, side="left"):
         return jnp.searchsorted(a, v, side=side)

@@ -88,6 +88,8 @@ def main():
     parser.add_argument("--spin_model", default='none', type=str, required=False)
     parser.add_argument("--interp_mass", default=0, type=int, required=False)
     parser.add_argument("--interp_z", default=0, type=int, required=False)
+    parser.add_argument("--linear_mass", default=0, type=int, required=False)
+    parser.add_argument("--linear_z", default=0, type=int, required=False)
 
     
     parser.add_argument("--N_DP_comp_max", default=30, type=int, required=False)
@@ -771,6 +773,8 @@ def main():
                                     has_m2_break=FLAGS.has_m2_break,
                                     norm_gauss=FLAGS.norm_gauss,
                                     interp_mass = FLAGS.interp_mass,
+                                    linear_mass=FLAGS.linear_mass,
+                                    linear_z=FLAGS.linear_z,
                                     interp_z = FLAGS.interp_z,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,

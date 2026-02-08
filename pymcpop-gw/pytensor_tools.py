@@ -36,8 +36,8 @@ p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0)  # arrays of floats
 
 c_light = 299792458*1e-03
 #c_light_at = at.as_tensor_variable(c_light)
-NINF = at.as_tensor_variable(-np.inf)  
-INF = at.as_tensor_variable(np.inf)
+NINF = at.constant(-np.inf)  
+INF = at.constant(np.inf)
 
 
 MIN = -np.inf #NINF # your "effectively -inf" : NINF or EPS
@@ -170,13 +170,13 @@ def make_z_grid_fixed(
 zGridGlobals_low = make_z_grid()
 
 
-zGridGlobals_at_low = stop_grad(at.as_tensor_variable(zGridGlobals_low))
+zGridGlobals_at_low = at.constant(zGridGlobals_low)
 
 
 
 zGridGlobals_high = make_z_grid(1000)
 
-zGridGlobals_at_high = stop_grad(at.as_tensor_variable(zGridGlobals_high))
+zGridGlobals_at_high = at.constant(zGridGlobals_high)
 
 
 max_m = 500.
@@ -190,7 +190,7 @@ _mass_grid_np = onp.unique(
     ])
 )
 _mass_grid_np.sort()
-_mass_grid_at = stop_grad(at.as_tensor_variable(_mass_grid_np))
+_mass_grid_at = at.constant(_mass_grid_np)
 
 def _get_mass_grid():
     return _mass_grid_at
@@ -198,13 +198,13 @@ def _get_mass_grid():
 
 
 _tgrid  = onp.linspace(0.0, 1.0, 500)
-_tgrid_at = stop_grad(at.as_tensor_variable(_tgrid))
+_tgrid_at = at.constant(_tgrid)
 
 _tgrid_1000  = onp.linspace(0.0, 1.0, 1000)
-_tgrid_at_1000 = stop_grad(at.as_tensor_variable(_tgrid_1000))
+_tgrid_at_1000 = at.constant(_tgrid_1000)
 
 _tgrid_100  = onp.linspace(0.0, 1.0, 100)
-_tgrid_at_100 = stop_grad(at.as_tensor_variable(_tgrid_100))
+_tgrid_at_100 = at.constant(_tgrid_100)
 
 def _get_t_grid():
     return _tgrid_at
@@ -764,7 +764,7 @@ def uniform_interp_indices(x, x0, x1, n_pts, eps=1e-30):
     j = at.clip(j, 0, n_pts - 2) #.astype(int_dtype)
 
     # stop gradient through the index selection
-    j = stop_grad(j)
+    #j = stop_grad(j)
 
     # fractional offset
     r = t - j #at.cast(j, dtype)
@@ -1047,7 +1047,7 @@ def uniform_interp_indices_jax(x, x0, x1, n_pts, eps=1e-30):
     dx = (x1 - x0) / at.maximum(n_minus_1_f, eps)
     t  = (x - x0) / at.maximum(dx, eps)
 
-    j = stop_grad(at.clip(at.floor(t), 0, n_pts - 2)) #.astype(int_dtype))
+    j = at.clip(at.floor(t), 0, n_pts - 2) #.astype(int_dtype))
     r = t - j #at.cast(t - at.cast(j, dtype), dtype)
     return j, r
 
@@ -4271,7 +4271,7 @@ def _interp_indices_nonuniform_0(x, xs, eps_xs=1e-9):
 
     # searchsorted on the non-uniform grid
     idxs = at.searchsorted(xs, xq, side="right")
-    idxs = stop_grad(at.clip(idxs, 1, N - 1))
+    idxs = at.clip(idxs, 1, N - 1)
 
     xl = xs[idxs - 1]
     xh = xs[idxs]
@@ -4312,7 +4312,7 @@ def _interp_indices_nonuniform_0(x, xs, eps=1e-9):
     idxs = at.clip(idxs, 1, N - 1)
     
     # stop gradient through the discrete index selection
-    idxs = stop_grad(idxs)
+    #idxs = stop_grad(idxs)
     
     # compute interpolation fraction r
     xl = xs[idxs - 1]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 # We rely on your backend-agnostic cosmology functions
-from cosmology import log_dV_dz, dcfun_quad
+from cosmology import log_dV_dz, dcfun_quad, Efun
 
 
 # ---------------------------------------------------------------------
@@ -24,7 +24,7 @@ def log_psi_z_MD(bk, z, gamma, kappa, zp):
     return log_psiz - bk.log1p(z)
 
 
-def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, x01=None, w01=None):
+def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, E=None, x01=None, w01=None):
     """
     log p(z) up to a normalization constant:
       log_psi_MD(z) + log(dV/dz)
@@ -35,9 +35,11 @@ def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, x01=None,
         if x01 is None or w01 is None:
             raise ValueError("log_p_z_MD_unnorm: dc is None, so you must pass x01 and w01.")
         dc = dcfun_quad(bk, z, H0, Om, w0, x01, w01)
+    if E is None:
+        E = Efun(bk, z, Om, w0)
 
     log_psiz = log_psi_z_MD(bk, z, gamma, kappa, zp)
-    log_dVdz = log_dV_dz(bk, z, H0, Om, w0, dc=dc)
+    log_dVdz = log_dV_dz(bk, z, H0, Om, w0, dc=dc, E=E)
     return log_psiz + log_dVdz
 
 

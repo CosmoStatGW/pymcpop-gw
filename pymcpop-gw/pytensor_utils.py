@@ -81,56 +81,41 @@ def logdiffexp(bk, a, b, *, eps=1e-16):
 # Uniform grid interpolation 
 
 
-def atinterp_uniform(bk, x, xp, fp_const, eps=1e-12, side="right"):
-    """
-    Uniform-grid linear interpolation with the SAME signature as atinterp().
+def atinterp_uniform(bk, x, *args, eps=1e-12, side="left"):
+    # New style: (xp, fp)
+    if len(args) == 2:
+        xp, fp_const = args
+        n = xp.shape[0]
+        x0 = xp[0]
+        dx = xp[1] - xp[0]
+    # Legacy style: (x0, x1, nU, fp)
+    elif len(args) == 4:
+        x0, x1, nU, fp_const = args
+        n = nU
+        dx = (x1 - x0) / bk.maximum(nU - 1, 1)
+    else:
+        raise TypeError("atinterp_uniform expects (x, xp, fp) or (x, x0, x1, nU, fp)")
 
-    Assumptions:
-      - xp is 1D, strictly increasing, and (approximately) uniformly spaced.
-      - fp_const has the same leading length as xp.
-
-    Notes:
-      - `side` is ignored (kept only for signature compatibility).
-      - We do NOT use searchsorted; index is computed by arithmetic.
-      - Index is clipped to [0, n-2] so we always access fp_const[j] and fp_const[j+1].
-      - If bk exposes stop_grad, we stop gradients through the integer index.
-    """
-    n = xp.shape[0]
-
-    # Endpoints / spacing from the grid (NOT from the query points)
-    x0 = xp[0]
-    dx = xp[1] - xp[0]
     dx = bk.maximum(dx, eps)
-
-    # Continuous index in grid units
     t = (x - x0) / dx
-    # Keep within grid support so j in [0, n-2]
     t = bk.clip(t, 0.0, (n - 1) * 1.0)
 
-    # Integer bin index j = floor(t), clipped to [0, n-2]
-    j = bk.floor(t)
-    # Cast to int32 (backend-dependent)
+    if side == "right":
+        j = bk.ceil(t) - 1.0
+    else:
+        j = bk.floor(t)
+
     if hasattr(bk, "asarray"):
         j = bk.asarray(j, dtype="int32")
     else:
-        # works for numpy / jax arrays
         j = j.astype("int32")
     j = bk.clip(j, 0, n - 2)
 
-    # Do not differentiate through discrete indices (if available)
-    if hasattr(bk, "stop_grad"):
-        j = bk.stop_grad(j)
-
-    # Left/right x and y
     xl = x0 + j * dx
     yl = fp_const[j]
     yh = fp_const[j + 1]
-
-    # Fraction within the cell
     r = (x - xl) / dx
-    # Numerical guard (optional, but safe)
     r = bk.clip(r, 0.0, 1.0)
-
     return (1.0 - r) * yl + r * yh
 
 

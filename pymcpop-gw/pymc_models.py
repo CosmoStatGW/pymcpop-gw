@@ -21,8 +21,8 @@ import mass_models as mm
 import pytensor.tensor as at
 import pytensor
 import pymc as pm
-import numpy as np
-from pytensor.gradient import disconnected_grad as stop_grad
+
+#from pytensor.gradient import disconnected_grad as stop_grad
 from pytensor.compile.mode import get_default_mode
 from pymc.distributions import transforms as tr
 #from pymc.pytensorf import collect_default_updates
@@ -30,6 +30,10 @@ from pytensor import config
 import h5py
 
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
+
+
+import numpy as np
+
 
 eps   = 1e-30
 tinyL = 1e-300
@@ -49,7 +53,7 @@ NEG_BIG = -np.inf
 def make_model(  priors,
                  GWData,
                  InjData,
-                 ivals={},
+                 ivals=None,
                  eps_init = 0.01,
                  sampling_GW = 'gmm',
                  rate_model = 'MD',
@@ -120,7 +124,9 @@ def make_model(  priors,
                  reparam_z = True,
                  reparam_mass = False,
                  priors_for_mmin='',
-                 normalize_PE_prior=True
+                 normalize_PE_prior=True,
+                 linear_mass=False,
+                 linear_z=False
                 ):
 
 
@@ -136,6 +142,7 @@ def make_model(  priors,
         if sampling_GW=='gauss':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs = GWData
+            import numpy as np
             wts_l = np.exp(log_wts_l)
             
         elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
@@ -563,15 +570,114 @@ def make_model(  priors,
     #     hi_boost=hi_boost,
     #     mode=z_grid_mode,
     # )
+    if not linear_z:
+        zgrid_np = atools.make_z_grid_fixed(
+        total=zres,
+        zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c,
+        mid_boost=8.0, edge_frac=0.08, end_boost=0.5
+    )
+    else:
+        zgrid_np = np.linspace(zmin_a, zmax_c, zres)
 
-#     zgrid_np = atools.make_z_grid_fixed(
-#     total=zres,
-#     zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c,
-#     mid_boost=8.0, edge_frac=0.08, end_boost=0.5
-# )
+        zgrid = zgrid_np
 
-    zgrid_np = np.linspace(zmin_a, zmax_c, zres)
-    
+        from constants import _x01_np as x01
+        from constants import _w01_np as w01
+        from pytensor_utils import atinterp, make_dL_to_z_table, atinterp_uniform
+        from cosmology import dcfun_quad, dLfun, log_ddL_dz, Efun, Xi_vanilla, Xi_polexp
+
+        bk = JAXBackend()
+
+
+        H0, Om, w0, Xi0, nXi0 =  70, 0.3, -1, 1, 0
+
+        E_grid = Efun(bk, zgrid, Om, w0)
+        if param == "vanilla":
+            Xi_grid = Xi_vanilla(bk, zgrid, Xi0, nXi0)
+        elif param == "polexp":
+            Xi_grid = Xi_polexp(bk, zgrid, Xi0, nXi0)
+        
+        
+        dc_grid = dcfun_quad(bk, zgrid, H0, Om, w0, x01, w01)
+        dL_grid = dLfun(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, Xi=Xi_grid, param=param, x01=x01, w01=w01)
+        log_ddL_dz_grid = log_ddL_dz(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, E=E_grid, Xi=Xi_grid,  x01=x01, w01=w01, param=param)
+
+        
+       
+        print("\n LINEAR Z DEBUG")
+        # Build reference table once per cosmology draw
+        dL_grid = dLfun(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, Xi=Xi_grid, param=param, x01=x01, w01=w01)
+        
+        dL_u, z_u = make_dL_to_z_table(bk, dL_grid, zgrid, NdL=4096, eps=1e-12, side="right", logspace=False)
+        
+        # Random test points in-range (use bk.random if available; else fall back to numpy)
+        m = 20000
+        try:
+            key = bk.PRNGKey(0)
+            u = bk.random.uniform(key, (m,), minval=0.0, maxval=1.0)
+        except Exception:
+            import numpy as np
+            u = np.random.RandomState(0).rand(m)
+        
+        dL_test = dL_grid[0] + u * (dL_grid[-1] - dL_grid[0])
+        
+        z_ref  = atinterp(bk, dL_test, dL_grid, zgrid, eps=1e-12, side="right",)
+        z_fast = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right",)
+        
+        dz = z_fast - z_ref
+        print("max |dz|:", bk.max(bk.abs(dz)))
+        print("rms |dz|:", bk.sqrt(np.mean(dz * dz)))
+
+
+        m = 20000
+        try:
+            key = bk.PRNGKey(1)
+            u = bk.random.uniform(key, (m,), minval=0.0, maxval=1.0)
+        except Exception:
+            import numpy as np
+            u = np.random.RandomState(1).rand(m)
+        
+        # random z in [zmin, zmax]
+        z_test = zgrid[0] + u * (zgrid[-1] - zgrid[0])
+        
+        # forward model (true)
+        dL_test = dLfun(bk, z_test, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, x01=x01, w01=w01)
+        
+        # invert (fast)
+        z_back = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right")
+        
+        dz = z_back - z_test
+        print("round-trip max |dz|:", bk.max(bk.abs(dz)))
+        print("round-trip rms |dz|:", bk.sqrt(np.mean(dz * dz)))
+
+
+        print("dL_grid increasing:", bool(bk.all(dL_grid[1:] > dL_grid[:-1])))
+        print("table covers dL range:", float(dL_u[0]), float(dL_u[-1]), "vs", float(dL_grid[0]), float(dL_grid[-1]))
+
+
+        import time
+        def bench(NdL, reps=10):
+            t0 = time.time()
+            for _ in range(reps):
+                dL_u, z_u = make_dL_to_z_table(
+                    bk, dL_grid, zgrid, NdL=NdL,
+                    eps=1e-12, side="right", logspace=False
+                )
+            t_build = (time.time() - t0) / reps
+        
+            # hot path: same dLdet each time
+            t0 = time.time()
+            for _ in range(reps):
+                z_evt = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right", )
+            t_eval = (time.time() - t0) / reps
+        
+            return t_build, t_eval
+        
+        for NdL in [1024, 2048, 4096]:
+            tb, te = bench(NdL)
+            print(f"NdL={NdL:4d}  build={tb:.6f}s  eval={te:.6f}s")
+
+
         
     zgrid_mass_np = atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode)
 
@@ -1759,25 +1865,26 @@ def make_model(  priors,
                 # # Pack for later use
                 # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
 
-                # m1_grid_ = mm.build_m1_grid_DPLDP_bk(
-                #                 NPBackend(),
-                #                   n_peak=interp_mass,   
-                #          n_tail_low=interp_mass//3,
-                #          n_tail_high=interp_mass//4,
-                #          n_taper=interp_mass//2,
-                #         frac_gauss1=0.4,
-                #             )
-                
-                # m2_grid_ = mm.build_m2_grid_bk( NPBackend(), 
-                                                 
-                #                 # resolution controls
-                #                 n_total=500,
-                #                 n_taper=200,)
+                if not linear_mass:
+                    m1_grid_ = mm.build_m1_grid_DPLDP_bk(
+                                    NPBackend(),
+                                      n_peak=interp_mass,   
+                             n_tail_low=interp_mass//3,
+                             n_tail_high=interp_mass//4,
+                             n_taper=interp_mass//2,
+                            frac_gauss1=0.4,
+                                )
+                    
+                    m2_grid_ = mm.build_m2_grid_bk( NPBackend(), 
+                                                     
+                                    # resolution controls
+                                    n_total=500,
+                                    n_taper=200,)
                                               
                                               
-
-                m1_grid_ = np.linspace(3., 300, interp_mass)
-                m2_grid_ = np.linspace(3., 300, interp_mass)
+                else:
+                    m1_grid_ = np.linspace(3., 300, interp_mass)
+                    m2_grid_ = np.linspace(3., 300, interp_mass)
 
 
                 # mm.grid_diagnostics("m1_grid", m1_grid_)
@@ -2332,6 +2439,8 @@ def make_model(  priors,
                 mass_grids = interp_grids_mass,
                 is_observed=is_observed,
                 subtract_log_p_incl=False,        # match your previous setting
+                linear_mass=linear_mass,
+                linear_z=linear_z
                 )
                 
                 if lp_incl_inj[0] is None:
