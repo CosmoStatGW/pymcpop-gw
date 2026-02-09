@@ -1492,7 +1492,7 @@ def make_model(  priors,
         subtract_log_p_incl=False,       
         linear_mass=linear_mass,
         linear_z=linear_z,
-
+        chunk_inj=chunk_inj
 
         )
         

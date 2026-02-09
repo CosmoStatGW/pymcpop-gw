@@ -125,7 +125,8 @@ def _make_pop_and_sel_core(
     linear_mass,
     linear_z,
     use_cuvjp=False,
-    skip_sel=False
+    skip_sel=False,
+    chunk_inj=0
 ):
     """Build the single source of truth JAX core function.
 
@@ -386,8 +387,8 @@ def _make_pop_and_sel_core(
             zinj=z_inj, dcinj=dc_inj, log_ddL_dz_inj=log_ddL_dz_inj,
             Einj=E_inj, XiInj=Xi_inj,
             linear_mass=linear_mass,
-            use_streaming_vjp=False,          # <--- enable optimized backward
-            sel_chunk_size=65536,            # <--- tune
+            use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
+            sel_chunk_size=chunk_inj,            # <--- tune
         )
 
 
@@ -645,7 +646,8 @@ class PopAndSelJAXOp(Op):
                  linear_mass=False,
                  linear_z=False,
                  subtract_log_p_incl=False, eps_interp=1e-12, side_interp="right",
-                skip_sel=False
+                skip_sel=False,
+                 chunk_inj=0
                 ):
         super().__init__()
 
@@ -671,6 +673,7 @@ class PopAndSelJAXOp(Op):
         self.linear_mass=linear_mass
         self.linear_z=linear_z
         self.skip_sel=skip_sel
+        self.chunk_inj = chunk_inj
 
         # Backend (needed by cosmology/mass grid builders)
         self._bk = JAXBackend()
@@ -727,7 +730,8 @@ class PopAndSelJAXOp(Op):
             #has_mass_grids=has_mass_grids,
             #mass_grids_jax=mass_grids_jax,
             linear_mass=self.linear_mass,
-            linear_z=self.linear_z
+            linear_z=self.linear_z,
+            chunk_inj=self.chunk_inj
         )
         return jax.jit(full_f)
 

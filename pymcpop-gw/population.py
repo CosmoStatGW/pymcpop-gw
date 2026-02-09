@@ -754,7 +754,7 @@ def sel_bias_with_uncertainty(
     linear_mass=False,
     # new flags
     use_streaming_vjp: bool = True,
-    sel_chunk_size: int = 10*65536,
+    sel_chunk_size: int = 65536,
 ):
     # keep your invariant
     if subtract_log_p_incl is not True:
@@ -762,6 +762,11 @@ def sel_bias_with_uncertainty(
     if zinj is None or dcinj is None or log_ddL_dz_inj is None or XiInj is None or Einj is None:
         raise ValueError("Optimized selection expects precomputed zinj/dcinj/log_ddL_dz_inj/XiInj/Einj.")
 
+
+    # print("sel_bias_with_uncertainty check: ")
+    # print("use_streaming_vjp is %s"%use_streaming_vjp)
+    # print("sel_chunk_size is %s"%sel_chunk_size)
+    
     if not use_streaming_vjp:
         return sel_bias_with_uncertainty_legacy(
             bk,

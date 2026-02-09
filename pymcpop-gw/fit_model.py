@@ -14,7 +14,7 @@ import os
 #os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 os.environ.setdefault("JAX_DEFAULT_DTYPE_BITS", "64")
-#os.environ["JAX_LOG_COMPILES"] = "1"
+os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", "highest") 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -23,18 +23,12 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")  # harmless on linux
 os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 os.environ.setdefault("OMP_PROC_BIND", "FALSE")
 os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
+os.environ.setdefault("BLIS_NUM_THREADS", "1") 
+os.environ.setdefault("XLA_FLAGS", "")
+os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
-from jax.experimental.compilation_cache import compilation_cache as cc
-cc.set_cache_dir("/tmp/jax_cache")
 
-
-import jaxify_ops
-
-from pytensor.link.jax.dispatch.basic import jax_funcify
-from pytensor_tools_new import PopAndSelJAXOp  # same import path as in jaxify_ops
-
-assert PopAndSelJAXOp in jax_funcify.registry, "jax_funcify registration did not stick"
-#print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
 
 import argparse
 import json
@@ -145,7 +139,7 @@ def main():
     parser.add_argument("--min_Neff", default=0, type=int, required=False)
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
-    parser.add_argument("--chunk_inj", default=-1, type=int, required=False)
+    parser.add_argument("--chunk_inj", default=65536, type=int, required=False)
     parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
@@ -203,6 +197,10 @@ def main():
 
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
+
+    parser.add_argument("--xla_intra_op_threads", default=8, type=int, required=False)
+    parser.add_argument("--xla_inter_op_threads", default=1, type=int, required=False)
+
 
 
     FLAGS = parser.parse_args()
@@ -263,68 +261,74 @@ def main():
     print("\nInitial PYTENSOR_FLAGS =", os.environ.get("PYTENSOR_FLAGS"))
 
 
+    uses_numpyro = FLAGS.sampler in ("numpyro", "blackjax")
     
-    uses_jax = FLAGS.sampler in ("numpyro", "blackjax")
+    # Are we doing PyMC multiprocessing chains?
+    using_pymc_multiproc = (FLAGS.sampler not in ("numpyro","blackjax")) and (FLAGS.ncores > 1)
     
-    if uses_jax:
-    
-        if FLAGS.chain_method == "parallel":
-            # Must set before importing numpyro/jax/pymc
-            add = f"--xla_force_host_platform_device_count={FLAGS.ncores}"
-            os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " " + add).strip()
-
-        
-        os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
-
-        # If you want x64 available:
-        os.environ["JAX_ENABLE_X64"] = "1"
-        os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"   # optional
-    
-        import jax
-        jax.config.update("jax_enable_x64", True)
-        jax.config.update("jax_default_matmul_precision", "highest")
-
-    
-  
-        # ----------------------------------------------------
-        # 2️⃣ Import libraries (now they see the environment)
-        # ----------------------------------------------------
-      
-        
-        import numpyro
-        
-           
-    
-        if FLAGS.jax_debug_nans:
-            jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
-        else:
-            jax.config.update("jax_debug_nans", False)
-        jax.config.update("jax_default_matmul_precision", "highest")
-
-        if FLAGS.chain_method == "parallel":
-            numpyro.set_host_device_count(device_count)
-
-        print("Available devices:", jax.devices())
-        print("Local device count:", jax.local_device_count())
-        print("Backend:", jax.default_backend())
-    
-        print("JAX:", jax.__version__, "NumPyro:", numpyro.__version__)
-
-        import jax.numpy as np
-
-        print("jax_enable_x64:", jax.config.jax_enable_x64)
-        print("devices:", jax.devices())
-        print("float64 test dtype:", np.array([1.0], dtype=np.float64).dtype)
-        print()
-
+    if using_pymc_multiproc:
+        # one JAX device per OS process (chain)
+        os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false"
     else:
-        import numpy as np
-
-
-    from scipy.special import ndtr, ndtri, erfinv
+        # single-process JAX multi-device (numpyro/blackjax parallel)
+        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores} --xla_cpu_multi_thread_eigen=true"
     
-    # Ensure correct device setup
-    device_count = FLAGS.ncores if FLAGS.chain_method == "parallel" else FLAGS.ncores
+
+    print("XLA_FLAGS (final) =", os.environ.get("XLA_FLAGS", ""))
+
+    # ----------------------------------------------------
+    # 2️⃣ Import libraries (now they see the environment)
+    # ----------------------------------------------------
+    
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_default_matmul_precision", "highest")
+
+
+    from jax.experimental.compilation_cache import compilation_cache as cc
+    cc.set_cache_dir("/tmp/jax_cache")
+    
+    
+    import jaxify_ops
+    
+    from pytensor.link.jax.dispatch.basic import jax_funcify
+    from pytensor_tools_new import PopAndSelJAXOp  # same import path as in jaxify_ops
+    
+    assert PopAndSelJAXOp in jax_funcify.registry, "jax_funcify registration did not stick"
+    #print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
+
+    
+    if uses_numpyro:
+        import numpyro
+          
+    
+    if FLAGS.jax_debug_nans:
+        jax.config.update("jax_debug_nans", True)   # crash at the first NaN/Inf during warmup
+    else:
+        jax.config.update("jax_debug_nans", False)
+    jax.config.update("jax_default_matmul_precision", "highest")
+
+
+    
+    if FLAGS.chain_method == "parallel" and uses_numpyro:
+        numpyro.set_host_device_count(device_count)
+
+    print("Available devices:", jax.devices())
+    print("Local device count:", jax.local_device_count())
+    print("Backend:", jax.default_backend())
+
+    print("JAX:", jax.__version__)
+    if uses_numpyro:
+        print("NumPyro:", numpyro.__version__)
+
+    import jax.numpy as np
+
+    print("jax_enable_x64:", jax.config.jax_enable_x64)
+    print("devices:", jax.devices())
+    print("float64 test dtype:", np.array([1.0], dtype=np.float64).dtype)
+    print()
+
+    
     
 
     # ----------------------------------------------------
@@ -363,8 +367,7 @@ def main():
     pytensor.config.openmp = False
     import numpy as onp
 
-    if uses_jax:
-        print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
+    print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
     
     
 
@@ -1379,8 +1382,8 @@ def main():
                     #tune = sampler_kwargs.get("tune", 1000)
                     #total_steps = FLAGS.nchains * (tune + draws)  # 4 * 40 = 160
                     #cb=autils.TqdmGlobalCallback(draws=draws, tune=tune, chains=FLAGS.nchains,)
-                    if uses_jax:
-                        print("PID", os.getpid(), "jax_enable_x64", jax.config.read("jax_enable_x64"))
+                    #if uses_jax:
+                    print("PID", os.getpid(), "jax_enable_x64", jax.config.read("jax_enable_x64"))
                     print("PID", os.getpid(), "JAX_ENABLE_X64 env", os.environ.get("JAX_ENABLE_X64"))
                     
                     trace = pm.sample(nuts_sampler='pymc', 
