@@ -8,31 +8,50 @@
 #    license that can be found in the LICENSE file.
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
-import os
+import os, argparse, sys
 
+
+def early_parse(argv):
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--nth", type=int, default=None)
+    # ignore everything else
+    args, _ = p.parse_known_args(argv)
+    return args
+
+
+early = early_parse(sys.argv[1:])
+
+
+NTH = early.nth if early.nth is not None else 1
+
+print()
+print("Asked NTH=%s. This will overwrite previous settinggs."%NTH)
+print()
 
 #os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
-os.environ.setdefault("JAX_ENABLE_X64", "1")
-os.environ.setdefault("JAX_DEFAULT_DTYPE_BITS", "64")
-os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", "highest") 
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")  # harmless on linux
-os.environ.setdefault("OMP_DYNAMIC", "FALSE")
-os.environ.setdefault("OMP_PROC_BIND", "FALSE")
-os.environ.setdefault("KMP_AFFINITY", "disabled")  # for MKL sometimes
-os.environ.setdefault("BLIS_NUM_THREADS", "1") 
-os.environ.setdefault("XLA_FLAGS", "")
-os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ["JAX_ENABLE_X64"] = "1"
+os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
+os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
+
+
+#os.environ.setdefault("JAX_LOG_COMPILES", "1")
+
+
+os.environ["OMP_NUM_THREADS"]      = str(NTH)
+os.environ["OPENBLAS_NUM_THREADS"] = str(NTH)
+os.environ["MKL_NUM_THREADS"]      = str(NTH)
+os.environ["NUMEXPR_NUM_THREADS"]  = str(NTH)
+os.environ["BLIS_NUM_THREADS"]     = str(NTH)
+os.environ["OMP_DYNAMIC"]          = "FALSE"
+os.environ["OMP_PROC_BIND"]        = "FALSE"
+os.environ["KMP_AFFINITY"]         = "disabled"
 
 
 
-import argparse
+
+
+
 import json
-import sys
 import warnings
 import time
 import resource
@@ -198,8 +217,9 @@ def main():
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
 
-    parser.add_argument("--xla_intra_op_threads", default=8, type=int, required=False)
-    parser.add_argument("--xla_inter_op_threads", default=1, type=int, required=False)
+    parser.add_argument("--xla_cpu_multi_thread_eigen", default='false', type=str, required=False)
+
+    parser.add_argument("--nth", type=int, default=None)
 
 
 
@@ -268,9 +288,15 @@ def main():
     
     if using_pymc_multiproc:
         # one JAX device per OS process (chain)
-        os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false"
+        if FLAGS.xla_cpu_multi_thread_eigen=='true':
+            print(f"⚠️ Warning: xla_cpu_multi_thread_eigen ({FLAGS.xla_cpu_multi_thread_eigen}) asked, but sampler is using_pymc_multiproc. "
+            "Do this if you have good handling of your memory load.")
+        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen={FLAGS.xla_cpu_multi_thread_eigen}"
     else:
         # single-process JAX multi-device (numpyro/blackjax parallel)
+        if FLAGS.xla_cpu_multi_thread_eigen=='false':
+            print(f"⚠️ Warning: xla_cpu_multi_thread_eigen ({FLAGS.xla_cpu_multi_thread_eigen}) asked, but sampler not using_pymc_multiproc. "
+            "Setting --xla_cpu_multi_thread_eigen=true")
         os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores} --xla_cpu_multi_thread_eigen=true"
     
 
