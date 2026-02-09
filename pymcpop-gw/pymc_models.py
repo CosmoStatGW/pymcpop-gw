@@ -1472,7 +1472,10 @@ def make_model(  priors,
 
         if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
             Lambda_ = at.stack(Lambda_, axis=0)
- 
+
+        if chunk_inj:
+            print("Will process injections in chunks of %s"%chunk_inj)
+
         
         fused = PopAndSelJAXOp(
         zgrid=zgrid_np,

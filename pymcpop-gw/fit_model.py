@@ -24,9 +24,9 @@ early = early_parse(sys.argv[1:])
 
 NTH = early.nth if early.nth is not None else 1
 
-print()
-print("Asked NTH=%s. This will overwrite previous settinggs."%NTH)
-print()
+# print()
+# print("Asked NTH=%s. This will overwrite previous settinggs."%NTH)
+# print()
 
 #os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 os.environ["JAX_ENABLE_X64"] = "1"
@@ -1437,8 +1437,8 @@ def main():
                 t0 = time.time()
                 log_mem("before pm.sample main")
 
-
-                sampler_kwargs["progressbar"] =False
+                # if FLAGS.sampler=='blaxkjax':
+                #     sampler_kwargs["progressbar"] =False
                 
                 
                 trace = pm.sample(nuts_sampler=FLAGS.sampler, 
