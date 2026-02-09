@@ -480,96 +480,7 @@ def make_model(  priors,
             print(lp_incl_inj)
             
     
-    if interp_mass!=0:
-
-        print("\nPre-computing mass function on grid for later interpolation. Grid resolution: %s"%interp_mass)
-
-        if interp_mass<100:
-                raise ValueError("Use finer grid for accurate mass function.")
-        
-        tgrid_m1 = np.linspace(0.0, 1.0, interp_mass )#.astype(X)
-        tgrid_m2 = np.linspace(0.0, 1.0, 500 )#.astype(X)
-
-  
-        if mass_model in ('DPLDP', 'DPLDP-z', 'PLPreg'):
-            
-            if mass_model =='DPLDP':
-                sigma_min = min(priors["sigma1"][0], priors["sigma2"][0])
-            elif mass_model=='PLPreg':
-                sigma_min = priors["sigmaMass"][0]
-            else:
-                sigma_min = min(priors["sigma1_0"][0], priors["sigma2_0"][0])
-            
-
-        
-        elif mass_model in ('DPUC', 'DP'):  
-
-            if sel_method=='skip':
-            
-                MMIN_GRID = lowmu1#*(1-0.1)
-                MMAX_GRID = upmu1#*(1+0.1)
-
-                MMIN_GRID_1 = lowmu2 #*(1-0.1)
-                MMAX_GRID_1 = upmu2#*(1+0.1)
-
-                MMIN_GRID_2 = lowmu3#*(1-0.1)
-                MMAX_GRID_2 = upmu3#*(1+0.1)
-                
-            else:
-                MMIN_GRID = min(lowmu1_inj, lowmu1)#*(1-0.1)
-                MMAX_GRID = max(upmu1, upmu1_inj)#*(1+0.1)
-
-                MMIN_GRID_1 = min(lowmu2_inj, lowmu2) #*(1-0.1)
-                MMAX_GRID_1 = max(upmu2, upmu2_inj)#*(1+0.1)
-
-                MMIN_GRID_2 = min(lowmu3_inj, lowmu3)#*(1-0.1)
-                MMAX_GRID_2 = max(upmu3, upmu3_inj)#*(1+0.1)
-
-            
-            print("Grid in log(Mc) source between %s and %s"%(MMIN_GRID, MMAX_GRID))
-            print("Grid in logit(q) source between %s and %s"%(MMIN_GRID_1, MMAX_GRID_1))
-            print("Grid in log(1+z) source between %s and %s"%(MMIN_GRID_2, MMAX_GRID_2))
-
-
-        else:
-            raise ValueError('Interpolation not available for this mass model.')
-
-    if is_observed:
-        print("Building optimal SNR interpolant...")
-
-        # load interpolant
-        with h5py.File('../tables/optimal_snr_aplus_design_05.h5','r') as f:
-            m_grid_at = at.constant(np.array(f['ms']))
-            osnrs_grid_at = at.constant(np.array(f['SNR']))
-            #ref_dist_Gpc_at = at.constant(np.array(1.), dtype=work_dtype)
-        grid_at = (m_grid_at, m_grid_at)
-        osnr_interp_at = atools.GridInterpolator_at(grid_at, osnrs_grid_at)
-                  
-    if sample_from_pop:
-        print("Finding init vals for individual event params...")
-
-        rng = np.random.default_rng()
-        x = rng.standard_normal(size=(N, nd))
-        samples_init = putils.sample_from_per_event_gmm(wts_l, mus_l, cho_covs_l, x, rng=None)
-
-        log_Mc_det_init = samples_init[:, 0]
-        logit_q_init = samples_init[:, 1]#.astype(X)
-        logd_init = samples_init[:, 2]
-
-        z_init = (atools.z_from_dL_at(at.exp(logd_init), 67.7, 0.31, -1, 1, 0)).eval()#.astype(X)
-        log_onepz_init = np.log1p(z_init)#.astype(X)
-        log_Mc_src_init = (log_Mc_det_init - log_onepz_init)#.astype(X)
-
-
-    # zgrid_np = atools.make_z_grid(
-    #     total=zres,
-    #     zmin_a=zmin_a,
-    #     zmin_b=zmin_b,
-    #     zmid_b=zmid_b,
-    #     zmax_c=zmax_c,
-    #     hi_boost=hi_boost,
-    #     mode=z_grid_mode,
-    # )
+    #####################################################################################################
     if not linear_z:
         zgrid_np = atools.make_z_grid_fixed(
         total=zres,
@@ -579,115 +490,8 @@ def make_model(  priors,
     else:
         zgrid_np = np.linspace(zmin_a, zmax_c, zres)
 
-        zgrid = zgrid_np
-
-        from constants import _x01_np as x01
-        from constants import _w01_np as w01
-        from pytensor_utils import atinterp, make_dL_to_z_table, atinterp_uniform
-        from cosmology import dcfun_quad, dLfun, log_ddL_dz, Efun, Xi_vanilla, Xi_polexp
-
-        bk = JAXBackend()
-
-
-        H0, Om, w0, Xi0, nXi0 =  70, 0.3, -1, 1, 0
-
-        E_grid = Efun(bk, zgrid, Om, w0)
-        if param == "vanilla":
-            Xi_grid = Xi_vanilla(bk, zgrid, Xi0, nXi0)
-        elif param == "polexp":
-            Xi_grid = Xi_polexp(bk, zgrid, Xi0, nXi0)
-        
-        
-        dc_grid = dcfun_quad(bk, zgrid, H0, Om, w0, x01, w01)
-        dL_grid = dLfun(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, Xi=Xi_grid, param=param, x01=x01, w01=w01)
-        log_ddL_dz_grid = log_ddL_dz(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, E=E_grid, Xi=Xi_grid,  x01=x01, w01=w01, param=param)
-
-        
-       
-        print("\n LINEAR Z DEBUG")
-        # Build reference table once per cosmology draw
-        dL_grid = dLfun(bk, zgrid, H0, Om, w0, Xi0, nXi0, dc=dc_grid, Xi=Xi_grid, param=param, x01=x01, w01=w01)
-        
-        dL_u, z_u = make_dL_to_z_table(bk, dL_grid, zgrid, NdL=4096, eps=1e-12, side="right", logspace=False)
-        
-        # Random test points in-range (use bk.random if available; else fall back to numpy)
-        m = 20000
-        try:
-            key = bk.PRNGKey(0)
-            u = bk.random.uniform(key, (m,), minval=0.0, maxval=1.0)
-        except Exception:
-            import numpy as np
-            u = np.random.RandomState(0).rand(m)
-        
-        dL_test = dL_grid[0] + u * (dL_grid[-1] - dL_grid[0])
-        
-        z_ref  = atinterp(bk, dL_test, dL_grid, zgrid, eps=1e-12, side="right",)
-        z_fast = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right",)
-        
-        dz = z_fast - z_ref
-        print("max |dz|:", bk.max(bk.abs(dz)))
-        print("rms |dz|:", bk.sqrt(np.mean(dz * dz)))
-
-
-        m = 20000
-        try:
-            key = bk.PRNGKey(1)
-            u = bk.random.uniform(key, (m,), minval=0.0, maxval=1.0)
-        except Exception:
-            import numpy as np
-            u = np.random.RandomState(1).rand(m)
-        
-        # random z in [zmin, zmax]
-        z_test = zgrid[0] + u * (zgrid[-1] - zgrid[0])
-        
-        # forward model (true)
-        dL_test = dLfun(bk, z_test, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, x01=x01, w01=w01)
-        
-        # invert (fast)
-        z_back = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right")
-        
-        dz = z_back - z_test
-        print("round-trip max |dz|:", bk.max(bk.abs(dz)))
-        print("round-trip rms |dz|:", bk.sqrt(np.mean(dz * dz)))
-
-
-        print("dL_grid increasing:", bool(bk.all(dL_grid[1:] > dL_grid[:-1])))
-        print("table covers dL range:", float(dL_u[0]), float(dL_u[-1]), "vs", float(dL_grid[0]), float(dL_grid[-1]))
-
-
-        import time
-        def bench(NdL, reps=10):
-            t0 = time.time()
-            for _ in range(reps):
-                dL_u, z_u = make_dL_to_z_table(
-                    bk, dL_grid, zgrid, NdL=NdL,
-                    eps=1e-12, side="right", logspace=False
-                )
-            t_build = (time.time() - t0) / reps
-        
-            # hot path: same dLdet each time
-            t0 = time.time()
-            for _ in range(reps):
-                z_evt = atinterp_uniform(bk, dL_test, dL_u, z_u, eps=1e-12, side="right", )
-            t_eval = (time.time() - t0) / reps
-        
-            return t_build, t_eval
-        
-        for NdL in [1024, 2048, 4096]:
-            tb, te = bench(NdL)
-            print(f"NdL={NdL:4d}  build={tb:.6f}s  eval={te:.6f}s")
-
-
-        
-    zgrid_mass_np = atools.make_z_grid(total=interp_z, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, mode=z_grid_mode)
-
-    # zgrid_np = np.geomspace(zmin_a, zmax_c, interp_z)
-    # zgrid_mass_np = np.geomspace(zmin_a, zmax_c, interp_z)
-    
-
-
+ 
     zgrid_ = at.constant(zgrid_np)
-    zgrid_mass_ = at.constant(zgrid_mass_np)
     
 
     
@@ -696,6 +500,7 @@ def make_model(  priors,
     print("is z grid constant check:")
     print(isinstance(zgrid_, at.TensorConstant))
 
+    #####################################################################################################
 
     if z_pivot!=0:
 
@@ -713,48 +518,8 @@ def make_model(  priors,
         Ez_min = min(Ez_corners)#.astype(X)
         Ez_max = max(Ez_corners)#.astype(X)
 
-    if reparam_mass:
 
-        if mass_model=='PLPreg':
-
-            # --- prior bounds and initvals ---
-            ml_min, ml_max       = priors["ml"]
-            mh_min, mh_max       = priors["mh"]
-            deltam_min, deltam_max = priors["deltam"]
-            muM_min, muM_max     = priors["muMass"]
-            sM_min, sM_max       = priors["sigmaMass"]
-            lam_min, lam_max     = priors["lambdaPeak"]
-            
-            ml_init   = ivals.get("ml",        4.0)#.astype(X)
-            mh_init   = ivals.get("mh",        100.0)#.astype(X)
-            dm_init = ivals.get("deltam",    3.0)#.astype(X)
-            muM_init  = ivals.get("muMass",    35.0)#.astype(X)
-            sM_init   = ivals.get("sigmaMass", 5.0)#.astype(X)
-            lam_init  = ivals.get("lambdaPeak", 0.05)#.astype(X)
-            
-            # Small helper for stable initvals on (0,1)
-            def _clip01(x, eps=1e-6):
-                #if dtype=="float64":
-                return np.clip(x, eps, 1.0 - eps)
-                # else:
-                #     return np.float32(np.clip(x, eps, 1.0 - eps))
-            
-            # =========================
-            # 1) ml with EXACT Uniform prior
-            # =========================
-            # Will sample a fraction u_ml ~ Uniform(0,1), map to ml = ml_min + u_ml*(ml_max-ml_min)
-            # Add Jacobian log|dml/du_ml| = log(ml_max-ml_min) so induced density on ml is uniform.
-            u_ml_init = _clip01((ml_init - ml_min) / (ml_max - ml_min))
-
-            u_mh_init = _clip01((mh_init - mh_min) / (mh_max - mh_min))
-
-            u_dm_init = _clip01((dm_init - deltam_min) / (deltam_max - deltam_min))
-
-            log_sM_min = np.log(sM_min)
-            log_sM_max = np.log(sM_max)
-            log_sM_init = np.clip(np.log(sM_init), log_sM_min + 1e-6, log_sM_max - 1e-6)
-            
-
+    #####################################################################################################
 
 
     vol_in_prior = any('UniformSourceFrame' in s or 'UniformComovingVolume' in s for s in dLprior)
@@ -783,23 +548,20 @@ def make_model(  priors,
             
             log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(NPBackend(), z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1,  constants._x01_np, constants._w01_np)
             
-            #float(atools.compute_log_norm_UniformSourceFrame(z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1.).eval())
         
 
     ################################################
     # Build model
     ################################################
 
-    # if sampling_GW=='gauss':
-    
-#     # we sample single-event parameters from broad gaussian approximations of the posteriors
-#     mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.constant(mus_s, dtype=work_dtype), at.constant(cho_s, dtype=work_dtype), at.constant(log_wts_l, dtype=work_dtype), at.constant(mus_l, dtype=work_dtype), at.constant(icovs_l, dtype=work_dtype), at.constant(log_dets_l, dtype=work_dtype)
-
             
     if 'gmm' in sampling_GW:
         # we sample single-event parameters from the actual single-event posteriors
         # need tensor variables to correctly slice inside model
         wts_l, mus_l, cho_covs_l = at.constant(wts_l), at.constant(mus_l), at.constant(cho_covs_l)
+
+
+
     
     with pm.Model(coords=coords) as model:
 
@@ -879,55 +641,11 @@ def make_model(  priors,
         if rate_model=='MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
+            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
-
-            if reparam_z:
-                print("Using reparametrized variables for easier geometry")
-
-                gamma_min, gamma_max = priors['gamma']
-                kappa_min, kappa_max = priors['kappa']
-    
-                gamma_init = ivals.get('gamma', 3.2)
-                kappa_init = ivals.get('kappa', 3.)
-                
-                # Prior ranges for s and d
-                s_min = gamma_min + kappa_min
-                s_max = gamma_max + kappa_max
-                d_min = gamma_min - kappa_max
-                d_max = gamma_max - kappa_min
-                
-                s_ = pm.Uniform("gamma_plus_kappa", lower=s_min, upper=s_max,
-                                initval=gamma_init + kappa_init)
-                d_ = pm.Uniform("gamma_minus_kappa", lower=d_min, upper=d_max,
-                                initval=gamma_init - kappa_init)
-                
-                gamma_ = pm.Deterministic("gamma", 0.5 * (s_ + d_))
-                kappa_ = pm.Deterministic("kappa", 0.5 * (s_ - d_))
-                #_ = pm.Potential("J_gamma_kappa_from_s_d", -np.log(2.0))
-    
-    
-                z_p_min, z_p_max = priors['zp']
-    
-                z_p_init = np.asarray( ivals.get('zp'), ) #dtype=X )
-    
-                log1p_zp_ = pm.Uniform(
-                    "log1p_zp",
-                    lower = np.log1p(z_p_min), #.astype(X),
-                    upper = np.log1p(z_p_max), #.astype(X),
-                    initval = np.log1p(z_p_init), #.astype(X) ,
-                )
-                
-                zp_ = pm.Deterministic("zp", at.expm1(log1p_zp_))
-                # for flat prior in zp
-                pm.Potential("J_zp_from_log1p_MD", at.log1p(zp_))
-
-            else:
-                gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-                kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-                zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
-
-
-            
+       
             Lambda_ += [gamma_, kappa_, zp_]
 
         elif rate_model=='PL':
@@ -1040,88 +758,13 @@ def make_model(  priors,
             alpha_  = pm.Uniform("alpha",      lower=priors["alpha"][0],      upper=priors["alpha"][1],      initval=ivals.get("alpha"))
             beta_   = pm.Uniform("beta",       lower=priors["beta"][0],       upper=priors["beta"][1],       initval=ivals.get("beta"))
             muM_    = pm.Uniform("muMass",     lower=priors["muMass"][0],     upper=priors["muMass"][1],     initval=ivals.get("muMass"))
+                            
+            lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))        
+            ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
+            mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
+            deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
+            sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
             
-            if not reparam_mass:
-                
-                lamP_   = pm.Uniform("lambdaPeak", lower=priors["lambdaPeak"][0], upper=priors["lambdaPeak"][1], initval=ivals.get("lambdaPeak"))        
-                ml_     = pm.Uniform("ml",         lower=priors["ml"][0],         upper=priors["ml"][1],         initval=ivals.get("ml"))
-                mh_     = pm.Uniform("mh",         lower=priors["mh"][0],         upper=priors["mh"][1],         initval=ivals.get("mh"))
-                deltam_ = pm.Uniform("deltam",     lower=priors["deltam"][0],     upper=priors["deltam"][1],     initval=ivals.get("deltam"))
-                sM_     = pm.Uniform("sigmaMass",  lower=priors["sigmaMass"][0],  upper=priors["sigmaMass"][1],  initval=ivals.get("sigmaMass"))
-                
-            else:
-                print("Using reparametrized variables for easier geometry")
-
-
-                # tiny buffer to avoid exact boundaries
-                eps = 1e-9
-
-
-                u_ml = pm.Uniform(
-                    "u_ml",
-                    0.0, 1.0,
-                    initval=_clip01((ml_init - ml_min) / (ml_max - ml_min)),
-                )
-                ml_ = pm.Deterministic("ml", ml_min + u_ml * (ml_max - ml_min))
-                # (Jacobian is constant -> optional; leaving it out changes nothing)
-                # pm.Potential("J_ml", at.log(ml_max - ml_min))
-
-
-                # -----------------------
-                # 2) mh | ml ~ Uniform(max(mh_min, ml+eps), mh_max)
-                #    Ensures mh > ml by construction
-                # -----------------------
-                mh_lower = at.maximum(mh_min, ml_ + eps)
-                mh_span  = mh_max - mh_lower
-                
-                u_mh = pm.Uniform(
-                    "u_mh",
-                    0.0, 1.0,
-                    initval=_clip01((mh_init - max(mh_min, ml_init + eps)) / (mh_max - max(mh_min, ml_init + eps))),
-                )
-                mh_ = pm.Deterministic("mh", mh_lower + u_mh * mh_span)
-                
-                # This Jacobian term makes the induced density for mh|ml uniform in physical space.
-                # (Because we sample u_mh uniformly but want flat in mh, and mh_span depends on ml.)
-                pm.Potential("J_mh_given_ml", at.log(at.maximum(mh_span, eps)))
-                
-                # -----------------------
-                # 3) deltam | (ml,mh) ~ Uniform(dm_min, min(dm_max, (mh-ml)-eps))
-                #    Ensures deltam < (mh-ml) by construction
-                # -----------------------
-                span_ = mh_ - ml_
-                dm_upper = at.minimum(deltam_max, span_ - eps)
-                dm_span  = dm_upper - deltam_min
-                
-                u_dm = pm.Uniform(
-                    "u_deltam",
-                    0.0, 1.0,
-                    initval=_clip01((dm_init - deltam_min) / (deltam_max - deltam_min)),
-                )
-                deltam_ = pm.Deterministic("deltam", deltam_min + u_dm * dm_span)
-                
-                pm.Potential("J_deltam_given_span", at.log(at.maximum(dm_span, eps)))
-                
-                # hard rejection when dm_upper <= dm_min (no valid deltam)
-                pm.Potential("valid_deltam_domain", at.switch(dm_span > 0, 0.0, -np.inf))
-                
-                # -----------------------
-                # 4) sigmaMass ~ Uniform(sM_min, sM_max)  (keep it simple & truly flat)
-                # -----------------------
-                u_sM = pm.Uniform(
-                    "u_sigmaMass",
-                    0.0, 1.0,
-                    initval=_clip01((sM_init - sM_min) / (sM_max - sM_min), ) #dtype=X_name),
-                )
-                sM_ = pm.Deterministic("sigmaMass", sM_min + u_sM * (sM_max - sM_min))
-                # (Jacobian constant -> optional)
-                # pm.Potential("J_sigmaMass", at.log(sM_max - sM_min))
-                
-
-
-                lamP_ = pm.Uniform("lambdaPeak", lower=lam_min, upper=lam_max, initval=lam_init)
-
-                
 
 
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
@@ -1273,12 +916,6 @@ def make_model(  priors,
                 priors=priors,
             )
         
-            # mb_inf_,      z_mb_,      dz_mb_     = putils.evo_triplet(
-            #     "mb",
-            #     theta0_rv=mb_0,
-            #     ivals=ivals,
-            #     priors=priors,
-            # )
             
             mb_inf_ = pm.Deterministic("mb_inf", mb_0) 
             z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0) ) #.astype(X)) 
@@ -1649,28 +1286,6 @@ def make_model(  priors,
                 ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
     
 
-                
-                # trace = var1 + var2                     # (K,)
-                # det   = var1 * var2 * (1.0 - rho**2)    # (K,)
-                
-                # # discriminant of the characteristic polynomial
-                # disc = at.sqrt(trace**2 - 4.0 * det)    # (K,)
-                
-                # # smallest eigenvalue λ_min
-                # lam_min = 0.5 * (trace - disc)          # (K,)
-                # s_min   = at.sqrt(lam_min)              # minor-axis std per component
-
-                # L_eig = 1      # "too small" minor-axis std (tune)
-                # alpha_eig = 0.05
-                
-                # lambda_eig = -L_eig * np.log(1.0 - alpha_eig)
-                
-                # _ = pm.Potential(
-                #     "pc_small_eig",
-                #     -lambda_eig * at.sum(1.0 / s_min)
-                # )
-
-
                 ################################################
     
                 Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
@@ -1689,1087 +1304,213 @@ def make_model(  priors,
             R0 = at.as_tensor_variable(1.)   
         lR0 = at.log(R0)
 
+    
+            
+        ################################################
+        # Individual event mass and distance
+        ###############################################
 
-        
-        # Precompute cosmology pieces 
-        # One grid build to interpolate later
-        dc_grid = atools.dcfun_at(zgrid_, H0_, Om_, w0_, interp=pade)
-        
-        dL_grid = atools.dLfun_at(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, interp=pade, dc=dc_grid, param=param)
-        
-        log_ddL_dz_grid = atools.log_ddL_dz(zgrid_, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc_grid, interp=pade, param=param)
-
-        
-
-        # Precompute mass function pieces 
-
-        if interp_mass!=0:
-
-            if mass_model == "PLPreg":
-
-                # ---------------------------
-                # 1) m2 grid: log-cluster taper
-                # ---------------------------
-                eps_m = 1e-5
-                n2 = 500
-                n2_taper = 150
-            
-                m2_lo = ml_ + eps_m
-                m2_taper_hi = m2_lo + at.maximum(deltam_, 1e-6)
-            
-                u1 = at.linspace(0.0, 1.0, n2_taper)
-                eps_t = 1e-4
-                t1 = at.exp(at.log(eps_t) * (1.0 - u1))
-                t1 = (t1 - eps_t) / (1.0 - eps_t)
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t1
-            
-                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
-                seg2 = m2_taper_hi + (mh_ - m2_taper_hi) * u2
-            
-                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
-            
-                # ---------------------------
-                # 2) m1 grid: adaptive PLPreg grid (should include taper+ramp like DPLDP)
-                # ---------------------------
-                m1_grid_ = atools.build_m1_grid_PLPreg(
-                    ml=ml_,
-                    mh=mh_,
-                    muMass=muM_,
-                    sigmaMass=sM_,
-                    deltam=deltam_,
-                    n_peak=interp_mass,
-                    n_tail_low=interp_mass // 5,
-                    n_tail_high=interp_mass // 5,
-                    n_taper=interp_mass // 5,
-                )
-            
-                # ---------------------------
-                # 3) Bank logpdfs
-                # ---------------------------
-                lp_m1_grid = atools.logpdfm1_PLP_reg(
-                    m1_grid_,
-                    lamP_, alpha_, deltam_,
-                    ml_, mh_,
-                    muM_, sM_,
-                    smoothing=smoothing,
-                )
-            
-                lp_m2_grid = atools.logpdfm2_PLP_reg(
-                    m2_grid_,
-                    beta_, deltam_, ml_,
-                    smoothing=smoothing,
-                )
-            
-                # ---------------------------
-                # 4) logC(m1): stable CDF + nonuniform interp
-                # ---------------------------
-                lp2_max = at.max(lp_m2_grid)
-                p2_shift = at.exp(lp_m2_grid - lp2_max)
-            
-                cdf_shift = atools.atcumtrapz(p2_shift, m2_grid_)  # (N2-1,)
-                cdf_shift = at.clip(cdf_shift, 1e-300, np.inf)
-            
-                m2_cdf_grid = m2_grid_[1:]
-                logcdf_m2 = at.log(cdf_shift) + lp2_max
-            
-                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
-                lC_of_m1 = atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
-            
-                # ---------------------------
-                # 5) stable ln(m1)
-                # ---------------------------
-                lp1_max = at.max(lp_m1_grid)
-                p1_shift = at.exp(lp_m1_grid - lp1_max)
-                I1 = atools.attrapzvec(p1_shift, m1_grid_)
-                I1 = at.clip(I1, 1e-300, np.inf)
-                ln = at.log(I1) + lp1_max
-            
-                # Pack
-                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
-                interp_grids_mass = [m1_grid_, m2_grid_]
+        x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
 
             
-            elif mass_model=='DPLDP':
+        if 'gmm' in sampling_GW:
+    
+            print('Sampling m1d, m2d, dL from GMM')
 
-                    
-                # eps_m = 1e-5
-                # n2 = 500
-                # n2_taper = 100
                 
-                # m2_lo = m2_low_ + eps_m
-                # m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
-                
-                # u1 = at.linspace(0.0, 1.0, n2_taper)
-                
-                # eps_t = 1e-4
-                # t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                # t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                # seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
-                
-                # u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
-                # seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
-                
-                # m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
+            ###################################
+            # categorical way
 
+            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
 
-            
-                # m1_grid_ = atools.build_m1_grid_DPLDP(
-                #                             alpha1=alpha1_,
-                #                             alpha2=alpha2_,
-                #                             mb=mb_,
-                #                             mu1=mu1_,
-                #                             sigma1=sigma1_,
-                #                             mu2=mu2_,
-                #                             sigma2=sigma2_,
-                #                             m1_low=m1_low_,
-                #                             m_high=m_high_,
-                #                             delta_m1=delta_m1_,
-                #                             n_peak=interp_mass,      # or smaller if you want
-                #                             n_tail_low=interp_mass//5,
-                #                             n_tail_high=interp_mass//5,
-                #                             #k_sigma=4.0,
-                #                             n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
-                #                             n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
-                #                         )
-                
-                # lp_m1_grid = atools.logpdfm1_DPLDP( m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
-
-
-                # lp_m2_grid = atools.logpdfm2_PLP_reg( m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
-
-
-                # # CDF over m2
-                # cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
-                # cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
-                
-                # # CDF lives on m2_grid_[1:]
-                # m2_cdf_grid = m2_grid_[1:]
-                # logcdf_m2   = at.log(cdf_m2)
-                
-                # # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
-                # mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
-                
-                # # NON-UNIFORM interpolation (must match your test)
-                # lC_of_m1 = atools.interp_1d_nonuniform_numpyop(mcap, m2_cdf_grid, logcdf_m2)
-                # #atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
-                
-                # # Normalization for m1
-                # #p1 = at.exp(lp_m1_grid)
-                # #ln = at.log(atools.attrapzvec(p1, m1_grid_))
-                # lp_max = at.max(lp_m1_grid)
-                # p_shift = at.exp(lp_m1_grid - lp_max)
-                # I = atools.attrapzvec(p_shift, m1_grid_)
-                # I = at.clip(I, 1e-300, np.inf)
-                # ln = at.log(I) + lp_max
-                
-                # # Pack for later use
-                # interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
-
-                if not linear_mass:
-                    m1_grid_ = mm.build_m1_grid_DPLDP_bk(
-                                    NPBackend(),
-                                      n_peak=interp_mass,   
-                             n_tail_low=interp_mass//3,
-                             n_tail_high=interp_mass//4,
-                             n_taper=interp_mass//2,
-                            frac_gauss1=0.4,
-                                )
-                    
-                    m2_grid_ = mm.build_m2_grid_bk( NPBackend(), 
-                                                     
-                                    # resolution controls
-                                    n_total=500,
-                                    n_taper=200,)
-                                              
-                                              
-                else:
-                    m1_grid_ = np.linspace(3., 300, interp_mass)
-                    m2_grid_ = np.linspace(3., 300, interp_mass)
-
-
-                # mm.grid_diagnostics("m1_grid", m1_grid_)
-                # mm.grid_diagnostics("m2_grid", m2_grid_)
-                # mm.grid_diagnostics("m2_cdf_grid", m2_grid_[1:])
-
-
-                interp_grids_mass = [m1_grid_, m2_grid_]
-                
-                #interp_grids_mass= None
-
-            elif mass_model=='DPLDP-z':
-
-                eps_m = 1e-5 
-                n2 = 500
-                n2_taper = 100
-                
-                m2_lo = m2_low_ + eps_m
-                m2_taper_hi = m2_lo + at.maximum(delta_m2_, 1e-6)
-                
-                u1 = at.linspace(0.0, 1.0, n2_taper)
-                
-                eps_t = 1e-4
-                t = at.exp(at.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
-                
-                u2 = at.linspace(0.0, 1.0, n2 - n2_taper)
-                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
-                
-                m2_grid_ = at.as_tensor_variable(at.concatenate([seg1[:-1], seg2]))
-
-                m1_grid_ =  atools.build_m1_grid_DPLDP_z( zgrid_mass_,
-                                # low-z hyperparameters
-                                mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
-                                # high-z (asymptotic) hyperparameters
-                                mu1_inf_, sigma1_inf_, mu2_inf_, sigma2_inf_, mb_inf_,
-                                # evolution hyperparameters
-                                z_mu1_, dz_mu1_,
-                                z_sigma1_, dz_sigma1_,
-                                z_mu2_, dz_mu2_,
-                                z_sigma2_, dz_sigma2_,
-                                z_mb_, dz_mb_,
-                                # support for m1
-                                m1_low_, m_high_,
-                                delta_m1_,
-                                # grid resolution controls
-                                n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
-                                n_tail_low=interp_mass//5,   # points in low-mass tail
-                                n_tail_high=interp_mass//5,  # points in high-mass tail
-                                k_sigma=4.0,      #
-                                n_taper=interp_mass//5,  # points in low-mass tapering
-                            )
-
-
-                # ---------
-                # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
-                # ---------
-                lp_m2_grid = atools.logpdfm2_PLP_reg(
-                    m2_grid_, beta_, delta_m2_, m2_low_,
-                    m_g=m_g_, w_g=w_g_, sig_g_low=sig_g_l_, sig_g_high=sig_g_h_,
-                    has_m2_break=has_m2_break, smoothing=smoothing
-                )  # shape (N2,)
-            
-                # lC_grid evaluated on m1_grid (shape (N1,))
-                cdf_m2 = atools.atcumtrapz(at.exp(lp_m2_grid), m2_grid_)
-                cdf_m2 = at.clip(cdf_m2, 1e-300, np.inf)
-
-                # CDF lives on m2_grid_[1:]
-                m2_cdf_grid = m2_grid_[1:]
-                logcdf_m2   = at.log(cdf_m2)
-                
-                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
-                mcap = at.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
-                
-                # NON-UNIFORM interpolation (must match your test)
-                lC_of_m1 = atools.interp_logpdf_1d_nonuniform(mcap, m2_cdf_grid, logcdf_m2)
-                
-
-                # ---------
-                # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
-                # ---------
-                K  = zgrid_mass_.shape[0]
-                N1 = m1_grid_.shape[0]
-                
-                M = at.broadcast_to(m1_grid_[None, :], (K, N1))
-                Z = at.broadcast_to(zgrid_mass_[:, None],   (K, N1))
-                
-                lp_flat = atools.logpdfm1_DPLDP_z(
-                    M.reshape((K * N1,)),
-                    Z.reshape((K * N1,)),
-                    alpha1_0, alpha2_0, mb_0,
-                    mu1_0, sigma1_0, mu2_0, sigma2_0,
-                    m1_low_, m_high_, delta_m1_,
-                    lambda0_0, lambda1_0, lambda2_0,
-                    epsilon_,
-                    *evo_params_,
-                    smoothing=smoothing,
-                    simplex_repair=simplex_repair,
-                    norm_gauss=norm_gauss
-                )
-                # at.clip( lp_flat, -1e30, 1e030 )
-                lp_m1_bank = at.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
-
-                #ln_bank = at.log( atools.attrapzvec(at.exp(lp_m1_bank), m1_grid_, axis=1))
-                lp_max = at.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
-                p_shift = at.exp(lp_m1_bank - lp_max)                       # safe exp
-                I = atools.attrapzvec(p_shift, m1_grid_, axis=1)            # (K,)
-                I = at.clip(I, 1e-300, np.inf)
-                ln_bank = at.log(I) + lp_max[:, 0]
+   
+            # Select means and Cholesky factors per batch
+            mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+            L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
              
-                # Pack for later use (include z_bank)
-                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
-                interp_grids_mass = [m1_grid_, m2_grid_, zgrid_mass_]
-                
-            elif mass_model in ('DPUC', 'DP'):
+            # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+            Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
 
-                n_total_min_mass = interp_mass
-                n_per_min = 20
-                #n_per_max = 50
-                #n_boundary_mass = 50
-                k_sigma = 4
-                frac_uniform=0.1
-                sigma_floor=1e-4
+                      
+            # Final transformed sample
+            samples = mu_selected + Lx                # shape (N, D)
 
-
-                mu1_lo = MMIN_GRID #min(lowmu1, lowmu1_inj)
-                mu1_hi = MMAX_GRID #max(upmu1,  upmu1_inj)
-                
-                mu2_lo = MMIN_GRID_1 #min(lowmu2, lowmu2_inj)
-                mu2_hi = MMAX_GRID_1 #max(upmu2,  upmu2_inj)
-                
-                # Choose n_eps: 6 is extremely safe (Gaussian tail ~ 1e-9 one-sided)
-                n_eps = 6.0
-                
-                # Bounds for logMc grid
-                XLOW1, XHIGH1, sig1_max = putils.safe_interp_bounds_from_tau_eps(
-                    mu_low=mu1_lo,
-                    mu_high=mu1_hi,
-                    tau_upper=U1,       # <-- upper bound of tau1 Uniform
-                    s_local=s_local,
-                    k_sigma=k_sigma,
-                    n_eps=n_eps,
-                    extra_frac=0.10,
-                )
-                
-                # Bounds for logit(q) grid
-                XLOW2, XHIGH2, sig2_max = putils.safe_interp_bounds_from_tau_eps(
-                    mu_low=mu2_lo,
-                    mu_high=mu2_hi,
-                    tau_upper=U2,       # <-- upper bound of tau2 Uniform
-                    s_local=s_local,
-                    k_sigma=k_sigma,
-                    n_eps=n_eps,
-                    extra_frac=0.10,
-                )
-                
-                # OPTIONAL: clip to global physical transform limits (recommended)
-                # these should be your transform-domain hard limits (constants)
-                #XLOW1  = at.maximum(XLOW1,  at.as_tensor_variable(MMIN_GRID))
-                #XHIGH1 = at.minimum(XHIGH1, at.as_tensor_variable(MMAX_GRID))
-                
-                #XLOW2  = at.maximum(XLOW2,  at.as_tensor_variable(MMIN_GRID_1))
-                #XHIGH2 = at.minimum(XHIGH2, at.as_tensor_variable(MMAX_GRID_1))
-
-                
-    
-
-                log_Mc_grid = atools.build_1d_gaussian_mixture_grid_components(
-                                                mu1, sig1,
-                                                XLOW1, XHIGH1,
-                                                n_total_min=n_total_min_mass,
-                                                frac_uniform=frac_uniform,
-                                                k_sigma=k_sigma,
-                                                sigma_floor=sigma_floor,
-                                                n_per_min = n_per_min,
-                                                K = N_DP_comp_max_np
-                                            )
-
-                logit_q_grid = atools.build_1d_gaussian_mixture_grid_components(
-                                                mu2, sig2,
-                                               XLOW2, XHIGH2,
-                                                n_total_min=n_total_min_mass,
-                                                frac_uniform=frac_uniform,
-                                                k_sigma=k_sigma,
-                                                sigma_floor=sigma_floor,
-                                                n_per_min=n_per_min, 
-                                                K = N_DP_comp_max_np
-                                            )
-
-
-                print("grid m1 range:", log_Mc_grid[0].eval(), log_Mc_grid[-1].eval())
-                print("mu prior range:", lowmu1, upmu1)
-                print("sigma upper used:", sig1_max.eval())
-
-
-                print("grid logit q range:", logit_q_grid[0].eval(), logit_q_grid[-1].eval())
-                print("mu prior range:", lowmu2, upmu2)
-                print("sigma upper used:", sig2_max.eval())
-                
-
-                if rate_model in ('MD', 'PL'):
-                    lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd)
-
-
-                    interp_vals_mass  = [lp_Mc_grid, lp_q_grid]
-                    interp_grids_mass = [log_Mc_grid, logit_q_grid]
-
-                else:
-
-
-                    mu3_lo = MMIN_GRID_2 #min(lowmu3, lowmu3_inj)
-                    mu3_hi = MMAX_GRID_2 #max(upmu3,  upmu3_inj)
-
-                    # Bounds for logit(q) grid
-                    XLOW3, XHIGH3, sig3_max = putils.safe_interp_bounds_from_tau_eps(
-                        mu_low=mu3_lo,
-                        mu_high=mu3_hi,
-                        tau_upper=U3,       # <-- upper bound of tau2 Uniform
-                        s_local=s_local,
-                        k_sigma=k_sigma,
-                        n_eps=n_eps,
-                        extra_frac=0.10,
-                    )
-                    
-                    # OPTIONAL: clip to global physical transform limits (recommended)
-                    # these should be your transform-domain hard limits (constants)
-                    #XLOW3  = at.maximum(XLOW3,  at.as_tensor_variable(MMIN_GRID_2))
-                    #XHIGH3 = at.minimum(XHIGH3, at.as_tensor_variable(MMAX_GRID_2))
-
-                
-                    log_1pz_grid = atools.build_1d_gaussian_mixture_grid_components(
-                                                mu3, sig3,
-                                                XLOW3, XHIGH3,
-                                                n_total_min=n_total_min_mass,                                                                                    frac_uniform=frac_uniform,
-                                                k_sigma=k_sigma,
-                                                sigma_floor=sigma_floor,
-                                                n_per_min=n_per_min, 
-                                                K = N_DP_comp_max_np
-                                            )
-
-                    print("grid log(1+z) range:", log_1pz_grid[0].eval(), log_1pz_grid[-1].eval())
-                    print("mu prior range:", lowmu3, upmu3)
-                    print("sigma upper used:", sig3_max.eval())
-
-           
-                    lp_Mc_grid, lp_q_grid, lp_z_grid = atools.gaussian_logpdf_pair(log_Mc_grid, logit_q_grid, mu, sd, z=log_1pz_grid)
-
-                    
-
-
-                    interp_vals_mass  = [lp_Mc_grid, lp_q_grid, lp_z_grid]
-                    interp_grids_mass = [log_Mc_grid, logit_q_grid, log_1pz_grid]
-                
-                
-            else:
-                raise NotImplementedError()
-        
-        else:
-            interp_vals_mass = None
-            interp_grids_mass = None
+            
+            log_Mc_det = samples[:,0]/dil_factor
+            logit_q = samples[:,1]
+            logd = samples[:,2]
             
 
-        
-        ## Precompute rate function pieces
-        # To implement
-
-
-        
-        ## Precompute spin function pieces
-        # To implement
-
-
-        if not sample_from_pop:
-            
-            if not pop_only:
-            ################################################
-            # Individual event mass and distance
-            ###############################################
+            if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
     
-                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
+                chieff = atools.inv_flogitat(samples[:,3])
+                chip = atools.inv_logitat(samples[:,4])
     
-                    
-                if 'gmm' in sampling_GW:
-            
-                    print('Sampling m1d, m2d, dL from GMM')
-        
-                        
-                    ###################################
-                    # categorical way
-
-                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
-        
-           
-                    # Select means and Cholesky factors per batch
-                    mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-                    L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-                     
-                    # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                    Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
-    
-                              
-                    # Final transformed sample
-                    samples = mu_selected + Lx                # shape (N, D)
-        
-                    
-                    log_Mc_det = samples[:,0]/dil_factor
-                    logit_q = samples[:,1]
-                    logd = samples[:,2]
-                    
-        
-                    if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
-            
-                        chieff = atools.inv_flogitat(samples[:,3])
-                        chip = atools.inv_logitat(samples[:,4])
-            
-                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                        # we have chi1, chi2, cost1, cost2
-                        if save_thetas:
-                            chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
-                            chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
-                
-                            cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
-                            cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
-                        else:
-                            chi1 = atools.inv_logitat(samples[:,3])
-                            chi2 = atools.inv_logitat(samples[:,4])
-                            cost1 =atools.inv_flogitat(samples[:,5])
-                            cost2 =atools.inv_flogitat(samples[:,6])
-                            
-                    else:
-                        print("No spins computed")
-                
-    
-                
-                elif sampling_GW=='gauss' : # to be tested with spins
-                    
-                    print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
-
-                    
-                    # sample = mu + L @ x   (batched)
-                    #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
-                    samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
-
-                  
-                
-                    # logp = log p(x) - log|L|
-                    # d = x.shape[1]
-                    log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
-
-
-                    log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
-
-                    
-                    pilik = log_px - log_det_L                                               # (N,)
-
-                    # unpack coordinates:
-                    log_Mc_det = samples[:, 0]
-                    logit_q    = samples[:, 1]
-                    logd       = samples[:, 2]
-                    
-    
-                    if spin_model == 'none' :
-                        
-                        X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                        d_int  = 3
-    
-    
-                    elif spin_model == 'default' or spin_model == 'default_gauss':
-    
-                        chi1 = atools.inv_logitat(samples[:,3])
-                        chi2 = atools.inv_logitat(samples[:,4])
-            
-                        cost1 = atools.inv_flogitat(samples[:,5])
-                        cost2 = atools.inv_flogitat(samples[:,6])
-    
-                        X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                        d_int  = 7
-    
-    
-                
-    
-                    # X as (N, d)
-                    #X = vals.T                                   # (N, d)
-                    #print("X shape is %s"%(X[:, None, :].shape.eval()))
-                    #print("mus_l shape is %s"%(mus_l.shape.eval()))
-                    
-                    # Broadcast X against component-wise parameters
-                    # diff: (N, ngmm, d)
-                    diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
-                    
-                    # Quadratic form using precision F = Σ^{-1}
-                    # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-
-                    
-                    tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
-
-
-                    
-                    # r^T F r for each (obs, comp)
-                    quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
-
-                    
-                    # Component logpdfs (Multivariate Normal)
-                    log_norm = (-0.5 * d_int * at.log(2*np.pi)) #.astype(work_dtype)     # scalar
-     
-                    logp_components = (
-                        -0.5 * quad
-                        + log_norm
-                        - 0.5 * log_dets_l
-                        + log_wts_l
-                    )                                             # (N, ngmm)
-
-                    # Mixture log-likelihood per observation: logsumexp over components
-                    gwl = at.logsumexp(logp_components, axis=1, )   # (N,)
-
-                
-                else:
-                    raise NotImplementedError()
-    
-    
-                Mc = at.exp(log_Mc_det)            
-                q = atools.inv_logitat(logit_q)
-                m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-                d = at.exp(logd)
-    
-                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-                #zs = atools.atinterp(d, dL_grid, zgrid_)
-                zs = atools.atinterp(d, dL_grid, zgrid_)
-                
-                
-                # cosmo_ev_op = CosmoFromDLJAXOp(
-                #     zgrid=zgrid_np,             # numpy grid (same one you already build)
-                #     x01=constants._x01_np,      # Gauss–Legendre nodes
-                #     w01=constants._w01_np,      # weights
-                #     param=param,
-                # )
-                
-                # zs, dc, log_ddL_dz = cosmo_ev_op(d, Lambda_)   # Lambda_ is your stacked vector
-                
-                one_plus_zs = 1. + zs
-
-
-                #log_ddL_dz = atools.atinterp( zs, zgrid_, log_ddL_dz_grid) 
-                #dc = atools.atinterp( zs, zgrid_, dc_grid) 
-                #dc =  d/one_plus_zs/atools.Xifun_at(zs, Xi0_, nXi0_)
-                
-                log_ddL_dz = atools.atinterp(zs, zgrid_, log_ddL_dz_grid)
-                dc = atools.atinterp(zs, zgrid_, dc_grid)
-                                          
-                m1src = m1det/one_plus_zs 
-                m2src = m2det/one_plus_zs  
-
-                
-                
+            elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+                # we have chi1, chi2, cost1, cost2
                 if save_thetas:
-                    d = pm.Deterministic('dL', d , dims="event_index")
-                    zs = pm.Deterministic('z', zs, dims= "event_index" ) 
-                    m1src = pm.Deterministic('m1src', m1src, dims="event_index")
-                    m2src = pm.Deterministic('m2src', m2src , dims="event_index")      
-             
-                    
-            else:
-                # we are sampling the usual marginalise likelihood, with "only" pop parameters
-                print('We are running inference only on population parameters.')
-    
-    
-                # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-                # AND for each sample! 
-                
-                d_stacked  = at.flatten(d)
-                zs_stacked = atools.atinterp(d_stacked, dL_grid, zgrid_)
-    
-                
-                zs = at.reshape( zs_stacked, (N, Nsamples) )
-                m1src = m1det/(1+zs)
-                m2src = m2det/(1+zs)
-                
-                logd = at.log(d)
-            
-            
-            ################################################
-            # Population prior
-            ################################################
-
-    
-            
-            # if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
-    
-            #     spins = [ chieff, chip  ]
-    
-            # elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-    
-            #     spins = [chi1, chi2, cost1, cost2]
-    
-            # elif spin_model == 'none':
-                
-            #     spins = []
-
-            if spin_model in ("default", "default_gauss"):
-                spins = at.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
-            elif spin_model in ("chieffchip", "chieffchip_uc"):
-                spins = at.stack([chieff, chip], axis=1)              # (N,2)
-            else:
-                spins = at.zeros((m1src.shape[0], 0), dtype="float64")  # (N,0)
-    
-            if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
-                Lambda_ = at.stack(Lambda_, axis=0)
-    
-    
-            # # Compute comoving distance - if gravity is modified, this is NOT d_L / (1+z) ! 
-            # Xi_ = atools.Xifun_at(zs, Xi0_, nXi0_)
-            # dc = d/(1+zs)/Xi_, 
-    
-            is_DP = mass_model in ('DP', 'DPUC')
-            # Population prior of all events, without the term T_obs*R0
-            if is_DP:
-    
-                # dirichelet processs will be for log(Mc_src), logit(q) ...
-                logMc_src =  log_Mc_det - at.log1p(zs)
-                
-                log_p_pop = log_p_pop_at( logMc_src, logit_q, zs, d, spins, Lambda_, rate_model, mass_model, spin_model,  dc=None ,  log_ddL_dz_pre = None, z_grid = zgrid_ )
-                
-                
-                # ... so remove a jacobian : p( m1, m2 ) = p( log(Mc), logit(q) ) * |J|
-                # if using interpolation, the jacobian is already included in the grid.
-                print("Likelihood: removing jacobian m1, m2 --> log(Mc), logit(q) ")
-                
-                eps = at.as_tensor_variable(1e-12, dtype=m2src.dtype)
-                log_p_pop -=  at.log(m2src) + at.log(at.maximum(m1src - m2src, eps))#+at.log1p(zs)
-    
-                if rate_model in ('DPUC','DPUC-vol' ):
-                    # also remove jacobian for log(1+z)
-                    log_p_pop -= at.log1p(zs) 
-                    
-                
-            else:    
-            
-                fused = PopAndSelJAXOp(
-                zgrid=zgrid_np,
-                x01=constants._x01_np,
-                w01=constants._w01_np,
-                rate_model=rate_model,
-                mass_model=mass_model,
-                spin_model=spin_model_name,
-                smoothing=smoothing,
-                simplex_repair=simplex_repair,
-                has_m2_break=has_m2_break,
-                norm_gauss=norm_gauss,
-                param=param,
-                interp_mass=interp_mass,
-                mass_grids = interp_grids_mass,
-                is_observed=is_observed,
-                subtract_log_p_incl=False,        # match your previous setting
-                linear_mass=linear_mass,
-                linear_z=linear_z
-                )
-                
-                if lp_incl_inj[0] is None:
-                    log_p_incl_ = at.zeros_like(lpdinj[0])
+                    chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
+                    chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
+        
+                    cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
+                    cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
                 else:
-                    log_p_incl_ = lp_incl_inj[0]
+                    chi1 = atools.inv_logitat(samples[:,3])
+                    chi2 = atools.inv_logitat(samples[:,4])
+                    cost1 =atools.inv_flogitat(samples[:,5])
+                    cost2 =atools.inv_flogitat(samples[:,6])
+                    
+            else:
+                print("No spins computed")
+        
+
+        
+        elif sampling_GW=='gauss' : # to be tested with spins
+            
+            print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
+
+            
+            # sample = mu + L @ x   (batched)
+            #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+            samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
+
+          
+        
+            # logp = log p(x) - log|L|
+            # d = x.shape[1]
+            log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
+
+
+            log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
+
+            
+            pilik = log_px - log_det_L                                               # (N,)
+
+            # unpack coordinates:
+            log_Mc_det = samples[:, 0]
+            logit_q    = samples[:, 1]
+            logd       = samples[:, 2]
+            
+
+            if spin_model == 'none' :
                 
-                log_p_pop, log_mu_, var_ll_u_ = fused(
-                    m1det, m2det, d, spins,           # EVENT side
-                    m1inj[0], m2inj[0], dLinj[0], spinsInj,
-                    lpdinj[0], log_p_incl_,
-                    Lambda_, Ndraw
-                )
+                X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
+                d_int  = 3
 
 
-                if debug_sel_batch:
+            elif spin_model == 'default' or spin_model == 'default_gauss':
 
-                    log_p_pop_std = pmmor.log_p_pop_at( m1src, 
-                                           m2src, 
-                                           zs, 
-                                           d, 
-                                           [chi1, chi2, cost1, cost2], 
-                                           Lambda_, 
-                                           rate_model, mass_model, spin_model, 
-                                           smoothing=smoothing,
-                                           simplex_repair=simplex_repair,
-                                           has_m2_break=has_m2_break, 
-                                            norm_gauss=norm_gauss,
-                                           dc = dc, 
-                                           log_ddL_dz_pre = log_ddL_dz,
-                                           interp_vals_mass = None,
-                                           interp_grids_mass = None,
-                                           is_observed = is_observed,
-                                           z_grid = zgrid_,
-                                           #K=N_DP_comp_max
-
-                                                        
-                                         )
-
-                    print("\ncheck dL")
-                    print(interp_diagnostics(d.eval(), dL_grid.eval(), eps=1e-12, side="right"))
-                    
-                    print("\nDEBUG LOG P POP")
-                    print((log_p_pop_std - log_p_pop).max().eval())            
-
-                    print()
-
-                    import pytensor.tensor as pt
-
-                    theta5 = Lambda_[:5]
-                    H0, Om, w0, Xi0, nXi0 = theta5
-
-                    print("H0, Om, w0, Xi0, n")
-                    print([i.eval() for i in theta5])
-                    
-                    
-                    obj_op  = pt.sum(log_p_pop)
-                    obj_std = pt.sum(log_p_pop_std)
-                    wrt = [m1det, m2det, d, Lambda_]
-                    g_op  = pt.grad(obj_op,  wrt=wrt, disconnected_inputs="raise")
-                    g_std = pt.grad(obj_std, wrt=wrt, disconnected_inputs="raise")
-                    
-                    print("\nDEBUG GRAD LOG P POP (max abs diff)")
-                    for name, go, gs in zip(["m1det", "m2det", "d", "Lambda"], g_op, g_std):
-                        if name=="Lambda":
-                            print(name, go.eval(), gs.eval())
-                        print(name, pt.max(pt.abs(gs - go)).eval())
-                    print()
-
-                    goL = g_op[3].eval()
-                    gsL = g_std[3].eval()
-                    diff = np.abs(gsL - goL)
-                    
-                    idx = np.where(diff > 5e-2)[0]   # choose threshold
-                    print("bad idx:", idx.tolist())
-                    print("diff at idx:", diff[idx])
-                    print("go at idx:", goL[idx])
-                    print("gs at idx:", gsL[idx])
-                    
-                    print("max idx:", int(diff.argmax()), "max diff:", diff.max())
-
-
-
-                    # # --- numeric theta at this debug point ---
-                    # theta5_np = np.array([i.eval() for i in Lambda_[:5]], dtype=np.float64)
-                    # H0, Om, w0, Xi0, nXi0 = theta5_np
-                    
-                    # # --- compute grids in JAX numerically (same zgrid as used everywhere) ---
-                    # from cosmology import dcfun_quad, dLfun, log_ddL_dz
-                    # import jax.numpy as jnp
-
-                    # bk_j = JAXBackend()
-                    # zj = jnp.asarray(zgrid_np, dtype=jnp.float64)
-                    # x01j = jnp.asarray(constants._x01_np, dtype=jnp.float64)
-                    # w01j = jnp.asarray(constants._w01_np, dtype=jnp.float64)
-                    
-                    # dc_grid_j = dcfun_quad(bk_j, zj, H0, Om, w0, x01j, w01j)
-                    # dL_grid_j = dLfun(bk_j, zj, H0, Om, w0, Xi0, nXi0, dc=dc_grid_j, param=param, x01=x01j, w01=w01j)
-                    # log_ddL_dz_grid_j = log_ddL_dz(bk_j, zj, H0, Om, w0, Xi0, nXi0, dc=dc_grid_j, x01=x01j, w01=w01j, param=param)
-                    
-                    # # bring to numpy
-                    # dc_grid_j_np = np.asarray(dc_grid_j, dtype=np.float64)
-                    # dL_grid_j_np = np.asarray(dL_grid_j, dtype=np.float64)
-                    # log_ddL_dz_grid_j_np = np.asarray(log_ddL_dz_grid_j, dtype=np.float64)
-                    
-                    # # --- make PyTensor constants from the JAX grids ---
-                    # dc_grid_j_pt = pt.as_tensor_variable(dc_grid_j_np)
-                    # dL_grid_j_pt = pt.as_tensor_variable(dL_grid_j_np)
-                    # log_ddL_dz_grid_j_pt = pt.as_tensor_variable(log_ddL_dz_grid_j_np)
-                    # zgrid_pt = zgrid_  # you already have pt.constant(zgrid_np)
-                    
-                    # # --- now do the "std" pipeline BUT using JAX-produced grids ---
-                    # zs_jgrid = atools.atinterp(d, dL_grid_j_pt, zgrid_pt)
-                    # dc_jgrid = atools.atinterp(zs_jgrid, zgrid_pt, dc_grid_j_pt)
-                    # log_ddL_dz_jgrid = atools.atinterp(zs_jgrid, zgrid_pt, log_ddL_dz_grid_j_pt)
-                    
-                    # log_p_pop_std_jgrid = pmmor.log_p_pop_at(
-                    #     m1src, m2src, zs_jgrid, d,
-                    #     [chi1, chi2, cost1, cost2],
-                    #     Lambda_,
-                    #     rate_model, mass_model, spin_model,
-                    #     smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break, norm_gauss=norm_gauss,
-                    #     dc=dc_jgrid,
-                    #     log_ddL_dz_pre=log_ddL_dz_jgrid,
-                    #     interp_vals_mass=None,
-                    #     interp_grids_mass=None,
-                    #     is_observed=is_observed,
-                    #     z_grid=zgrid_pt,
-                    # )
-                    
-                    # # compare gradients again
-                    # obj_std_jgrid = pt.sum(log_p_pop_std_jgrid)
-                    # obj_op = pt.sum(log_p_pop)
-                    
-                    # wrt = [m1det, m2det, d, Lambda_]
-                    # g_op  = pt.grad(obj_op, wrt=wrt, disconnected_inputs="raise")
-                    # g_std_jgrid = pt.grad(obj_std_jgrid, wrt=wrt, disconnected_inputs="raise")
-                    
-                    # print("\nDEBUG GRAD (std uses JAX grids as constants) max abs diff")
-                    # for name, go, gs in zip(["m1det", "m2det", "d", "Lambda"], g_op, g_std_jgrid):
-                    #     print(name, pt.max(pt.abs(gs - go)).eval())
-
-
-                    #1) Freeze all non-Lambda inputs at the current numeric point
-                    m1det0 = np.asarray(m1det.eval(), dtype=np.float64)
-                    m2det0 = np.asarray(m2det.eval(), dtype=np.float64)
-                    d0     = np.asarray(d.eval(), dtype=np.float64)
-                    sp0    = np.asarray(spins.eval(), dtype=np.float64)
-                    
-                    m1inj0 = np.asarray(m1inj[0], dtype=np.float64)
-                    m2inj0 = np.asarray(m2inj[0], dtype=np.float64)
-                    dLinj0 = np.asarray(dLinj[0], dtype=np.float64)
-                    spinj0 = spinsInj #[np.asarray(s, dtype=np.float64) for s in spinsInj]
-                    
-                    lpd0   = np.asarray(lpdinj[0], dtype=np.float64)
-                    lpi0   = log_p_incl_ #np.asarray(log_p_incl_, dtype=np.float64)
-                    Ndraw0 = float(np.asarray(Ndraw).reshape(()))
-                    
-                    Lambda0 = np.asarray(Lambda_.eval(), dtype=np.float64)
-                    
-                    # 2) Build a PyTensor function for the Op forward: F(Lambda) = sum(log_p_pop_op)
-                    Lam_sym = pt.dvector("Lam_sym")
-                    
-                    log_p_pop_op_sym, log_mu_sym, var_u_sym = fused(
-                        pt.constant(m1det0), pt.constant(m2det0), pt.constant(d0), pt.constant(sp0),
-                        pt.constant(m1inj0), pt.constant(m2inj0), pt.constant(dLinj0), spinj0,
-                        pt.constant(lpd0),   lpi0, #pt.constant(lpi0),
-                        Lam_sym, pt.constant(Ndraw0),
-                    )
-                    
-                    F_op_sym = pt.sum(log_p_pop_op_sym)
-                    
-                    F_op = pytensor.function([Lam_sym], F_op_sym)
-                    
-                    # 3) Also build the Op analytic gradient wrt Lambda at this frozen point
-                    g_op_sym = pt.grad(F_op_sym, Lam_sym)
-                    G_op = pytensor.function([Lam_sym], g_op_sym)
-                    
-                    # 4) Finite difference on H0 (idx 0) and Om (idx 1)
-                    def fd_component(func, lam0, k, h):
-                        e = np.zeros_like(lam0)
-                        e[k] = 1.0
-                        return (func(lam0 + h*e) - func(lam0 - h*e)) / (2.0*h)
-                    
-                    def choose_h(val):
-                        return 1e-6 * max(1.0, abs(float(val)))
-
-
-                    # Optional: provide names if you have them; otherwise indices are used
-                    lambda_names = (
-                        ["H0","Om","w0","Xi0","nXi0"] +
-                        [f"Lambda[{k}]" for k in range(5, Lambda0.shape[0])]
-                    )
-                    
-                    g0 = G_op(Lambda0)
-                    
-                    print("\n=== OP: grad vs FD for all Lambda ===")
-                    for k in range(Lambda0.shape[0]):
-                        name = lambda_names[k] if k < len(lambda_names) else f"Lambda[{k}]"
-                        h = choose_h(Lambda0[k])
-                        fd = fd_component(F_op, Lambda0, k, h)
-                        go = g0[k]
-                        print(f"{name:>10s}  k={k:2d}  Op grad={go:.12g}   FD={fd:.12g}   |diff|={abs(go-fd):.3g}   h={h:.3g}")
-
+                chi1 = atools.inv_logitat(samples[:,3])
+                chi2 = atools.inv_logitat(samples[:,4])
     
-                    # for k, name in [(0, "H0"), (1, "Om")]:
-                    #     h = choose_h(Lambda0[k])
-                    #     fd = fd_component(F_op, Lambda0, k, h)
-                    #     go = G_op(Lambda0)[k]
-                    #     print(f"{name}: Op grad={go:.12g}   FD={fd:.12g}   |diff|={abs(go-fd):.3g}   h={h:.3g}")
+                cost1 = atools.inv_flogitat(samples[:,5])
+                cost2 = atools.inv_flogitat(samples[:,6])
+
+                X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
+                d_int  = 7
 
 
         
 
+            # X as (N, d)
+            #X = vals.T                                   # (N, d)
+            #print("X shape is %s"%(X[:, None, :].shape.eval()))
+            #print("mus_l shape is %s"%(mus_l.shape.eval()))
+            
+            # Broadcast X against component-wise parameters
+            # diff: (N, ngmm, d)
+            diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
+            
+            # Quadratic form using precision F = Σ^{-1}
+            # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
+
+            
+            tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
 
 
-                    Lam_sym = pt.TensorType("float64", shape=(Lambda0.shape[0],))("Lam_sym")
+            
+            # r^T F r for each (obs, comp)
+            quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
 
+            
+            # Component logpdfs (Multivariate Normal)
+            log_norm = (-0.5 * d_int * at.log(2*np.pi)) #.astype(work_dtype)     # scalar
 
-                    # rebuild your "std" graph with frozen inputs but symbolic Lambda
-                    theta5 = Lam_sym[:5]
-                    H0  = theta5[0]
-                    Om  = theta5[1]
-                    w0  = theta5[2]
-                    Xi0 = theta5[3]
-                    nXi0= theta5[4]
-                    
-                    # IMPORTANT: use the same builders you use in the std branch
-                    # (these names match what you showed earlier)
-                    dc_grid_std = atools.dcfun_at(zgrid_, H0, Om, w0,) #dcfun_quad_pt(zgrid_, H0, Om, w0, constants._x01, constants._w01)   # <-- your PyTensor version
-                    dL_grid_std = atools.dLfun_at(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,) #dLfun_pt(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std, param=param,x01=constants._x01, w01=constants._w01)                   # <-- your PyTensor version
-                    log_ddL_dz_grid_std = atools.log_ddL_dz(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,) #log_ddL_dz_pt(zgrid_, H0, Om, w0, Xi0, nXi0, dc=dc_grid_std,x01=constants._x01, w01=constants._w01, param=param)  # <-- your PyTensor version
-                    
-                    zs_std = atools.atinterp(pt.constant(d0), dL_grid_std, zgrid_)
-                    dc_std = atools.atinterp(zs_std, zgrid_, dc_grid_std)
-                    log_ddL_dz_std = atools.atinterp(zs_std, zgrid_, log_ddL_dz_grid_std)
-                    
-                    # reconstruct m1src/m2src from frozen det masses (same as your std branch)
-                    onepz = 1.0 + zs_std
-                    m1src_std = pt.constant(m1det0) / onepz
-                    m2src_std = pt.constant(m2det0) / onepz
-                    
-                    log_p_pop_std_sym = pmmor.log_p_pop_at(
-                        m1src_std, m2src_std, zs_std, pt.constant(d0),
-                        [chi1, chi2, cost1, cost2],          # if these are pt vars, freeze them similarly
-                        Lam_sym,
-                        rate_model, mass_model, spin_model,
-                        smoothing=smoothing,
-                        simplex_repair=simplex_repair,
-                        has_m2_break=has_m2_break,
-                        norm_gauss=norm_gauss,
-                        dc=dc_std,
-                        log_ddL_dz_pre=log_ddL_dz_std,
-                        interp_vals_mass=None,
-                        interp_grids_mass=None,
-                        is_observed=is_observed,
-                        z_grid=zgrid_,
-                    )
-                    
-                    F_std_sym = pt.sum(log_p_pop_std_sym)
-                    
-                    F_std = pytensor.function([Lam_sym], F_std_sym)
-                    G_std = pytensor.function([Lam_sym], pt.grad(F_std_sym, Lam_sym))
-                    
-                    # 2) Finite difference helpers
-                    def fd_component(func, lam0, k, h):
-                        e = np.zeros_like(lam0)
-                        e[k] = 1.0
-                        return (func(lam0 + h*e) - func(lam0 - h*e)) / (2.0*h)
-                    
-                    def choose_h(val):
-                        return 1e-6 * max(1.0, abs(float(val)))
-                    
-                    # # 3) Check H0 and Om
-                    # for k, name in [(0, "H0"), (1, "Om")]:
-                    #     h = choose_h(Lambda0[k])
-                    #     fd = fd_component(F_std, Lambda0, k, h)
-                    #     gs = G_std(Lambda0)[k]
-                    #     print(f"{name}: std grad={gs:.12g}   FD={fd:.12g}   |diff|={abs(gs-fd):.3g}   h={h:.3g}")
+            logp_components = (
+                -0.5 * quad
+                + log_norm
+                - 0.5 * log_dets_l
+                + log_wts_l
+            )                                             # (N, ngmm)
 
-                    g0 = G_std(Lambda0)
+            # Mixture log-likelihood per observation: logsumexp over components
+            gwl = at.logsumexp(logp_components, axis=1, )   # (N,)
 
-                    print("\n=== STD: grad vs FD for all Lambda ===")
-                    for k in range(Lambda0.shape[0]):
-                        name = lambda_names[k] if k < len(lambda_names) else f"Lambda[{k}]"
-                        h = choose_h(Lambda0[k])
-                        fd = fd_component(F_std, Lambda0, k, h)
-                        gs = g0[k]
-                        print(f"{name:>10s}  k={k:2d}  std grad={gs:.12g}   FD={fd:.12g}   |diff|={abs(gs-fd):.3g}   h={h:.3g}")
-
-
-                    print("\n=== STD VS OP ===")
-                    for k, name in enumerate(lambda_names):
-                        h = choose_h(Lambda0[k])
-                        fd_op  = fd_component(F_op,  Lambda0, k, h)
-                        fd_std = fd_component(F_std, Lambda0, k, h)
-                        f0_op  = F_op(Lambda0)
-                        f0_std = F_std(Lambda0)
-                        print(f"{name}: F_op-F_std at Lambda0 = {f0_op - f0_std:.6g}")
-                        print(f"{name}: FD_op={fd_op:.12g}   FD_std={fd_std:.12g}   |diff|={abs(fd_op-fd_std):.3g}   h={h:.3g}")
-
-
-
-                    print()
-                    gop = G_op(Lambda0)
-                    gs  = G_std(Lambda0)
-                    print("max |G_op - G_std|:", np.max(np.abs(gop - gs)))
-                    print("idx max:", int(np.argmax(np.abs(gop-gs))))
-                    
-
-
-        
         
         else:
             raise NotImplementedError()
 
 
-        if is_observed:
-    
-            print("Fitting for observed population. Removing factor 1/Pdet")
-
-            Theta = at.ones(d.shape)
-          
-            log_P_det = at.log( atools.Pdet( osnr_interp_at, m1det, m2det, d, Theta, at.as_tensor_variable(8.) )
-                                       )
-            log_p_pop -= log_P_det
-
+        Mc = at.exp(log_Mc_det)            
+        q = atools.inv_logitat(logit_q)
+        m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
+        d = at.exp(logd)                   
             
-                
+            
+        ################################################
+        # Population prior and selection computation
+        ################################################
+
+
+
+        if spin_model in ("default", "default_gauss"):
+            spins = at.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
+        elif spin_model in ("chieffchip", "chieffchip_uc"):
+            spins = at.stack([chieff, chip], axis=1)              # (N,2)
+        else:
+            spins = at.zeros((m1src.shape[0], 0), dtype="float64")  # (N,0)
+
+        if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
+            Lambda_ = at.stack(Lambda_, axis=0)
+ 
+        
+        fused = PopAndSelJAXOp(
+        zgrid=zgrid_np,
+        x01=constants._x01_np,
+        w01=constants._w01_np,
+        rate_model=rate_model,
+        mass_model=mass_model,
+        spin_model=spin_model_name,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+        has_m2_break=has_m2_break,
+        norm_gauss=norm_gauss,
+        param=param,
+        #interp_mass=interp_mass,
+        #mass_grids = interp_grids_mass,
+        #is_observed=is_observed,
+        subtract_log_p_incl=False,       
+        linear_mass=linear_mass,
+        linear_z=linear_z,
+
+
+        )
+        
+        if lp_incl_inj[0] is None:
+            log_p_incl_ = at.zeros_like(lpdinj[0])
+        else:
+            log_p_incl_ = lp_incl_inj[0]
+        
+        log_p_pop, log_mu_, var_ll_u_ = fused(
+            m1det, m2det, d, spins,           # EVENT side
+            m1inj[0], m2inj[0], dLinj[0], spinsInj,
+            lpdinj[0], log_p_incl_,
+            Lambda_, Ndraw
+        )
+
+
+        ################################################
+        
         if all_dLsq_prior:
             #dLprior=='dLsq':
             # Remove \pi(d)~dL^2 prior on distance 
@@ -2850,22 +1591,18 @@ def make_model(  priors,
             raise ValueError("Check dL prior choices.")
             
 
-        if not pop_only:
-            if sampling_GW=='gauss' and not sample_from_pop:
+        if sampling_GW=='gauss' and not sample_from_pop:
                 # Add gw likelihood and correct for sampling prior pdf
                 log_p_pop -= pilik
                 log_p_pop += gwl
 
-            
-            # just sum log likelihoods
-
-            likelihood_val = at.sum( log_p_pop )
-
+        ################################################
         
-        else:
-            raise NotImplementedError()
+        #  sum log likelihoods
 
-        
+        likelihood_val = at.sum( log_p_pop )
+
+       
         # add R0*Tobs if needed. 
         if not marginal_R0:
             print("Will not marginalise over R0.")
@@ -2896,76 +1633,7 @@ def make_model(  priors,
                 # we passed a single injection set corresponding to multiple observing runs,
                 # with injections already containing the correct weights
                 print("Using selection effects from a single injection campaign")
-
-
-                if debug_sel_batch:
-
-                    print("\nDEBUG SEL ")
-                    print("log_mu_ new: ")
-                    print(log_mu_.eval())
-                    
-                    zinj_tmp_ = atools.atinterp(dLinj[0], dL_grid, zgrid_)
-    
-                    
-                    log_mu_1, Neff_1, var_ll_u_1 = pmmor.sel_bias_with_uncertainty_at_0( m1inj[0], m2inj[0], dLinj[0], [ chi1Inj[0], chi2Inj[0], cost1Inj[0], cost2Inj[0] ], lpdinj[0], 
-                                                              Lambda_, 
-                                                              Ndraw, 
-                                                              rate_model, mass_model, spin_model_name, 
-                                                              smoothing, 
-                                                            False,
-                                                              has_m2_break,
-                                                                norm_gauss,
-                                                              interp=pade, 
-                                                             log_p_incl = None,
-                                                            log_ddL_dz_inj = atools.atinterp( zinj_tmp_, zgrid_, log_ddL_dz_grid),
-                                                             zinj = zinj_tmp_,
-                                                             dcinj = atools.atinterp( zinj_tmp_, zgrid_, dc_grid) ,
-                                                            )
-    
-                    
-                    
-                    print("Difference in log_mu_1 :")
-                    print((log_mu_1 - log_mu_).eval().max())
-    
-                    print("Difference in var_ll_u_1 :")
-                    print((var_ll_u_1 - var_ll_u_).eval().max())
-
-                    print("Relative scale comparison:")
-                    print(pt.max(pt.abs(g_std[0])).eval(), pt.max(pt.abs(g_op[0])).eval())
-
-
-                    import pytensor.tensor as pt
-
-                    # --- gradient check (minimal) ---
-                    # Compare gradients of a scalar objective. log_mu_ is scalar already, but we sum just in case.
-                    obj_op  = pt.sum(log_mu_)
-                    obj_std = pt.sum(log_mu_1)
-                    
-                    # pick a minimal wrt set (typically Lambda_ is what you care about most)
-                    wrt = [Lambda_]
-                    
-                    g_op  = pt.grad(obj_op,  wrt=wrt, disconnected_inputs="ignore")
-                    g_std = pt.grad(obj_std, wrt=wrt, disconnected_inputs="ignore")
-                    
-                    print("\nDEBUG GRAD SEL (max abs diff)")
-                    for name, go, gs in zip(["Lambda"], g_op, g_std):
-                        print(name, go.eval(), gs.eval())
-                        print(name, pt.max(pt.abs(gs - go)).eval())
-                    print()
-
-                    goL = g_op[0].eval()
-                    gsL = g_std[0].eval()
-                    diff = np.abs(gsL - goL)
-                    
-                    idx = np.where(diff > 5e-2)[0]   # choose threshold
-                    print("bad idx:", idx.tolist())
-                    print("diff at idx:", diff[idx])
-                    print("go at idx:", goL[idx])
-                    print("gs at idx:", gsL[idx])
-                    
-                    print("max idx:", int(diff.argmax()), "max diff:", diff.max())
-                    
-                    
+       
                 if not marginal_R0:
                     # This is really the number of expected events 
                     sel_effect = -R0*Ttot*at.exp(log_mu_)
@@ -3011,33 +1679,13 @@ def make_model(  priors,
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
 
-                        
-                        #selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))  
-
                         selection_bias = sel_effect
                         _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var, deltam=0.01, ml=-0.01))
 
-
-                        
-                    elif sel_smoothing=='softplus':
-                        print("Tapering sel effect with softplus")
-                        # Slack (how sharp the corner is) and weight (penalty strength)
-                        nu = 0.01    # smaller = sharper transition
-                        lam = 1.    # larger = stronger penalty
-                        
-                        excess  = (log_lik_var - log_lik_var_min) / nu
-                        penalty = lam * at.softplus(excess)          # ≥ 0, ~0 if below threshold
-
-                        selection_bias = sel_effect 
-                        
-                        # If log_lik_var is a vector, sum to get a scalar penalty:
-                        pm.Potential("bound_log_lik_var", -at.sum(penalty))
                     else:
                         print("Tapering sel effect with hard cut")
 
-                        selection_bias = sel_effect #pm.Deterministic("sel_bias", sel_effect)
-                        # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
-                        # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
+                        selection_bias = sel_effect
                         _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf ))
 
             
@@ -3062,39 +1710,3 @@ def make_model(  priors,
 
 
 
-
-def interp_diagnostics(x, xp, eps=1e-12, side="right"):
-    x  = np.atleast_1d(np.asarray(x))
-    xp = np.asarray(xp)
-
-    idx = np.searchsorted(xp, x, side=side)
-    idx = np.clip(idx, 1, xp.size - 1)
-
-    xl = xp[idx-1]
-    xh = xp[idx]
-    dx = xh - xl
-
-    # (2) how close are queries to a knot?
-    # distance to nearest knot among the two bracketing knots
-    dist_to_knot = np.minimum(np.abs(x - xl), np.abs(x - xh))
-
-    # normalized proximity: "how many dx away from a knot"
-    # small values mean you're near a bracket boundary => idx can flip with tiny numerical changes
-    rel = dist_to_knot / np.maximum(dx, eps)
-
-    # (3) are we clamping denom?
-    clamped = dx <= eps
-
-    out = {
-        "xp_dtype": xp.dtype,
-        "x_dtype": x.dtype,
-        "N": x.size,
-        "min_dx": float(dx.min()),
-        "clamped_count": int(clamped.sum()),
-        "min_dist_to_knot": float(dist_to_knot.min()),
-        "pct_rel_lt_1e-12": float(np.mean(rel < 1e-12) * 100.0),
-        "pct_rel_lt_1e-9":  float(np.mean(rel < 1e-9)  * 100.0),
-        "pct_rel_lt_1e-6":  float(np.mean(rel < 1e-6)  * 100.0),
-        "pct_rel_lt_1e-3":  float(np.mean(rel < 1e-3)  * 100.0),
-    }
-    return out

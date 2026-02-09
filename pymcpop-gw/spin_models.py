@@ -37,7 +37,13 @@ def logpdf_default_spin_gauss(bk, theta, lambdaBBHspin):
     theta = (chi1, chi2, cost1, cost2)
     lambdaBBHspin = (muChi, sigmaChi, zeta, sigmat)
     """
-    chi1, chi2, cost1, cost2 = theta
+    # theta can be (N,4) or a tuple/list of 4 arrays
+    if hasattr(theta, "ndim") and theta.ndim == 2:
+        chi1, chi2, cost1, cost2 = theta[:, 0], theta[:, 1], theta[:, 2], theta[:, 3]
+    else:
+        chi1, chi2, cost1, cost2 = theta
+        
+    #chi1, chi2, cost1, cost2 = theta
     muChi, sigmaChi, zeta, sigmat = lambdaBBHspin
 
     # amplitudes: truncated Gaussian on [0,1]

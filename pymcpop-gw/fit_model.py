@@ -34,7 +34,7 @@ from pytensor.link.jax.dispatch.basic import jax_funcify
 from pytensor_tools_new import PopAndSelJAXOp  # same import path as in jaxify_ops
 
 assert PopAndSelJAXOp in jax_funcify.registry, "jax_funcify registration did not stick"
-print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
+#print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
 
 import argparse
 import json
