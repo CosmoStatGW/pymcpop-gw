@@ -2,7 +2,7 @@ import jax.numpy as jnp
 from pytensor.link.jax.dispatch.basic import jax_funcify
 
 # IMPORTANT: import the class from the SAME place you use in your model code
-from pytensor_tools_new import PopAndSelJAXOp  # <- change to your real module path
+from pytensor_ops import PopAndSelJAXOp  # <- change to your real module path
 
 @jax_funcify.register(PopAndSelJAXOp)
 def jax_funcify_PopAndSelJAXOp(op, **kwargs):

@@ -1537,7 +1537,7 @@ def _load_group_as_dataset(grp, chain_names=None, draw_names=None):
         ds_vars[key] = _mk_da(key, arr, chain_names, draw_names)
     return xr.Dataset(ds_vars)
 
-def load_pymc_zarr_trace_robust(store_path):
+def load_pymc_zarr_trace_robust(store_path, drop_tune=True):
     """
     Returns an ArviZ InferenceData from a PyMC ZarrTrace directory.
     Tries ArviZ's from_zarr first; if that fails, constructs by hand.
@@ -1576,12 +1576,31 @@ def load_pymc_zarr_trace_robust(store_path):
     warmup_stats      = _load_group_as_dataset(root.get("warmup_sample_stats"), chain_names, draw_names) \
                         if "warmup_sample_stats" in gkeys else None
 
-    return az.InferenceData(
+    idata=az.InferenceData(
         posterior=posterior,
         sample_stats=sample_stats,
         warmup_posterior=warmup_posterior,
         warmup_sample_stats=warmup_stats,
     )
+
+    if drop_tune and "sampler_0__tune" in idata.sample_stats:
+        tune2d = idata.sample_stats["sampler_0__tune"].astype(bool)  # dims: chain, draw
+    
+        # safe 1D mask per-draw: mark a draw as tune if ANY chain says it's tune
+        tune1d = tune2d.any(dim="chain")  # dims: draw
+    
+        n_total_draws = tune1d.sizes["draw"]
+        n_drop_draws  = int(tune1d.values.sum())
+        n_keep_draws  = n_total_draws - n_drop_draws
+    
+        print(
+            f"[load_pymc_zarr_trace_robust] Dropping tune draws: {n_drop_draws}/{n_total_draws} "
+            f"({100*n_drop_draws/n_total_draws:.1f}%). Keeping {n_keep_draws} draws."
+        )
+    
+        idata = idata.sel(draw=~tune1d)
+
+    return idata
 
 
 

@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--min_Neff", default=0, type=int, required=False)
     parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
     parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
-    parser.add_argument("--chunk_inj", default=65536, type=int, required=False)
+    parser.add_argument("--chunk_inj", default=0, type=int, required=False)
     parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
     parser.add_argument("--use_float32", default=0, type=int, required=False)
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
@@ -197,7 +197,7 @@ def main():
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
-    parser.add_argument("--zres", default=500, type=int, required=False)
+    parser.add_argument("--zres", default=1000, type=int, required=False)
     parser.add_argument("--z_grid_mode", default='cheb', type=str, required=False)
     
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
@@ -318,7 +318,7 @@ def main():
     import jaxify_ops
     
     from pytensor.link.jax.dispatch.basic import jax_funcify
-    from pytensor_tools_new import PopAndSelJAXOp  # same import path as in jaxify_ops
+    from pytensor_ops import PopAndSelJAXOp  # same import path as in jaxify_ops
     
     assert PopAndSelJAXOp in jax_funcify.registry, "jax_funcify registration did not stick"
     #print("jax_funcify registered for:", jax_funcify.registry[PopAndSelJAXOp])
@@ -393,6 +393,8 @@ def main():
     pytensor.config.openmp = False
     import numpy as onp
 
+    set_pytensor_flag("optimizer_excluding", "inplace")
+    
     print("JAX x64 after importing pymc/pytensor:", jax.config.read("jax_enable_x64"))
     
     

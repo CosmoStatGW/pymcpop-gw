@@ -9,7 +9,7 @@ import pytensor_utils_old as putils
 
 from pytensor_utils import atinterp
 
-from pytensor_tools_new import PopAndSelJAXOp
+from pytensor_ops import PopAndSelJAXOp
 import cosmology as cosmo
 from backends import NPBackend, JAXBackend
 import constants
@@ -39,6 +39,72 @@ eps   = 1e-30
 tinyL = 1e-300
 NEG_BIG = -np.inf
 
+
+
+#####################################################
+#####################################################
+
+# Prior transforms
+
+#####################################################
+#####################################################
+
+
+# 95% central interval for Normal and 95% point for HalfNormal
+NORM_Q95 = 1.959963984540054  # Phi^{-1}(0.975)
+
+# For bounded-sigmoid params, choose raw sd so that 95% maps to ~[0.05, 0.95]
+RAW_SD_95 = 1.502  # since sigmoid(±1.96*RAW_SD_95) ≈ 0.05 / 0.95
+
+def normal_from_bounds_95(name, low, high, initval=None):
+    """Interpret [low, high] as central 95% of a Normal."""
+    mu = 0.5 * (low + high)
+    sigma = (high - low) / (2.0 * NORM_Q95)
+    return pm.Normal(name, mu=mu, sigma=sigma, initval=initval)
+
+def floored_halfnormal_typmax95(name, floor, typical_max_total, initval=None):
+    """
+    Parameter = floor + HalfNormal(raw_sigma),
+    with typical_max_total interpreted as the ~95% point of the final parameter.
+    So raw 95% point = (typical_max_total - floor).
+    """
+    raw_typ = max(1e-12, typical_max_total - floor)
+    raw_sigma = raw_typ / NORM_Q95  # because P(HN <= raw_typ) = 0.95
+    raw_init = None
+    if initval is not None:
+        raw_init = max(0.0, initval - floor)
+    raw = pm.HalfNormal(f"{name}_raw", sigma=raw_sigma, initval=raw_init)
+    return pm.Deterministic(name, floor + raw)
+
+def unit_interval_sigmoid(name, initval=None, raw_sigma=1.0):
+    """Unconstrained -> (0,1) without hard walls."""
+    raw_init = None
+    if initval is not None:
+        x = float(np.clip(initval, 1e-6, 1 - 1e-6))
+        raw_init = np.log(x / (1 - x))
+    raw = pm.Normal(f"{name}_raw", mu=0.0, sigma=raw_sigma, initval=raw_init)
+    return pm.Deterministic(name, pm.math.sigmoid(raw))
+
+def bounded_sigmoid_95(name, low, high, initval=None):
+    """Hard-bounded in [low, high] with ~95% mass away from edges."""
+    raw_init = None
+    if initval is not None:
+        t = float((initval - low) / (high - low))
+        t = np.clip(t, 1e-6, 1 - 1e-6)
+        raw_init = np.log(t / (1 - t))
+    raw = pm.Normal(f"{name}_raw", mu=0.0, sigma=RAW_SD_95, initval=raw_init)
+    return pm.Deterministic(name, low + (high - low) * pm.math.sigmoid(raw))
+
+def log_bounded_sigmoid_95(name, low, high, initval=None):
+    """Hard-bounded positive scale in [low, high] but uniform-ish in log space."""
+    raw_init = None
+    if initval is not None:
+        t = float((np.log(initval) - np.log(low)) / (np.log(high) - np.log(low)))
+        t = np.clip(t, 1e-6, 1 - 1e-6)
+        raw_init = np.log(t / (1 - t))
+    raw = pm.Normal(f"{name}_raw", mu=0.0, sigma=RAW_SD_95, initval=raw_init)
+    logx = np.log(low) + (np.log(high) - np.log(low)) * pm.math.sigmoid(raw)
+    return pm.Deterministic(name, pm.math.exp(logx))
 
 
 #####################################################
@@ -523,6 +589,7 @@ def make_model(  priors,
 
 
     vol_in_prior = any('UniformSourceFrame' in s or 'UniformComovingVolume' in s for s in dLprior)
+    none_in_prior = any('none' in s for s in dLprior)
     
     all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
     all_no_dL_prior = all(s == 'none' for s in dLprior)
@@ -533,7 +600,7 @@ def make_model(  priors,
 
     if vol_in_prior:
 
-        zgrid_dLp = at.constant( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ) 
+        zgrid_dLp =  at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost))
 
         dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.74, 0.3075, -1., interp=False)#.astype(work_dtype)
         dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.74, 0.3075, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla') #.astype(work_dtype)
@@ -641,9 +708,14 @@ def make_model(  priors,
         if rate_model=='MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-            kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-            zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+            # gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+            # kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+            # zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+
+            gamma_ = normal_from_bounds_95("gamma", priors["gamma"][0], priors["gamma"][1], initval=ivals.get("gamma"))
+
+            kappa_ = bounded_sigmoid_95("kappa", priors["kappa"][0], priors["kappa"][1], initval=ivals.get("kappa"))
+            zp_    = bounded_sigmoid_95("zp",    priors["zp"][0],    priors["zp"][1],    initval=ivals.get("zp"))
 
        
             Lambda_ += [gamma_, kappa_, zp_]
@@ -726,11 +798,53 @@ def make_model(  priors,
 
             print('Modeling spin distribution with default spin model, gaussian distribution for magnitudes')
 
-            muChi_ = pm.Uniform('muChi', lower=priors['muChi'][0], upper=priors['muChi'][1])
-            sigmaChi_ = pm.Uniform('sigmaChi', lower=priors['sigmaChi'][0], upper=priors['sigmaChi'][1])
+            # muChi_ = pm.Uniform('muChi', lower=priors['muChi'][0], upper=priors['muChi'][1])
+            # sigmaChi_ = pm.Uniform('sigmaChi', lower=priors['sigmaChi'][0], upper=priors['sigmaChi'][1])
             
-            zeta_ = pm.Uniform('zeta', lower=priors['zeta'][0], upper=priors['zeta'][1])
-            sigmat_ = pm.Uniform('sigmat', lower=priors['sigmat'][0], upper=priors['sigmat'][1])
+            # zeta_ = pm.Uniform('zeta', lower=priors['zeta'][0], upper=priors['zeta'][1])
+            # sigmat_ = pm.Uniform('sigmat', lower=priors['sigmat'][0], upper=priors['sigmat'][1])
+
+            # --- reparameterized bounded priors (muChi, sigmaChi, zeta) and HalfNormal (sigmat) ---
+
+             
+            # muChi: hard-bounded in [a,b] via sigmoid reparam
+            muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
+            muChi_raw = pm.Normal("muChi_raw", mu=0.0, sigma=RAW_SD_95)
+            muChi_ = pm.Deterministic(
+                "muChi",
+                muChi_a + (muChi_b - muChi_a) * pm.math.sigmoid(muChi_raw),
+            )
+            
+            # sigmaChi: hard-bounded in [a,b] but mapped in log-space (better for widths)
+            sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
+            sigmaChi_raw = pm.Normal("sigmaChi_raw", mu=0.0, sigma=RAW_SD_95)
+            log_sigmaChi = (
+                np.log(sigmaChi_a)
+                + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * pm.math.sigmoid(sigmaChi_raw)
+            )
+            sigmaChi_ = pm.Deterministic("sigmaChi", pm.math.exp(log_sigmaChi))
+            
+            # zeta: hard-bounded in [a,b] via sigmoid reparam (typically [0,1])
+            zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
+            zeta_raw = pm.Normal("zeta_raw", mu=0.0, sigma=RAW_SD_95)
+            zeta_ = pm.Deterministic(
+                "zeta",
+                zeta_a + (zeta_b - zeta_a) * pm.math.sigmoid(zeta_raw),
+            )
+            
+            # sigmat: HalfNormal with "typical max" = priors['sigmat'][1] at ~95% quantile
+            HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
+            sigmat_floor = priors["sigmat"][0]
+            sigmat_typmax = priors["sigmat"][1]
+            raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)  # interpret typmax as final 95% point
+            sigmat_sigma = raw_typ / HN_Q95_TO_SIGMA
+            
+            sigmat_raw_init = None
+            if ivals.get("sigmat") is not None:
+                sigmat_raw_init = max(0.0, ivals["sigmat"] - sigmat_floor)
+            
+            sigmat_raw = pm.HalfNormal("sigmat_raw", sigma=sigmat_sigma, initval=sigmat_raw_init)
+            sigmat_ = pm.Deterministic("sigmat", sigmat_floor + sigmat_raw)
 
             Lambda_ += [muChi_, sigmaChi_, zeta_, sigmat_]
             
@@ -774,26 +888,76 @@ def make_model(  priors,
 
             print('Modeling mass distribution with Double Power Law + Double Peak ')
 
-            alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
-            alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
-            mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
-            mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
-            sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
-            mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
-            sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
-            u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
-            m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
-            v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
-            m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
-            delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(ivals.get("lambda")))
+            # alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+            # alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
+            # mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+            # mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+            # sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
+            # mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
+            # sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            # u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            # m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            # v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+            # m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+            # m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
+            # delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+            # lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(ivals.get("lambda")))
+            # lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+            # lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+            # lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+            # beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+            # delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            
+            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable( 1.) )
+
+
+            # --- Slopes / locations: Normal with bounds as 95% typical range ---
+            alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
+            alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
+            beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
+            
+            #mb_  = normal_from_bounds_95("mb",  priors["mb"][0],  priors["mb"][1],  initval=ivals.get("mb"))
+            mb_a, mb_b = priors["mb"][0], priors["mb"][1]
+
+            # set init in raw-space using logit of normalized initval (if provided)
+            mb_raw_init = None
+            if ivals.get("mb") is not None:
+                t = float((ivals["mb"] - mb_a) / (mb_b - mb_a))
+                t = np.clip(t, 1e-6, 1 - 1e-6)
+                mb_raw_init = np.log(t / (1 - t))
+            
+            mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
+            mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+
+            mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
+            mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
+            
+            # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
+            sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
+            sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            delta_m1_ = floored_halfnormal_typmax95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+            delta_m2_ = floored_halfnormal_typmax95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            
+            # --- Triangle constraint for m1_low, m2_low preserved ---
+            u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
+            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            
+            v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
+            m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+            
+            m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+            
+            # --- Lambda  ---
+            lam_init = ivals.get("lambda")
+            if lam_init is None:
+                lam_init = np.array([1/3, 1/3, 1/3])
+            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(lam_init))
             lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
             lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
             lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
-            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
-            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.01) )
+
+
+
             
             if has_m2_break:
                 print("Including gap for secondary mass")
@@ -1523,14 +1687,16 @@ def make_model(  priors,
         elif all_no_dL_prior:    
             print("No dL prior removed for all events.")
             
-        elif vol_in_prior:
+        elif vol_in_prior or none_in_prior:
 
-            zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
-            dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
+            if vol_in_prior:
+                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
+                dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
 
-            lpi = at.zeros_like(log_p_pop )
+            #lpi = at.zeros_like(log_p_pop )
 
             # apply chunk-wise prior removal
+            chunks = []
             for i, lab in enumerate(dLprior):
                 sl = slice(edges[i], edges[i+1])
 
@@ -1582,8 +1748,11 @@ def make_model(  priors,
                     if normalize_PE_prior:
                         print('normalizing PE prior')
                         chunk -= log_norm_PE_prior
+                
+                chunks.append(chunk)
+                #lpi = at.set_subtensor(lpi[sl], chunk)
 
-                lpi = at.set_subtensor(lpi[sl], chunk)
+            lpi = at.concatenate(chunks, axis=0)
             
             log_p_pop -= lpi
             
