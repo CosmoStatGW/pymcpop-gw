@@ -6,14 +6,15 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def _interp_prepare_bk(bk, x, xp, eps=1e-12, side="right"):
+def _interp_prepare_bk(bk, x, xp, eps=0, side="left"):
     idx = bk.searchsorted( xp, x, side=side)
     idx = bk.clip(idx, 1, xp.shape[0] - 1) #bk.stop_grad( bk.clip(idx, 1, xp.shape[0] - 1) )
     x0 = xp[idx - 1]
     x1 = xp[idx]
-    denom = bk.maximum(x1 - x0, eps)
+    denom = x1 - x0 #bk.maximum(x1 - x0, eps)
     t = (x - x0) / denom
     return idx, t
+
 
 def _interp_apply_bk(bk, idx, t, fp):
     y0 = fp[idx - 1]
@@ -46,7 +47,7 @@ def _interp_prepare_uniform_bk(bk, x, xp, eps=1e-12):
     n = xp.shape[0]
     x0 = xp[0]
     dx = xp[1] - xp[0]
-    dx = bk.maximum(dx, eps)
+    #dx = bk.maximum(dx, eps)
 
     # continuous index in grid units
     s = (x - x0) / dx

@@ -259,15 +259,15 @@ def _make_pop_and_sel_core(
                 z_evt = inv_dL_to_z(dLdet, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda)
                 z_inj = inv_dL_to_z(dLinj, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda)
             else:
-                z_inj = atinterp(bk, dLinj, dL_grid, zgrid, eps=eps_interp, side=side_interp)
-                z_evt = atinterp(bk, dLdet, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+                z_inj = atinterp(bk, dLinj, dL_grid, zgrid)
+                z_evt = atinterp(bk, dLdet, dL_grid, zgrid)
 
              
             # Reuse a single searchsorted for any z->grid interpolations we need downstream
 
             # prepare indices once
-            idx_z_evt, t_z_evt = _interp_prepare_bk(bk, z_evt, zgrid, eps=eps_interp, side=side_interp)
-            idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid, eps=eps_interp, side=side_interp)
+            idx_z_evt, t_z_evt = _interp_prepare_bk(bk, z_evt, zgrid)
+            idx_z_inj, t_z_inj = _interp_prepare_bk(bk, z_inj, zgrid)
             
             # build stacked fps ONCE
             fps4 = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)  # (4, Nz)
@@ -299,18 +299,18 @@ def _make_pop_and_sel_core(
                 z_evt = inv_dL_to_z(dLdet, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda)
                 z_inj = inv_dL_to_z(dLinj, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda)
             else: 
-                z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u, eps=eps_interp, side=side_interp)
-                z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u, eps=eps_interp, side=side_interp)
+                z_inj = atinterp_uniform(bk, dLinj, dL_u, z_u)
+                z_evt = atinterp_uniform(bk, dLdet, dL_u, z_u)
 
 
             # Uniform grids, no searchsorted
-            idx_z_evt, t_z_evt = _interp_prepare_uniform_bk(bk, z_evt, zgrid, eps=eps_interp)
+            idx_z_evt, t_z_evt = _interp_prepare_uniform_bk(bk, z_evt, zgrid)
             
             fps_evt = bk.stack([dc_grid, log_ddL_dz_grid, E_grid, Xi_grid], axis=0)  # (4, Nz)
             vals_evt = _interp_apply_multi_bk(bk, idx_z_evt, t_z_evt, fps_evt)
             dc_evt, log_ddL_dz_evt, E_evt, Xi_evt = vals_evt[0], vals_evt[1], vals_evt[2], vals_evt[3]
             
-            idx_z_inj, t_z_inj = _interp_prepare_uniform_bk(bk, z_inj, zgrid, eps=eps_interp)
+            idx_z_inj, t_z_inj = _interp_prepare_uniform_bk(bk, z_inj, zgrid)
             
             # IMPORTANT: reuse the same stacked fps (don’t rebuild it)
             vals_inj = _interp_apply_multi_bk(bk, idx_z_inj, t_z_inj, fps_evt)
@@ -425,7 +425,7 @@ class _PopAndSelJAXVJPOp(Op):
                  #mass_grids = None,
                  verbose=False,
                  linear_mass=False, linear_z=False,
-                 subtract_log_p_incl=False, eps_interp=1e-12, side_interp="right",
+                 subtract_log_p_incl=False, eps_interp=1e-12, side_interp="left",
                 skip_sel=False
                 ):
         super().__init__()
@@ -645,7 +645,7 @@ class PopAndSelJAXOp(Op):
                  verbose=False,
                  linear_mass=False,
                  linear_z=False,
-                 subtract_log_p_incl=False, eps_interp=1e-12, side_interp="right",
+                 subtract_log_p_incl=False, eps_interp=1e-12, side_interp="left",
                 skip_sel=False,
                  chunk_inj=0
                 ):

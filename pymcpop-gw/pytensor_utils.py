@@ -123,7 +123,7 @@ def atinterp_uniform(bk, x, *args, eps=1e-12, side="left"):
 # interpolation
 
 
-def atinterp(bk, x, xp, fp_const, eps=1e-12, side="right"):
+def atinterp_clip(bk, x, xp, fp_const, eps=1e-12, side="left"):
     n = xp.shape[0]
     idx = bk.searchsorted(xp, x, side=side)
     idx = bk.clip(idx, 1, n - 1)
@@ -137,6 +137,19 @@ def atinterp(bk, x, xp, fp_const, eps=1e-12, side="right"):
     return (1.0 - r) * yl + r * yh
 
 
+def atinterp(bk, x, xs, ys):
+
+  idxs = bk.searchsorted(xs, x, side='left')
+  idxs = bk.clip(idxs, 1, xs.shape[0] - 1) # out of index case
+
+  xl = xs[idxs-1]
+  yl = ys[idxs-1]
+  xh = xs[idxs]
+  yh = ys[idxs]
+
+  r = (x-xl)/(xh-xl)
+
+  return r*yh + (1.0-r)*yl
 
     
 # ---------------------------------------------------------------------

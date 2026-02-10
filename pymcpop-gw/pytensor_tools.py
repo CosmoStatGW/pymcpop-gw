@@ -68,11 +68,13 @@ zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
 def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15, mode='cheb'):
-
+    print("make_z_grid mode: %s"%mode)
     if mode=='man':
         return zGridGlobals
     elif mode=='cheb':
         return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)
+    elif mode=='fixed':
+        return make_z_grid_fixed(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c)
     else:
         raise ValueError()
 
@@ -523,8 +525,22 @@ def meshgrid_at(x, y):
     return X.T, Y.T
 
 
+def atinterp(x, xs, ys):
 
-def atinterp(x, xs, ys, eps=1e-12, side="right"):
+  idxs = at.searchsorted(xs, x, side='left')
+  idxs = at.clip(idxs, 1, xs.shape[0] - 1) # out of index case
+
+  xl = xs[idxs-1]
+  yl = ys[idxs-1]
+  xh = xs[idxs]
+  yh = ys[idxs]
+
+  r = (x-xl)/(xh-xl)
+
+  return r*yh + (1.0-r)*yl
+
+
+def atinterp_clip(x, xs, ys, eps=1e-12, side="right"):
     # xs, ys tensors; x can be scalar or tensor
     idxs = at.searchsorted(xs, x, side=side)
     idxs = at.clip(idxs, 1, xs.shape[0] - 1)

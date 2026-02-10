@@ -204,7 +204,7 @@ def sel_bias_with_uncertainty_legacy(
     verbose=False,
     subtract_log_p_incl=True,
     eps_interp=1e-12,
-    side_interp="right",
+    side_interp="left",
     # -------- optional precomputed cosmology at injections --------
     zinj=None,
     dcinj=None,
@@ -223,13 +223,13 @@ def sel_bias_with_uncertainty_legacy(
     if zinj is None:
         raise ValueError()
         # z(dL): xp=dL_grid, fp=zgrid
-        i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid, eps=eps_interp, side=side_interp)
+        i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid)
         zinj = _interp_apply_bk(bk, i_dL, t_dL, z_grid)
 
     if (dcinj is None) or (log_ddL_dz_inj is None):
         raise ValueError()
         # dc(z), log_ddL_dz(z): xp=zgrid, fp=grids
-        i_z, t_z = _interp_prepare_bk(bk, zinj, z_grid, eps=eps_interp, side=side_interp)
+        i_z, t_z = _interp_prepare_bk(bk, zinj, z_grid)
         if dcinj is None:
             dcinj = _interp_apply_bk(bk, i_z, t_z, dc_grid)
         if log_ddL_dz_inj is None:
@@ -745,7 +745,7 @@ def sel_bias_with_uncertainty(
     verbose=False,
     subtract_log_p_incl=True,
     eps_interp=1e-12,
-    side_interp="right",
+    side_interp="left",
     zinj=None,
     dcinj=None,
     log_ddL_dz_inj=None,
@@ -813,7 +813,7 @@ def sel_bias_with_uncertainty(
 
 
 
-def make_dL_to_z_cuvjp(*, bk, eps_interp=1e-12, side_interp="right"):
+def make_dL_to_z_cuvjp(*, bk, eps_interp=1e-12, side_interp="left"):
     """
     Fast custom VJP for z = z(dL) using the *dL-grid bracketing* only.
     Avoids a second z->grid searchsorted/interp in the backward.
@@ -832,12 +832,12 @@ def make_dL_to_z_cuvjp(*, bk, eps_interp=1e-12, side_interp="right"):
     @jax.custom_vjp
     def inv_dL_to_z(dL, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda):
         # Use your standard interpolator in dL space
-        return atinterp(bk, dL, dL_grid, zgrid, eps=eps_interp, side=side_interp)
+        return atinterp(bk, dL, dL_grid, zgrid)
 
     def fwd(dL, dL_grid, zgrid, log_ddL_dz_grid, dL_dtheta_grid, Lambda):
         # Build dL-space bracketing once
         # i, t satisfy: dL_grid[i] <= dL < dL_grid[i+1] (depending on side)
-        i, t = _interp_prepare_bk(bk, dL, dL_grid, eps=eps_interp, side=side_interp)
+        i, t = _interp_prepare_bk(bk, dL, dL_grid)
 
         # z(dL) by applying same weights to zgrid (1-1 correspondence with dL_grid)
         z = _interp_apply_bk(bk, i, t, zgrid)
@@ -946,7 +946,7 @@ def make_dL_to_z_cuvjp_uniform(*, bk, eps_interp=1e-12):
     @jax.custom_vjp
     def inv_dL_to_z_uniform(dL, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda):
         # your canonical forward for this branch
-        return atinterp_uniform(bk, dL, dL_u, z_u, eps=eps_interp, side="right")
+        return atinterp_uniform(bk, dL, dL_u, z_u, eps=eps_interp, side="left")
 
     def fwd(dL, dL_u, z_u, zgrid, dL_dtheta_grid, Lambda):
         # ---- invert on uniform dL table

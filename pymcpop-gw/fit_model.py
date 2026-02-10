@@ -23,17 +23,11 @@ early = early_parse(sys.argv[1:])
 
 
 NTH = early.nth if early.nth is not None else 1
-
-# print()
-# print("Asked NTH=%s. This will overwrite previous settinggs."%NTH)
-# print()
-
-#os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 os.environ["JAX_ENABLE_X64"] = "1"
 os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
 os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
-
+#os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
 #os.environ.setdefault("JAX_LOG_COMPILES", "1")
 
 
@@ -45,9 +39,6 @@ os.environ["BLIS_NUM_THREADS"]     = str(NTH)
 os.environ["OMP_DYNAMIC"]          = "FALSE"
 os.environ["OMP_PROC_BIND"]        = "FALSE"
 os.environ["KMP_AFFINITY"]         = "disabled"
-
-
-
 
 
 
@@ -141,7 +132,7 @@ def main():
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
     parser.add_argument("--MAP_init", default=0, type=int, required=False)
-    parser.add_argument("--eps_init", default=0.5, type=float, required=False)
+    parser.add_argument("--eps_init", default=0.01, type=float, required=False)
     parser.add_argument("--params_fix", default='', type=str, required=False)
     parser.add_argument("--check_init", default=0, type=int, required=False)
     parser.add_argument("--debug", default=0, type=int, required=False)
@@ -198,7 +189,7 @@ def main():
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
     parser.add_argument("--zres", default=1000, type=int, required=False)
-    parser.add_argument("--z_grid_mode", default='cheb', type=str, required=False)
+    parser.add_argument("--z_grid_mode", default='man', type=str, required=False)
     
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)

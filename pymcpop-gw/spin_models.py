@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from constants import _PI as PI
-from mass_models import truncGausslowerupper_at_lpdf_safe
+from mass_models import truncGausslowerupper_at_lpdf_safe, truncGausslowerupper_at_lpdf
 
 from pytensor_utils import logsumexp2
 
@@ -47,8 +47,8 @@ def logpdf_default_spin_gauss(bk, theta, lambdaBBHspin):
     muChi, sigmaChi, zeta, sigmat = lambdaBBHspin
 
     # amplitudes: truncated Gaussian on [0,1]
-    lpdfs1 = truncGausslowerupper_at_lpdf_safe(bk, chi1, muChi, sigmaChi, xmin=0.0, xmax=1.0, truncate=False)
-    lpdfs2 = truncGausslowerupper_at_lpdf_safe(bk, chi2, muChi, sigmaChi, xmin=0.0, xmax=1.0, truncate=False)
+    lpdfs1 = truncGausslowerupper_at_lpdf(bk, chi1, muChi, sigmaChi, xmin=0.0, xmax=1.0, truncate=False)
+    lpdfs2 = truncGausslowerupper_at_lpdf(bk, chi2, muChi, sigmaChi, xmin=0.0, xmax=1.0, truncate=False)
     logpdfampl = lpdfs1 + lpdfs2
 
     # cos tilts: "Gaussian around 1" piece
