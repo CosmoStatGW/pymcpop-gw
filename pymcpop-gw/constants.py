@@ -25,7 +25,7 @@ def gauss_legendre_01(n=32, ): #dtype="float64"):
     w01 = w * 0.5
     return x01, w01 #.astype(dtype)
 
-_x01_np, _w01_np = gauss_legendre_01(n=32)  # 16–64 usually plenty
+_x01_np, _w01_np = gauss_legendre_01(n=64)  # 16–64 usually plenty
 
 
 x01_at = at.as_tensor_variable(_x01_np)     # shape (n,)
