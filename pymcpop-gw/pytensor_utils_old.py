@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Optional, List
 from tqdm.auto import tqdm
 
-
+import numpy as np
 
 
 
@@ -1478,6 +1478,7 @@ def _infer_chain_draw_shape_from_group(grp):
     Try to infer (n_chain, n_draw) from any array in the group.
     Arrays are expected to be shaped (chain, draw, ...).
     """
+    print("\n_infer_chain_draw_shape_from_group ")
     for name in _array_keys_list(grp):
         arr = grp[name][...]
         if arr.ndim >= 2:
@@ -1537,6 +1538,57 @@ def _load_group_as_dataset(grp, chain_names=None, draw_names=None):
         ds_vars[key] = _mk_da(key, arr, chain_names, draw_names)
     return xr.Dataset(ds_vars)
 
+
+
+
+def find_valid_draws_by_chain(idata, stat_candidates=("sampler_0__depth", "sampler_0__step_size", "sampler_0__energy")):
+    ss = idata.sample_stats
+    stat = None
+    for k in stat_candidates:
+        if k in ss:
+            stat = ss[k]
+            stat_name = k
+            break
+    if stat is None:
+        raise KeyError(f"None of {stat_candidates} found in sample_stats")
+
+    # stat is (chain, draw, ...) sometimes; reduce to (chain, draw)
+    x = stat
+    while x.ndim > 2:
+        x = x.isel({x.dims[-1]: 0})
+    # valid where not NaN
+    valid = np.isfinite(x.values)  # shape (chain, draw)
+
+    # indices per chain
+    idxs = [np.flatnonzero(valid[c]) for c in range(valid.shape[0])]
+    # also report last valid draw index per chain (-1 if none)
+    last = [int(i[-1]) if len(i) else -1 for i in idxs]
+
+    return stat_name, idxs, last
+
+def trim_preallocated_nans(idata, var_for_valid="gamma"):
+    x = idata.posterior[var_for_valid].values  # (chain, draw, ...)
+    while x.ndim > 2:
+        x = x[..., 0]  # reduce extra dims if any
+
+    valid = np.isfinite(x)  # (chain, draw)
+    last = [int(np.flatnonzero(valid[c])[-1]) if valid[c].any() else -1
+            for c in range(valid.shape[0])]
+
+    min_last = min(last)
+    if min_last < 0:
+        print(f"[trim] {var_for_valid}: no finite draws in any chain -> not trimming")
+        return idata
+
+    n_total = idata.posterior.sizes["draw"]
+    n_keep = min_last + 1
+    print(f"[trim] keeping draws 0..{min_last} ({n_keep}/{n_total}) "
+          f"based on {var_for_valid}; last_valid per chain={last}")
+
+    return idata.isel(draw=slice(0, n_keep))
+
+
+
 def load_pymc_zarr_trace_robust(store_path, drop_tune=True):
     """
     Returns an ArviZ InferenceData from a PyMC ZarrTrace directory.
@@ -1550,6 +1602,7 @@ def load_pymc_zarr_trace_robust(store_path, drop_tune=True):
         print("ArviZ.from_zarr path failed, falling back:", repr(e_fast))
 
     # 2) Manual path
+    print("\nManual path")
     root = zarr.open_group(store_path, mode="r")
     gkeys = _group_keys_list(root)
     # infer chain/draw once from the richest group we can find
@@ -1569,12 +1622,16 @@ def load_pymc_zarr_trace_robust(store_path, drop_tune=True):
 
     posterior         = _load_group_as_dataset(root["posterior"], chain_names, draw_names) \
                         if "posterior" in gkeys else None
+    print("Posterior ok")
     sample_stats      = _load_group_as_dataset(root["sample_stats"], chain_names, draw_names) \
                         if "sample_stats" in gkeys else None
+    print("sample_stats ok")
     warmup_posterior  = _load_group_as_dataset(root.get("warmup_posterior"), chain_names, draw_names) \
                         if "warmup_posterior" in gkeys else None
+    print("warmup_posterior ok")
     warmup_stats      = _load_group_as_dataset(root.get("warmup_sample_stats"), chain_names, draw_names) \
                         if "warmup_sample_stats" in gkeys else None
+    print("warmup_stats ok")
 
     idata=az.InferenceData(
         posterior=posterior,
@@ -1582,21 +1639,45 @@ def load_pymc_zarr_trace_robust(store_path, drop_tune=True):
         warmup_posterior=warmup_posterior,
         warmup_sample_stats=warmup_stats,
     )
-
+    print("idata ok")
     if drop_tune and "sampler_0__tune" in idata.sample_stats:
-        tune2d = idata.sample_stats["sampler_0__tune"].astype(bool)  # dims: chain, draw
+
+        # print("[load] draw sizes:",
+        #       {g: getattr(idata, g).sizes.get("draw", None)
+        #        for g in idata.groups() if hasattr(idata, g)})
+        # print("[load] tune mask length:", int(n_tune_draws))
+
+        
+        # tune2d = idata.sample_stats["sampler_0__tune"].astype(bool)  # dims: chain, draw
     
-        # safe 1D mask per-draw: mark a draw as tune if ANY chain says it's tune
+        # # safe 1D mask per-draw: mark a draw as tune if ANY chain says it's tune
+        # tune1d = tune2d.any(dim="chain")  # dims: draw
+        # print("tune1d: %s"%tune1d)
+        # n_total_draws = tune1d.sizes["draw"]
+        # n_drop_draws  = int(tune1d.values.sum())
+        # n_keep_draws  = n_total_draws - n_drop_draws
+        # print("n_total_draws: %s"%n_total_draws)
+        # print("n_drop_draws: %s"%n_drop_draws)
+        # print("n_keep_draws: %s"%n_keep_draws)
+        # print(
+        #     f"[load_pymc_zarr_trace_robust] Dropping tune draws: {n_drop_draws}/{n_total_draws} "
+        #     f"({100*n_drop_draws/n_total_draws:.1f}%). Keeping {n_keep_draws} draws."
+        # )
+
+        tune2d = idata.sample_stats["sampler_0__tune"].astype(bool)
         tune1d = tune2d.any(dim="chain")  # dims: draw
+        n = int(tune1d.sizes["draw"])
     
-        n_total_draws = tune1d.sizes["draw"]
-        n_drop_draws  = int(tune1d.values.sum())
-        n_keep_draws  = n_total_draws - n_drop_draws
+        # Align all groups to sample_stats draw length (fixes preallocation mismatch)
+        draw_sizes = {g: getattr(idata, g).sizes.get("draw", None)
+                      for g in idata.groups() if hasattr(idata, g)}
+        print(f"[load] draw sizes before align: {draw_sizes} -> aligning to {n}")
     
-        print(
-            f"[load_pymc_zarr_trace_robust] Dropping tune draws: {n_drop_draws}/{n_total_draws} "
-            f"({100*n_drop_draws/n_total_draws:.1f}%). Keeping {n_keep_draws} draws."
-        )
+        idata = idata.isel(draw=slice(0, n))
+    
+        n_drop = int(tune1d.values.sum())
+        print(f"[load] Dropping tune draws: {n_drop}/{n} ({100*n_drop/n:.1f}%). Keeping {n-n_drop} draws.")
+
     
         idata = idata.sel(draw=~tune1d)
 

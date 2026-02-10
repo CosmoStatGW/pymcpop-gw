@@ -11,7 +11,7 @@ from pytensor_utils import atinterp
 
 from pytensor_ops import PopAndSelJAXOp
 import cosmology as cosmo
-from backends import NPBackend, JAXBackend
+from backends import NPBackend, JAXBackend, ATBackend
 import constants
 
 import pymc_models_or as pmmor
@@ -41,6 +41,28 @@ NEG_BIG = -np.inf
 
 
 
+def make_writable(a):
+    import numpy as np
+    a = np.asarray(a)
+    if (not a.flags.writeable) or (not a.flags.owndata) or (not a.flags.c_contiguous):
+        a = np.array(a, copy=True, order="C")
+    else:
+        # still force writeable in case flags were flipped
+        a.setflags(write=True)
+    return a
+
+    
+def assert_writable(name, a):
+    import numpy as np
+    if hasattr(a, "get_value"):  # shared var
+        v = a.get_value(borrow=True)
+    else:
+        v = np.asarray(a)
+    assert v.flags.writeable, f"{name} is read-only"
+    assert v.flags.owndata or v.base is None, f"{name} is a view/memmap"
+    assert v.flags.c_contiguous, f"{name} not contiguous"
+
+    
 #####################################################
 #####################################################
 
@@ -600,10 +622,16 @@ def make_model(  priors,
 
     if vol_in_prior:
 
-        zgrid_dLp =  at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost))
+        zgrid_dLp =  make_writable(atools.make_z_grid_fixed(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c))
 
-        dc_grid_Planck15 = atools.dcfun_at(zgrid_dLp, 67.74, 0.3075, -1., interp=False)#.astype(work_dtype)
-        dL_grid_Planck15 = atools.dLfun_at(zgrid_dLp, 67.74, 0.3075, -1., 1., 0., interp=False, dc=dc_grid_Planck15, param='vanilla') #.astype(work_dtype)
+        dc_grid_Planck15 = make_writable(cosmo.dcfun_quad(NPBackend(), zgrid_dLp, 67.74, 0.3075, -1.,constants._x01_np, constants._w01_np) )
+        dL_grid_Planck15 = make_writable(cosmo.dLfun(NPBackend(), zgrid_dLp,  67.74, 0.3075, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla', x01=constants._x01_np, w01=constants._w01_np, )    )    
+
+        dc_grid_Planck15 = pytensor.shared(dc_grid_Planck15, borrow=False)
+        dL_grid_Planck15 = pytensor.shared(dL_grid_Planck15, borrow=False)
+        zgrid_dLp        = pytensor.shared(zgrid_dLp, borrow=False)
+
+
 
         if normalize_PE_prior:
             z_bounds = atools.z_from_dL_at( np.asarray([0.1/1000, 40000/1000]), 67.74, 0.3075, -1., 1., 0. , interp=False)
@@ -613,7 +641,7 @@ def make_model(  priors,
     f"i.e. z=[{z_min_PE_prior}, {z_max_PE_prior}]"
 )
             
-            log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(NPBackend(), z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1,  constants._x01_np, constants._w01_np)
+            log_norm_PE_prior = float(cosmo.compute_log_norm_UniformSourceFrame(NPBackend(), z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1,  constants._x01_np, constants._w01_np))
             
         
 
@@ -1690,8 +1718,8 @@ def make_model(  priors,
         elif vol_in_prior or none_in_prior:
 
             if vol_in_prior:
-                zs_Planck15 = atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
-                dc_Planck15 = atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
+                zs_Planck15 = atinterp( ATBackend(), d, dL_grid_Planck15, zgrid_dLp, eps=1e-12, side="right") #atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
+                dc_Planck15 = cosmo.dcfun_quad( ATBackend(), zs_Planck15, 67.74, 0.3075, -1.,constants._x01_np, constants._w01_np) #atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
 
             #lpi = at.zeros_like(log_p_pop )
 
