@@ -106,6 +106,8 @@ def main():
     parser.add_argument("--res_highz", default=0.1, type=float, required=False)
     parser.add_argument("--res_lowz", default=0.05, type=float, required=False)
 
+    parser.add_argument("--init_GP", default='zeros', type=str, required=False)
+
     
 
     
@@ -693,7 +695,7 @@ def main():
         from pymc.backends.zarr import ZarrTrace
         
         spath=os.path.join(FLAGS.fout, "trace_backup.zarr")
-        backend = ZarrTrace(store=spath)
+        backend = ZarrTrace(store=spath,  draws_per_chunk=100)
         print("Intermediate trace will be stored at %s"%spath)
         print("zarr:", zarr.__version__, "| numcodecs:", numcodecs.__version__)
     else:
@@ -793,8 +795,8 @@ def main():
         
                             import scipy.linalg as la
                             if True:
-                                print("Initializing f_rotated_ to linear function....")
-                                
+                                print("Initializing f_rotated_ to ....")
+                                print("Initialization will be to %s"%FLAGS.init_GP)
                     
                                
                                 #z_grid = atools.zGridGlobals   # (N,)
@@ -825,7 +827,28 @@ def main():
                                 # 4) The node function you used to build f_rotated_ (same as your snippet)
                                 z0 = z_grid[0]
                                 s0 = 0.0001
-                                f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
+
+                                if FLAGS.init_GP=='zeros':
+                                    f_nodes_init = np.zeros(z_grid.shape) #0.5 * s0 * (z_grid - z0)                   # (N,)
+                                elif FLAGS.init_GP=='polexp':
+                                    
+                                    def delta(z, n, Xi0):
+                                        """
+                                        δ(z) = n(1-Ξ0)/(1-Ξ0 + Ξ0(1+z)^n)
+                                               + n(1-Ξ0)/(1+z)^n
+                                               - 2n(1-Ξ0)/(1+z)^{2n}
+                                        """
+                                        z = np.asarray(z)
+                                        term1 = n * (1 - Xi0) / (1 - Xi0 + Xi0 * (1 + z)**n)
+                                        term2 = n * (1 - Xi0) / (1 + z)**n
+                                        term3 = 2 * n * (1 - Xi0) / (1 + z)**(2 * n)
+                                        return term1 + term2 - term3
+
+                                    n =  3.
+                                    Xi0 = 2.5
+                                    
+                                    f_nodes_init  = -delta(z_grid, n, Xi0)/(1+z_grid)
+                                                                        
             
                                 
                                 # 5) GP interpolation to midpoints: f_mid = K_mn K_nn^{-1} f_nodes

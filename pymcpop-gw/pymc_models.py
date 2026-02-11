@@ -1514,12 +1514,18 @@ def make_model(  priors,
                         if monotonicity=='poly':
                             print('Imposing d(dL)/dz >0 on all the domain')
                             print('Using smooth polynomial, nu=%s, lam=%s'%(nu, lam))
+
+
+                            if nu==-1:
+                                print("sampling nu")
+                                nu = pm.HalfNormal("nu", sigma=1., initval=0.5)
+                            if lam==-1:
+                                print("sampling lam")
+                                lam = pm.HalfNormal("lam", sigma=10., initval=10)
                             
-                            # pm.Potential("monotonicity", -at.sum(lam * atools.poly_hinge_neg(s_grid, nu)))
 
                             # GP derivative g(z)
                             g_grid = grad_log_distance_ratio_grid_fine
-                            #atools.atinterp(zgrid_fine_, zgrid_, grad_log_distance_ratio_grid) 
                             b_full_fine = atools.d_log_dLEM_dz(zgrid_fine_, H0_, Om_, w0_, dc=None, safe=False)
                             
                             
