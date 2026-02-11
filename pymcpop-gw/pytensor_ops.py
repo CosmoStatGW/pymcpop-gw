@@ -92,11 +92,11 @@ def _make_pop_and_sel_core(
     has_m2_break,
     norm_gauss,
     param,
-    #is_observed,
     verbose,
     subtract_log_p_incl,
     skip_sel=False,
-    chunk_inj=0
+    chunk_inj=0,
+    K_dp=None, 
 ):
     """Build the single source of truth JAX core function.
 
@@ -144,6 +144,7 @@ def _make_pop_and_sel_core(
                 param=param,
                 z_grid=zgrid, 
                 verbose=verbose,
+            K_dp=K_dp, 
         )
 
         if skip_sel:
@@ -171,6 +172,7 @@ def _make_pop_and_sel_core(
             subtract_log_p_incl=subtract_log_p_incl,
             use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
             sel_chunk_size=chunk_inj,            # <--- tune
+            K_dp=K_dp, 
         )
 
 
@@ -204,7 +206,9 @@ class _PopAndSelJAXVJPOp(Op):
                  param="vanilla", 
                  verbose=False,
                  subtract_log_p_incl=False, 
-                skip_sel=False
+                skip_sel=False,
+                 
+                 K_dp=30
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -220,6 +224,7 @@ class _PopAndSelJAXVJPOp(Op):
         self.verbose = bool(verbose)
         self.subtract_log_p_incl = bool(subtract_log_p_incl)
         self.skip_sel=skip_sel
+        self.K_dp=K_dp
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -239,6 +244,7 @@ class _PopAndSelJAXVJPOp(Op):
         verbose = self.verbose
         subtract_log_p_incl = self.subtract_log_p_incl
         skip_sel = self.skip_sel
+        K_dp = self.K_dp
 
         
         cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
@@ -258,7 +264,8 @@ class _PopAndSelJAXVJPOp(Op):
             param=param,
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
-            skip_sel=skip_sel
+            skip_sel=skip_sel,
+            K_dp=K_dp
         )
 
 
@@ -388,7 +395,8 @@ class PopAndSelJAXOp(Op):
                  verbose=False,
                  subtract_log_p_incl=False, 
                 skip_sel=False,
-                 chunk_inj=0
+                 chunk_inj=0,
+                 K_dp=30
                 ):
         super().__init__()
 
@@ -406,6 +414,7 @@ class PopAndSelJAXOp(Op):
         self.subtract_log_p_incl = bool(subtract_log_p_incl)
         self.skip_sel=skip_sel
         self.chunk_inj = chunk_inj
+        self.K_dp=K_dp
 
         # Backend (needed by cosmology/mass grid builders)
         self._bk = JAXBackend()
@@ -427,7 +436,8 @@ class PopAndSelJAXOp(Op):
             smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break,
             norm_gauss=norm_gauss, param=param, 
             verbose=verbose, subtract_log_p_incl=subtract_log_p_incl,
-            skip_sel=self.skip_sel
+            skip_sel=self.skip_sel,
+            K_dp=self.K_dp
         )
         self._vjp_op._parent_op = self
 
@@ -448,7 +458,8 @@ class PopAndSelJAXOp(Op):
             param=self.param,
             verbose=self.verbose,
             subtract_log_p_incl=self.subtract_log_p_incl,
-            chunk_inj=self.chunk_inj
+            chunk_inj=self.chunk_inj,
+            K_dp=self.K_dp
         )
         return jax.jit(full_f)
 
@@ -543,6 +554,7 @@ class PopAndSelJAXOp(Op):
                 z_m1inj, z_m2inj, z_dLinj, z_spinj, z_lpd, z_lpi,
                 dLambda, z_Ndraw
             ]
+
 
 
 

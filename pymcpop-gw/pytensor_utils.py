@@ -8,6 +8,27 @@ from pytensor.graph.op import Op, Apply
 from constants import _PI
 
 
+
+
+def pack1d(L):
+    """Flatten each entry (scalar -> length-1) and concatenate into one 1D tensor."""
+    flats = []
+    for v in L:
+        v = at.as_tensor_variable(v)
+        v = v[None] if v.ndim == 0 else v.ravel()
+        flats.append(v)
+    return at.concatenate(flats, axis=0)
+
+
+def pack1d_with_layout(L):
+    flats, lens = [], []
+    for v in L:
+        v = at.as_tensor_variable(v)
+        v = v[None] if v.ndim == 0 else v.ravel()
+        flats.append(v)
+        lens.append(v.shape[0])
+    return at.concatenate(flats, axis=0), at.stack(lens).astype("int64")
+
 # ---------------------------------------------------------------------
 # Utilities
 # 

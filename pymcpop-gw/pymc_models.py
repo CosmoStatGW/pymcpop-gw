@@ -7,7 +7,7 @@
 import pytensor_tools as atools
 import pytensor_utils_old as putils
 
-from pytensor_utils import atinterp
+from pytensor_utils import atinterp, pack1d, pack1d_with_layout
 
 from pytensor_ops import PopAndSelJAXOp
 import cosmology as cosmo
@@ -587,7 +587,7 @@ def make_model(  priors,
 
     
     print("z grid for interpolation built. Resolution: %s"%zgrid_.shape.eval())
-    print("z min: %s , z max: %s"%(zmin_a, zmax_c))
+    print("z min: %s , z max: %s"%(zgrid_np.min(), zgrid_np.max()))
     #print("is z grid constant check:")
     #print(isinstance(zgrid_, at.TensorConstant))
 
@@ -1636,9 +1636,19 @@ def make_model(  priors,
     
                 Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
 
-            Lambda_ += [N_DP_comp_max]
+            #Lambda_ += [float(N_DP_comp_max)]
 
 
+        #if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
+        #    Lambda_ = at.stack(Lambda_, axis=0)
+
+        #Lambda_ = pack1d(Lambda_)
+        #Lambda_flat, Lambda_layout = pack1d_with_layout(Lambda_)
+
+        Lambda_ = at.concatenate([(at.as_tensor_variable(v)[None] if at.as_tensor_variable(v).ndim == 0
+                           else at.as_tensor_variable(v).ravel())
+                          for v in Lambda_], axis=0)
+        
             
         ################################################
         # If including total normalization of the rate, add it here
@@ -1814,10 +1824,8 @@ def make_model(  priors,
         elif spin_model in ("chieffchip", "chieffchip_uc"):
             spins = at.stack([chieff, chip], axis=1)              # (N,2)
         else:
-            spins = at.zeros((m1src.shape[0], 0), dtype="float64")  # (N,0)
+            spins = at.zeros((m1det.shape[0], 0), dtype="float64")  # (N,0)
 
-        if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
-            Lambda_ = at.stack(Lambda_, axis=0)
 
         if chunk_inj:
             print("Will process injections in chunks of %s"%chunk_inj)
@@ -1838,7 +1846,8 @@ def make_model(  priors,
         param=param,
         subtract_log_p_incl = False,       
 
-        chunk_inj=chunk_inj
+        chunk_inj=chunk_inj,
+        K_dp = N_DP_comp_max
 
         )
         

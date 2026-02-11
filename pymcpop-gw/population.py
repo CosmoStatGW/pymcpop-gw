@@ -56,6 +56,7 @@ def log_p_pop(
     param="vanilla",
     z_grid=None,
     verbose=False,
+    K_dp=30,
 ):
     """
     Backend-agnostic log_p_pop_at,
@@ -121,6 +122,9 @@ def log_p_pop(
         # expected spins layout: (chi1, chi2, cost1, cost2)
         lpspin = logpdf_default_spin_gauss_bk(bk, spins, (muChi, sigmaChi, zeta, sigmat))
         istart_spin = istart + 4
+    elif spin_model == "none":
+        lpspin = bk.zeros_like(z)
+        istart_spin = istart
     else:
         raise ValueError(f"Unknown spin_model: {spin_model}")
 
@@ -258,19 +262,29 @@ def log_p_pop(
     # DPUC   
     elif mass_model=='DPUC':
 
-        w, mu, sd, logw, mmin, mmax  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5] 
+
+        #w, mu, sd, logw, mmin, mmax  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5] 
+
+        D = 3 if rate_model in ('DPUC','DPUC-vol') else 2
+        K = K_dp
         
-        Nmax = Lambda[istart_spin+4]
+        j = istart_spin
+
+        w   = Lambda[j : j+K];       j += K
+        mu  = Lambda[j : j+D*K].reshape((D, K));  j += D*K
+        sd  = Lambda[j : j+D*K].reshape((D, K));  j += D*K
+        logw = Lambda[j : j+K];      j += K
+
 
             
-        logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=z_dpuc )
+        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, m1s, m2s, mu, sd, z=z_dpuc )
         
         if rate_model in ('PL', 'MD'):
             logp_components = logp1 + logp2                    # (K,N)
         else:
             logp_components = logp1 + logp2 + logp3                   # (K,N)  
         # Mixture over components → (n_obs,)
-        lpmass = at.logsumexp(logp_components + logw[:, None], axis=0, )
+        lpmass = bk.logsumexp(logp_components + logw[:, None], axis=0, )
 
 
 
@@ -323,6 +337,7 @@ def sel_bias_with_uncertainty_legacy(
     z_grid=None,
     verbose=False,
     subtract_log_p_incl=False,
+    K_dp=30
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -370,6 +385,7 @@ def sel_bias_with_uncertainty_legacy(
         param=param,
         z_grid=None,
         verbose=verbose,
+        K_dp=K_dp, 
     )
 
     log_sel_b = log_p_pop_vals - log_p_draw
@@ -422,6 +438,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
     z_grid=None,
     verbose=False,
     chunk_size: int = 65536,
+    K_dp=30,
 ):
     """
     Optimized selection term (patched):
@@ -517,6 +534,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
             param=param,
             z_grid=None,
             verbose=verbose,
+            K_dp=K_dp, 
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -746,6 +764,7 @@ def sel_bias_with_uncertainty(
     # new flags
     use_streaming_vjp: bool = True,
     sel_chunk_size: int = 65536,
+    K_dp=30, 
 ):
     
    
@@ -761,6 +780,7 @@ def sel_bias_with_uncertainty(
             z_grid=z_grid, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
+            K_dp=K_dp, 
             
         )
 
@@ -776,6 +796,7 @@ def sel_bias_with_uncertainty(
         z_grid=z_grid,
         verbose=verbose,
         chunk_size=sel_chunk_size,
+        K_dp=K_dp, 
     )
 
 

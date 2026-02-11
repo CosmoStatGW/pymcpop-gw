@@ -5,7 +5,6 @@ from pytensor_utils import attrapzvec, atcumtrapz, logsumexp2, logaddexp, logdif
 from constants import _PI as PI
 from constants import max_m, _tgrid_np
 from pytensor_utils import atinterp
-from jax.scipy.special import logsumexp as _logsumexp
 
 try:
     import jax.numpy as jnp
@@ -134,10 +133,10 @@ def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
     diff2 = m2 - mu2                      # (K,N)
 
     # 1D Gaussian logpdfs 
-    const = -0.5 * at.log(2.0 * PI)
+    const = -0.5 * bk.log(2.0 * PI)
 
-    logp1 = const - 0.5 * at.log(var1) - 0.5 * (diff1 * diff1 / var1)
-    logp2 = const - 0.5 * at.log(var2) - 0.5 * (diff2 * diff2 / var2)
+    logp1 = const - 0.5 * bk.log(var1) - 0.5 * (diff1 * diff1 / var1)
+    logp2 = const - 0.5 * bk.log(var2) - 0.5 * (diff2 * diff2 / var2)
 
 
     if z is not None:
@@ -147,7 +146,7 @@ def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
 
         varz = sdz * sdz
         diffz = z - muz
-        logpz = const - 0.5 * at.log(varz) - 0.5 * (diffz * diffz / varz)
+        logpz = const - 0.5 * bk.log(varz) - 0.5 * (diffz * diffz / varz)
     else:
         logpz = bk.zeros_like(logp1)
 

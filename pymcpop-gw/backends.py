@@ -540,6 +540,7 @@ class JAXBackend:
 
     # logsumexp / logaddexp (often needed)
     logaddexp = staticmethod(jnp.logaddexp)
+    logsumexp = staticmethod(jax.scipy.special.logsumexp)
 
     stop_grad = staticmethod(jax.lax.stop_gradient)
 
