@@ -1016,24 +1016,24 @@ def make_model(  priors,
 
 
             # --- Slopes / locations: Normal with bounds as 95% typical range ---
-            alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
-            alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
+            # alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
+            # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
 
-            # if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+            if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
                 
-            # # bounds -> mid and sigma (same as helper)
-            # a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-            # a_mid = 0.5 * (a_low + a_high)
-            # a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+            # bounds -> mid and sigma (same as helper)
+            a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+            a_mid = 0.5 * (a_low + a_high)
+            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
             
-            # # reparam
-            # a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
-            #                    initval=ivals.get("alpha_bar", ivals.get("alpha1")))
-            # a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
-            #                    initval=ivals.get("alpha_diff", 0.0))
+            # reparam
+            a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
+                               initval=ivals.get("alpha_bar", ivals.get("alpha1")))
+            a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
+                               initval=ivals.get("alpha_diff", 0.0))
             
-            # alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
-            # alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+            alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
+            alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
 
 
             beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
@@ -1052,7 +1052,7 @@ def make_model(  priors,
             mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
             mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
 
-             
+              
             # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
             # sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
             # sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))

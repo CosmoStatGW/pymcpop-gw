@@ -68,14 +68,15 @@ class NPBackend:
     def where(cond, x, y):
         return np.where(cond, x, y)
 
+
+    
     # ---- reductions ----
     @staticmethod
     def sum(x, axis=None, keepdims=False):
         return np.sum(x, axis=axis, keepdims=keepdims)
 
-    @staticmethod
-    def max(x, axis=None, keepdims=False):
-        return np.max(x, axis=axis, keepdims=keepdims)
+
+    
 
     @staticmethod
     def any(x, axis=None, keepdims=False):
@@ -84,6 +85,10 @@ class NPBackend:
     @staticmethod
     def all(x, axis=None, keepdims=False):
         return np.all(x, axis=axis, keepdims=keepdims)
+
+    @staticmethod
+    def zeros_like(x):
+        return np.zeros_like(x)
     
     @staticmethod
     def ceil(x):
@@ -122,18 +127,19 @@ class NPBackend:
     def expm1(x):
         return np.expm1(x)
 
+
+    @staticmethod
+    def square(x):
+        return np.square(x)
+
+    @staticmethod
+    def pow(x1, x2):
+        return np.pow(x1, x2)
+        
     @staticmethod
     def squeeze(x):
         return np.squeeze(x)
 
-    @staticmethod
-    def logsumexp(x, axis=None, keepdims=False):
-        m = np.max(x, axis=axis, keepdims=True)
-        s = np.sum(np.exp(x - m), axis=axis, keepdims=True)
-        out = np.log(s) + m
-        if not keepdims and axis is not None:
-            out = np.squeeze(out, axis=axis)
-        return out
 
 
     # ---- comparisons (elementwise) ----
@@ -239,6 +245,11 @@ class ATBackend:
         return at.zeros(shape, dtype=dtype)
 
     @staticmethod
+    def zeros_like(x):
+        at = ATBackend._at()
+        return at.zeros_like(x)
+
+    @staticmethod
     def ones(shape, dtype=None):
         at = ATBackend._at()
         return at.ones(shape, dtype=dtype)
@@ -286,6 +297,16 @@ class ATBackend:
     def tanh(x):
         at = ATBackend._at()
         return at.tanh(x)
+
+    @staticmethod
+    def pow(x1, x2):
+        at = ATBackend._at()
+        return at.pow(x1, x2)
+
+    @staticmethod
+    def square(x):
+        at = ATBackend._at()
+        return at.square(x)
 
     @staticmethod
     def erf(x):
@@ -475,13 +496,20 @@ class JAXBackend:
     abs = staticmethod(jnp.abs)
     tanh = staticmethod(jnp.tanh)
     expm1 = staticmethod(jnp.expm1)
-
+    square = staticmethod(jnp.square)
     erf = staticmethod(jax.scipy.special.erf)
     erfc = staticmethod(jax.scipy.special.erfc)
+    @staticmethod
+    def pow(x1, x2):
+        return jnp.pow(x1, x2)
 
     # reductions / elementwise
     sum = staticmethod(jnp.sum)
-    max = staticmethod(jnp.max)
+    
+    @staticmethod
+    def max(x, axis=None, keepdims=False):
+        return jnp.max(x, axis=axis, keepdims=keepdims)
+        
     minimum = staticmethod(jnp.minimum)
     maximum = staticmethod(jnp.maximum)
     clip = staticmethod(jnp.clip)
@@ -497,6 +525,8 @@ class JAXBackend:
     reshape = staticmethod(jnp.reshape)
     concatenate = staticmethod(jnp.concatenate)
     stack = staticmethod(jnp.stack)
+
+    zeros_like = staticmethod(jnp.zeros_like)
     
     @staticmethod
     def sort(x, axis=-1):

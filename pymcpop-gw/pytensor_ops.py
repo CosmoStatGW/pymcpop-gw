@@ -70,26 +70,7 @@ def _as_scalar(g):
     g = _connected_g(g)
     return at.as_tensor_variable(g).reshape(())  # force scalar
 
-    
-
-
-def _extract_lambdaBBHmass(Lambda, *, rate_model, spin_model, mass_model):
-    if rate_model == "MD":
-        istart = 8
-    else:
-        raise NotImplementedError
-
-    if spin_model == "default_gauss":
-        istart_spin = istart + 4
-    else:
-        raise NotImplementedError
-
-    if mass_model == "DPLDP":
-        s = istart_spin
-        # keep as a tuple for JAX (static container, dynamic leaves)
-        return tuple(Lambda[s + k] for k in range(21))
-
-    raise NotImplementedError
+ 
 
 
 
@@ -140,21 +121,7 @@ def _make_pop_and_sel_core(
         log_p_incl = lax.stop_gradient(log_p_incl)
         Ndraw = lax.stop_gradient(Ndraw)
 
-      
-        ##################################################
-        
-        lambdaBBHmass = _extract_lambdaBBHmass(
-            Lambda,
-            rate_model=rate_model,
-            spin_model=spin_model,
-            mass_model=mass_model,
-        )
-
-      
-        
-        spins_evt_list = spin_models._spins_as_list(spins_evt, spin_model)
-        spins_inj_list = spins_inj
-
+  
         ##################################################
 
         z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, z_nodes = zgrid, d_nodes = None) 
@@ -167,8 +134,8 @@ def _make_pop_and_sel_core(
 
         logp_pop_evt = log_p_pop(
             bk,
-            m1src, m2src, z_evt, dLdet,
-            spins_evt_list, Lambda,
+            m1src, m2src, z_evt, dLdet, spin_models._spins_as_list(spins_evt, spin_model), 
+            Lambda,
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
                 smoothing=smoothing, simplex_repair=simplex_repair,
                 has_m2_break=has_m2_break, norm_gauss=norm_gauss,
@@ -192,7 +159,7 @@ def _make_pop_and_sel_core(
         log_mu, var_u = sel_bias_with_uncertainty(
             bk,
             m1inj, m2inj, dLinj,
-            spins_inj_list,
+            spins_inj,
             log_p_draw, log_p_incl,
             Lambda, Ndraw,
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,

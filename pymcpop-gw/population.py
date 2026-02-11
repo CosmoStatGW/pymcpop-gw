@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 # backend-agnostic pieces
-from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, dLfun
-
+from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, dLfun, log_dV_dz
 
 
 from rate_models import log_p_z_MD_unnorm as log_p_z_MD_unnorm_bk
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
-from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
+import mass_models
 from pytensor_utils import logdiffexp as logdiffexp_bk
 from pytensor_utils import logsumexp as _logsumexp
 from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
@@ -91,11 +90,27 @@ def log_p_pop(
         lpz = log_p_z_MD_unnorm_bk(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
         istart = 8
         z_dpuc = None
+    elif rate_model=='DPUC':
+
+        z_dpuc = bk.log1p(z)
+        
+        lpz = bk.zeros(z.shape)
+        
+        istart = 5
+
+    elif rate_model=='DPUC-vol':
+
+        z_dpuc = bk.log1p(z)
+        
+        lpz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc, E=E ) - z_dpuc
+        
+        istart = 5
+
     else:
-        raise NotImplementedError("Only rate_model=='MD' is implemented in this rewrite.")
+        raise ValueError(f"Unknown rate_model: {rate_model}")
 
     # -----------------------
-    # spin model (default_gauss only)
+    # spin model 
     # -----------------------
     if spin_model == "default_gauss":
         muChi = Lambda[istart + 0]
@@ -107,11 +122,13 @@ def log_p_pop(
         lpspin = logpdf_default_spin_gauss_bk(bk, spins, (muChi, sigmaChi, zeta, sigmat))
         istart_spin = istart + 4
     else:
-        raise NotImplementedError("Only spin_model=='default_gauss' is implemented in this rewrite.")
+        raise ValueError(f"Unknown spin_model: {spin_model}")
 
     # -----------------------
-    # mass model (DPLDP only)
+    # mass model 
     # -----------------------
+    
+    # DPLDP
     if mass_model == "DPLDP":
         # 21 params
         x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
@@ -131,7 +148,7 @@ def log_p_pop(
             x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21
         )
         
-        lpmass = logpdf_DPLDP_bk(
+        lpmass = mass_models.logpdf_DPLDP(
             bk,
             (m1s, m2s),
             lambdaBBHmass,
@@ -144,9 +161,121 @@ def log_p_pop(
             simplex_repair=simplex_repair,
             norm_gauss=norm_gauss,
         )
+
+    # PLPreg
+    elif mass_model == "PLPreg":
+
+        lp  = Lambda[istart_spin + 0]
+        al   = Lambda[istart_spin + 1]
+        bb   = Lambda[istart_spin + 2]
+        dm   = Lambda[istart_spin + 3]
+        ml   = Lambda[istart_spin + 4]
+        mh   = Lambda[istart_spin + 5]
+        muM  = Lambda[istart_spin + 6]
+        sM   = Lambda[istart_spin + 7]
+
+        lambdaBBHmass = (
+            lp, al, bb, dm, ml, mh, muM, sM
+        )
+
+
+        lpmass = mass_models.logpdf_PLP_reg(
+                bk,
+                (m1s, m2s),
+                lambdaBBHmass,
+                smoothing=smoothing,
+            )
+    
+    # DPLDP-z
+    elif mass_model == "DPLDP-z":
+    
+        # ------------------------------------------------------------
+        # UNPACK low-z mass hyperparameters (same 20 as non-evolving)
+        # ------------------------------------------------------------
+        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+        x21 = Lambda[istart_spin + 20]
+    
+        lambdaBBHmass_lowz = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
+                              x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
+    
+        # ------------------------------------------------------------
+        # UNPACK evolution hyperparameters (27 scalars):
+        #   (theta_inf, z_theta, dz_theta) for:
+        #    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
+        #    lambda0, lambda1
+        # ------------------------------------------------------------
+        j = istart_spin + 21
+    
+        alpha1_inf  = Lambda[j +  0]; z_alpha1  = Lambda[j +  1]; dz_alpha1  = Lambda[j +  2]
+        alpha2_inf  = Lambda[j +  3]; z_alpha2  = Lambda[j +  4]; dz_alpha2  = Lambda[j +  5]
+        mb_inf      = Lambda[j +  6]; z_mb      = Lambda[j +  7]; dz_mb      = Lambda[j +  8]
+        mu1_inf     = Lambda[j +  9]; z_mu1     = Lambda[j + 10]; dz_mu1     = Lambda[j + 11]
+        sigma1_inf  = Lambda[j + 12]; z_sigma1  = Lambda[j + 13]; dz_sigma1  = Lambda[j + 14]
+        mu2_inf     = Lambda[j + 15]; z_mu2     = Lambda[j + 16]; dz_mu2     = Lambda[j + 17]
+        sigma2_inf  = Lambda[j + 18]; z_sigma2  = Lambda[j + 19]; dz_sigma2  = Lambda[j + 20]
+        lambda0_inf = Lambda[j + 21]
+        lambda1_inf = Lambda[j + 22]
+        lambda2_inf = Lambda[j + 23]
+        z_lambda    = Lambda[j + 24]
+        dz_lambda   = Lambda[j + 25]
+        evo_params = [
+                alpha1_inf,  z_alpha1,  dz_alpha1,
+                alpha2_inf,  z_alpha2,  dz_alpha2,
+                mb_inf,      z_mb,      dz_mb,
+                mu1_inf,     z_mu1,     dz_mu1,
+                sigma1_inf,  z_sigma1,  dz_sigma1,
+                mu2_inf,     z_mu2,     dz_mu2,
+                sigma2_inf,  z_sigma2,  dz_sigma2,
+                lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda,
+            ]
+    
+        # ------------------------------------------------------------
+        # Call the redshift-evolving mass pdf
+        # ------------------------------------------------------------
+        lpmass = mass_models.logpdf_DPLDP_z_bk(
+                bk,
+                (m1s, m2s), z,                     
+                lambdaBBHmass_lowz,
+                evo_params,
+                force_m2_less_than_m1=False,
+                has_m2_break=has_m2_break,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                norm_gauss=norm_gauss
+            )
+            
+
+
+    # DPUC   
+    elif mass_model=='DPUC':
+
+        w, mu, sd, logw, mmin, mmax  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5] 
         
+        Nmax = Lambda[istart_spin+4]
+
+            
+        logp1, logp2, logp3 = atools.gaussian_logpdf_pair( m1s, m2s, mu, sd, z=z_dpuc )
+        
+        if rate_model in ('PL', 'MD'):
+            logp_components = logp1 + logp2                    # (K,N)
+        else:
+            logp_components = logp1 + logp2 + logp3                   # (K,N)  
+        # Mixture over components → (n_obs,)
+        lpmass = at.logsumexp(logp_components + logw[:, None], axis=0, )
+
+
+
     else:
-        raise NotImplementedError("Only mass_model=='DPLDP' is implemented in this rewrite.")
+        raise ValueError(f"Unknown mass_model: {mass_model}")
 
     # -----------------------
     # Jacobian term
@@ -635,14 +764,7 @@ def sel_bias_with_uncertainty(
             
         )
 
-    # print("m1", m1inj.shape, type(m1inj), getattr(m1inj, "dtype", None))
-    # print("m2", m2inj.shape, type(m2inj), getattr(m2inj, "dtype", None))
-    # print("dL", dLinj.shape, type(dLinj), getattr(dLinj, "dtype", None))
-    # print("sp", spinsInj.shape, type(spinsInj), getattr(spinsInj, "dtype", None))
-    # print("lpd", log_p_draw.shape, type(log_p_draw), getattr(log_p_draw, "dtype", None))
-    # print("
-    # lpi", log_p_incl.shape, type(log_p_incl), getattr(log_p_incl, "dtype", None))
-    # print("Ndraw", Ndraw, type(Ndraw))
+
     return sel_bias_with_uncertainty_streaming_vjp(
         bk,
         m1inj, m2inj, dLinj, spinsInj,

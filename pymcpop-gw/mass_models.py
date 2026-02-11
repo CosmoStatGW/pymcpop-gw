@@ -19,37 +19,6 @@ except Exception as e:
     raise ValueError()
 
 
-
-
-# Precompute a few sizes you will use
-_LEGGAUSS_NP = {
-    8:  np.polynomial.legendre.leggauss(8),
-    16: np.polynomial.legendre.leggauss(16),
-    32: np.polynomial.legendre.leggauss(32),
-    64: np.polynomial.legendre.leggauss(64),
-}
-
-def leggauss_const(n: int):
-    t_np, w_np = _LEGGAUSS_NP[int(n)]  # pure dict lookup, no mutation
-    # Convert to JAX arrays (constants captured by XLA)
-    t = jnp.asarray(t_np, dtype=jnp.float64)
-    w = jnp.asarray(w_np, dtype=jnp.float64)
-    return t, w
-
-
-def grid_diagnostics(name, x):
-    import numpy as np
-    x = np.asarray(x, dtype=np.float64)
-    dx = np.diff(x)
-    print(f"{name}: N={x.size}")
-    print(f"  min dx = {dx.min():.3e}")
-    print(f"  1% dx  = {np.quantile(dx, 0.01):.3e}")
-    print(f"  median = {np.median(dx):.3e}")
-    print(f"  max dx = {dx.max():.3e}")
-    print(f"  any non-increasing? {np.any(dx <= 0)}")
-    # near-duplicates relative to eps
-    print(f"  dx < 1e-12: {np.sum(dx < 1e-12)}")
-    print(f"  dx < 1e-10: {np.sum(dx < 1e-10)}")
     
 # ---------------------------------------------------------------------
 # Gaussians
@@ -139,6 +108,50 @@ def _log_ndtr(bk, z):
     Phi = 0.5 * (1.0 + bk.erf(z / bk.sqrt(2.0)))
     Phi = bk.maximum(Phi, 1e-300)
     return bk.log(Phi)
+
+
+
+def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
+    """
+    Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
+    means mu and std-devs sd.
+    """
+
+    m1 = m1s[None, :]          # (1, N)
+    m2 = m2s[None, :]          # (1, N)
+
+    mu1 = mu[0][:, None]       # (K, 1)
+    mu2 = mu[1][:, None]       # (K, 1)
+
+    sd1 = sd[0][:, None]       # (K, 1)
+    sd2 = sd[1][:, None]       # (K, 1)
+
+  
+    var1 = sd1 * sd1
+    var2 = sd2 * sd2
+
+    diff1 = m1 - mu1                      # (K,N)
+    diff2 = m2 - mu2                      # (K,N)
+
+    # 1D Gaussian logpdfs 
+    const = -0.5 * at.log(2.0 * PI)
+
+    logp1 = const - 0.5 * at.log(var1) - 0.5 * (diff1 * diff1 / var1)
+    logp2 = const - 0.5 * at.log(var2) - 0.5 * (diff2 * diff2 / var2)
+
+
+    if z is not None:
+        z = z[None, :]
+        muz = mu[2][:, None]       # (K, 1)
+        sdz = sd[2][:, None]
+
+        varz = sdz * sdz
+        diffz = z - muz
+        logpz = const - 0.5 * at.log(varz) - 0.5 * (diffz * diffz / varz)
+    else:
+        logpz = bk.zeros_like(logp1)
+
+    return logp1, logp2, logpz
 
     
 # ---------------------------------------------------------------------
@@ -235,6 +248,129 @@ def logpdfm2_PLP_reg(
         )
         + log_sigmoid(bk, m, ml, sig_l)
     )
+
+
+
+# ---------------------------------------------------------------------
+#Power Law Plus Peak with regularized edges (PLPreg)
+# ---------------------------------------------------------------------
+
+def log_norm_truncated_pl_num_simple(bk, alpha, mmin, mmax, eps=1e-12, t_floor=1e-12):
+    """
+    log ∫_{mmin}^{mmax} m^{-alpha} dm
+    = log( (mmax^(1-α) - mmin^(1-α)) / (1-α) ).
+    """
+ 
+    t = 1. - alpha  # t = 1 - α
+
+    # α ≠ 1: log( |mmax^t - mmin^t| ) - log( |t| )
+    num = bk.pow(mmax, t) - bk.pow(mmin, t)
+    log_not1 = bk.log(bk.abs(num)) - bk.log(bk.abs(t))
+
+    # α = 1: log( log(mmax/mmin) )
+    # log_ratio = bk.log(mmax_c / mmin_c)
+    # log_eq1   = bk.log( log_ratio )
+
+    return log_not1 #bk.switch(close, log_eq1, log_not1)
+
+    
+def logpdfm1_PLP_reg(bk, m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, sl=0.05, sh=0.05, smoothing='LVK'):
+
+    return logpdfm1_PLP_noreg(bk, m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing)  + log_sigmoid(bk, m, ml, sl) + bk.log1p(-safe_sigmoid(bk, m, mh, sh)) 
+    
+
+def logpdfm1_PLP_noreg(bk, m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK'):
+
+     
+    log_norm = log_norm_truncated_pl_num_simple(bk, alpha, ml, mh) #norm_truncated_pl_num(alpha, ml, mh)
+    log_trunc_component =  -alpha*bk.log(m) - log_norm #1./(m**alpha)/norm
+    log_gauss_component = -0.5 * bk.square((m - muMass) / sigmaMass) - bk.log(sigmaMass) - 0.5 * bk.log(2*PI)
+ 
+    if smoothing=='LVK':
+        lS = logS_PLP_LVK(bk, m, deltam, ml)
+    else:
+        lS = logS_PLP(bk, m, deltam, ml)
+        
+    result = bk.logaddexp( bk.log1p(-lambdaPeak) + log_trunc_component, bk.log(lambdaPeak) + log_gauss_component ) + lS
+ 
+    return result
+
+
+
+def logC_PLP_reg( bk, m, beta, deltam, ml, smoothing='LVK'):
+
+
+    _tgrid = _tgrid_np
+
+    xx = ml + (max_m - ml) * _tgrid 
+
+    l2 = logpdfm2_PLP_reg(bk, xx, beta, deltam, ml,
+                         smoothing=smoothing)
+
+    
+    a = bk.max(l2)
+    p2 = bk.exp(l2 - a)
+
+    cdf_scaled = atcumtrapz(bk, p2, xx)
+    # cdf_scaled = bk.clip(cdf_scaled, 1e-300, np.inf)
+
+    # x0 = xx[1]
+    # x1 = xx[-1]
+    # nU = xx.shape[0] - 1
+
+    # # log(cdf_scaled) + a gives log(cdf_original)
+    # itr = atinterp_uniform(m, x0, x1, nU, bk.log(cdf_scaled) + a)
+    itr = atinterp( bk, m, xx[1:], bk.log(cdf_scaled) + a )
+    
+    return itr
+
+
+
+def logNorm_PLP_reg( bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing='LVK', ):
+
+    
+    
+    '''
+        Gives log integral of  p(m1, m2) dm1 dm2 (i.e. total normalization of mass function )
+
+    '''
+
+
+    _tgrid = _tgrid_np 
+
+    ms = ml + (mh - ml) * _tgrid 
+
+    lpdf = logpdfm1_PLP_noreg( bk, ms , lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing  )
+
+    a = bk.max(lpdf)
+    ps = bk.exp(lpdf - a)                 # <= 1, avoids overflow
+    integ = attrapzvec(bk, ps, ms)
+    #integ = bk.clip(integ, eps_int, np.inf)
+
+    return a + bk.log(integ)
+
+
+
+
+
+    
+def logpdf_PLP_reg(bk, theta, lambdaBBHmass,  smoothing='LVK'):
+    
+        m1, m2 = theta
+        lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
+                
+
+        lpdfm1 = logpdfm1_PLP_reg( bk, m1, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing )
+        
+        lpdfm2 = logpdfm2_PLP_reg(bk, m2, beta, deltam, ml, smoothing=smoothing)
+        
+        ln = logNorm_PLP_reg( bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, smoothing=smoothing )
+
+        lC = logC_PLP_reg(bk, m1, beta, deltam,  ml, smoothing=smoothing
+                         ) 
+        
+        return lpdfm1 + lpdfm2 - ln - lC
+        
 
 
 
@@ -434,6 +570,7 @@ def log_norm_truncated_pl_num_alpha1_safe(bk, alpha, mmin, mmax, eps=1e-12, t_fl
 
     t = 1.0 - alpha
     # avoid exactly zero
+    
     t_safe = bk.where(bk.abs(t) < t_floor, bk.where(t >= 0.0, t_floor, -t_floor), t)
 
     b = bk.log(mmin_c)
@@ -453,8 +590,6 @@ def logpdf_DPLDP(
     force_m2_less_than_m1=False,
     has_m2_break=False,
     smoothing="LVK",
-    resC=100,
-    resN=500,
     interp_vals=None,
     interp_grids=None,
     norm=True,
@@ -533,7 +668,6 @@ def logpdf_DPLDP(
         sig_g_low=sig_g_low,
         sig_g_high=sig_g_high,
         has_m2_break=has_m2_break,
-        res=resC,
         smoothing=smoothing,
     )
 
@@ -555,25 +689,10 @@ def logpdf_DPLDP(
             lambda2,
             epsilon,
             smoothing=smoothing,
-            res=resN,
             simplex_repair=simplex_repair,
             norm_gauss=norm_gauss,
         )
  
-
-        # ln  = logNorm_m1_DPLDP_GL(
-        #         bk,
-        #         alpha1, alpha2, mb,
-        #         mu1, sigma1, mu2, sigma2,
-        #         m1_low, m_high, delta_m1,
-        #         lambda0, lambda1, lambda2,
-        #         epsilon,
-        #         smoothing=smoothing,
-        #         simplex_repair=simplex_repair,
-        #         #sl=sl, sh=sh,
-        #         norm_gauss=norm_gauss,
-        #         n_gl=16,   
-        #     )
         
     else:
         ln = 0.0
@@ -599,13 +718,10 @@ def logC_DPLDP(
     sig_g_low=5,
     sig_g_high=5,
     has_m2_break=False,
-    res=500,
     smoothing="LVK",
 ):
-    if res != 500:
-        _tgrid = bk.linspace(0.0, 1.0, res)
-    else:
-        _tgrid = _tgrid_np 
+    
+    _tgrid = _tgrid_np 
 
     xx = m2_low + (max_m - m2_low) * _tgrid  
 
@@ -640,120 +756,6 @@ def logC_DPLDP(
     return itr
 
 
-# ---- Fast replacements for logNorm_DPLDP and logC_DPLDP using GL ----
-
-def logNorm_m1_DPLDP_GL(
-    bk,
-    alpha1,
-    alpha2,
-    mb,
-    mu1,
-    sigma1,
-    mu2,
-    sigma2,
-    m1_low,
-    m_high,
-    delta_m1,
-    lambda0,
-    lambda1,
-    lambda2,
-    epsilon,
-    *,
-    smoothing="LVK",
-    simplex_repair=False,
-    eps_w=1e-15,
-    sl=0.1,
-    sh=1,
-    norm_gauss="uplow",
-    n_gl=32,
-):
-    """
-    logZ = log ∫_{m1_low}^{m_high} exp(logpdfm1_DPLDP(..., m1)) dm1
-    computed by Gauss–Legendre on a small number of intervals.
-
-    This keeps EXACT model (soft break epsilon + gates + smoothing choice).
-    """
-    #m1_low = jnp.asarray(m1_low, dtype=jnp.float64)
-    #m_high = jnp.asarray(m_high, dtype=jnp.float64)
-    #mb     = jnp.asarray(mb, dtype=jnp.float64)
-
-    # fixed split point for taper end
-    m_taper_end = jnp.minimum(m1_low + delta_m1, m_high)
-
-    # clamp break into [m_taper_end, m_high] so segments are ordered
-    mb_c = jnp.clip(mb, m_taper_end, m_high)
-
-    def _logf(x):
-        return logpdfm1_DPLDP(
-            bk,
-            x,
-            alpha1, alpha2, mb,
-            mu1, sigma1, mu2, sigma2,
-            m1_low, m_high, delta_m1,
-            lambda0, lambda1, lambda2,
-            epsilon,
-            smoothing=smoothing,
-            simplex_repair=simplex_repair,
-            eps_w=eps_w,
-            sl=sl,
-            sh=sh,
-            norm_gauss=norm_gauss,
-        )
-
-    # Segment 1: [m1_low, m_taper_end]
-    logI1 = _log_integral_gl_1d(_logf, m1_low, m_taper_end, n=n_gl)
-
-    # Segment 2: [m_taper_end, mb_c]
-    logI2 = _log_integral_gl_1d(_logf, m_taper_end, mb_c, n=n_gl)
-
-    # Segment 3: [mb_c, m_high]
-    logI3 = _log_integral_gl_1d(_logf, mb_c, m_high, n=n_gl)
-
-    # Total = log(exp(logI1)+exp(logI2)+exp(logI3))
-    logZ = _logaddexp(_logaddexp(logI1, logI2), logI3)
-    return logZ
-
-
-
-def _log_integral_gl_1d(logf, a, b, *, n=32):
-    """
-    Compute log ∫_a^b exp(logf(x)) dx using n-point Gauss–Legendre.
-    Works with JAX tracers for a,b.
-
-    logf: callable x -> log density (broadcastable over x)
-    a,b: scalars (can be JAX tracers)
-    """
-    #a = jnp.asarray(a, dtype=jnp.float64)
-    #b = jnp.asarray(b, dtype=jnp.float64)
-
-    # ensure ordering
-    a0 = jnp.minimum(a, b)
-    b0 = jnp.maximum(a, b)
-
-    # if interval is empty, return -inf
-    length = b0 - a0
-    empty = length <= 0.0
-
-    t, w = leggauss_const(int(n))  # constants
-
-    # map nodes to [a0, b0]
-    mid  = 0.5 * (a0 + b0)
-    half = 0.5 * (b0 - a0)
-    x = mid + half * t
-
-    # log-integrand at nodes
-    lv = logf(x)
-
-    # include weights + Jacobian
-    logw = jnp.log(w) + jnp.log(half)
-    out = _logsumexp(lv + logw)
-
-    return jnp.where(empty, -jnp.inf, out)
-
-
-def _logaddexp(a, b):
-    return jnp.logaddexp(a, b)
-
 
 def logNorm_DPLDP(
     bk,
@@ -771,7 +773,6 @@ def logNorm_DPLDP(
     lambda1,
     lambda2,
     epsilon,
-    res=500,
     smoothing="LVK",
     simplex_repair=False,
     eps_int=1e-300,
@@ -782,10 +783,8 @@ def logNorm_DPLDP(
       log ∫ exp(logpdfm1_DPLDP(ms)) dms
     using max-subtraction.
     """
-    if res != 500:
-        _tgrid = bk.linspace(0.0, 1.0, res)
-    else:
-        _tgrid = _tgrid_np #_get_t_grid()
+    
+    _tgrid = _tgrid_np #_get_t_grid()
 
     ms = m1_low + (m_high - m1_low) * _tgrid
 
