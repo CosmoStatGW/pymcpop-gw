@@ -40,28 +40,6 @@ tinyL = 1e-300
 NEG_BIG = -np.inf
 
 
-
-def make_writable(a):
-    import numpy as np
-    a = np.asarray(a)
-    if (not a.flags.writeable) or (not a.flags.owndata) or (not a.flags.c_contiguous):
-        a = np.array(a, copy=True, order="C")
-    else:
-        # still force writeable in case flags were flipped
-        a.setflags(write=True)
-    return a
-
-    
-def assert_writable(name, a):
-    import numpy as np
-    if hasattr(a, "get_value"):  # shared var
-        v = a.get_value(borrow=True)
-    else:
-        v = np.asarray(a)
-    assert v.flags.writeable, f"{name} is read-only"
-    assert v.flags.owndata or v.base is None, f"{name} is a view/memmap"
-    assert v.flags.c_contiguous, f"{name} not contiguous"
-
     
 #####################################################
 #####################################################
@@ -73,7 +51,8 @@ def assert_writable(name, a):
 
 
 # 95% central interval for Normal and 95% point for HalfNormal
-NORM_Q95 = 1.959963984540054  # Phi^{-1}(0.975)
+NORM_Q95 = 2.5758293035489004  # 99% point (Phi^{-1}(0.995))
+#1.959963984540054  # Phi^{-1}(0.975)
 
 # For bounded-sigmoid params, choose raw sd so that 95% maps to ~[0.05, 0.95]
 RAW_SD_95 = 1.502  # since sigmoid(±1.96*RAW_SD_95) ≈ 0.05 / 0.95
@@ -83,6 +62,31 @@ def normal_from_bounds_95(name, low, high, initval=None):
     mu = 0.5 * (low + high)
     sigma = (high - low) / (2.0 * NORM_Q95)
     return pm.Normal(name, mu=mu, sigma=sigma, initval=initval)
+
+
+def floored_lognormal_q95(name, floor, typical_max_total, initval=None, median_frac=0.2):
+    """
+    sigma = floor + x, with x ~ LogNormal(mu, sigma_ln)
+
+    We set:
+      Q95(x) = raw_typ = typical_max_total - floor
+      median(x) = median_frac * raw_typ   (default 0.2)
+
+    This avoids mass piling up at the floor (lognormal density -> 0 as x->0).
+    """
+    raw_typ = max(1e-12, typical_max_total - floor)
+    med = max(1e-12, median_frac * raw_typ)
+
+    # For LogNormal: median = exp(mu), and Q95 = exp(mu + z95*sigma_ln)
+    mu = np.log(med)
+    sigma_ln = (np.log(raw_typ) - mu) / NORM_Q95
+
+    raw_init = None
+    if initval is not None:
+        raw_init = max(1e-12, initval - floor)
+
+    x = pm.LogNormal(f"{name}_raw", mu=mu, sigma=sigma_ln, initval=raw_init)
+    return pm.Deterministic(name, floor + x)
 
 def floored_halfnormal_typmax95(name, floor, typical_max_total, initval=None):
     """
@@ -730,30 +734,34 @@ def make_model(  priors,
         if rate_model=='MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
-            # gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-            # kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-            # zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
-            gamma_ = normal_from_bounds_95("gamma", priors["gamma"][0], priors["gamma"][1], initval=ivals.get("gamma"))
+            if not reparam_z:
+                gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+                kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+                zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
-            # kappa_ = bounded_sigmoid_95("kappa", priors["kappa"][0], priors["kappa"][1], initval=ivals.get("kappa"))
-            zp_    = bounded_sigmoid_95("zp",    priors["zp"][0],    priors["zp"][1],    initval=ivals.get("zp"))
-
-            # sample s = gamma + kappa with a "95% typical range" prior derived from bounds
-            s_low  = priors["gamma"][0] + priors["kappa"][0]
-            s_high = priors["gamma"][1] + priors["kappa"][1]
-            s_ = normal_from_bounds_95("gamma_plus_kappa", s_low, s_high, initval=ivals.get("gamma_plus_kappa"))
-            
-            # reconstruct kappa
-            kappa_ = pm.Deterministic("kappa", s_ - gamma_)
-            
-            # soft-bounds for kappa (discourage leaving [k_low, k_high] without hard truncation)
-            k_low, k_high = priors["kappa"][0], priors["kappa"][1]
-            k_scale = 0.1 * (k_high - k_low)  # smaller = stricter; adjust if needed
-            
-            below = pm.math.maximum(0.0, k_low - kappa_)
-            above = pm.math.maximum(0.0, kappa_ - k_high)
-            pm.Potential("kappa_soft_bounds", -0.5 * ((below / k_scale) ** 2 + (above / k_scale) ** 2))
+            else:
+                gamma_ = normal_from_bounds_95("gamma", priors["gamma"][0], priors["gamma"][1], initval=ivals.get("gamma"))
+                zp_    = bounded_sigmoid_95("zp",    priors["zp"][0],    priors["zp"][1],    initval=ivals.get("zp"))
+    
+                kappa_ = bounded_sigmoid_95("kappa", priors["kappa"][0], priors["kappa"][1], initval=ivals.get("kappa"))
+                
+    
+                # # sample s = gamma + kappa with a "95% typical range" prior derived from bounds
+                # s_low  = priors["gamma"][0] + priors["kappa"][0]
+                # s_high = priors["gamma"][1] + priors["kappa"][1]
+                # s_ = normal_from_bounds_95("gamma_plus_kappa", s_low, s_high, initval=ivals.get("gamma_plus_kappa"))
+                
+                # # reconstruct kappa
+                # kappa_ = pm.Deterministic("kappa", s_ - gamma_)
+                
+                # # soft-bounds for kappa (discourage leaving [k_low, k_high] without hard truncation)
+                # k_low, k_high = priors["kappa"][0], priors["kappa"][1]
+                # k_scale = 0.1 * (k_high - k_low)  # smaller = stricter; adjust if needed
+                
+                # below = pm.math.maximum(0.0, k_low - kappa_)
+                # above = pm.math.maximum(0.0, kappa_ - k_high)
+                # pm.Potential("kappa_soft_bounds", -0.5 * ((below / k_scale) ** 2 + (above / k_scale) ** 2))
 
 
             
@@ -849,88 +857,36 @@ def make_model(  priors,
             # --- reparameterized bounded priors (muChi, sigmaChi, zeta) and HalfNormal (sigmat) ---
 
              
-            # # muChi: hard-bounded in [a,b] via sigmoid reparam
-            # muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
-            # muChi_raw = pm.Normal("muChi_raw", mu=0.0, sigma=RAW_SD_95)
-            # muChi_ = pm.Deterministic(
-            #     "muChi",
-            #     muChi_a + (muChi_b - muChi_a) * pm.math.sigmoid(muChi_raw),
-            # )
+            # muChi: hard-bounded in [a,b] via sigmoid reparam
+            muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
+            muChi_raw = pm.Normal("muChi_raw", mu=0.0, sigma=RAW_SD_95)
+            muChi_ = pm.Deterministic(
+                "muChi",
+                muChi_a + (muChi_b - muChi_a) * pm.math.sigmoid(muChi_raw),
+            )
             
-            # # sigmaChi: hard-bounded in [a,b] but mapped in log-space (better for widths)
-            # sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
-            # sigmaChi_raw = pm.Normal("sigmaChi_raw", mu=0.0, sigma=RAW_SD_95)
-            # log_sigmaChi = (
-            #     np.log(sigmaChi_a)
-            #     + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * pm.math.sigmoid(sigmaChi_raw)
-            # )
-            # sigmaChi_ = pm.Deterministic("sigmaChi", pm.math.exp(log_sigmaChi))
-            
-            # # zeta: hard-bounded in [a,b] via sigmoid reparam (typically [0,1])
-            # zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
-            # zeta_raw = pm.Normal("zeta_raw", mu=0.0, sigma=RAW_SD_95)
-            # zeta_ = pm.Deterministic(
-            #     "zeta",
-            #     zeta_a + (zeta_b - zeta_a) * pm.math.sigmoid(zeta_raw),
-            # )
-            
-            # # sigmat: HalfNormal with "typical max" = priors['sigmat'][1] at ~95% quantile
-            # HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
-            # sigmat_floor = priors["sigmat"][0]
-            # sigmat_typmax = priors["sigmat"][1]
-            # raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)  # interpret typmax as final 95% point
-            # sigmat_sigma = raw_typ / HN_Q95_TO_SIGMA
-            
-            # sigmat_raw_init = None
-            # if ivals.get("sigmat") is not None:
-            #     sigmat_raw_init = max(0.0, ivals["sigmat"] - sigmat_floor)
-            
-            # sigmat_raw = pm.HalfNormal("sigmat_raw", sigma=sigmat_sigma, initval=sigmat_raw_init)
-            # sigmat_ = pm.Deterministic("sigmat", sigmat_floor + sigmat_raw)
-
-
-            # --- correlated (muChi, sigmaChi) via non-centered coupling in raw (unbounded) space ---
-
-            # sigmaChi: hard-bounded in [a,b] in log-space (same as you already do)
+            # sigmaChi: hard-bounded in [a,b] but mapped in log-space (better for widths)
             sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
-            sigmaChi_raw = pm.Normal("sigmaChi_raw", mu=0.0, sigma=RAW_SD_95)  # unconstrained
+            sigmaChi_raw = pm.Normal("sigmaChi_raw", mu=0.0, sigma=RAW_SD_95)
             log_sigmaChi = (
                 np.log(sigmaChi_a)
                 + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * pm.math.sigmoid(sigmaChi_raw)
             )
             sigmaChi_ = pm.Deterministic("sigmaChi", pm.math.exp(log_sigmaChi))
             
-            # muChi: bounded in [a,b] via sigmoid of an unbounded latent,
-            # but the latent is *non-centered* and scaled by sigmaChi.
-            muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
-            
-            # "location" of muChi in raw space (roughly corresponds to logit(muChi) if bounds are [0,1])
-            muChi_loc_raw = pm.Normal("muChi_loc_raw", mu=0.0, sigma=RAW_SD_95)
-            
-            # sigma-units jitter (dimensionless)
-            z_muChi = pm.Normal("z_muChi", mu=0.0, sigma=1.0)
-            
-            # reference scale to keep the coupling roughly O(1)
-            sigma_ref = float(np.sqrt(sigmaChi_a * sigmaChi_b))  # geometric mid of bounds
-            
-            # coupled latent for muChi (unbounded)
-            muChi_raw = pm.Deterministic("muChi_raw", muChi_loc_raw + z_muChi * (sigmaChi_ / sigma_ref))
-            
-            # map back to bounded muChi
-            muChi_ = pm.Deterministic("muChi", muChi_a + (muChi_b - muChi_a) * pm.math.sigmoid(muChi_raw))
-            
-            
-            # --- zeta unchanged (bounded via sigmoid reparam) ---
+            # zeta: hard-bounded in [a,b] via sigmoid reparam (typically [0,1])
             zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
             zeta_raw = pm.Normal("zeta_raw", mu=0.0, sigma=RAW_SD_95)
-            zeta_ = pm.Deterministic("zeta", zeta_a + (zeta_b - zeta_a) * pm.math.sigmoid(zeta_raw))
+            zeta_ = pm.Deterministic(
+                "zeta",
+                zeta_a + (zeta_b - zeta_a) * pm.math.sigmoid(zeta_raw),
+            )
             
-            
-            # --- sigmat unchanged (floor + HalfNormal with typmax as 95% point of final parameter) ---
+            # sigmat: HalfNormal with "typical max" = priors['sigmat'][1] at ~95% quantile
             HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
             sigmat_floor = priors["sigmat"][0]
             sigmat_typmax = priors["sigmat"][1]
-            raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)
+            raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)  # interpret typmax as final 95% point
             sigmat_sigma = raw_typ / HN_Q95_TO_SIGMA
             
             sigmat_raw_init = None
@@ -939,6 +895,58 @@ def make_model(  priors,
             
             sigmat_raw = pm.HalfNormal("sigmat_raw", sigma=sigmat_sigma, initval=sigmat_raw_init)
             sigmat_ = pm.Deterministic("sigmat", sigmat_floor + sigmat_raw)
+
+
+            # --- correlated (muChi, sigmaChi) via non-centered coupling in raw (unbounded) space ---
+
+            # sigmaChi: hard-bounded in [a,b] in log-space (same as you already do)
+            # sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
+            # sigmaChi_raw = pm.Normal("sigmaChi_raw", mu=0.0, sigma=RAW_SD_95)  # unconstrained
+            # log_sigmaChi = (
+            #     np.log(sigmaChi_a)
+            #     + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * pm.math.sigmoid(sigmaChi_raw)
+            # )
+            # sigmaChi_ = pm.Deterministic("sigmaChi", pm.math.exp(log_sigmaChi))
+            
+            # # muChi: bounded in [a,b] via sigmoid of an unbounded latent,
+            # # but the latent is *non-centered* and scaled by sigmaChi.
+            # muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
+            
+            # # "location" of muChi in raw space (roughly corresponds to logit(muChi) if bounds are [0,1])
+            # muChi_loc_raw = pm.Normal("muChi_loc_raw", mu=0.0, sigma=RAW_SD_95)
+            
+            # # sigma-units jitter (dimensionless)
+            # z_muChi = pm.Normal("z_muChi", mu=0.0, sigma=1.0)
+            
+            # # reference scale to keep the coupling roughly O(1)
+            # sigma_ref = float(np.sqrt(sigmaChi_a * sigmaChi_b))  # geometric mid of bounds
+            
+            # # coupled latent for muChi (unbounded)
+            # muChi_raw = pm.Deterministic("muChi_raw", muChi_loc_raw + z_muChi * (sigmaChi_ / sigma_ref))
+            
+            # # map back to bounded muChi
+            # muChi_ = pm.Deterministic("muChi", muChi_a + (muChi_b - muChi_a) * pm.math.sigmoid(muChi_raw))
+            
+            
+            # # --- zeta unchanged (bounded via sigmoid reparam) ---
+            # zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
+            # zeta_raw = pm.Normal("zeta_raw", mu=0.0, sigma=RAW_SD_95)
+            # zeta_ = pm.Deterministic("zeta", zeta_a + (zeta_b - zeta_a) * pm.math.sigmoid(zeta_raw))
+            
+            
+            # # --- sigmat unchanged (floor + HalfNormal with typmax as 95% point of final parameter) ---
+            # HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
+            # sigmat_floor = priors["sigmat"][0]
+            # sigmat_typmax = priors["sigmat"][1]
+            # raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)
+            # sigmat_sigma = raw_typ / HN_Q95_TO_SIGMA
+            
+            # sigmat_raw_init = None
+            # if ivals.get("sigmat") is not None:
+            #     sigmat_raw_init = max(0.0, ivals["sigmat"] - sigmat_floor)
+            
+            # sigmat_raw = pm.HalfNormal("sigmat_raw", sigma=sigmat_sigma, initval=sigmat_raw_init)
+            # sigmat_ = pm.Deterministic("sigmat", sigmat_floor + sigmat_raw)
 
 
             Lambda_ += [muChi_, sigmaChi_, zeta_, sigmat_]
@@ -1008,29 +1016,30 @@ def make_model(  priors,
 
 
             # --- Slopes / locations: Normal with bounds as 95% typical range ---
-            # alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
-            # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
+            alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
+            alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
 
-            if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+            # if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
                 
-            # bounds -> mid and sigma (same as helper)
-            a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-            a_mid = 0.5 * (a_low + a_high)
-            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+            # # bounds -> mid and sigma (same as helper)
+            # a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+            # a_mid = 0.5 * (a_low + a_high)
+            # a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
             
-            # reparam
-            a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
-                               initval=ivals.get("alpha_bar", ivals.get("alpha1")))
-            a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
-                               initval=ivals.get("alpha_diff", 0.0))
+            # # reparam
+            # a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
+            #                    initval=ivals.get("alpha_bar", ivals.get("alpha1")))
+            # a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
+            #                    initval=ivals.get("alpha_diff", 0.0))
             
-            alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
-            alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+            # alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
+            # alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
 
 
             beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
             
             #mb_  = normal_from_bounds_95("mb",  priors["mb"][0],  priors["mb"][1],  initval=ivals.get("mb"))
+            
             mb_a, mb_b = priors["mb"][0], priors["mb"][1]
 
             # set init in raw-space using logit of normalized initval (if provided)
@@ -1045,25 +1054,27 @@ def make_model(  priors,
 
              
             # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
-            sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
-            sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            # sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
+            # sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
+            sigma1_ = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], initval=ivals.get("sigma1"))
+            sigma2_ = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], initval=ivals.get("sigma2"))
 
 
-            # mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
-            # mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
+            mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
+            mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
   
 
             # midpoints from your old "typical range" bounds
-            mu1_mid = 0.5 * (priors["mu1"][0] + priors["mu1"][1])
-            mu2_mid = 0.5 * (priors["mu2"][0] + priors["mu2"][1])
+            # mu1_mid = 0.5 * (priors["mu1"][0] + priors["mu1"][1])
+            # mu2_mid = 0.5 * (priors["mu2"][0] + priors["mu2"][1])
             
-            # dimensionless offsets in sigma-units
-            z_mu1 = pm.Normal("z_mu1", mu=0.0, sigma=1.0, initval=0.0)
-            z_mu2 = pm.Normal("z_mu2", mu=0.0, sigma=1.0, initval=0.0)
+            # # dimensionless offsets in sigma-units
+            # z_mu1 = pm.Normal("z_mu1", mu=0.0, sigma=1.0, initval=0.0)
+            # z_mu2 = pm.Normal("z_mu2", mu=0.0, sigma=1.0, initval=0.0)
             
-            # coupled means
-            mu1_ = pm.Deterministic("mu1", mu1_mid + z_mu1 * sigma1_)
-            mu2_ = pm.Deterministic("mu2", mu2_mid + z_mu2 * sigma2_)
+            # # coupled means
+            # mu1_ = pm.Deterministic("mu1", mu1_mid + z_mu1 * sigma1_)
+            # mu2_ = pm.Deterministic("mu2", mu2_mid + z_mu2 * sigma2_)
 
             
             # delta_m1_ = floored_halfnormal_typmax95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], initval=ivals.get("delta_m1"))
@@ -1078,32 +1089,44 @@ def make_model(  priors,
             
             m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
 
-            # --- Reparam: sample taper end instead of delta_m1 ---
+            # # --- Reparam: sample taper end instead of delta_m1 ---
+            # d1_floor = priors["delta_m1"][0]
+            # d1_typ   = priors["delta_m1"][1]  # interpret as typical max for delta_m1
+            
+            # # w1 in (0,1) with ~95% away from edges
+            # w1 = unit_interval_sigmoid("w1_delta_m1", initval=ivals.get("w1_delta_m1"), raw_sigma=RAW_SD_95)
+            
+            # m1_taper_end_ = pm.Deterministic(
+            #     "m1_taper_end",
+            #     m1_low_ + d1_floor + (d1_typ - d1_floor) * w1
+            # )
+            
+            # delta_m1_ = pm.Deterministic("delta_m1", m1_taper_end_ - m1_low_)
+
+
+            # d2_floor = priors["delta_m2"][0]
+            # d2_typ   = priors["delta_m2"][1]
+            
+            # w2 = unit_interval_sigmoid("w2_delta_m2", initval=ivals.get("w2_delta_m2"), raw_sigma=RAW_SD_95)
+            
+            # m2_taper_end_ = pm.Deterministic(
+            #     "m2_taper_end",
+            #     m2_low_ + d2_floor + (d2_typ - d2_floor) * w2
+            # )
+            
+            # delta_m2_ = pm.Deterministic("delta_m2", m2_taper_end_ - m2_low_)
+
+            # delta_m1 + taper end
             d1_floor = priors["delta_m1"][0]
-            d1_typ   = priors["delta_m1"][1]  # interpret as typical max for delta_m1
+            d1_typ   = priors["delta_m1"][1]
+            delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"))
+            m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
             
-            # w1 in (0,1) with ~95% away from edges
-            w1 = unit_interval_sigmoid("w1_delta_m1", initval=ivals.get("w1_delta_m1"), raw_sigma=RAW_SD_95)
-            
-            m1_taper_end_ = pm.Deterministic(
-                "m1_taper_end",
-                m1_low_ + d1_floor + (d1_typ - d1_floor) * w1
-            )
-            
-            delta_m1_ = pm.Deterministic("delta_m1", m1_taper_end_ - m1_low_)
-
-
+            # delta_m2 + taper end
             d2_floor = priors["delta_m2"][0]
             d2_typ   = priors["delta_m2"][1]
-            
-            w2 = unit_interval_sigmoid("w2_delta_m2", initval=ivals.get("w2_delta_m2"), raw_sigma=RAW_SD_95)
-            
-            m2_taper_end_ = pm.Deterministic(
-                "m2_taper_end",
-                m2_low_ + d2_floor + (d2_typ - d2_floor) * w2
-            )
-            
-            delta_m2_ = pm.Deterministic("delta_m2", m2_taper_end_ - m2_low_)
+            delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"))
+            m2_taper_end_ = pm.Deterministic("m2_taper_end", m2_low_ + delta_m2_)
 
                         
             # --- Lambda  ---
@@ -1801,23 +1824,20 @@ def make_model(  priors,
 
         
         fused = PopAndSelJAXOp(
+            
         zgrid=zgrid_np,
-        x01=constants._x01_np,
-        w01=constants._w01_np,
+            
         rate_model=rate_model,
         mass_model=mass_model,
         spin_model=spin_model_name,
+        
         smoothing=smoothing,
         simplex_repair=simplex_repair,
         has_m2_break=has_m2_break,
         norm_gauss=norm_gauss,
         param=param,
-        #interp_mass=interp_mass,
-        #mass_grids = interp_grids_mass,
-        #is_observed=is_observed,
-        subtract_log_p_incl=False,       
-        linear_mass=linear_mass,
-        linear_z=linear_z,
+        subtract_log_p_incl = False,       
+
         chunk_inj=chunk_inj
 
         )
@@ -1829,8 +1849,7 @@ def make_model(  priors,
         
         log_p_pop, log_mu_, var_ll_u_ = fused(
             m1det, m2det, d, spins,           # EVENT side
-            m1inj[0], m2inj[0], dLinj[0], spinsInj,
-            lpdinj[0], log_p_incl_,
+            m1inj[0], m2inj[0], dLinj[0], spinsInj, lpdinj[0], log_p_incl_, # Inj side
             Lambda_, Ndraw
         )
 

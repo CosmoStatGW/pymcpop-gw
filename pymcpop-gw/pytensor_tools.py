@@ -72,6 +72,7 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
     if mode=='man':
         return zGridGlobals
     elif mode=='cheb':
+        raise ValueError()
         return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)
     elif mode=='fixed':
         return make_z_grid_fixed(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c)
@@ -169,16 +170,16 @@ def make_z_grid_fixed(
     return z
 
 
-zGridGlobals_low = make_z_grid()
+# zGridGlobals_low = make_z_grid()
 
 
-zGridGlobals_at_low = at.constant(zGridGlobals_low)
+# zGridGlobals_at_low = at.constant(zGridGlobals_low)
 
 
 
-zGridGlobals_high = make_z_grid(1000)
+# zGridGlobals_high = make_z_grid(1000)
 
-zGridGlobals_at_high = at.constant(zGridGlobals_high)
+# zGridGlobals_at_high = at.constant(zGridGlobals_high)
 
 
 max_m = 500.

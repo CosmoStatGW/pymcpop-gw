@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 # backend-agnostic pieces
-from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk
+from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, dLfun
+
+
+
 from rate_models import log_p_z_MD_unnorm as log_p_z_MD_unnorm_bk
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 from mass_models import logpdf_DPLDP as logpdf_DPLDP_bk
@@ -52,12 +55,8 @@ def log_p_pop(
     E=None,
     log_ddL_dz_pre=None,
     param="vanilla",
-    #interp_vals_mass=None,
-    #interp_grids_mass=None,
-    #is_observed=False,
     z_grid=None,
     verbose=False,
-    linear_mass=False
 ):
     """
     Backend-agnostic log_p_pop_at,
@@ -132,7 +131,6 @@ def log_p_pop(
             x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21
         )
         
-
         lpmass = logpdf_DPLDP_bk(
             bk,
             (m1s, m2s),
@@ -154,7 +152,7 @@ def log_p_pop(
     # Jacobian term
     # -----------------------
     if log_ddL_dz_pre is None:
-        # IMPORTANT: we already have dc, so cosmology.log_ddL_dz doesn't need x01,w01
+        
         log_dthD_dth = log_ddL_dz_bk(
             bk, z, H0, Om, w0, Xi0, n, dc=dc, param=param, Xi=Xi, E=E, 
         )
@@ -182,13 +180,9 @@ def sel_bias_with_uncertainty_legacy(
     spinsInj,
     log_p_draw,
     log_p_incl,
-    dL_grid,
-    dc_grid,
-    log_ddL_dz_grid,
     Lambda,
     Ndraw,
     *,
-    #zgrid,
     rate_model,
     mass_model,
     spin_model,
@@ -197,21 +191,9 @@ def sel_bias_with_uncertainty_legacy(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    #interp_vals_mass=None,
-    #interp_grids_mass=None,
-    #is_observed=False,
     z_grid=None,
     verbose=False,
-    subtract_log_p_incl=True,
-    eps_interp=1e-12,
-    side_interp="left",
-    # -------- optional precomputed cosmology at injections --------
-    zinj=None,
-    dcinj=None,
-    log_ddL_dz_inj=None,
-    XiInj=None,
-    Einj=None,
-    linear_mass=False
+    subtract_log_p_incl=False,
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -219,21 +201,22 @@ def sel_bias_with_uncertainty_legacy(
     If zinj/dcinj/log_ddL_dz_inj are provided, internal inversions/interps are skipped.
     """
 
-    # ---- if not precomputed, compute zinj, dcinj, log_ddL_dz_inj by interpolation ----
-    if zinj is None:
-        raise ValueError()
-        # z(dL): xp=dL_grid, fp=zgrid
-        i_dL, t_dL = _interp_prepare_bk(bk, dLinj, dL_grid)
-        zinj = _interp_apply_bk(bk, i_dL, t_dL, z_grid)
+    # ---- compute zinj by interpolation ----
 
-    if (dcinj is None) or (log_ddL_dz_inj is None):
-        raise ValueError()
-        # dc(z), log_ddL_dz(z): xp=zgrid, fp=grids
-        i_z, t_z = _interp_prepare_bk(bk, zinj, z_grid)
-        if dcinj is None:
-            dcinj = _interp_apply_bk(bk, i_z, t_z, dc_grid)
-        if log_ddL_dz_inj is None:
-            log_ddL_dz_inj = _interp_apply_bk(bk, i_z, t_z, log_ddL_dz_grid)
+    H0, Om, w0, Xi0, nXi0 = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
+    
+    zinj = z_from_dL(
+            bk,
+            dLinj,
+            H0=H0,
+            Om=Om,
+            w0=w0,
+            Xi0=Xi0,
+            nXi0=nXi0,
+            z_nodes=z_grid,
+            d_nodes=None,
+            param=param,
+        )
 
     onepz = 1.0 + zinj
     m1Src = m1inj / onepz
@@ -251,17 +234,13 @@ def sel_bias_with_uncertainty_legacy(
         simplex_repair=simplex_repair,
         has_m2_break=has_m2_break,
         norm_gauss=norm_gauss,
-        dc=dcinj,
-        log_ddL_dz_pre=log_ddL_dz_inj,
-        Xi=XiInj,
-        E=Einj,
+        dc=None,
+        log_ddL_dz_pre=None,
+        Xi=None,
+        E=None,
         param=param,
-        #interp_vals_mass=interp_vals_mass,
-        #interp_grids_mass=interp_grids_mass,
-        #is_observed=is_observed,
-        z_grid=z_grid,
+        z_grid=None,
         verbose=verbose,
-        linear_mass=linear_mass
     )
 
     log_sel_b = log_p_pop_vals - log_p_draw
@@ -292,7 +271,6 @@ def sel_bias_with_uncertainty_legacy(
 #  sel. bias with streaming 
 # ---------------------------------------------------------------------
 
-
 def sel_bias_with_uncertainty_streaming_vjp(
     bk,
     m1inj,
@@ -301,9 +279,6 @@ def sel_bias_with_uncertainty_streaming_vjp(
     spinsInj,
     log_p_draw,
     log_p_incl,
-    dL_grid,
-    dc_grid,
-    log_ddL_dz_grid,
     Lambda,
     Ndraw,
     *,
@@ -317,66 +292,66 @@ def sel_bias_with_uncertainty_streaming_vjp(
     param="vanilla",
     z_grid=None,
     verbose=False,
-    eps_interp=1e-12,
-    side_interp="right",
-    # precomputed injection cosmology (required in your current usage)
-    zinj,
-    dcinj,
-    log_ddL_dz_inj,
-    XiInj,
-    Einj,
-    linear_mass=False,
-    # new controls
     chunk_size: int = 65536,
 ):
     """
-    Optimized selection term:
+    Optimized selection term (patched):
       - forward: streaming (one-pass) computation of log_mu and var_u
-      - backward: custom VJP that differentiates ONLY log_mu (forces g_var_u=0)
-      - chunked recomputation in backward to avoid huge tape/intermediates
+      - backward: custom VJP that differentiates ONLY log_mu w.r.t. Lambda
+      - z(dL) inversion: uses interpolation with nodes (z_grid, d_nodes)
+      - d_nodes = dLfun(..., z_grid, Lambda_cosmo) is computed ONCE per call (not per chunk)
+      - no gradients are ever taken w.r.t. the 1e6 injection arrays
 
-    chunk_size:
-      - >0 : process in chunks of this size
-      - <=0: treat as single chunk (no chunking)
+    Assumes these exist/imported:
+      - dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, x01, w01, dc=None, Xi=None, param=...)
+      - atinterp(bk, x, x_nodes, y_nodes)  # returns y(x) with nodes (x_nodes -> y_nodes)
+      - log_p_pop(...)
+      - logdiffexp_bk(bk, a, b)
+      - jax, jnp, lax
     """
-
-    # ---- constants are treated as constants upstream already, but we keep them as args ----
-    # NOTE: you said subtract_log_p_incl is always True, so we bake it in.
-
     B = int(chunk_size) if chunk_size and chunk_size > 0 else 0
 
+    if z_grid is None:
+        raise ValueError("z_grid must be provided for z(dL) inversion.")
+    z_nodes = jnp.asarray(z_grid)
+
     def _pad_to_multiple(x, n_pad, *, mode="edge"):
-        # pad 1D or 2D arrays on axis=0 to length n_pad
         n = x.shape[0]
         pad = n_pad - n
         if pad == 0:
             return x
         if x.ndim == 1:
-            if mode == "edge":
-                tail = jnp.repeat(x[-1:], pad, axis=0)
-            else:
-                tail = jnp.zeros((pad,), dtype=x.dtype)
+            tail = jnp.repeat(x[-1:], pad, axis=0) if mode == "edge" else jnp.zeros((pad,), dtype=x.dtype)
             return jnp.concatenate([x, tail], axis=0)
-        elif x.ndim == 2:
-            if mode == "edge":
-                tail = jnp.repeat(x[-1:, :], pad, axis=0)
-            else:
-                tail = jnp.zeros((pad, x.shape[1]), dtype=x.dtype)
+        if x.ndim == 2:
+            tail = jnp.repeat(x[-1:, :], pad, axis=0) if mode == "edge" else jnp.zeros((pad, x.shape[1]), dtype=x.dtype)
             return jnp.concatenate([x, tail], axis=0)
-        else:
-            raise ValueError("Unexpected ndim for padding")
+        raise ValueError("Unexpected ndim for padding")
 
     def _make_mask(n, n_pad):
-        # True for real entries, False for padded
         return jnp.arange(n_pad) < n
+
+    def _nodes_from_lambda(Lambda_):
+        # Cosmology hyper-params (must match your convention)
+        H0, Om, w0, Xi0, nXi0 = Lambda_[0], Lambda_[1], Lambda_[2], Lambda_[3], Lambda_[4]
+        # Compute d_nodes once: dL(z_nodes; Lambda_cosmo)
+        return dLfun(
+            bk,
+            z_nodes,
+            H0,
+            Om,
+            w0,
+            Xi0,
+            nXi0,
+            
+            dc=None,
+            Xi=None,
+            param=param,
+        )
 
     def _score_chunk(
         Lambda_,
-        zinj_c,
-        dcinj_c,
-        logdd_c,
-        Xi_c,
-        E_c,
+        d_nodes_,
         m1_c,
         m2_c,
         dL_c,
@@ -385,13 +360,17 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_c,
         mask_c,
     ):
-        onepz = 1.0 + zinj_c
+        # invert z(dL) cheaply using precomputed nodes
+        # atinterp(bk, x, x_nodes, y_nodes): here x=dL, x_nodes=d_nodes, y_nodes=z_nodes
+        zc = atinterp(bk, dL_c, d_nodes_, z_nodes)
+
+        onepz = 1.0 + zc
         m1Src = m1_c / onepz
         m2Src = m2_c / onepz
 
         lp_pop = log_p_pop(
             bk,
-            m1Src, m2Src, zinj_c, dL_c,
+            m1Src, m2Src, zc, dL_c,
             spins_c,
             Lambda_,
             rate_model=rate_model,
@@ -401,30 +380,24 @@ def sel_bias_with_uncertainty_streaming_vjp(
             simplex_repair=simplex_repair,
             has_m2_break=has_m2_break,
             norm_gauss=norm_gauss,
-            dc=dcinj_c,
-            log_ddL_dz_pre=logdd_c,
-            Xi=Xi_c,
-            E=E_c,
+            # let log_p_pop compute cosmo auxiliaries internally
+            dc=None,
+            log_ddL_dz_pre=None,
+            Xi=None,
+            E=None,
             param=param,
-            z_grid=z_grid,
+            z_grid=None,
             verbose=verbose,
-            linear_mass=linear_mass,
         )
 
         x = lp_pop - lpd_c - lpi_c
-        # padded entries contribute nothing: set to -inf
-        x = jnp.where(mask_c, x, -jnp.inf)
+        x = jnp.where(mask_c, x, -jnp.inf)  # padded entries contribute nothing
         return x  # (B,)
 
     @jax.custom_vjp
     def _sel_core(
         Lambda_,
-        zinj_,
-        dcinj_,
-        logdd_,
-        Xi_,
-        E_,
-        # big constant arrays (treated constant in bwd)
+        # injection constants (we return zero grads for these)
         m1_,
         m2_,
         dL_,
@@ -433,20 +406,11 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_,
         Ndraw_,
     ):
-        # forward uses helper fwd below
-        log_mu_, var_u_ = _sel_fwd_only(
-            Lambda_, zinj_, dcinj_, logdd_, Xi_, E_,
-            m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_
-        )
+        log_mu_, var_u_ = _sel_fwd_only(Lambda_, m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_)
         return log_mu_, var_u_
 
     def _sel_fwd_only(
         Lambda_,
-        zinj_,
-        dcinj_,
-        logdd_,
-        Xi_,
-        E_,
         m1_,
         m2_,
         dL_,
@@ -455,11 +419,12 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_,
         Ndraw_,
     ):
+        # compute d_nodes ONCE
+        d_nodes = _nodes_from_lambda(Lambda_)
+
         n = m1_.shape[0]
         if B == 0:
-            n_chunks = 1
-            n_pad = n
-            B_use = n
+            n_chunks, n_pad, B_use = 1, n, n
         else:
             n_chunks = (n + B - 1) // B
             n_pad = n_chunks * B
@@ -467,7 +432,6 @@ def sel_bias_with_uncertainty_streaming_vjp(
 
         mask = _make_mask(n, n_pad)
 
-        # pad everything to n_pad using edge padding (safe for math), mask kills padded
         m1p = _pad_to_multiple(m1_, n_pad, mode="edge")
         m2p = _pad_to_multiple(m2_, n_pad, mode="edge")
         dLp = _pad_to_multiple(dL_, n_pad, mode="edge")
@@ -475,22 +439,16 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpdp = _pad_to_multiple(lpd_, n_pad, mode="edge")
         lpip = _pad_to_multiple(lpi_, n_pad, mode="edge")
 
-        zinjp = _pad_to_multiple(zinj_, n_pad, mode="edge")
-        dcinjp = _pad_to_multiple(dcinj_, n_pad, mode="edge")
-        logddp = _pad_to_multiple(logdd_, n_pad, mode="edge")
-        Xip = _pad_to_multiple(Xi_, n_pad, mode="edge")
-        Ep = _pad_to_multiple(E_, n_pad, mode="edge")
-
-        # streaming accumulators: m, s1, s2
-        init = (jnp.array(-jnp.inf, dtype=jnp.float64),
-                jnp.array(0.0, dtype=jnp.float64),
-                jnp.array(0.0, dtype=jnp.float64))
+        init = (
+            jnp.array(-jnp.inf, dtype=jnp.float64),  # m
+            jnp.array(0.0, dtype=jnp.float64),       # s1
+            jnp.array(0.0, dtype=jnp.float64),       # s2
+        )
 
         def body(carry, k):
             m, s1, s2 = carry
             start = k * B_use
-
-            z0 = jnp.array(0, dtype=start.dtype)   # or jnp.int32(0) if you standardize on int32
+            z0 = jnp.array(0, dtype=start.dtype)
 
             m1c = lax.dynamic_slice(m1p, (start,), (B_use,))
             m2c = lax.dynamic_slice(m2p, (start,), (B_use,))
@@ -498,21 +456,13 @@ def sel_bias_with_uncertainty_streaming_vjp(
             spc = lax.dynamic_slice(spinsp, (start, z0), (B_use, spinsp.shape[1]))
             lpdc = lax.dynamic_slice(lpdp, (start,), (B_use,))
             lpic = lax.dynamic_slice(lpip, (start,), (B_use,))
-
-            zc = lax.dynamic_slice(zinjp, (start,), (B_use,))
-            dcc = lax.dynamic_slice(dcinjp, (start,), (B_use,))
-            logddc = lax.dynamic_slice(logddp, (start,), (B_use,))
-            Xic = lax.dynamic_slice(Xip, (start,), (B_use,))
-            Ec = lax.dynamic_slice(Ep, (start,), (B_use,))
-
             mc = lax.dynamic_slice(mask, (start,), (B_use,))
 
-            x = _score_chunk(Lambda_, zc, dcc, logddc, Xic, Ec, m1c, m2c, dLc, spc, lpdc, lpic, mc)
+            x = _score_chunk(Lambda_, d_nodes, m1c, m2c, dLc, spc, lpdc, lpic, mc)
 
             m_chunk = jnp.max(x)
             m_new = jnp.maximum(m, m_chunk)
 
-            # rescale old sums if max increased
             scale1 = jnp.exp(m - m_new)
             scale2 = jnp.exp(2.0 * (m - m_new))
 
@@ -533,59 +483,30 @@ def sel_bias_with_uncertainty_streaming_vjp(
         log_mu = lse1 - logN
         logs2 = lse2 - logN
 
-        # same formula you used (still forward-only for our hard-constraint plan)
         var_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 1.0) - jnp.log(Ndraw_ - 1.0)
-
         return log_mu, var_u
 
     def _sel_fwd(
         Lambda_,
-        zinj_,
-        dcinj_,
-        logdd_,
-        Xi_,
-        E_,
-        m1_,
-        m2_,
-        dL_,
-        spins_,
-        lpd_,
-        lpi_,
-        Ndraw_,
+        m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_,
     ):
-        log_mu, var_u = _sel_fwd_only(
-            Lambda_, zinj_, dcinj_, logdd_, Xi_, E_,
-            m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_
-        )
-
-        # Save only what we need for backward:
-        # we need lse1 for weights; easiest is to recompute (m,s1) cheaply? we already have log_mu + logN
-        # lse1 = log_mu + logN
+        # compute d_nodes ONCE and save it for backward
+        d_nodes = _nodes_from_lambda(Lambda_)
+        log_mu, var_u = _sel_fwd_only(Lambda_, m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_)
         lse1 = log_mu + jnp.log(Ndraw_)
-
-        # also save n and chunking info implicitly via shapes/static B
-        #res = (lse1, Ndraw_)
-        res = (lse1, Ndraw_,
-           Lambda_, zinj_, dcinj_, logdd_, Xi_, E_,
-           m1_, m2_, dL_, spins_, lpd_, lpi_)
-        primals = (log_mu, var_u)
-        return primals, res
+        res = (lse1, Ndraw_, Lambda_, d_nodes, m1_, m2_, dL_, spins_, lpd_, lpi_)
+        return (log_mu, var_u), res
 
     def _sel_bwd(res, g):
-        #(lse1, Ndraw_) = res
-        (lse1, Ndraw_,
-         Lambda_, zinj_, dcinj_, logdd_, Xi_, E_,
-         m1_, m2_, dL_, spins_, lpd_, lpi_) = res
-        
+        (lse1, Ndraw_, Lambda_, d_nodes, m1_, m2_, dL_, spins_, lpd_, lpi_) = res
         g_log_mu, g_var_u = g
 
-        # HARD CONSTRAINT PLAN: do not differentiate var_u
+        # do not differentiate var_u
         g_var_u = jnp.array(0.0, dtype=jnp.float64)
 
-        #n = m1inj.shape[0]
         n = m1_.shape[0]
-
-        if B == 0:
+        # robust: if B <= 0 or B >= n, avoid padding/chunking
+        if (B is None) or (B <= 0) or (B >= n):
             n_chunks = 1
             n_pad = n
             B_use = n
@@ -596,7 +517,6 @@ def sel_bias_with_uncertainty_streaming_vjp(
 
         mask = _make_mask(n, n_pad)
 
-        # pad inputs (same as forward)
         m1p = _pad_to_multiple(m1_, n_pad, mode="edge")
         m2p = _pad_to_multiple(m2_, n_pad, mode="edge")
         dLp = _pad_to_multiple(dL_, n_pad, mode="edge")
@@ -604,24 +524,12 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpdp = _pad_to_multiple(lpd_, n_pad, mode="edge")
         lpip = _pad_to_multiple(lpi_, n_pad, mode="edge")
 
-        zinjp = _pad_to_multiple(zinj_, n_pad, mode="edge")
-        dcinjp = _pad_to_multiple(dcinj_, n_pad, mode="edge")
-        logddp = _pad_to_multiple(logdd_, n_pad, mode="edge")
-        Xip = _pad_to_multiple(Xi_, n_pad, mode="edge")
-        Ep = _pad_to_multiple(E_, n_pad, mode="edge")
-
-        # accumulators: dLambda plus big grads for cosmology carrier arrays
-        dLambda = jnp.zeros_like(Lambda_)
-        dz = jnp.zeros((n_pad,), dtype=jnp.float64)
-        ddc = jnp.zeros((n_pad,), dtype=jnp.float64)
-        dlogdd = jnp.zeros((n_pad,), dtype=jnp.float64)
-        dXi = jnp.zeros((n_pad,), dtype=jnp.float64)
-        dE = jnp.zeros((n_pad,), dtype=jnp.float64)
+        dLambda_direct = jnp.zeros_like(Lambda_)
+        d_dnodes_total = jnp.zeros_like(d_nodes)  # size ~ 1-2k
 
         def body(carry, k):
-            dLambda, dz, ddc, dlogdd, dXi, dE = carry
+            dLam_acc, ddnodes_acc = carry
             start = k * B_use
-
             z0 = jnp.array(0, dtype=start.dtype)
 
             m1c = lax.dynamic_slice(m1p, (start,), (B_use,))
@@ -630,81 +538,47 @@ def sel_bias_with_uncertainty_streaming_vjp(
             spc = lax.dynamic_slice(spinsp, (start, z0), (B_use, spinsp.shape[1]))
             lpdc = lax.dynamic_slice(lpdp, (start,), (B_use,))
             lpic = lax.dynamic_slice(lpip, (start,), (B_use,))
-
-            zc = lax.dynamic_slice(zinjp, (start,), (B_use,))
-            dcc = lax.dynamic_slice(dcinjp, (start,), (B_use,))
-            logddc = lax.dynamic_slice(logddp, (start,), (B_use,))
-            Xic = lax.dynamic_slice(Xip, (start,), (B_use,))
-            Ec = lax.dynamic_slice(Ep, (start,), (B_use,))
-
             mc = lax.dynamic_slice(mask, (start,), (B_use,))
 
-            def score_wrapped(Lam_, z_, dc_, logdd_, Xi_, E_):
-                return _score_chunk(Lam_, z_, dc_, logdd_, Xi_, E_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
+            def score_wrapped(Lam_, dnodes_):
+                return _score_chunk(Lam_, dnodes_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
 
-            # x = score_wrapped(Lambda_, zc, dcc, logddc, Xic, Ec)
-            # w = jnp.exp(x - lse1)  # softmax weights (chunked)
-
-            # cot = g_log_mu * w  # (B,)
-
-            # # VJP wrt the *differentiated* args only
-            # (x_out, pull) = jax.vjp(score_wrapped, Lambda, zc, dcc, logddc, Xic, Ec)
-            # dLam_c, dz_c, ddc_c, dlogdd_c, dXi_c, dE_c = pull(cot)
-
-            x, pull = jax.vjp(score_wrapped, Lambda, zc, dcc, logddc, Xic, Ec)  # x is the primal!
+            # Differentiate only w.r.t (Lambda, d_nodes); NEVER w.r.t 1e6 injection arrays
+            x, pull = jax.vjp(score_wrapped, Lambda_, d_nodes)
             w = jnp.exp(x - lse1)
-            
             cot = g_log_mu * w
-            dLam_c, dz_c, ddc_c, dlogdd_c, dXi_c, dE_c = pull(cot)
 
+            dLam_c, d_dnodes_c = pull(cot)
+            return (dLam_acc + dLam_c, ddnodes_acc + d_dnodes_c), None
 
-            dLambda = dLambda + dLam_c
-            # dz = dz.at[start:start + B_use].set(dz_c)
-            # ddc = ddc.at[start:start + B_use].set(ddc_c)
-            # dlogdd = dlogdd.at[start:start + B_use].set(dlogdd_c)
-            # dXi = dXi.at[start:start + B_use].set(dXi_c)
-            # dE = dE.at[start:start + B_use].set(dE_c)
-
-            dz     = lax.dynamic_update_slice(dz,     dz_c,     (start,))
-            ddc    = lax.dynamic_update_slice(ddc,    ddc_c,    (start,))
-            dlogdd = lax.dynamic_update_slice(dlogdd, dlogdd_c, (start,))
-            dXi    = lax.dynamic_update_slice(dXi,    dXi_c,    (start,))
-            dE     = lax.dynamic_update_slice(dE,     dE_c,     (start,))
-
-            return (dLambda, dz, ddc, dlogdd, dXi, dE), None
-
-        (dLambda, dz, ddc, dlogdd, dXi, dE), _ = lax.scan(
+        (dLambda_direct, d_dnodes_total), _ = lax.scan(
             body,
-            (dLambda, dz, ddc, dlogdd, dXi, dE),
-            jnp.arange(n_chunks, dtype=jnp.int32)
+            (dLambda_direct, d_dnodes_total),
+            jnp.arange(n_chunks, dtype=jnp.int32),
         )
 
-        # strip padding
-        dz = dz[:n]
-        ddc = ddc[:n]
-        dlogdd = dlogdd[:n]
-        dXi = dXi[:n]
-        dE = dE[:n]
+        # Chain d_dnodes_total back to Lambda through d_nodes(Lambda)
+        _, pull_nodes = jax.vjp(_nodes_from_lambda, Lambda_)
+        (dLambda_from_nodes,) = pull_nodes(d_dnodes_total)
 
-        # Return grads for all args of _sel_core in order:
-        # (Lambda, zinj, dcinj, logdd, Xi, E, m1, m2, dL, spins, lpd, lpi, Ndraw)
+        dLambda = dLambda_direct + dLambda_from_nodes
+
         zeros_m1 = jnp.zeros_like(m1_)
         zeros_m2 = jnp.zeros_like(m2_)
         zeros_dL = jnp.zeros_like(dL_)
         zeros_sp = jnp.zeros_like(spins_)
         zeros_lpd = jnp.zeros_like(lpd_)
         zeros_lpi = jnp.zeros_like(lpi_)
-        zeros_N = jnp.zeros_like(jnp.asarray(Ndraw).reshape(()))
+        zeros_N = jnp.zeros_like(jnp.asarray(Ndraw_).reshape(()))
 
-        return (dLambda, dz, ddc, dlogdd, dXi, dE,
-                zeros_m1, zeros_m2, zeros_dL, zeros_sp, zeros_lpd, zeros_lpi, zeros_N)
+        # grads must match _sel_core arg order:
+        # (Lambda, m1, m2, dL, spins, lpd, lpi, Ndraw)
+        return (dLambda, zeros_m1, zeros_m2, zeros_dL, zeros_sp, zeros_lpd, zeros_lpi, zeros_N)
 
     _sel_core.defvjp(_sel_fwd, _sel_bwd)
 
-    # call the custom_vjp core
     log_mu, var_u = _sel_core(
         Lambda,
-        zinj, dcinj, log_ddL_dz_inj, XiInj, Einj,
         m1inj, m2inj, dLinj, spinsInj, log_p_draw, log_p_incl,
         jnp.asarray(Ndraw).reshape(()),
     )
@@ -715,9 +589,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
 
 
 # ---------------------------------------------------------------------
-#  sel bias wrapper
+#  sel. bias wrapper
 # ---------------------------------------------------------------------
-
 
 def sel_bias_with_uncertainty(
     bk,
@@ -727,9 +600,6 @@ def sel_bias_with_uncertainty(
     spinsInj,
     log_p_draw,
     log_p_incl,
-    dL_grid,
-    dc_grid,
-    log_ddL_dz_grid,
     Lambda,
     Ndraw,
     *,
@@ -743,62 +613,46 @@ def sel_bias_with_uncertainty(
     param="vanilla",
     z_grid=None,
     verbose=False,
-    subtract_log_p_incl=True,
-    eps_interp=1e-12,
-    side_interp="left",
-    zinj=None,
-    dcinj=None,
-    log_ddL_dz_inj=None,
-    XiInj=None,
-    Einj=None,
-    linear_mass=False,
+    subtract_log_p_incl=False,
     # new flags
     use_streaming_vjp: bool = True,
     sel_chunk_size: int = 65536,
 ):
-    # keep your invariant
-    if subtract_log_p_incl is not True:
-        raise ValueError("subtract_log_p_incl must be True in this configuration.")
-    if zinj is None or dcinj is None or log_ddL_dz_inj is None or XiInj is None or Einj is None:
-        raise ValueError("Optimized selection expects precomputed zinj/dcinj/log_ddL_dz_inj/XiInj/Einj.")
-
-
-    # print("sel_bias_with_uncertainty check: ")
-    # print("use_streaming_vjp is %s"%use_streaming_vjp)
-    # print("sel_chunk_size is %s"%sel_chunk_size)
     
+   
     if not use_streaming_vjp:
         return sel_bias_with_uncertainty_legacy(
             bk,
             m1inj, m2inj, dLinj, spinsInj,
             log_p_draw, log_p_incl,
-            dL_grid, dc_grid, log_ddL_dz_grid,
             Lambda, Ndraw,
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             smoothing=smoothing, simplex_repair=simplex_repair,
-            has_m2_break=has_m2_break, norm_gauss=norm_gauss,
-            param=param, z_grid=z_grid, verbose=verbose,
-            subtract_log_p_incl=True,
-            eps_interp=eps_interp, side_interp=side_interp,
-            zinj=zinj, dcinj=dcinj, log_ddL_dz_inj=log_ddL_dz_inj,
-            XiInj=XiInj, Einj=Einj,
-            linear_mass=linear_mass
+            has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
+            z_grid=z_grid, 
+            verbose=verbose,
+            subtract_log_p_incl=subtract_log_p_incl,
+            
         )
 
+    # print("m1", m1inj.shape, type(m1inj), getattr(m1inj, "dtype", None))
+    # print("m2", m2inj.shape, type(m2inj), getattr(m2inj, "dtype", None))
+    # print("dL", dLinj.shape, type(dLinj), getattr(dLinj, "dtype", None))
+    # print("sp", spinsInj.shape, type(spinsInj), getattr(spinsInj, "dtype", None))
+    # print("lpd", log_p_draw.shape, type(log_p_draw), getattr(log_p_draw, "dtype", None))
+    # print("
+    # lpi", log_p_incl.shape, type(log_p_incl), getattr(log_p_incl, "dtype", None))
+    # print("Ndraw", Ndraw, type(Ndraw))
     return sel_bias_with_uncertainty_streaming_vjp(
         bk,
         m1inj, m2inj, dLinj, spinsInj,
         log_p_draw, log_p_incl,
-        dL_grid, dc_grid, log_ddL_dz_grid,
         Lambda, Ndraw,
         rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
         smoothing=smoothing, simplex_repair=simplex_repair,
-        has_m2_break=has_m2_break, norm_gauss=norm_gauss,
-        param=param, z_grid=z_grid, verbose=verbose,
-        eps_interp=eps_interp, side_interp=side_interp,
-        zinj=zinj, dcinj=dcinj, log_ddL_dz_inj=log_ddL_dz_inj,
-        XiInj=XiInj, Einj=Einj,
-        linear_mass=linear_mass,
+        has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
+        z_grid=z_grid,
+        verbose=verbose,
         chunk_size=sel_chunk_size,
     )
 

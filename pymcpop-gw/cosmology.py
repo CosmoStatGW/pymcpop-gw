@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from pytensor_utils import attrapzvec
+from pytensor_utils import attrapzvec, atinterp
 from constants import _PI, c_light
+from pytensor_tools import zGridGlobals
+
+from constants import _x01_np as x01
+from constants import _w01_np as w01
+
+
 
 # ---------------------------------------------------------------------
 # Hubble
@@ -43,7 +49,7 @@ def Xi_polexp(bk, z, Xi0, n):
 # ---------------------------------------------------------------------
 
 
-def dcfun_quad(bk, z, H0, Om, w0, x01, w01):
+def dcfun_quad(bk, z, H0, Om, w0 ):
     """
     Comoving distance d_c(z) in Gpc, using Gauss–Legendre quadrature on [0,z].
 
@@ -68,7 +74,7 @@ def dcfun_quad(bk, z, H0, Om, w0, x01, w01):
 # luminosity distance
 # ---------------------------------------------------------------------
 
-def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, x01, w01, dc=None, Xi=None, param="vanilla"):
+def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla"):
     """
     Luminosity distance d_L(z) in Gpc.
 
@@ -85,17 +91,34 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, x01, w01, dc=None, Xi=None, param="va
             raise ValueError(f"Unknown param='{param}' (expected 'vanilla' or 'polexp')")
 
     if dc is None:
-        if x01 is None or w01 is None:
-            raise ValueError("dLfun: dc is None, so you must pass x01 and w01 to compute dc via dcfun_quad.")
-        dc = dcfun_quad(bk, z, H0, Om, w0, x01, w01)
+        dc = dcfun_quad(bk, z, H0, Om, w0 )
 
     return Xi * (1.0 + z) * dc
 
 
 # ---------------------------------------------------------------------
+# inversion of dL(z)
+# ---------------------------------------------------------------------
+
+def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla"):
+
+    
+    if z_nodes is None:
+        z_nodes = zGridGlobals
+    
+    if d_nodes is None:
+        d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param)
+
+    return atinterp(bk, dL, d_nodes, z_nodes)
+        
+
+
+
+
+# ---------------------------------------------------------------------
 # log(dV/dz)
 # ---------------------------------------------------------------------
-def log_dV_dz(bk, z, H0, Om0, w0, *, dc=None, E=None, x01=None, w01=None):
+def log_dV_dz(bk, z, H0, Om0, w0, *, dc=None, E=None ):
     """
     Backend-agnostic log(dV/dz).
 
@@ -105,9 +128,7 @@ def log_dV_dz(bk, z, H0, Om0, w0, *, dc=None, E=None, x01=None, w01=None):
       log(4π) + log(c) - log(H0) + 2log(dc) - log(E(z)) - 3log(10)
     """
     if dc is None:
-        if x01 is None or w01 is None:
-            raise ValueError("log_dV_dz: dc is None, so you must pass x01 and w01 to compute dc via dcfun_quad.")
-        dc = dcfun_quad(bk, z, H0, Om0, w0, x01, w01)
+        dc = dcfun_quad(bk, z, H0, Om0, w0 )
 
     if E is None:
         E = Efun(bk, z, Om0, w0)
@@ -137,8 +158,6 @@ def log_ddL_dz(
     dc=None,
     E=None,
     Xi=None,
-    x01=None,
-    w01=None,
     param="vanilla",
 ):
     """
@@ -148,9 +167,7 @@ def log_ddL_dz(
     - Uses Xi_vanilla / Xi_polexp from this module.
     """
     if dc is None:
-        if x01 is None or w01 is None:
-            raise ValueError("log_ddL_dz: dc is None, so you must pass x01 and w01 to compute dc via dcfun_quad.")
-        dc = dcfun_quad(bk, z, H0, Om0, w0, x01, w01)
+        dc = dcfun_quad(bk, z, H0, Om0, w0,  )
     
     if E is None:
         E = Efun(bk, z, Om0, w0)
@@ -196,7 +213,7 @@ def log_ddL_dz(
 # ---------------------------------------------------------------------
 
 
-def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, x01, w01):
+def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
     """
     Backend-agnostic compute_log_norm_UniformSourceFrame.
 
@@ -207,7 +224,7 @@ def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, x01, w01)
     """
     z = bk.linspace(z_min, z_max, 10000)
 
-    dc = dcfun_quad(bk, z, H0, Om0, w0, x01, w01)
+    dc = dcfun_quad(bk, z, H0, Om0, w0,)
     log_dVdz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc)
 
     integrand = bk.exp(log_dVdz) / (1.0 + z)

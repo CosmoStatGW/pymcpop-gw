@@ -172,7 +172,7 @@ def main():
     parser.add_argument("--ntune", default=100, type=int, required=True)
     parser.add_argument("--nchains", default=1, type=int, required=False)
     parser.add_argument("--ncores", default=1, type=int, required=False)
-    parser.add_argument("--target_accept", default=0.9, type=float, required=False)
+    parser.add_argument("--target_accept", default=0.8, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
     parser.add_argument("--jax_debug_nans", default=0, type=int, required=False)
     parser.add_argument("--dense_mass", default=0, type=int, required=False)
@@ -196,7 +196,7 @@ def main():
     parser.add_argument("--zmid_b", default=3., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
-    parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
+    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
 
@@ -868,6 +868,37 @@ def main():
     log_mem("after make_model")
     print('Done.')
 
+
+    # print()
+    # print('*'*80)
+    # print('Timing grad...')
+    # print('*'*80)
+
+    # with model:
+    #     f_logp = model.compile_logp(sum=True)     # returns a callable(point_dict)->float
+    #     f_grad = model.compile_dlogp()            # callable(point_dict)->1D array (in var order)
+    
+    # pt0 = model.initial_point()
+    
+    # # warmup (compile + first run)
+    # _ = f_logp(pt0)
+    # _ = f_grad(pt0)
+    
+    # # logp only
+    # t0 = time.perf_counter()
+    # for _ in range(5):
+    #     _ = f_logp(pt0)
+    # t1 = time.perf_counter()
+    # print("PyMC logp avg (s):", (t1 - t0)/5)
+    
+    # # grad only
+    # t0 = time.perf_counter()
+    # for _ in range(5):
+    #     _ = f_grad(pt0)
+    # t1 = time.perf_counter()
+    # print("PyMC grad avg (s):", (t1 - t0)/5)
+
+    
     print()
     print('*'*80)
     print('Initializing inference...')

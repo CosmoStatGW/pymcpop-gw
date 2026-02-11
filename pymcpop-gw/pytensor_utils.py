@@ -221,8 +221,6 @@ def make_dL_to_z_table(
     zgrid,
     *,
     NdL=1024,
-    eps=1e-12,
-    side="right",
     logspace=True,
 ):
     """
@@ -253,7 +251,7 @@ def make_dL_to_z_table(
         dL_u = bk.linspace(dLmin, dLmax, NdL)
 
     # Invert once using your existing general interp (searchsorted on NdL points only)
-    z_u = atinterp(bk, dL_u, dL_grid, zgrid, eps=eps, side=side)
+    z_u = atinterp(bk, dL_u, dL_grid, zgrid)
 
     return dL_u, z_u
 
