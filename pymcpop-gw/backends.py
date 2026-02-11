@@ -566,6 +566,8 @@ class JAXBackend:
     ones  = staticmethod(jnp.ones)
     arange = staticmethod(jnp.arange)
 
+    sigmoid = staticmethod(jax.nn.sigmoid)
+
     # needed by your grid helpers
     any = staticmethod(jnp.any)
     all = staticmethod(jnp.all)

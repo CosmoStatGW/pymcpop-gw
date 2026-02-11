@@ -96,7 +96,8 @@ def _make_pop_and_sel_core(
     subtract_log_p_incl,
     skip_sel=False,
     chunk_inj=0,
-    K_dp=None, 
+    K_dp: int = 30, 
+    DP_truncate=False
 ):
     """Build the single source of truth JAX core function.
 
@@ -145,6 +146,7 @@ def _make_pop_and_sel_core(
                 z_grid=zgrid, 
                 verbose=verbose,
             K_dp=K_dp, 
+            DP_truncate=DP_truncate
         )
 
         if skip_sel:
@@ -172,7 +174,8 @@ def _make_pop_and_sel_core(
             subtract_log_p_incl=subtract_log_p_incl,
             use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
             sel_chunk_size=chunk_inj,            # <--- tune
-            K_dp=K_dp, 
+            K_dp=K_dp,
+            DP_truncate=DP_truncate
         )
 
 
@@ -207,8 +210,8 @@ class _PopAndSelJAXVJPOp(Op):
                  verbose=False,
                  subtract_log_p_incl=False, 
                 skip_sel=False,
-                 
-                 K_dp=30
+                 K_dp : int = 30,
+                 DP_truncate=False
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -223,8 +226,9 @@ class _PopAndSelJAXVJPOp(Op):
         self.param = str(param)
         self.verbose = bool(verbose)
         self.subtract_log_p_incl = bool(subtract_log_p_incl)
-        self.skip_sel=skip_sel
-        self.K_dp=K_dp
+        self.skip_sel = skip_sel
+        self.K_dp = int(K_dp)
+        self.DP_truncate = DP_truncate
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -232,40 +236,26 @@ class _PopAndSelJAXVJPOp(Op):
     def _build_jax_vjp(self):
         bk = JAXBackend()
 
-
-        rate_model = self.rate_model
-        mass_model = self.mass_model
-        spin_model = self.spin_model
-        smoothing = self.smoothing
-        simplex_repair = self.simplex_repair
-        has_m2_break = self.has_m2_break
-        norm_gauss = self.norm_gauss
-        param = self.param
-        verbose = self.verbose
-        subtract_log_p_incl = self.subtract_log_p_incl
-        skip_sel = self.skip_sel
-        K_dp = self.K_dp
-
-        
         cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
  
 
         core_f = _make_pop_and_sel_core(
             bk=bk,
             zgrid=cosmo_zgrid,
-            rate_model=rate_model,
-            mass_model=mass_model,
-            spin_model=spin_model,
-            smoothing=smoothing,
+            rate_model=self.rate_model,
+            mass_model=self.mass_model,
+            spin_model=self.spin_model,
+            smoothing=self.smoothing,
             
-            simplex_repair=simplex_repair,
-            has_m2_break=has_m2_break,
-            norm_gauss=norm_gauss,
-            param=param,
-            verbose=verbose,
-            subtract_log_p_incl=subtract_log_p_incl,
-            skip_sel=skip_sel,
-            K_dp=K_dp
+            simplex_repair=self.simplex_repair,
+            has_m2_break=self.has_m2_break,
+            norm_gauss=self.norm_gauss,
+            param=self.param,
+            verbose=self.verbose,
+            subtract_log_p_incl= self.subtract_log_p_incl,
+            skip_sel = self.skip_sel,
+            K_dp = self.K_dp,
+            DP_truncate= self.DP_truncate
         )
 
 
@@ -279,7 +269,7 @@ class _PopAndSelJAXVJPOp(Op):
             g_log_mu = jnp.reshape(g_log_mu, ())
             g_var_u = jnp.reshape(g_var_u, ())
 
-            if skip_sel:
+            if self.skip_sel:
                 (_, _, _), pull = jax.vjp(
                 core_f,
                 m1det, m2det, dLdet, spins_evt,
@@ -396,7 +386,8 @@ class PopAndSelJAXOp(Op):
                  subtract_log_p_incl=False, 
                 skip_sel=False,
                  chunk_inj=0,
-                 K_dp=30
+                 K_dp: int = 30,
+                 DP_truncate = False
                 ):
         super().__init__()
 
@@ -414,7 +405,10 @@ class PopAndSelJAXOp(Op):
         self.subtract_log_p_incl = bool(subtract_log_p_incl)
         self.skip_sel=skip_sel
         self.chunk_inj = chunk_inj
-        self.K_dp=K_dp
+        self.K_dp = int(K_dp)
+
+        
+        self.DP_truncate=DP_truncate
 
         # Backend (needed by cosmology/mass grid builders)
         self._bk = JAXBackend()
@@ -437,7 +431,8 @@ class PopAndSelJAXOp(Op):
             norm_gauss=norm_gauss, param=param, 
             verbose=verbose, subtract_log_p_incl=subtract_log_p_incl,
             skip_sel=self.skip_sel,
-            K_dp=self.K_dp
+            K_dp = self.K_dp,
+            DP_truncate=self.DP_truncate
         )
         self._vjp_op._parent_op = self
 
@@ -459,7 +454,8 @@ class PopAndSelJAXOp(Op):
             verbose=self.verbose,
             subtract_log_p_incl=self.subtract_log_p_incl,
             chunk_inj=self.chunk_inj,
-            K_dp=self.K_dp
+            K_dp = self.K_dp,
+            DP_truncate=self.DP_truncate
         )
         return jax.jit(full_f)
 

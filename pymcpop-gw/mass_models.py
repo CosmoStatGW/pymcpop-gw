@@ -152,6 +152,56 @@ def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
 
     return logp1, logp2, logpz
 
+
+
+M = 40
+gh_nodes_np, gh_weights_np = np.polynomial.hermite.hermgauss(M)
+GH_NODES = gh_nodes_np   # (M,)
+GH_WEIGHTS = gh_weights_np  # (M,)
+SQRTPI = np.sqrt(np.pi)
+
+def mixture_logZ_physical_vectorized( bk, 
+    mux, sdx, muy, sdy, logw, mmin, mmax,
+    #GH_NODES, GH_WEIGHTS,
+    eps=1e-10
+):
+    """
+    Returns scalar logZ for hard truncation in (m1,m2) but GMM in (x=logMc,y=logitq).
+    Uses 1D Gauss-Hermite in y; x-integral is Normal CDF difference.
+    """
+ 
+    # y grid: (K,M)
+    y = muy[:, None] + bk.sqrt(2.0) * sdy[:, None] * GH_NODES[None, :]
+    q = bk.sigmoid(y)
+
+    fac = (1.0 + q) ** 0.2
+    Mc_low  = mmin / (fac * q ** 0.4)
+    Mc_high = mmax * (q ** 0.6) / fac
+
+    x_low  = bk.log(Mc_low)
+    x_high = bk.log(Mc_high)
+
+
+    z_high = (x_high - mux[:, None]) / sdx[:, None]
+    z_low  = (x_low  - mux[:, None]) / sdx[:, None]
+
+    # log(Phi(z_high)-Phi(z_low)) stably
+    lhi = _log_ndtr(bk, z_high)
+    llo = _log_ndtr(bk, z_low)
+    logPx = logdiffexp(bk, 
+                       lhi, llo)
+
+    Px = bk.exp(logPx)  # (K,M), safe enough after log-space diff
+
+    # GH integrate over y: Zk = sum w_i Px / sqrt(pi)
+    Zk = bk.sum(GH_WEIGHTS[None, :] * Px, axis=1) / bk.sqrt(np.pi)  # (K,)
+    
+
+    logZ = bk.logsumexp(logw + bk.log(Zk))
+    return logZ, Zk
+
+
+    
     
 # ---------------------------------------------------------------------
 # Smoothings

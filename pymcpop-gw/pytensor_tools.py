@@ -248,7 +248,6 @@ def soft_constraint_leq(x, y, k=50.0):
     Returns ~0 when x<=y and ~-(x-y) when violated (scaled by k).
     """
     return -at.softplus(k * (x - y)) / k
-
     
 
 def logdiffexp(a, b, eps=1e-16):
@@ -268,7 +267,6 @@ def logdiffexp(a, b, eps=1e-16):
     # if b >= a -> set to -inf
     #neg_inf = _const_like(a, -np.inf)
     return at.where(b < a, out, neg_inf)
-
 
 
 def logsumexp(x, y):

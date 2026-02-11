@@ -7,7 +7,7 @@ from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, 
 from rate_models import log_p_z_MD_unnorm as log_p_z_MD_unnorm_bk
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 import mass_models
-from pytensor_utils import logdiffexp as logdiffexp_bk
+from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid
 from pytensor_utils import logsumexp as _logsumexp
 from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
 from pytensor_utils import atinterp, atinterp_uniform
@@ -56,7 +56,8 @@ def log_p_pop(
     param="vanilla",
     z_grid=None,
     verbose=False,
-    K_dp=30,
+    K_dp : int = 30,
+    DP_truncate = False
 ):
     """
     Backend-agnostic log_p_pop_at,
@@ -87,10 +88,12 @@ def log_p_pop(
     # rate model (MD only)
     # -----------------------
     if rate_model == "MD":
+        
         gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7]
         lpz = log_p_z_MD_unnorm_bk(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
         istart = 8
         z_dpuc = None
+        
     elif rate_model=='DPUC':
 
         z_dpuc = bk.log1p(z)
@@ -263,28 +266,61 @@ def log_p_pop(
     elif mass_model=='DPUC':
 
 
-        #w, mu, sd, logw, mmin, mmax  = Lambda[istart_spin], Lambda[istart_spin+1], Lambda[istart_spin+2], Lambda[istart_spin+3], Lambda[istart_spin+4], Lambda[istart_spin+5] 
-
-        D = 3 if rate_model in ('DPUC','DPUC-vol') else 2
+        D = 3 if rate_model in ("DPUC", "DPUC-vol") else 2
         K = K_dp
         
-        j = istart_spin
+        j = int(istart_spin)
+        D = int(D)
+        K = int(K)
 
-        w   = Lambda[j : j+K];       j += K
-        mu  = Lambda[j : j+D*K].reshape((D, K));  j += D*K
-        sd  = Lambda[j : j+D*K].reshape((D, K));  j += D*K
-        logw = Lambda[j : j+K];      j += K
+        mu   = Lambda[j : j + D*K].reshape((D, K)); j += int(D*K)
+        sd   = Lambda[j : j + D*K].reshape((D, K)); j += int(D*K)
+        logw = Lambda[j : j + K];                  j += K
+        mmin = Lambda[j];                          j += 1
+        mmax = Lambda[j];                          j += 1
 
+
+
+        Mc_src, q = Mcq_from_m1m2( m1s, m2s )
+        logMc_src, logit_q = bk.log( bk.maximum(Mc_src, 1e-10)), logit(bk, q)
+            
+        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, logMc_src, logit_q, mu, sd, z=z_dpuc )
+
+        
+        # Mixture over components → (n_obs,)
+        lpmass = bk.logsumexp(logp1 + logp2 + logp3 + logw[:, None], axis=0, )
+
+
+        # remove jacobian m1, m2 --> log(Mc), logit(q)
+        lpmass += ( - bk.log(m2s) 
+                      - bk.log(bk.maximum( m1s - m2s, 1e-10
+                                         ) )
+                     )
+        if rate_model in ('DPUC','DPUC-vol'):
+                lpmass -= z_dpuc
 
             
-        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, m1s, m2s, mu, sd, z=z_dpuc )
-        
-        if rate_model in ('PL', 'MD'):
-            logp_components = logp1 + logp2                    # (K,N)
-        else:
-            logp_components = logp1 + logp2 + logp3                   # (K,N)  
-        # Mixture over components → (n_obs,)
-        lpmass = bk.logsumexp(logp_components + logw[:, None], axis=0, )
+        if DP_truncate:
+            # truncate low and up and renormalize
+
+            s_logm = 0.003
+            log_gate = (
+                log_sigmoid(bk, bk.log(m2s), bk.log(mmin), s_logm) +
+                log_sigmoid(bk, bk.log(mmax) - bk.log(m1s), 0.0, s_logm)
+            )
+            lpmass += log_gate
+            
+            #inside = (m2Src >= mmin) & (m1Src <= mmax) & (m1Src >= mmin) & (m2Src <= mmax)
+            #log_p_pop = at.switch(inside, log_p_pop, -np.inf)
+
+            logZ, Zk = mass_models.mixture_logZ_physical_vectorized( bk,
+                    mux=mu[0], sdx=sd[0],
+                    muy=mu[1], sdy=sd[1],
+                    logw=logw,
+                    mmin=mmin, mmax=mmax
+                )
+            
+            lpmass -= logZ
 
 
 
@@ -337,7 +373,8 @@ def sel_bias_with_uncertainty_legacy(
     z_grid=None,
     verbose=False,
     subtract_log_p_incl=False,
-    K_dp=30
+    K_dp: int  = 30,
+    DP_truncate=False
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -386,13 +423,16 @@ def sel_bias_with_uncertainty_legacy(
         z_grid=None,
         verbose=verbose,
         K_dp=K_dp, 
+        DP_truncate=DP_truncate
     )
 
+
+    
     log_sel_b = log_p_pop_vals - log_p_draw
     if subtract_log_p_incl:
         log_sel_b = log_sel_b - log_p_incl
 
-    # fast two-logsumexp reduction (matches your Op)
+    # fast two-logsumexp reduction
     x = log_sel_b
     m = bk.max(x)
     u = bk.exp(x - m)
@@ -438,7 +478,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     z_grid=None,
     verbose=False,
     chunk_size: int = 65536,
-    K_dp=30,
+    K_dp: int = 30,
+    DP_truncate=False
 ):
     """
     Optimized selection term (patched):
@@ -534,7 +575,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             param=param,
             z_grid=None,
             verbose=verbose,
-            K_dp=K_dp, 
+            K_dp=K_dp,
+            DP_truncate=DP_truncate
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -764,7 +806,8 @@ def sel_bias_with_uncertainty(
     # new flags
     use_streaming_vjp: bool = True,
     sel_chunk_size: int = 65536,
-    K_dp=30, 
+    K_dp: int =30,
+    DP_truncate=False
 ):
     
    
@@ -781,6 +824,7 @@ def sel_bias_with_uncertainty(
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             K_dp=K_dp, 
+            DP_truncate=DP_truncate
             
         )
 
@@ -796,7 +840,8 @@ def sel_bias_with_uncertainty(
         z_grid=z_grid,
         verbose=verbose,
         chunk_size=sel_chunk_size,
-        K_dp=K_dp, 
+        K_dp=K_dp,
+        DP_truncate=DP_truncate
     )
 
 

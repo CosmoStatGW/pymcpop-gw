@@ -109,6 +109,9 @@ def main():
     parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
     parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
     parser.add_argument("--gamma_DP_params", nargs='+', type=float, default=[1., 1.], required=False)
+    parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
+    parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
+    
 
     
     
@@ -810,6 +813,8 @@ def main():
                                     chunk_reduce = FLAGS.chunk_reduce,
                                     marginal_R0 = FLAGS.marginal_R0,
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
+                                    DP_truncate_up = FLAGS.DP_truncate_up,
+                                    DP_truncate_low = FLAGS.DP_truncate_low,
                                     alpha_tail = FLAGS.alpha_tail,
                                     alpha_small = FLAGS.alpha_small,
                                     L_small_1 = FLAGS.L_small_1,

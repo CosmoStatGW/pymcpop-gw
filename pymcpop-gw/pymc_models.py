@@ -218,7 +218,9 @@ def make_model(  priors,
                  priors_for_mmin='',
                  normalize_PE_prior=True,
                  linear_mass=False,
-                 linear_z=False
+                 linear_z=False,
+                 DP_truncate_up=False,
+                 DP_truncate_low=False
                 ):
 
 
@@ -308,9 +310,10 @@ def make_model(  priors,
             spinsInj = at.stack(spinsInj, axis=1)   # (ninj,2)
         else:
             spinsInj = at.zeros((m1inj[0].shape[0], 0), dtype="float64")
+
     
     Ndet_np = Ndet #Ndet.eval()
-    N_DP_comp_max_np = N_DP_comp_max #N_DP_comp_max.eval()
+    N_DP_comp_max_np = int(N_DP_comp_max) #N_DP_comp_max.eval()
     Nevs_np = np.atleast_1d(Nevs) #Nevs.eval()
 
     Tobs_np = Tobs #Tobs.eval()
@@ -1521,8 +1524,9 @@ def make_model(  priors,
 
             print("s_local = %s "%s_local)
 
-            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
-            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
+            eps1 = pm.Normal("eps1", 0.0, s_local, dims=("component",), initval=0.01*np.random.randn(N_DP_comp_max_np)) #.astype(X))
+            eps2 = pm.Normal("eps2", 0.0, s_local, dims=("component",), initval=0.01
+                             *np.random.randn(N_DP_comp_max_np)) #.astype(X))
 
             # eps1 = pm.SkewNormal("eps1", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X) )
             # eps2 = pm.SkewNormal("eps2", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
@@ -1531,6 +1535,8 @@ def make_model(  priors,
             sig1 = pm.Deterministic("sig1", tau1 * at.exp(eps1) , dims="component")   
             sig2 = pm.Deterministic("sig2", tau2 * at.exp(eps2), dims="component")  
 
+
+            
             
             if rate_model in ('DPUC', 'DPUC-vol'):
 
@@ -1564,92 +1570,38 @@ def make_model(  priors,
                 _ = pm.Potential( "pc_large_ell_1", -lambda_large_1 * tau1,  )
                 _ = pm.Potential( "pc_large_ell_2", -lambda_large_2 * tau2, )
 
-          
+            
+            if DP_truncate_low:
+
+                print("DP mixture will be truncated at lower edge.")
+                mmin_ = pm.Uniform("mmin_DP",  lower=priors["mmin_DP"][0],  upper=priors["mmin_DP"][1],  initval=ivals.get("mmin_DP", 3.5))
+            else:
+                mmin_ = 0.
+
+            if DP_truncate_up:
+
+                print("DP mixture will be truncated at upper edge.")
+                mmax_ = pm.Uniform("mmax_DP",  lower=priors["mmax_DP"][0],  upper=priors["mmax_DP"][1],  initval=ivals.get("mmax_DP", 100.))
+            else:
+                mmax_ = 10000.
+
+            DP_truncate = DP_truncate_up or DP_truncate_low
+        
             if mass_model=='DPUC':
                 print("No m1-m2 correlation.")
                 
                 sd = pm.Deterministic("sig", sigs, dims=("GMMdimension", "component"))
 
-                Lambda_ += [ w, mu, sd, logw ]
+                Lambda_ += [ mu, sd, logw, mmin_, mmax_ ]
 
             elif mass_model=='DP':
-                print("Including m1-m2 correlation.")
-                # -------- Correlation prior --------
-
-                eta=1.
-                print("eta = %s"%eta)
-                rho_u = pm.Beta("rho_u", alpha=eta, beta=eta, dims=("component",))
-
-                # #rho_max = 0.9  # cap on |rho|
-                # # choose fraction f of L_small you allow for the minor axis
-                f = 0.5   # minor axis at least 100xf% of L_small in worst case
-                rho_max = np.sqrt(1.0 - f**2)  # ≈ 0.866
-                print("rho_max = %s, with f=%s, i.e minor axis is at least %s of L_small in worst case"%(rho_max,f,f))
-                rho   = pm.Deterministic("rho", rho_max * (2.0 * rho_u - 1.0), dims="component")
-
-                # rho = pm.Uniform("rho", lower=-rho_max, upper=rho_max, dims="component")
-                # pm.Potential(
-                #     "lkj_corr_prior",
-                #     (eta - 1.0) * at.log(1.0 - rho**2).sum()
-                # )
-    
-                # # Useful terms
-                one_minus_r2 = 1.0 - rho**2
-                sqrt1mr2     = at.sqrt(one_minus_r2)
-                
-                # ----- Cholesky of Σ (for reference / if you need solves) -----
-                # Σ = [[s1^2, ρ s1 s2], [ρ s1 s2, s2^2]]
-                # Cholesky L = diag([s1, s2]) @ [[1, 0], [ρ, sqrt(1-ρ^2)]]
-                row0 = at.stack([sig1,               at.zeros_like(sig1)], axis=1)          # (K,2)
-                row1 = at.stack([rho * sig2,         sig2 * sqrt1mr2     ], axis=1)          # (K,2)
-                L    = at.stack([row0, row1], axis=1)     
-                Cho_cov = pm.Deterministic("Cho_cov", L, dims=("component","GMMdimension","GMMdimension_1"))
-                
-                # ----- log |Σ^{-1}| (no inverses) -----
-                # det Σ = s1^2 * s2^2 * (1 - ρ^2)
-                # log |Σ^{-1}| = - log det Σ
-                ldets_inv = pm.Deterministic(
-                    "ldets_inv",
-                    -2.0 * at.log(sig1) - 2.0 * at.log(sig2) - at.log(one_minus_r2),
-                    dims="component",
-                )
-                
-                # ----- Precision Σ^{-1} in closed form (Fisher) -----
-                # Σ^{-1} = 1 / [ (1-ρ^2) s1^2 s2^2 ] * [[ s2^2, -ρ s1 s2 ], [ -ρ s1 s2, s1^2 ]]
-                # variances
-                var1 = sig1**2          # (K,)
-                var2 = sig2**2          # (K,)
-                cov12 = rho * sig1 * sig2
-                
-                den = one_minus_r2 * (var1) * (var2)
-                F11 =  (var2)            / den
-                F22 =  (var1)            / den
-                F12 = -(cov12)    / den
-                
-                Fisher = pm.Deterministic( "Fisher", at.stack([
-                    at.stack([F11, F12], axis=1),
-                    at.stack([F12, F22], axis=1)
-                ], axis=1), dims=("component","GMMdimension_1","GMMdimension_2"))  # shape: (K, 2, 2)
-    
-
-                ################################################
-    
-                Lambda_ += [ alpha, beta, w, mu, Fisher, ldets_inv, logw ]
-
-            #Lambda_ += [float(N_DP_comp_max)]
-
-
-        #if mass_model not in ('DP', 'DPUC', 'DPLDP-z'):
-        #    Lambda_ = at.stack(Lambda_, axis=0)
-
-        #Lambda_ = pack1d(Lambda_)
-        #Lambda_flat, Lambda_layout = pack1d_with_layout(Lambda_)
+                raise NotImplementedError()
 
         Lambda_ = at.concatenate([(at.as_tensor_variable(v)[None] if at.as_tensor_variable(v).ndim == 0
-                           else at.as_tensor_variable(v).ravel())
+                           else at.as_tensor_variable(v).ravel() )
                           for v in Lambda_], axis=0)
+
         
-            
         ################################################
         # If including total normalization of the rate, add it here
         ################################################
@@ -1847,7 +1799,8 @@ def make_model(  priors,
         subtract_log_p_incl = False,       
 
         chunk_inj=chunk_inj,
-        K_dp = N_DP_comp_max
+        K_dp = N_DP_comp_max,
+        DP_truncate = DP_truncate
 
         )
         

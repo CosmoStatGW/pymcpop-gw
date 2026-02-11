@@ -29,6 +29,24 @@ def pack1d_with_layout(L):
         lens.append(v.shape[0])
     return at.concatenate(flats, axis=0), at.stack(lens).astype("int64")
 
+
+# ---------------------------------------------------------------------
+# GW stuff
+# 
+# ---------------------------------------------------------------------
+
+def Mcq_from_m1m2(m1, m2):
+   
+    Mc  = ((m1*m2)**(3./5.))/((m1+m2)**(1./5.))
+    q = m2/m1
+    
+    return Mc, q
+
+
+def logit(bk, p):
+    return bk.log(p) - bk.log(1. - p)
+
+    
 # ---------------------------------------------------------------------
 # Utilities
 # 
