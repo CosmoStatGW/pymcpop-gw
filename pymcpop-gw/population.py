@@ -87,7 +87,9 @@ def log_p_pop(
     # -----------------------
     # rate model (MD only)
     # -----------------------
-    if rate_model == "MD":
+    log_one_p_z = bk.log1p(z)
+    
+    if rate_model == "MD" or rate_model == "DPUC-vol-MD":
         
         gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7]
         lpz = log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
@@ -95,16 +97,12 @@ def log_p_pop(
         z_dpuc = None
         
     elif rate_model=='DPUC':
-
-        z_dpuc = bk.log1p(z)
         
-        lpz = z_dpuc
+        lpz = log_one_p_z
         
         istart = 5
 
     elif rate_model=='DPUC-vol':
-
-        z_dpuc = bk.log1p(z)
         
         lpz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc, E=E )
         
@@ -266,7 +264,7 @@ def log_p_pop(
     elif mass_model=='DPUC':
 
 
-        D = 3 if rate_model in ("DPUC", "DPUC-vol") else 2
+        D = 3 if rate_model in ("DPUC", "DPUC-vol", "DPUC-vol-MD") else 2
         K = K_dp
         
         j = int(istart_spin)
@@ -284,7 +282,7 @@ def log_p_pop(
         Mc_src, q = Mcq_from_m1m2( m1s, m2s )
         logMc_src, logit_q = bk.log( bk.maximum(Mc_src, 1e-10)), logit(bk, q)
             
-        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, logMc_src, logit_q, mu, sd, z=z_dpuc )
+        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, logMc_src, logit_q, mu, sd, z=log_one_p_z )
 
         
         # Mixture over components → (n_obs,)
@@ -296,8 +294,8 @@ def log_p_pop(
                       - bk.log(bk.maximum( m1s - m2s, 1e-10
                                          ) )
                      )
-        if rate_model in ('DPUC','DPUC-vol'):
-                lpmass -= z_dpuc
+        if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD'):
+                lpmass -= log_one_p_z
 
             
         if DP_truncate:
@@ -338,7 +336,7 @@ def log_p_pop(
     else:
         log_dthD_dth = log_ddL_dz_pre
 
-    log_dthD_dth = log_dthD_dth + 3.0 * bk.log1p(z) # here there is a (1+z)^2 prior removal from mass conversion and (1+z) from source-->observer time
+    log_dthD_dth = log_dthD_dth + 3.0 * log_one_p_z # here there is a (1+z)^2 prior removal from mass conversion and (1+z) from source-->observer time
 
     # population log density
     lp = lpz - log_dthD_dth + lpmass + lpspin

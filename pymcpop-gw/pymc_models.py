@@ -357,7 +357,7 @@ def make_model(  priors,
     if mass_model in ('DP', 'DPUC'):
         coords['component'] = np.arange(N_DP_comp_max_np, dtype=int)
         
-        if rate_model in ('DPUC','DPUC-vol'):
+        if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD'):
             ndim_GMM = 3
         else:
             ndim_GMM = 2
@@ -735,7 +735,7 @@ def make_model(  priors,
         # Redshift evolution of merger rate
         ################################################
         
-        if rate_model=='MD':
+        if rate_model=='MD' or rate_model=='DPUC-vol-MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
 
@@ -1368,20 +1368,7 @@ def make_model(  priors,
             
         
         
-        
-        ### BNS
-        elif 'BNSgauss' in mass_model:
 
-            if mass_model=='BNSgauss':
-                # Uncorrelated gaussians
-                print('Modeling mass distribution with uncorrelated gaussian distributions')
-            elif mass_model=='BNSgaussCond':
-                # Conditioned gaussians
-                print('Modeling mass distribution with gaussian distributions with p(m1, m2) = p(m1) p(m2|m1) H(m1-m2)')
-                
-            muM_ = pm.Uniform('muMass', lower=priors['muMass'][0], upper=priors['muMass'][1])
-            sM_ = pm.Uniform('sigmaMass', lower=priors['sigmaMass'][0], upper=priors['sigmaMass'][1] )  
-            Lambda_ += [muM_, sM_ ]
 
         ### Non - parametric
         elif mass_model in ('DPUC', 'DP'):
@@ -1473,7 +1460,7 @@ def make_model(  priors,
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center)) #.astype(X) )
             mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center)) #.astype(X))
 
-            if rate_model in ('DPUC','DPUC-vol' ):
+            if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD' ):
 
                 mu3_center = ( lowmu3+ upmu3) / 2.0
                 mu3_init = np.full(N_DP_comp_max_np, mu3_center)
@@ -1539,7 +1526,7 @@ def make_model(  priors,
 
             
             
-            if rate_model in ('DPUC', 'DPUC-vol'):
+            if rate_model in ('DPUC', 'DPUC-vol', 'DPUC-vol-MD'):
 
                 
                 U3 = (upmu3-lowmu3)
@@ -1616,10 +1603,13 @@ def make_model(  priors,
             elif mass_model=='DP':
                 raise NotImplementedError()
 
+        
+        
         Lambda_ = at.concatenate([(at.as_tensor_variable(v)[None] if at.as_tensor_variable(v).ndim == 0
                            else at.as_tensor_variable(v).ravel() )
                           for v in Lambda_], axis=0)
 
+        
         DP_truncate = DP_truncate_up or DP_truncate_low
         
         ################################################
