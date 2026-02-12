@@ -1574,14 +1574,32 @@ def make_model(  priors,
             if DP_truncate_low:
 
                 print("DP mixture will be truncated at lower edge.")
-                mmin_ = pm.Uniform("mmin_DP",  lower=priors["mmin_DP"][0],  upper=priors["mmin_DP"][1],  initval=ivals.get("mmin_DP", 3.5))
+                #mmin_ = normal_from_bounds_95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5))
+                #pm.Uniform("mmin_DP",  lower=priors["mmin_DP"][0],  upper=priors["mmin_DP"][1],  initval=ivals.get("mmin_DP", 3.5))
+
+                # HalfNormal with "typical max" = priors['mmin_'][1] at ~95% quantile
+                HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
+                mmin_DP_floor = priors["mmin_DP"][0]
+                mmin_DP_typmax = priors["mmin_DP"][1]
+                raw_typ_mmin_DP = max(1e-12, mmin_DP_typmax - mmin_DP_floor)  # interpret typmax as final 95% point
+                mmin_DP_sigma = raw_typ_mmin_DP / HN_Q95_TO_SIGMA
+                
+                sigmat_raw_init = None
+                ival = ivals.get("mmin_DP", 3.5)
+                mmin_DP_raw_init = max(0.0, ival - mmin_DP_floor)
+                
+                mmin_DP_raw = pm.HalfNormal("mmin_DP_raw", sigma=mmin_DP_sigma, initval=mmin_DP_raw_init)
+                mmin_ = pm.Deterministic("mmin_DP", mmin_DP_floor + mmin_DP_raw)
+
+            
             else:
                 mmin_ = 0.
 
             if DP_truncate_up:
 
                 print("DP mixture will be truncated at upper edge.")
-                mmax_ = pm.Uniform("mmax_DP",  lower=priors["mmax_DP"][0],  upper=priors["mmax_DP"][1],  initval=ivals.get("mmax_DP", 100.))
+                mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 100.))
+                #pm.Uniform("mmax_DP",  lower=priors["mmax_DP"][0],  upper=priors["mmax_DP"][1],  initval=ivals.get("mmax_DP", 100.))
             else:
                 mmax_ = 10000.
 
