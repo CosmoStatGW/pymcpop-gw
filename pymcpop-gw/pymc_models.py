@@ -628,21 +628,22 @@ def make_model(  priors,
 
     if vol_in_prior:
 
-        zgrid_dLp =  atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode)
+        bk = ATBackend()
+        zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
 
-        dc_grid_Planck15 = cosmo.dcfun_quad(NPBackend(), zgrid_dLp, 67.74, 0.3075, -1.,constants._x01_np, constants._w01_np) 
-        dL_grid_Planck15 = cosmo.dLfun(NPBackend(), zgrid_dLp,  67.74, 0.3075, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla', x01=constants._x01_np, w01=constants._w01_np, )      
+        dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, 67.74, 0.3075, -1.) 
+        dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  67.74, 0.3075, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
 
     
         if normalize_PE_prior:
-            z_bounds = atools.z_from_dL_at( np.asarray([0.1/1000, 40000/1000]), 67.74, 0.3075, -1., 1., 0. , interp=False)
-            z_min_PE_prior, z_max_PE_prior = float(z_bounds[0].eval() ), float(z_bounds[1].eval())
+            z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
+            z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
             print(
     f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
-    f"i.e. z=[{z_min_PE_prior}, {z_max_PE_prior}]"
+    f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
 )
             
-            log_norm_PE_prior = float(cosmo.compute_log_norm_UniformSourceFrame(NPBackend(), z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1,  constants._x01_np, constants._w01_np))
+            log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1)
             
         
 
@@ -1603,7 +1604,7 @@ def make_model(  priors,
             else:
                 mmax_ = 10000.
 
-            DP_truncate = DP_truncate_up or DP_truncate_low
+            
         
             if mass_model=='DPUC':
                 print("No m1-m2 correlation.")
@@ -1619,6 +1620,7 @@ def make_model(  priors,
                            else at.as_tensor_variable(v).ravel() )
                           for v in Lambda_], axis=0)
 
+        DP_truncate = DP_truncate_up or DP_truncate_low
         
         ################################################
         # If including total normalization of the rate, add it here
@@ -1835,104 +1837,59 @@ def make_model(  priors,
 
 
         ################################################
+
+        labels = at.repeat(at.arange(len(Nevs_np)), Nevs_np)
+
+        log_PE_prior = at.zeros_like(log_p_pop)
+
+        if vol_in_prior:
+                bk = ATBackend()
+                zs_Planck15 = cosmo.z_from_dL( bk, d, z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
+                dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, 67.74, 0.3075, -1.) 
         
-        if all_dLsq_prior:
-            #dLprior=='dLsq':
-            # Remove \pi(d)~dL^2 prior on distance 
-            log_p_pop -= 2*logd
-            print('Removing dL^2 prior for all events.')
 
-        elif all_no_dL_prior:    
-            print("No dL prior removed for all events.")
-            
-        elif vol_in_prior or none_in_prior:
-
-            if vol_in_prior:
-                zs_Planck15 = atinterp( ATBackend(), d, dL_grid_Planck15, zgrid_dLp) 
-                #atools.atinterp(d, dL_grid_Planck15, zgrid_dLp)
-                dc_Planck15 = cosmo.dcfun_quad( ATBackend(), zs_Planck15, 67.74, 0.3075, -1.,constants._x01_np, constants._w01_np) 
-                #atools.dcfun_at(zs_Planck15, 67.74, 0.3075, -1., interp=False)
-
-            #lpi = at.zeros_like(log_p_pop )
-
-            # apply chunk-wise prior removal
-            chunks = []
-            for i, lab in enumerate(dLprior):
-                sl = slice(edges[i], edges[i+1])
-
-                print('For events between %s and %s, removing prior %s'%(edges[i], edges[i+1], lab))
-
-
-                if lab == 'dLsq':
-                    print('chunk is dLsq')
-                    print(sl)
-                    chunk = 2 * logd[sl]
-
-                elif lab == 'none':
-                    print('chunk is zero')
-                    print(sl)
-                    chunk = at.zeros_like(log_p_pop[sl])
-
-                else:
-                    # base label + whether we apply the -J correction
-                    use_J = lab.endswith('-J')
-                    base = lab[:-2] if use_J else lab
-
-                    if base == 'UniformComovingVolume':
-                        print('chunk is UniformComovingVolume')
-                        print(sl)
-                        chunk = atools.log_dV_dz_at(
-                            zs_Planck15[sl], 67.74, 0.3075, -1., dc=dc_Planck15[sl]
-                        )
-
-                    elif base == 'UniformSourceFrame':
-                        print('chunk is UniformSourceFrame')
-                        print(sl)
-                        chunk = (
-                            atools.log_dV_dz_at(
-                                zs_Planck15[sl], 67.74, 0.3075, -1., dc=dc_Planck15[sl]
-                            )
-                            - at.log1p(zs_Planck15[sl])
-                        )
-
-                    else:
-                        raise ValueError(f"Unknown dL prior label: {lab}")
-
-                    if use_J:
-                        print('removing log_ddL_dz ')
-                        chunk -= atools.log_ddL_dz(
-                            zs_Planck15[sl], 67.74, 0.3075, -1., 1., 0.,
-                            dc=dc_Planck15[sl], interp=False, param='vanilla'
-                        )
-
-                    if normalize_PE_prior:
-                        print('normalizing PE prior')
-                        chunk -= log_norm_PE_prior
-                
-                chunks.append(chunk)
-                #lpi = at.set_subtensor(lpi[sl], chunk)
-
-            lpi = at.concatenate(chunks, axis=0)
-            
-            log_p_pop -= lpi
-            
-
+        for i, lab in enumerate(dLprior):
         
+            mask = at.eq(labels, i)
         
-        else:
-            raise ValueError("Check dL prior choices.")
+            if lab == 'dLsq':
+                chunk = 2 * logd
+        
+            elif lab == 'none':
+                chunk = at.zeros_like(log_p_pop)
+        
+            else:
+                use_J = lab.endswith('-J')
+                base = lab[:-2] if use_J else lab
+        
+                if base == 'UniformComovingVolume':
+                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, 67.74, 0.3075, -1, dc=dc_Planck15, E=None )
+        
+                elif base == 'UniformSourceFrame':
+                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, 67.74, 0.3075, -1, dc=dc_Planck15, E=None ) - at.log1p(zs_Planck15)
+        
+                if use_J:
+                    chunk -= atools.log_ddL_dz(zs_Planck15, 67.74, 0.3075, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+        
+                if normalize_PE_prior:
+                    chunk -= log_norm_PE_prior
+        
+            log_PE_prior = at.where(mask, chunk, log_PE_prior)
+
+
             
 
+        log_jacobian = at.zeros_like(log_p_pop)
         if sampling_GW=='gauss' and not sample_from_pop:
                 # Add gw likelihood and correct for sampling prior pdf
-                log_p_pop -= pilik
-                log_p_pop += gwl
+                log_jacobian -= pilik
+                log_jacobian += gwl
 
         ################################################
         
         #  sum log likelihoods
 
-        likelihood_val = at.sum( log_p_pop )
+        likelihood_val = at.sum( log_p_pop + log_jacobian - log_PE_prior )
 
        
         # add R0*Tobs if needed. 

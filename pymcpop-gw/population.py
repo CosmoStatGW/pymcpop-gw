@@ -4,7 +4,7 @@ from __future__ import annotations
 from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, dLfun, log_dV_dz
 
 
-from rate_models import log_p_z_MD_unnorm as log_p_z_MD_unnorm_bk
+from rate_models import log_p_z_MD_unnorm
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 import mass_models
 from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid
@@ -90,7 +90,7 @@ def log_p_pop(
     if rate_model == "MD":
         
         gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7]
-        lpz = log_p_z_MD_unnorm_bk(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
+        lpz = log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
         istart = 8
         z_dpuc = None
         
@@ -98,7 +98,7 @@ def log_p_pop(
 
         z_dpuc = bk.log1p(z)
         
-        lpz = bk.zeros(z.shape)
+        lpz = z_dpuc
         
         istart = 5
 
@@ -106,7 +106,7 @@ def log_p_pop(
 
         z_dpuc = bk.log1p(z)
         
-        lpz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc, E=E ) - z_dpuc
+        lpz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc, E=E )
         
         istart = 5
 
@@ -338,7 +338,7 @@ def log_p_pop(
     else:
         log_dthD_dth = log_ddL_dz_pre
 
-    log_dthD_dth = log_dthD_dth + 2.0 * bk.log1p(z)
+    log_dthD_dth = log_dthD_dth + 3.0 * bk.log1p(z) # here there is a (1+z)^2 prior removal from mass conversion and (1+z) from source-->observer time
 
     # population log density
     lp = lpz - log_dthD_dth + lpmass + lpspin

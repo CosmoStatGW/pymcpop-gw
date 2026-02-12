@@ -12,8 +12,8 @@ from cosmology import log_dV_dz, dcfun_quad, Efun
 
 def log_psi_z_MD(bk, z, gamma, kappa, zp):
     """
-    Madau-Dickinson-like psi(z) piece (your legacy formula),
-    returned as log_psi(z) - log(1+z) (source-frame factor).
+    Madau-Dickinson-like psi(z) piece,
+    returned as log_psi(z) .
     """
     lC0 = bk.log(1.0 + (1.0 + zp) ** (-gamma - kappa))
     log_psiz = (
@@ -21,7 +21,7 @@ def log_psi_z_MD(bk, z, gamma, kappa, zp):
         + gamma * bk.log1p(z)
         - bk.log(1.0 + ((1.0 + z) / (1.0 + zp)) ** (gamma + kappa))
     )
-    return log_psiz - bk.log1p(z)
+    return log_psiz
 
 
 def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, E=None, x01=None, w01=None):
