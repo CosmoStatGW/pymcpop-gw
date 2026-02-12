@@ -57,7 +57,8 @@ def log_p_pop(
     z_grid=None,
     verbose=False,
     K_dp : int = 30,
-    DP_truncate = False
+    DP_truncate = False,
+    DP_m1_env = False
 ):
     """
     Backend-agnostic log_p_pop_at,
@@ -276,7 +277,7 @@ def log_p_pop(
         logw = Lambda[j : j + K];                  j += K
         mmin = Lambda[j];                          j += 1
         mmax = Lambda[j];                          j += 1
-
+        alpha = Lambda[j];                          j += 1
 
 
         Mc_src, q = Mcq_from_m1m2( m1s, m2s )
@@ -296,6 +297,9 @@ def log_p_pop(
                      )
         if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD'):
                 lpmass -= log_one_p_z
+
+        if DP_m1_env:
+            lpmass += -alpha * bk.log(m1s)
 
             
         if DP_truncate:
@@ -372,7 +376,8 @@ def sel_bias_with_uncertainty_legacy(
     verbose=False,
     subtract_log_p_incl=False,
     K_dp: int  = 30,
-    DP_truncate=False
+    DP_truncate=False,
+    DP_m1_env = False
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -421,7 +426,8 @@ def sel_bias_with_uncertainty_legacy(
         z_grid=None,
         verbose=verbose,
         K_dp=K_dp, 
-        DP_truncate=DP_truncate
+        DP_truncate=DP_truncate,
+        DP_m1_env = DP_m1_env
     )
 
 
@@ -477,7 +483,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     verbose=False,
     chunk_size: int = 65536,
     K_dp: int = 30,
-    DP_truncate=False
+    DP_truncate=False,
+    DP_m1_env=False
 ):
     """
     Optimized selection term (patched):
@@ -574,7 +581,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             z_grid=None,
             verbose=verbose,
             K_dp=K_dp,
-            DP_truncate=DP_truncate
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -805,7 +813,8 @@ def sel_bias_with_uncertainty(
     use_streaming_vjp: bool = True,
     sel_chunk_size: int = 65536,
     K_dp: int =30,
-    DP_truncate=False
+    DP_truncate=False,
+    DP_m1_env=False
 ):
     
    
@@ -822,7 +831,8 @@ def sel_bias_with_uncertainty(
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             K_dp=K_dp, 
-            DP_truncate=DP_truncate
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env
             
         )
 
@@ -839,7 +849,8 @@ def sel_bias_with_uncertainty(
         verbose=verbose,
         chunk_size=sel_chunk_size,
         K_dp=K_dp,
-        DP_truncate=DP_truncate
+        DP_truncate=DP_truncate,
+        DP_m1_env=DP_m1_env
     )
 
 

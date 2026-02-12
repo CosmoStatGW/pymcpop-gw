@@ -220,7 +220,8 @@ def make_model(  priors,
                  linear_mass=False,
                  linear_z=False,
                  DP_truncate_up=False,
-                 DP_truncate_low=False
+                 DP_truncate_low=False,
+                 DP_m1_env = False
                 ):
 
 
@@ -1592,13 +1593,18 @@ def make_model(  priors,
                 mmax_ = 10000.
 
             
-        
+            if DP_m1_env:
+                print("DP mixture will be include a power-law envelope.")
+                alpha_ = normal_from_bounds_95("alpha", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
+            else:
+                alpha_ = 0.
+                
             if mass_model=='DPUC':
                 print("No m1-m2 correlation.")
                 
                 sd = pm.Deterministic("sig", sigs, dims=("GMMdimension", "component"))
 
-                Lambda_ += [ mu, sd, logw, mmin_, mmax_ ]
+                Lambda_ += [ mu, sd, logw, mmin_, mmax_, alpha_ ]
 
             elif mass_model=='DP':
                 raise NotImplementedError()
@@ -1810,8 +1816,8 @@ def make_model(  priors,
 
         chunk_inj=chunk_inj,
         K_dp = N_DP_comp_max,
-        DP_truncate = DP_truncate
-
+        DP_truncate = DP_truncate,
+        DP_m1_env = DP_m1_env
         )
         
         if lp_incl_inj[0] is None:

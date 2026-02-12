@@ -97,7 +97,8 @@ def _make_pop_and_sel_core(
     skip_sel=False,
     chunk_inj=0,
     K_dp: int = 30, 
-    DP_truncate=False
+    DP_truncate=False,
+    DP_m1_env=False
 ):
     """Build the single source of truth JAX core function.
 
@@ -146,7 +147,8 @@ def _make_pop_and_sel_core(
                 z_grid=zgrid, 
                 verbose=verbose,
             K_dp=K_dp, 
-            DP_truncate=DP_truncate
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env
         )
 
         if skip_sel:
@@ -175,7 +177,8 @@ def _make_pop_and_sel_core(
             use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
             sel_chunk_size=chunk_inj,            # <--- tune
             K_dp=K_dp,
-            DP_truncate=DP_truncate
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env
         )
 
 
@@ -211,7 +214,8 @@ class _PopAndSelJAXVJPOp(Op):
                  subtract_log_p_incl=False, 
                 skip_sel=False,
                  K_dp : int = 30,
-                 DP_truncate=False
+                 DP_truncate=False,
+                 DP_m1_env=False
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -229,6 +233,7 @@ class _PopAndSelJAXVJPOp(Op):
         self.skip_sel = skip_sel
         self.K_dp = int(K_dp)
         self.DP_truncate = DP_truncate
+        self.DP_m1_env = DP_m1_env
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -255,7 +260,8 @@ class _PopAndSelJAXVJPOp(Op):
             subtract_log_p_incl= self.subtract_log_p_incl,
             skip_sel = self.skip_sel,
             K_dp = self.K_dp,
-            DP_truncate= self.DP_truncate
+            DP_truncate= self.DP_truncate,
+            DP_m1_env = self.DP_m1_env
         )
 
 
@@ -387,7 +393,8 @@ class PopAndSelJAXOp(Op):
                 skip_sel=False,
                  chunk_inj=0,
                  K_dp: int = 30,
-                 DP_truncate = False
+                 DP_truncate = False,
+                 DP_m1_env = False
                 ):
         super().__init__()
 
@@ -409,6 +416,7 @@ class PopAndSelJAXOp(Op):
 
         
         self.DP_truncate=DP_truncate
+        self.DP_m1_env=DP_m1_env
 
         # Backend (needed by cosmology/mass grid builders)
         self._bk = JAXBackend()
@@ -432,7 +440,8 @@ class PopAndSelJAXOp(Op):
             verbose=verbose, subtract_log_p_incl=subtract_log_p_incl,
             skip_sel=self.skip_sel,
             K_dp = self.K_dp,
-            DP_truncate=self.DP_truncate
+            DP_truncate=self.DP_truncate,
+            DP_m1_env=self.DP_m1_env
         )
         self._vjp_op._parent_op = self
 
@@ -455,7 +464,8 @@ class PopAndSelJAXOp(Op):
             subtract_log_p_incl=self.subtract_log_p_incl,
             chunk_inj=self.chunk_inj,
             K_dp = self.K_dp,
-            DP_truncate=self.DP_truncate
+            DP_truncate=self.DP_truncate,
+            DP_m1_env=self.DP_m1_env
         )
         return jax.jit(full_f)
 

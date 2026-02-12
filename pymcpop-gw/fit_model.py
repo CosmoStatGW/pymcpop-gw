@@ -111,6 +111,8 @@ def main():
     parser.add_argument("--gamma_DP_params", nargs='+', type=float, default=[1., 1.], required=False)
     parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
     parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
+    parser.add_argument("--DP_m1_env", default=0, type=int, required=False)
+    
     
 
     
@@ -815,6 +817,7 @@ def main():
                                     N_DP_comp_max = FLAGS.N_DP_comp_max,
                                     DP_truncate_up = FLAGS.DP_truncate_up,
                                     DP_truncate_low = FLAGS.DP_truncate_low,
+                                    DP_m1_env = FLAGS.DP_m1_env,
                                     alpha_tail = FLAGS.alpha_tail,
                                     alpha_small = FLAGS.alpha_small,
                                     L_small_1 = FLAGS.L_small_1,
