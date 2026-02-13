@@ -1043,7 +1043,6 @@ def make_model(  priors,
 
             beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
             
-            #mb_  = normal_from_bounds_95("mb",  priors["mb"][0],  priors["mb"][1],  initval=ivals.get("mb"))
             
             mb_a, mb_b = priors["mb"][0], priors["mb"][1]
 
@@ -1171,10 +1170,54 @@ def make_model(  priors,
             # -------------------------
             # Low-z (z≈0) hyperparameters (same as before)
             # -------------------------
-            alpha1_0  = pm.Uniform("alpha1_0",  lower=priors["alpha1_0"][0],  upper=priors["alpha1_0"][1],  initval=ivals.get("alpha1_0"))
-            alpha2_0  = pm.Uniform("alpha2_0",  lower=priors["alpha2_0"][0],  upper=priors["alpha2_0"][1],  initval=ivals.get("alpha2_0"))
-            mb_0      = pm.Uniform("mb_0",      lower=priors["mb_0"][0],      upper=priors["mb_0"][1],      initval=ivals.get("mb_0"))
-            mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
+            # alpha1_0  = pm.Uniform("alpha1_0",  lower=priors["alpha1_0"][0],  upper=priors["alpha1_0"][1],  initval=ivals.get("alpha1_0"))
+            # alpha2_0  = pm.Uniform("alpha2_0",  lower=priors["alpha2_0"][0],  upper=priors["alpha2_0"][1],  initval=ivals.get("alpha2_0"))
+            # mb_0      = pm.Uniform("mb_0",      lower=priors["mb_0"][0],      upper=priors["mb_0"][1],      initval=ivals.get("mb_0"))
+            # beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+
+
+            if priors["alpha1_0"] != priors["alpha2_0"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1_0']} vs {priors['alpha2_0']}")
+                
+            # bounds -> mid and sigma (same as helper)
+            a_low, a_high = priors["alpha1_0"][0], priors["alpha1_0"][1]
+            a_mid = 0.5 * (a_low + a_high)
+            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+            
+            # reparam
+            a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
+                               initval=ivals.get("alpha_bar", ivals.get("alpha1_0")))
+            a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
+                               initval=ivals.get("alpha_diff", 0.0))
+            
+            alpha1_0 = pm.Deterministic("alpha1_0", a_bar - 0.5 * a_diff)
+            alpha2_0 = pm.Deterministic("alpha2_0", a_bar + 0.5 * a_diff)
+
+            beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
+            
+            
+            mb_a, mb_b = priors["mb_0"][0], priors["mb_0"][1]
+
+            # set init in raw-space using logit of normalized initval (if provided)
+            mb_raw_init = None
+            if ivals.get("mb_0") is not None:
+                t = float((ivals["mb_0"] - mb_a) / (mb_b - mb_a))
+                t = np.clip(t, 1e-6, 1 - 1e-6)
+                mb_raw_init = np.log(t / (1 - t))
+            
+            mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
+            mb_0 = pm.Deterministic("mb_0", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+
+
+            
+            
+            # mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
+            # mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
+
+            mu1_0 = normal_from_bounds_95("mu1_0", priors["mu1_0"][0], priors["mu1_0"][1], initval=ivals.get("mu1_0"))
+            mu2_0 = normal_from_bounds_95("mu2_0", priors["mu2_0"][0], priors["mu2_0"][1], initval=ivals.get("mu2_0"))
+ 
+
+            
             
             #sigma1_0  = pm.Uniform("sigma1_0",  lower=priors["sigma1_0"][0],  upper=priors["sigma1_0"][1],  initval=ivals.get("sigma1_0"))
             sigma1_0 = pm.Truncated(
@@ -1185,7 +1228,7 @@ def make_model(  priors,
                         initval=ivals.get("sigma1_0"),
                     )
             
-            mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
+            
             #sigma2_0  = pm.Uniform("sigma2_0",  lower=priors["sigma2_0"][0],  upper=priors["sigma2_0"][1],  initval=ivals.get("sigma2_0"))
             sigma2_0 = pm.Truncated(
                         "sigma2_0",
@@ -1196,7 +1239,7 @@ def make_model(  priors,
                     )
             
             
-            delta_m1_ = pm.Uniform("delta_m1",  lower=priors["delta_m1"][0],upper=priors["delta_m1"][1],initval=ivals.get("delta_m1"))
+            
             
             # m1_low, m2_low, m_high as in your original block
             u        = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
@@ -1206,11 +1249,27 @@ def make_model(  priors,
             m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X))
             
 
+
+            # delta_m1_ = pm.Uniform("delta_m1",  lower=priors["delta_m1"][0],upper=priors["delta_m1"][1],initval=ivals.get("delta_m1"))
+            # # secondary-mass hyperparams (unchanged unless you also evolve them)
             
-            # secondary-mass hyperparams (unchanged unless you also evolve them)
-            beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
-            delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+            # delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+
+            # delta_m1 + taper end
+            d1_floor = priors["delta_m1"][0]
+            d1_typ   = priors["delta_m1"][1]
+            delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"))
+            m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
+            
+            # delta_m2 + taper end
+            d2_floor = priors["delta_m2"][0]
+            d2_typ   = priors["delta_m2"][1]
+            delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"))
+            m2_taper_end_ = pm.Deterministic("m2_taper_end", m2_low_ + delta_m2_)
+
+            
             epsilon_  = pm.Deterministic("epsilon", at.as_tensor_variable(0.1) ) #.astype(X))
+
             
             if has_m2_break:
                 print("Including gap for secondary mass")
@@ -1364,9 +1423,17 @@ def make_model(  priors,
                 sigma2_inf_,  z_sigma2_,  dz_sigma2_,
                 lambda0_inf_, lambda1_inf_, lambda2_inf_, z_lambda_, dz_lambda_,
             ]
+
+
+            
             
             # If your code expects a single list Lambda_, append both
             Lambda_ += [*lambdaBBHmass_lowz_, *evo_params_]
+
+            print("\n Chech params in pymc models")
+            mass_p = [*lambdaBBHmass_lowz_, *evo_params_]
+            print(len(mass_p), len(lambdaBBHmass_lowz_), len(evo_params_))
+            print()
             
         
         
@@ -1456,11 +1523,14 @@ def make_model(  priors,
             
             mu2_init[:M_active] = np.linspace(lowmu2 + 0.1*(upmu2-lowmu2),
                                               upmu2  - 0.1*(upmu2-lowmu2),
-                                              M_active)
-            
-     
+                                              M_active)     
             mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center)) #.astype(X) )
             mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center)) #.astype(X))
+
+
+        
+
+            
 
             if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD' ):
 
@@ -1472,6 +1542,34 @@ def make_model(  priors,
                 
                 
                 mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center)) #.astype(X))
+
+                # --- ordered mu3 for first M_active components ---
+
+                
+                # mu3_raw_active = pm.Uniform(
+                #     "mulz_raw_active",
+                #     lower=lowmu3, upper=upmu3,
+                #     shape=(M_active,),
+                #     initval=mu3_init[:M_active],
+                # )
+                
+                # mu3_active = pm.Deterministic("mulz_active", at.sort(mu3_raw_active))
+                
+                # mu3_tail = pm.Uniform(
+                #     "mulz_tail",
+                #     lower=lowmu3, upper=upmu3,
+                #     shape=(N_DP_comp_max_np - M_active,),
+                #     initval=mu3_init[M_active:],   # your centered tail init
+                # )
+                
+                # mu3 = pm.Deterministic(
+                #     "mulz",
+                #     at.concatenate([mu3_active, mu3_tail]),
+                #     dims=("component",),
+                # )
+
+
+
 
                 mus = at.stack([mu1, mu2, mu3], axis=0)
                 
@@ -1509,8 +1607,14 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
-            tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
+            # tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
+            # tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
+
+            eta1 = pm.Normal("eta1", 0.0, 1.0)
+            tau1 = pm.Deterministic("tau1", L_small_1 + (U1 - L_small_1) * pm.math.sigmoid(eta1))
+            
+            eta2 = pm.Normal("eta2", 0.0, 1.0)
+            tau2 = pm.Deterministic("tau2", L_small_2 + (U2 - L_small_2) * pm.math.sigmoid(eta2))
 
             print("s_local = %s "%s_local)
 
@@ -1536,7 +1640,11 @@ def make_model(  priors,
                 print("L_small_3 = %s "%L_small_3)
                 print("U3 = %s "%U3)
 
-                tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
+                #tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
+                eta3 = pm.Normal("eta3", 0.0, 1.0)
+                tau3 = pm.Deterministic("tau3", L_small_3 + (U3 - L_small_3) * pm.math.sigmoid(eta3))
+                
+                
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
@@ -1838,7 +1946,8 @@ def make_model(  priors,
         chunk_inj=chunk_inj,
         K_dp = N_DP_comp_max,
         DP_truncate = DP_truncate,
-        DP_m1_env = DP_m1_env
+        DP_m1_env = DP_m1_env,
+        interp_mass = interp_mass
         )
         
         if lp_incl_inj[0] is None:

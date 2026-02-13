@@ -13,6 +13,22 @@ class NPBackend:
     @staticmethod
     def asarray(x, dtype=None):
         return np.asarray(x, dtype=dtype)
+    
+    @staticmethod
+    def atleast_1d(x, ):
+        return np.atleast_1d(x)
+
+    @staticmethod
+    def shape(x):
+        return x.shape
+
+    @staticmethod
+    def tile(x, reps):
+        return np.tile(x, reps)
+
+    @staticmethod
+    def repeat(a, reps, axis=None):
+        return np.repeat(a, reps, axis=axis)
 
 
 
@@ -231,6 +247,22 @@ class ATBackend:
             out = out.astype(dtype)
         return out
 
+    @staticmethod
+    def atleast_1d(x, ):
+        at = ATBackend._at()
+        return at.atleast_1d(x)
+
+    @staticmethod
+    def repeat(a, reps, axis=None):
+        at = ATBackend._at()
+        return at.repeat(a, reps, axis=axis)
+
+    @staticmethod
+    def tile(x, reps):
+        at = ATBackend._at()
+        return at.tile(x, reps)
+
+        
     @staticmethod
     def constant(x, dtype=None):
         at = ATBackend._at()
@@ -511,6 +543,8 @@ class JAXBackend:
         return jnp.max(x, axis=axis, keepdims=keepdims)
         
     minimum = staticmethod(jnp.minimum)
+    min = staticmethod(jnp.min
+                      )
     maximum = staticmethod(jnp.maximum)
     clip = staticmethod(jnp.clip)
     where = staticmethod(jnp.where)
@@ -525,12 +559,34 @@ class JAXBackend:
     reshape = staticmethod(jnp.reshape)
     concatenate = staticmethod(jnp.concatenate)
     stack = staticmethod(jnp.stack)
+    atleast_1d = staticmethod(jnp.atleast_1d)
 
     zeros_like = staticmethod(jnp.zeros_like)
+
+    @staticmethod
+    def tile(x, reps):
+        return jnp.tile(x, reps)
+
+    @staticmethod
+    def shape(x):
+        return x.shape
+
+    @staticmethod
+    def broadcast_to(x, shape):
+        return jnp.broadcast_to(x,shape)
+    
+    
+    @staticmethod
+    def repeat(a, reps, axis=None):
+        return jnp.repeat(a, reps, axis=axis)
     
     @staticmethod
     def sort(x, axis=-1):
         return jnp.sort(x, axis=axis)
+
+    @staticmethod
+    def full_like(x, fill_value):
+        return jnp.full_like(x, fill_value)
 
     # misc
     floor = staticmethod(jnp.floor)

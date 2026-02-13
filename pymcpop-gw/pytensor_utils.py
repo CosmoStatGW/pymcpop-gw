@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Tuple
 import numpy as np
-
+import jax.numpy as jnp
 import pytensor.tensor as at
 from pytensor.graph.op import Op, Apply
 from constants import _PI
+import jax
 
 
 
@@ -190,6 +191,39 @@ def atinterp(bk, x, xs, ys):
 
   return r*yh + (1.0-r)*yl
 
+
+
+
+def _interp_indices_nonuniform_safe(x, x_grid):
+    """
+    Robust index+weight for non-uniform 1D interpolation.
+
+    Returns:
+      j  in [1, N-1]
+      r  in [0, 1]
+    such that:
+      xL = x_grid[j-1], xR = x_grid[j]
+      y(x) ~ (1-r)*y[j-1] + r*y[j]
+    """
+    N = x_grid.shape[0]
+
+    # clip x into grid domain (avoid out-of-bounds indices)
+    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
+
+    # searchsorted gives insertion index in [0..N]
+    j = bk.searchsorted(x_grid, x_clip, side="left")
+
+    # clamp to valid interpolation interval [1..N-1]
+    j = bk.clip(j, 1, N - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = bk.maximum(xR - xL, 1e-30)
+
+    r = (x_clip - xL) / denom
+    r = bk.clip(r, 0.0, 1.0)
+
+    return j, r
     
 # ---------------------------------------------------------------------
 # Integration
@@ -254,43 +288,34 @@ def atcumtrapz(bk, y, x, *, axis=-1):
 
 
 
-def make_dL_to_z_table(
-    bk,
-    dL_grid,
-    zgrid,
-    *,
-    NdL=1024,
-    logspace=True,
-):
+
+def logtrapzexp_streaming(bk, logpdf_at_m, x):
     """
-    Build a uniform (or log-uniform) dL axis and the corresponding inverse table z(dL_u),
-    using your existing atinterp(dL_u, dL_grid, zgrid).
-
-    This does NOT change cosmology: dL_grid is still computed from zgrid.
-    It only amortizes searchsorted by moving it to a small table (NdL points).
-
-    Returns:
-      dL_u (uniform in dL or log(dL))
-      z_u  (same length)
+    logpdf_at_m: function m -> logpdf for all events, shape (K,)
+    x: 1D grid, shape (N1,)
+    returns: log integral per event, shape (K,)
     """
-    dLmin = dL_grid[0]
-    dLmax = dL_grid[-1]
+    x = bk.asarray(x)
+    dx = bk.diff(x)  # (N1-1,)
 
-    # Build uniform axis in dL (or in log dL)
-    if logspace:
-        # guard against <=0
-        dLmin_g = bk.maximum(dLmin, eps)
-        dLmax_g = bk.maximum(dLmax, dLmin_g * (1.0 + 1e-12))
-        # need exp/log; bk should provide these (JAXBackend does)
-        u0 = bk.log(dLmin_g)
-        u1 = bk.log(dLmax_g)
-        u = bk.linspace(u0, u1, NdL)
-        dL_u = bk.exp(u)
-    else:
-        dL_u = bk.linspace(dLmin, dLmax, NdL)
+    # init with logpdf at first grid point
+    lp0 = logpdf_at_m(x[0])  # (K,)
+    neginf = -1e300 if lp0.dtype == jnp.float64 else -1e30
+    logI = bk.full_like(lp0, neginf)  # log(0) per event
 
-    # Invert once using your existing general interp (searchsorted on NdL points only)
-    z_u = atinterp(bk, dL_u, dL_grid, zgrid)
+    def step(carry, i):
+        lp_prev, logI = carry
+        lp_curr = logpdf_at_m(x[i+1])  # (K,)
 
-    return dL_u, z_u
+        # log( 0.5*(exp(lp_prev)+exp(lp_curr)) * dx[i] )
+        log_term = bk.logaddexp(lp_prev, lp_curr) + bk.log(dx[i]) - bk.log(2.0)
+
+        # accumulate in log-space: logI = logaddexp(logI, log_term)
+        logI = bk.logaddexp(logI, log_term)
+        return (lp_curr, logI), None
+
+    (lp_last, logI), _ = jax.lax.scan(step, (lp0, logI), jnp.arange(dx.shape[0]))
+    return logI
+
+
 

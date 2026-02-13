@@ -58,7 +58,8 @@ def log_p_pop(
     verbose=False,
     K_dp : int = 30,
     DP_truncate = False,
-    DP_m1_env = False
+    DP_m1_env = False,
+    interp_mass_vals=  None
 ):
     """
     Backend-agnostic log_p_pop_at,
@@ -194,70 +195,77 @@ def log_p_pop(
     
     # DPLDP-z
     elif mass_model == "DPLDP-z":
-    
-        # ------------------------------------------------------------
-        # UNPACK low-z mass hyperparameters (same 20 as non-evolving)
-        # ------------------------------------------------------------
-        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
-        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
-        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
-        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
-        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
-        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
-        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
-        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
-        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
-        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
-        x21 = Lambda[istart_spin + 20]
-    
-        lambdaBBHmass_lowz = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
-                              x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
-    
-        # ------------------------------------------------------------
-        # UNPACK evolution hyperparameters (27 scalars):
-        #   (theta_inf, z_theta, dz_theta) for:
-        #    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
-        #    lambda0, lambda1
-        # ------------------------------------------------------------
-        j = istart_spin + 21
-    
-        alpha1_inf  = Lambda[j +  0]; z_alpha1  = Lambda[j +  1]; dz_alpha1  = Lambda[j +  2]
-        alpha2_inf  = Lambda[j +  3]; z_alpha2  = Lambda[j +  4]; dz_alpha2  = Lambda[j +  5]
-        mb_inf      = Lambda[j +  6]; z_mb      = Lambda[j +  7]; dz_mb      = Lambda[j +  8]
-        mu1_inf     = Lambda[j +  9]; z_mu1     = Lambda[j + 10]; dz_mu1     = Lambda[j + 11]
-        sigma1_inf  = Lambda[j + 12]; z_sigma1  = Lambda[j + 13]; dz_sigma1  = Lambda[j + 14]
-        mu2_inf     = Lambda[j + 15]; z_mu2     = Lambda[j + 16]; dz_mu2     = Lambda[j + 17]
-        sigma2_inf  = Lambda[j + 18]; z_sigma2  = Lambda[j + 19]; dz_sigma2  = Lambda[j + 20]
-        lambda0_inf = Lambda[j + 21]
-        lambda1_inf = Lambda[j + 22]
-        lambda2_inf = Lambda[j + 23]
-        z_lambda    = Lambda[j + 24]
-        dz_lambda   = Lambda[j + 25]
-        evo_params = [
-                alpha1_inf,  z_alpha1,  dz_alpha1,
-                alpha2_inf,  z_alpha2,  dz_alpha2,
-                mb_inf,      z_mb,      dz_mb,
-                mu1_inf,     z_mu1,     dz_mu1,
-                sigma1_inf,  z_sigma1,  dz_sigma1,
-                mu2_inf,     z_mu2,     dz_mu2,
-                sigma2_inf,  z_sigma2,  dz_sigma2,
-                lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda,
-            ]
-    
-        # ------------------------------------------------------------
-        # Call the redshift-evolving mass pdf
-        # ------------------------------------------------------------
-        lpmass = mass_models.logpdf_DPLDP_z_bk(
-                bk,
-                (m1s, m2s), z,                     
-                lambdaBBHmass_lowz,
-                evo_params,
-                force_m2_less_than_m1=False,
-                has_m2_break=has_m2_break,
-                smoothing=smoothing,
-                simplex_repair=simplex_repair,
-                norm_gauss=norm_gauss
-            )
+
+
+        if interp_mass_vals is not None:
+            
+            lpmass = mass_models.logpdf_DPLDP_z_from_interp(
+                    bk, interp_mass_vals)
+            
+        else:
+            # ------------------------------------------------------------
+            # UNPACK low-z mass hyperparameters (same 20 as non-evolving)
+            # ------------------------------------------------------------
+            x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+            x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+            x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+            x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+            x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+            x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+            x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+            x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+            x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+            x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+            x21 = Lambda[istart_spin + 20]
+        
+            lambdaBBHmass_lowz = [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
+                                  x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21]
+        
+            # ------------------------------------------------------------
+            # UNPACK evolution hyperparameters (27 scalars):
+            #   (theta_inf, z_theta, dz_theta) for:
+            #    alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
+            #    lambda0, lambda1
+            # ------------------------------------------------------------
+            j = istart_spin + 21
+        
+            alpha1_inf  = Lambda[j +  0]; z_alpha1  = Lambda[j +  1]; dz_alpha1  = Lambda[j +  2]
+            alpha2_inf  = Lambda[j +  3]; z_alpha2  = Lambda[j +  4]; dz_alpha2  = Lambda[j +  5]
+            mb_inf      = Lambda[j +  6]; z_mb      = Lambda[j +  7]; dz_mb      = Lambda[j +  8]
+            mu1_inf     = Lambda[j +  9]; z_mu1     = Lambda[j + 10]; dz_mu1     = Lambda[j + 11]
+            sigma1_inf  = Lambda[j + 12]; z_sigma1  = Lambda[j + 13]; dz_sigma1  = Lambda[j + 14]
+            mu2_inf     = Lambda[j + 15]; z_mu2     = Lambda[j + 16]; dz_mu2     = Lambda[j + 17]
+            sigma2_inf  = Lambda[j + 18]; z_sigma2  = Lambda[j + 19]; dz_sigma2  = Lambda[j + 20]
+            lambda0_inf = Lambda[j + 21]
+            lambda1_inf = Lambda[j + 22]
+            lambda2_inf = Lambda[j + 23]
+            z_lambda    = Lambda[j + 24]
+            dz_lambda   = Lambda[j + 25]
+            evo_params = [
+                    alpha1_inf,  z_alpha1,  dz_alpha1,
+                    alpha2_inf,  z_alpha2,  dz_alpha2,
+                    mb_inf,      z_mb,      dz_mb,
+                    mu1_inf,     z_mu1,     dz_mu1,
+                    sigma1_inf,  z_sigma1,  dz_sigma1,
+                    mu2_inf,     z_mu2,     dz_mu2,
+                    sigma2_inf,  z_sigma2,  dz_sigma2,
+                    lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda,
+                ]
+        
+            # ------------------------------------------------------------
+            # Call the redshift-evolving mass pdf
+            # ------------------------------------------------------------
+            lpmass = mass_models.logpdf_DPLDP_z(
+                    bk,
+                    (m1s, m2s), z,                     
+                    lambdaBBHmass_lowz,
+                    evo_params,
+                    force_m2_less_than_m1=False,
+                    has_m2_break=has_m2_break,
+                    smoothing=smoothing,
+                    simplex_repair=simplex_repair,
+                    norm_gauss=norm_gauss
+                )
             
 
 
@@ -298,6 +306,7 @@ def log_p_pop(
         if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD'):
                 lpmass -= log_one_p_z
 
+        
         if DP_m1_env:
             lpmass += -alpha * bk.log(m1s)
 
@@ -377,7 +386,8 @@ def sel_bias_with_uncertainty_legacy(
     subtract_log_p_incl=False,
     K_dp: int  = 30,
     DP_truncate=False,
-    DP_m1_env = False
+    DP_m1_env = False,
+    interp_mass_vals=None
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -427,7 +437,8 @@ def sel_bias_with_uncertainty_legacy(
         verbose=verbose,
         K_dp=K_dp, 
         DP_truncate=DP_truncate,
-        DP_m1_env = DP_m1_env
+        DP_m1_env = DP_m1_env,
+        interp_mass_vals=interp_mass_vals
     )
 
 
@@ -484,7 +495,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     chunk_size: int = 65536,
     K_dp: int = 30,
     DP_truncate=False,
-    DP_m1_env=False
+    DP_m1_env=False,
+    interp_mass_vals=None
 ):
     """
     Optimized selection term (patched):
@@ -582,7 +594,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             verbose=verbose,
             K_dp=K_dp,
             DP_truncate=DP_truncate,
-            DP_m1_env=DP_m1_env
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals=interp_mass_vals
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -814,7 +827,8 @@ def sel_bias_with_uncertainty(
     sel_chunk_size: int = 65536,
     K_dp: int =30,
     DP_truncate=False,
-    DP_m1_env=False
+    DP_m1_env=False,
+    interp_mass_vals=None
 ):
     
    
@@ -832,7 +846,8 @@ def sel_bias_with_uncertainty(
             subtract_log_p_incl=subtract_log_p_incl,
             K_dp=K_dp, 
             DP_truncate=DP_truncate,
-            DP_m1_env=DP_m1_env
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals=interp_mass_vals
             
         )
 
@@ -850,7 +865,8 @@ def sel_bias_with_uncertainty(
         chunk_size=sel_chunk_size,
         K_dp=K_dp,
         DP_truncate=DP_truncate,
-        DP_m1_env=DP_m1_env
+        DP_m1_env=DP_m1_env,
+        interp_mass_vals=interp_mass_vals
     )
 
 

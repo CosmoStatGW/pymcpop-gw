@@ -12,7 +12,7 @@ import rate_models
 import spin_models
 import mass_models
 from cosmology import dcfun_quad, dLfun, log_ddL_dz, Efun, Xi_vanilla, Xi_polexp, z_from_dL
-from pytensor_utils import atinterp, make_dL_to_z_table, atinterp_uniform
+from pytensor_utils import atinterp, atinterp_uniform, atcumtrapz
 
 
 import jax
@@ -72,6 +72,119 @@ def _as_scalar(g):
 
  
 
+def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
+    """
+    Split the flat Lambda_ list into (cosmo, rate, spin, mass) lists,
+    following the construction in your model code.
+
+    Returns
+    -------
+    cosmo_params : list
+    rate_params  : list
+    spin_params  : list
+    mass_params  : list
+    """
+    i = 0
+
+    # -------------------------
+    # Cosmology: [H0, Om, w0, Xi0, nXi0]
+    # -------------------------
+    cosmo = Lambda_[i:i+5]
+    i += 5
+
+    # -------------------------
+    # Rate model
+    # -------------------------
+    if rate_model in ("MD", "DPUC-vol-MD"):
+        # [gamma, kappa, zp]
+        rate = Lambda_[i:i+3]
+        i += 3
+    elif rate_model == "PL":
+        # [gamma]
+        rate = Lambda_[i:i+1]
+        i += 1
+    elif rate_model in ("DPUC", "DPUC-vol"):
+        # rate is modeled jointly with mass; nothing appended here
+        rate = []
+    else:
+        raise ValueError(f"Unknown rate_model: {rate_model}")
+
+    # -------------------------
+    # Spin model
+    # -------------------------
+    if spin_model == "chieffchip":
+        # [muEff, sigEff, muP, sigP, rho]
+        spin = Lambda_[i:i+5]
+        i += 5
+    elif spin_model == "chieffchip_uc":
+        # [muEff, sigEff, muP, sigP]
+        spin = Lambda_[i:i+4]
+        i += 4
+    elif spin_model == "default":
+        # [alphaChi, betaChi, zeta, sigmat]
+        spin = Lambda_[i:i+4]
+        i += 4
+    elif spin_model == "default_gauss":
+        # [muChi, sigmaChi, zeta, sigmat]
+        spin = Lambda_[i:i+4]
+        i += 4
+    else:
+        # "No model of the spin distribution."
+        spin = []
+
+    # -------------------------
+    # Mass model
+    # -------------------------
+    if mass_model == "PLPreg":
+        # [lamP, alpha, beta, deltam, ml, mh, muM, sM]
+        mass = Lambda_[i:i+8]
+        i += 8
+
+    elif mass_model == "DPLDP":
+        # In your code you append:
+        # [alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1,
+        #  lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon,
+        #  m_g, w_g, sig_g_l, sig_g_h]
+        mass = Lambda_[i:i+21]
+        i += 21
+
+    elif mass_model == "DPLDP-z":
+        # You append:
+        # low-z block (22):
+        #  [alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
+        #   m1_low, m_high, delta_m1, lambda0_0, lambda1_0, lambda2_0,
+        #   beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_l, sig_g_h]
+        # plus evo params (23):
+        #  [alpha1_inf, z_alpha1, dz_alpha1,
+        #   alpha2_inf, z_alpha2, dz_alpha2,
+        #   mb_inf, z_mb, dz_mb,
+        #   mu1_inf, z_mu1, dz_mu1,
+        #   sigma1_inf, z_sigma1, dz_sigma1,
+        #   mu2_inf, z_mu2, dz_mu2,
+        #   sigma2_inf, z_sigma2, dz_sigma2,
+        #   lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda]
+        mass = Lambda_[i:i+47]
+        i += 47
+
+    else:
+        raise ValueError(f"Unknown mass_model: {mass_model}")
+
+    return cosmo, rate, spin, mass
+
+
+def unpack_mass_DPLDP_z(mass_params):
+    n_lowz = 21
+    n_evo  = 26   # was 23; add mb_inf, z_mb, dz_mb
+    n_tot  = n_lowz + n_evo  # 47
+
+    if len(mass_params) != n_tot:
+        raise ValueError(f"DPLDP-z mass_params must have length {n_tot}, got {len(mass_params)}")
+
+    lambdaBBHmass_lowz = mass_params[:n_lowz]
+    evo_params         = mass_params[n_lowz:n_tot]
+    return lambdaBBHmass_lowz, evo_params
+    
+
 
 
 
@@ -98,7 +211,8 @@ def _make_pop_and_sel_core(
     chunk_inj=0,
     K_dp: int = 30, 
     DP_truncate=False,
-    DP_m1_env=False
+    DP_m1_env=False,
+    interp_mass = 0
 ):
     """Build the single source of truth JAX core function.
 
@@ -112,9 +226,13 @@ def _make_pop_and_sel_core(
         m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
         Lambda, Ndraw,
     ):
+        
+        
         theta5 = Lambda[:5]
         H0, Om, w0, Xi0, nXi0 = theta5
 
+
+        
         m1inj = lax.stop_gradient(m1inj)
         m2inj = lax.stop_gradient(m2inj)
         dLinj = lax.stop_gradient(dLinj)
@@ -132,6 +250,148 @@ def _make_pop_and_sel_core(
         m1src = m1det / onepz
         m2src = m2det / onepz
 
+        if interp_mass:
+            # pre-computing mass function for later interpolation
+            if mass_model=='DPLDP-z':
+
+
+                _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
+
+            
+                lambdaBBHmass_lowz, evo_params = unpack_mass_DPLDP_z(mass_p)
+
+                print("\n Chech params in pop.")
+                print(len(mass_p), len(lambdaBBHmass_lowz), len(evo_params))
+                print()
+                
+                (alpha1_0, alpha2_0, mb_0,
+                 mu1_0, sigma1_0, mu2_0, sigma2_0,
+                 m1_low, m_high, delta_m1,
+                 lambda0_0, lambda1_0, lambda2_0, 
+                 beta, m2_low, delta_m2,
+                 epsilon, m_g, w_g, sig_g_low, sig_g_high) = lambdaBBHmass_lowz
+            
+                # unpack evolution parameters
+                (alpha1_inf,  z_alpha1,  dz_alpha1,
+                 alpha2_inf,  z_alpha2,  dz_alpha2,
+                 mb_inf,      z_mb,      dz_mb,
+                 mu1_inf,     z_mu1,     dz_mu1,
+                 sigma1_inf,  z_sigma1,  dz_sigma1,
+                 mu2_inf,     z_mu2,     dz_mu2,
+                 sigma2_inf,  z_sigma2,  dz_sigma2,
+                 lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda) = evo_params
+                
+                eps_m = 1e-5 
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low + eps_m
+                m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
+                
+                u1 = bk.linspace(0.0, 1.0, n2_taper)
+                
+                eps_t = 1e-4
+                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                
+                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+
+                m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, zgrid,
+                # low-z hyperparameters
+                mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+                # high-z (asymptotic) hyperparameters
+                mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
+                # evolution hyperparameters
+                z_mu1, dz_mu1,
+                z_sigma1, dz_sigma1,
+                z_mu2, dz_mu2,
+                z_sigma2, dz_sigma2,
+                z_mb, dz_mb,
+                # support for m1
+                m1_low, m_high,
+                delta_m1,
+                # grid resolution controls
+                n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
+                n_tail_low=interp_mass//5,   # points in low-mass tail
+                n_tail_high=interp_mass//5,  # points in high-mass tail
+                k_sigma=4.0,      #
+                n_taper=interp_mass//5,  # points in low-mass tapering
+                )
+
+
+                # ---------
+                # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
+                # ---------
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk,
+                    m2_grid_, beta , delta_m2 , m2_low ,
+                    m_g=m_g, w_g=w_g,  sig_g_low=sig_g_low , sig_g_high=sig_g_high ,
+                    has_m2_break=has_m2_break, smoothing=smoothing
+                )  # shape (N2,)
+            
+                # lC_grid evaluated on m1_grid (shape (N1,))
+                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
+
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = bk.log(cdf_m2)
+                
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                
+
+                # ---------
+                # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
+                # ---------
+                K  = zgrid.shape[0]
+                N1 = m1_grid_.shape[0]
+                
+                M = bk.broadcast_to(m1_grid_[None, :], (K, N1))
+                Z = bk.broadcast_to(zgrid[:, None],   (K, N1))
+                
+                lp_flat = mass_models.logpdfm1_DPLDP_z( bk, 
+                    M.reshape((K * N1,)),
+                    Z.reshape((K * N1,)),
+                    alpha1_0, alpha2_0, mb_0,
+                    mu1_0, sigma1_0, mu2_0, sigma2_0,
+                    m1_low , m_high , delta_m1 ,
+                    lambda0_0, lambda1_0, lambda2_0,
+                    epsilon ,
+                    *evo_params_,
+                    smoothing=smoothing,
+                    simplex_repair=simplex_repair,
+                    norm_gauss=norm_gauss
+                )
+                lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
+
+                lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
+                p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
+                I = attrapzvec(bk, p_shift, m1_grid_, axis=1)            # (K,)
+                I = bk.clip(I, 1e-300, jnp.inf)
+                ln_bank = bk.log(I) + lp_max[:, 0]
+             
+                # Pack for later use (include z_bank)
+                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
+                interp_grids_mass = [m1_grid_, m2_grid_, zgrid]
+                
+
+            
+            else:
+                raise NotImplementedError()
+
+            interp_mass_vals = ( interp_grids_mass, interp_vals_mass )
+        
+        else:
+            
+            interp_mass_vals = None
+
         ##################################################
 
         logp_pop_evt = log_p_pop(
@@ -148,7 +408,8 @@ def _make_pop_and_sel_core(
                 verbose=verbose,
             K_dp=K_dp, 
             DP_truncate=DP_truncate,
-            DP_m1_env=DP_m1_env
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals = interp_mass_vals
         )
 
         if skip_sel:
@@ -178,7 +439,8 @@ def _make_pop_and_sel_core(
             sel_chunk_size=chunk_inj,            # <--- tune
             K_dp=K_dp,
             DP_truncate=DP_truncate,
-            DP_m1_env=DP_m1_env
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals = interp_mass_vals
         )
 
 
@@ -215,7 +477,8 @@ class _PopAndSelJAXVJPOp(Op):
                 skip_sel=False,
                  K_dp : int = 30,
                  DP_truncate=False,
-                 DP_m1_env=False
+                 DP_m1_env=False,
+                 interp_mass=0
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -234,6 +497,7 @@ class _PopAndSelJAXVJPOp(Op):
         self.K_dp = int(K_dp)
         self.DP_truncate = DP_truncate
         self.DP_m1_env = DP_m1_env
+        self.interp_mass=interp_mass
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -261,7 +525,8 @@ class _PopAndSelJAXVJPOp(Op):
             skip_sel = self.skip_sel,
             K_dp = self.K_dp,
             DP_truncate= self.DP_truncate,
-            DP_m1_env = self.DP_m1_env
+            DP_m1_env = self.DP_m1_env,
+            interp_mass=self.interp_mass
         )
 
 
@@ -387,14 +652,14 @@ class PopAndSelJAXOp(Op):
     def __init__(self, *, zgrid, rate_model, mass_model, spin_model,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla",
-                 interp_mass=0,
                  verbose=False,
                  subtract_log_p_incl=False, 
                 skip_sel=False,
                  chunk_inj=0,
                  K_dp: int = 30,
                  DP_truncate = False,
-                 DP_m1_env = False
+                 DP_m1_env = False,
+                 interp_mass=0
                 ):
         super().__init__()
 
@@ -413,6 +678,7 @@ class PopAndSelJAXOp(Op):
         self.skip_sel=skip_sel
         self.chunk_inj = chunk_inj
         self.K_dp = int(K_dp)
+        self.interp_mass=interp_mass
 
         
         self.DP_truncate=DP_truncate
@@ -441,7 +707,8 @@ class PopAndSelJAXOp(Op):
             skip_sel=self.skip_sel,
             K_dp = self.K_dp,
             DP_truncate=self.DP_truncate,
-            DP_m1_env=self.DP_m1_env
+            DP_m1_env=self.DP_m1_env,
+            interp_mass=self.interp_mass
         )
         self._vjp_op._parent_op = self
 
@@ -466,8 +733,8 @@ class PopAndSelJAXOp(Op):
             K_dp = self.K_dp,
             DP_truncate=self.DP_truncate,
             DP_m1_env=self.DP_m1_env,
-            
-            skip_sel=self.skip_sel
+            skip_sel=self.skip_sel,
+            interp_mass=self.interp_mass
         )
         return jax.jit(full_f)
 

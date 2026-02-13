@@ -67,10 +67,21 @@ except:
 zGridGlobals = np.array(zGridGlobals_at.eval())
 
 
+
+def _make_z_grid_man(zres):
+
+    nmid = int(zres/10)
+    ntails = int(zres/20)
+
+    return np.sort(np.unique(np.concatenate([ np.logspace(start=-100, stop=-15, base=10, num=ntails), np.logspace(start=-30, stop=-4, base=10, num=nmid), 
+                     np.logspace(start=-4, stop=1, base=10, num=zres), 
+                     np.logspace(start=1, stop=2, base=10, num=nmid), np.logspace(start=2, stop=5, base=10, num=ntails) ])))
+
+
 def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15, mode='cheb'):
     print("make_z_grid mode: %s"%mode)
     if mode=='man':
-        return zGridGlobals
+        return _make_z_grid_man(total)
     elif mode=='cheb':
         raise ValueError()
         return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)

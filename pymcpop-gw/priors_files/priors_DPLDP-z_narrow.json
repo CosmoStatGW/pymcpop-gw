@@ -3,10 +3,10 @@
   "kappa": [0, 12],
   "zp": [0, 6],
 
-  "alpha1_0": [0, 5],
+  "alpha1_0": [1, 7],
   "alpha1_inf": [0, 5],
 
-  "alpha2_0": [1.5, 7],
+  "alpha2_0": [1, 7],
   "alpha2_inf": [1.5, 7],
 
   "mb_0": [20, 50],
@@ -52,5 +52,7 @@
   "delta_sigma2_sigma": 10.0,
 
   "delta_lambda0_sigma": 1.5,
-  "delta_lambda1_sigma": 1.5
+  "delta_lambda1_sigma": 1.5,
+
+  "muChi":[0,1], "sigmaChi":[0.005, 1], "zeta":[0,1], "sigmat":[0.01, 4], "mu_g":[20,150], "w_g":[20,150]
 }
