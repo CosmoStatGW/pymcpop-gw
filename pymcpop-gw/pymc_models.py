@@ -1812,7 +1812,9 @@ def make_model(  priors,
         has_m2_break=has_m2_break,
         norm_gauss=norm_gauss,
         param=param,
-        subtract_log_p_incl = False,       
+        subtract_log_p_incl = False,   
+
+        skip_sel = (sel_method=='skip'),
 
         chunk_inj=chunk_inj,
         K_dp = N_DP_comp_max,

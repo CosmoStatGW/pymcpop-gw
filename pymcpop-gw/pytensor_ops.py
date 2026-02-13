@@ -465,7 +465,9 @@ class PopAndSelJAXOp(Op):
             chunk_inj=self.chunk_inj,
             K_dp = self.K_dp,
             DP_truncate=self.DP_truncate,
-            DP_m1_env=self.DP_m1_env
+            DP_m1_env=self.DP_m1_env,
+            
+            skip_sel=self.skip_sel
         )
         return jax.jit(full_f)
 
