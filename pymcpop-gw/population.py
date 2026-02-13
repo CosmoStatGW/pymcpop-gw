@@ -137,36 +137,43 @@ def log_p_pop(
     
     # DPLDP
     if mass_model == "DPLDP":
-        # 21 params
-        x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
-        x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
-        x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
-        x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
-        x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
-        x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
-        x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
-        x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
-        x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
-        x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
-        x21 = Lambda[istart_spin + 20]
 
-        lambdaBBHmass = (
-            x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
-            x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21
-        )
-        
-        lpmass = mass_models.logpdf_DPLDP(
-            bk,
-            (m1s, m2s),
-            lambdaBBHmass,
-            force_m2_less_than_m1=False,
-            has_m2_break=has_m2_break,
-            smoothing=smoothing,
-            interp_vals=None,
-            interp_grids=None,
-            norm=True,
-            simplex_repair=simplex_repair,
-            norm_gauss=norm_gauss,
+        if interp_mass_vals is not None:
+            
+            lpmass = mass_models.logpdf_DPLDP_from_interp(
+                    bk, (m1s, m2s), interp_mass_vals)
+
+        else:
+            # 21 params
+            x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
+            x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
+            x5  = Lambda[istart_spin +  4]; x6  = Lambda[istart_spin +  5]
+            x7  = Lambda[istart_spin +  6]; x8  = Lambda[istart_spin +  7]
+            x9  = Lambda[istart_spin +  8]; x10 = Lambda[istart_spin +  9]
+            x11 = Lambda[istart_spin + 10]; x12 = Lambda[istart_spin + 11]
+            x13 = Lambda[istart_spin + 12]; x14 = Lambda[istart_spin + 13]
+            x15 = Lambda[istart_spin + 14]; x16 = Lambda[istart_spin + 15]
+            x17 = Lambda[istart_spin + 16]; x18 = Lambda[istart_spin + 17]
+            x19 = Lambda[istart_spin + 18]; x20 = Lambda[istart_spin + 19]
+            x21 = Lambda[istart_spin + 20]
+    
+            lambdaBBHmass = (
+                x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
+                x11, x12, x13, x14, x15, x16, x17, x18, x19, x20, x21
+            )
+            
+            lpmass = mass_models.logpdf_DPLDP(
+                bk,
+                (m1s, m2s),
+                lambdaBBHmass,
+                force_m2_less_than_m1=False,
+                has_m2_break=has_m2_break,
+                smoothing=smoothing,
+                interp_vals=None,
+                interp_grids=None,
+                norm=True,
+                simplex_repair=simplex_repair,
+                norm_gauss=norm_gauss,
         )
 
     # PLPreg
@@ -200,7 +207,7 @@ def log_p_pop(
         if interp_mass_vals is not None:
             
             lpmass = mass_models.logpdf_DPLDP_z_from_interp(
-                    bk, interp_mass_vals)
+                    bk, (m1s, m2s), z, interp_mass_vals)
             
         else:
             # ------------------------------------------------------------

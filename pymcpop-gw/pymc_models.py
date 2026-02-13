@@ -746,7 +746,10 @@ def make_model(  priors,
                 zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
 
             else:
-                gamma_ = normal_from_bounds_95("gamma", priors["gamma"][0], priors["gamma"][1], initval=ivals.get("gamma"))
+                # gamma_ = normal_from_bounds_95("gamma", priors["gamma"][0], priors["gamma"][1], initval=ivals.get("gamma"))
+                
+                gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))  
+                
                 zp_    = bounded_sigmoid_95("zp",    priors["zp"][0],    priors["zp"][1],    initval=ivals.get("zp"))
     
                 kappa_ = bounded_sigmoid_95("kappa", priors["kappa"][0], priors["kappa"][1], initval=ivals.get("kappa"))
@@ -1429,13 +1432,7 @@ def make_model(  priors,
             
             # If your code expects a single list Lambda_, append both
             Lambda_ += [*lambdaBBHmass_lowz_, *evo_params_]
-
-            print("\n Chech params in pymc models")
-            mass_p = [*lambdaBBHmass_lowz_, *evo_params_]
-            print(len(mass_p), len(lambdaBBHmass_lowz_), len(evo_params_))
-            print()
-            
-        
+       
         
 
 

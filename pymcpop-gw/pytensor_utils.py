@@ -194,7 +194,7 @@ def atinterp(bk, x, xs, ys):
 
 
 
-def _interp_indices_nonuniform_safe(x, x_grid):
+def _interp_indices_nonuniform_safe(bk, x, x_grid):
     """
     Robust index+weight for non-uniform 1D interpolation.
 
@@ -224,7 +224,52 @@ def _interp_indices_nonuniform_safe(x, x_grid):
     r = bk.clip(r, 0.0, 1.0)
 
     return j, r
-    
+
+
+def interp_1d_nonuniform_multiY(bk, x, x_grid, Y, side="left", eps=1e-30):
+    """
+    Simple multi-Y nonuniform 1D linear interpolation.
+
+    Inputs:
+      x      : (...,)
+      x_grid : (N,)
+      Y      : (K, N)
+
+    Output:
+      out    : (K, ...)   (same as your Op)
+    """
+    N = x_grid.shape[0]
+
+    # clip x into grid domain
+    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
+
+    # indices of right/left bracket
+    j = bk.searchsorted(x_grid, x_clip, side=side)
+    j = bk.clip(j, 1, N - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = bk.maximum(xR - xL, eps)
+    r = (x_clip - xL) / denom
+    r = bk.clip(r, 0.0, 1.0)
+
+    # gather Y at j-1 and j for all K
+    jm1 = (j - 1)[None, ...]  # (1, ...)
+    j0  = j[None, ...]        # (1, ...)
+
+    # prefer take_along_axis if backend has it
+    if hasattr(bk, "take_along_axis"):
+        YL = bk.take_along_axis(Y, jm1, axis=1)  # (K, ...)
+        YR = bk.take_along_axis(Y, j0,  axis=1)  # (K, ...)
+    else:
+        # works for numpy-like backends
+        YL = Y[:, (j - 1)]
+        YR = Y[:, j]
+
+    out = (1.0 - r)[None, ...] * YL + r[None, ...] * YR
+    return out
+
+
 # ---------------------------------------------------------------------
 # Integration
 # ---------------------------------------------------------------------

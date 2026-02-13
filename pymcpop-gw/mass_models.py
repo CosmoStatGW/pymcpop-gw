@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from pytensor_utils import attrapzvec, atcumtrapz, logtrapzexp_streaming, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe
+from pytensor_utils import attrapzvec, atcumtrapz, logtrapzexp_streaming, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY
 #from constants import _PI as PI
 from constants import max_m, _tgrid_np
 from pytensor_utils import atinterp
@@ -869,6 +869,255 @@ def logNorm_DPLDP(
 
 
 
+def build_m1_grid_DPLDP( bk, 
+    alpha1, alpha2, mb,
+    mu1, sigma1, mu2, sigma2,
+    m1_low, m_high,
+    delta_m1,
+    n_peak=2500,
+    n_tail_low=400,
+    n_tail_high=400,
+    frac_gauss1=0.2,
+    frac_gauss2=0.2,
+    k_sigma_gauss=3.0,
+    k_sigma_band=4.0,
+    n_taper=10,
+    n_taper_eff=200,
+):
+    """
+    Symbolic non-uniform m1 grid for non-evolving DPLDP.
+
+    Structure:
+      - taper:      [m1_low, m1_low+delta_m1] (clustered near m1_low)
+      - low tail:   [taper_hi, band_min)
+      - Gaussian 1: [mu1 - kσ1, mu1 + kσ1] (with fallback if degenerate)
+      - Gaussian 2: [mu2 - kσ2, mu2 + kσ2] (with fallback if degenerate)
+      - mid band:   [band_min, band_max] envelope over peaks + mb
+      - high tail:  [band_max, m_high)   (endpoint excluded)
+
+    Guarantees:
+      - all points inside (m1_low, m_high)
+      - strictly increasing (via tiny ramp)
+      - avoids repeated xmin/xmax collapse
+    """
+
+    # ---- detach hyperparameters for grid geometry (no grad through geometry) ----
+    mb_sg       = bk.stop_grad(mb)
+    mu1_sg      = bk.stop_grad(mu1)
+    sigma1_sg   = bk.stop_grad(sigma1)
+    mu2_sg      = bk.stop_grad(mu2)
+    sigma2_sg   = bk.stop_grad(sigma2)
+    m1_low_sg   = bk.stop_grad(m1_low)
+    m_high_sg   = bk.stop_grad(m_high)
+    delta_m1_sg = bk.stop_grad(delta_m1)
+
+    # gentle boundary offset (avoid exact endpoints)
+    eps = 1e-4
+    xmin = m1_low_sg + eps
+    xmax = m_high_sg - eps
+    span = bk.maximum(xmax - xmin, 1e-6)
+
+    # ------------------------------------------------------------
+    # 0) Taper grid: clustered near xmin (important for logS_PLP)
+    # ------------------------------------------------------------
+    taper_hi = bk.clip(xmin + bk.maximum(delta_m1_sg, 1e-6), xmin, xmax)
+    taper_w  = bk.maximum(taper_hi - xmin, 1e-6)
+
+    if n_taper > 1:
+        eps_t = 1e-4  # smallest fraction of taper width for the first interior point
+        u = bk.linspace(0.0, 1.0, n_taper)  # [0,1]
+        t = bk.exp(bk.log(eps_t) * (1.0 - u))   # eps_t -> 1
+        t = (t - eps_t) / (1.0 - eps_t)         # -> [0,1]
+        m1_taper = xmin + taper_w * t
+    else:
+        m1_taper = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 1) Gaussian windows (clip to support)
+    # ------------------------------------------------------------
+    k_g = k_sigma_gauss
+    k_b = k_sigma_band
+
+    g1_min_raw = mu1_sg - k_g * bk.abs(sigma1_sg)
+    g1_max_raw = mu1_sg + k_g * bk.abs(sigma1_sg)
+    g2_min_raw = mu2_sg - k_g * bk.abs(sigma2_sg)
+    g2_max_raw = mu2_sg + k_g * bk.abs(sigma2_sg)
+
+    g1_min = bk.clip(g1_min_raw, xmin, xmax)
+    g1_max = bk.clip(g1_max_raw, xmin, xmax)
+    g2_min = bk.clip(g2_min_raw, xmin, xmax)
+    g2_max = bk.clip(g2_max_raw, xmin, xmax)
+
+    tiny = 1e-6 * span
+    g1_width = g1_max - g1_min
+    g2_width = g2_max - g2_min
+
+    has_g1 = bk.gt(g1_width, tiny)
+    has_g2 = bk.gt(g2_width, tiny)
+
+    # ------------------------------------------------------------
+    # 2) Envelope "interesting band" over peaks + mb
+    # ------------------------------------------------------------
+    peak_min_raw = bk.minimum(g1_min_raw, g2_min_raw)
+    peak_min_raw = bk.minimum(peak_min_raw, mb_sg)
+
+    peak_max_raw = bk.maximum(g1_max_raw, g2_max_raw)
+    peak_max_raw = bk.maximum(peak_max_raw, mb_sg)
+
+    band_min = bk.clip(peak_min_raw, xmin, xmax)
+    band_max = bk.clip(peak_max_raw, xmin, xmax)
+
+    band_width = bk.maximum(band_max - band_min, tiny)
+
+    # ------------------------------------------------------------
+    # 3) Split n_peak between Gaussians + mid band
+    # ------------------------------------------------------------
+    n_g1  = int(n_peak * float(frac_gauss1))
+    n_g2  = int(n_peak * float(frac_gauss2))
+    if n_g1 < 0: n_g1 = 0
+    if n_g2 < 0: n_g2 = 0
+    if n_g1 + n_g2 > n_peak:
+        scale = float(n_peak) / float(n_g1 + n_g2)
+        n_g1 = int(round(n_g1 * scale))
+        n_g2 = int(round(n_g2 * scale))
+    n_mid = max(n_peak - n_g1 - n_g2, 0)
+
+    # ------------------------------------------------------------
+    # 4) Low tail: start AFTER taper, keep fixed length
+    # ------------------------------------------------------------
+    if n_tail_low > 0:
+        denom_low = float(n_tail_low + 1)
+        t_low = (bk.arange(n_tail_low) + 1.0) / denom_low  # in (0,1)
+
+        low_start = taper_hi
+        low_width = band_min - low_start
+
+        fallback_w = bk.maximum(taper_w / bk.maximum(n_taper, 1), 1e-3)
+
+        tail_good = low_start + low_width * t_low
+        tail_fallback = low_start + fallback_w * t_low
+
+        m1_low_tail = bk.switch(bk.gt(low_width, 0), tail_good, tail_fallback)
+    else:
+        m1_low_tail = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 5) Gaussian 1 segment (with fallback window if degenerate)
+    # ------------------------------------------------------------
+    if n_g1 > 0:
+        denom_g1 = float(max(n_g1 - 1, 1))
+        t_g1 = bk.arange(n_g1) / denom_g1
+
+        m1_g1 = g1_min + g1_width * t_g1
+
+        fallback_width = 1e-8 * span
+        g1_center = 0.5 * (g1_min + g1_max)
+        g1_center = bk.clip(g1_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g1 = g1_center + fallback_width * (t_g1 - 0.5)
+
+        m1_g1 = bk.switch(has_g1, m1_g1, fallback_g1)
+    else:
+        m1_g1 = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 6) Gaussian 2 segment (with fallback window if degenerate)
+    # ------------------------------------------------------------
+    if n_g2 > 0:
+        denom_g2 = float(max(n_g2 - 1, 1))
+        t_g2 = bk.arange(n_g2) / denom_g2
+
+        m1_g2 = g2_min + g2_width * t_g2
+
+        fallback_width = 1e-8 * span
+        g2_center = 0.5 * (g2_min + g2_max)
+        g2_center = bk.clip(g2_center, xmin + fallback_width, xmax - fallback_width)
+        fallback_g2 = g2_center + fallback_width * (t_g2 - 0.5)
+
+        m1_g2 = bk.switch(has_g2, m1_g2, fallback_g2)
+    else:
+        m1_g2 = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 7) Mid band segment
+    # ------------------------------------------------------------
+    if n_mid > 0:
+        denom_mid = float(max(n_mid - 1, 1))
+        t_mid = bk.arange(n_mid) / denom_mid
+        m1_mid = band_min + band_width * t_mid
+    else:
+        m1_mid = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # 8) High tail: endpoint excluded (avoid exact xmax)
+    # ------------------------------------------------------------
+    if n_tail_high > 0:
+        denom_high = float(max(n_tail_high, 1))   # not (n_tail_high-1)
+        t_high = bk.arange(n_tail_high) / denom_high  # in [0,1)
+        m1_high_tail = band_max + (xmax - band_max) * t_high
+    else:
+        m1_high_tail = bk.zeros((0,))
+
+    # ------------------------------------------------------------
+    # Combine -> clip -> sort -> tiny ramp for strict monotonicity
+    # ------------------------------------------------------------
+    m1_grid_raw = bk.concatenate(
+        [m1_taper, m1_low_tail, m1_g1, m1_g2, m1_mid, m1_high_tail],
+        axis=0,
+    )
+
+    m1_grid_clipped = bk.clip(m1_grid_raw, xmin, xmax)
+    m1_grid_sorted = bk.sort(m1_grid_clipped)
+
+    # tiny ramp ensures strict increase (does not affect resolution)
+    ramp_step = 1e-6
+    ramp = ramp_step * bk.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
+    #m1_grid_strict = m1_grid_sorted + ramp
+    m1_grid_strict = bk.clip(m1_grid_sorted + ramp, xmin, xmax)
+    return m1_grid_strict
+
+
+
+
+
+def logpdf_DPLDP_from_interp(bk, theta, interp_vals, force_m2_less_than_m1=False):
+
+    m1, m2 = theta
+    interp_grids, interp_vals_mass = interp_vals
+
+    m1_grid, m2_grid = interp_grids
+    lp_m1_grid, lp_m2_grid, lC_of_m1, ln = interp_vals_mass
+
+    ok = (
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1]) &
+        (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+    )
+
+    if force_m2_less_than_m1:
+        ok = ok & (m2 <= m1)
+
+    # avoid C(m1)=0 zone (logC=-inf -> +inf in joint)
+    ok = ok & (m1 > m2_grid[0])
+
+
+    Y_m1 = bk.stack([lp_m1_grid, lC_of_m1], axis=0)   # shape (2, Nm1)
+
+    #out = interp_1d_nonuniform_multiY_numpyop(m1, m1_grid, Y_m1)
+    out = interp_1d_nonuniform_multiY(bk, m1, m1_grid, Y_m1, side="left")
+
+    lpdfm1 = out[0]
+    lC     = out[1]
+
+    #lpdfm2 = interp_1d_nonuniform_numpyop(m2, m2_grid, lp_m2_grid)
+    lpdfm2 = atinterp(bk, m2, m2_grid, lp_m2_grid)
+
+
+    
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+    return bk.where(ok, lpdf, -1e30)
+
+
+
+
 # ---------------------------------------------------------------------
 # Double Power Law plus Double Peak Redshift Evolving (DPLDP-z)
 # ---------------------------------------------------------------------
@@ -1441,7 +1690,7 @@ def build_m1_grid_DPLDP_z( bk,
 
 
 
-def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, force_m2_less_than_m1=False):
+def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
     interp_grids, interp_vals_mass = interp_vals
     m1, m2 = theta
@@ -1470,11 +1719,11 @@ def logpdf_DPLDP_z_from_interp(theta, z, interp_vals, force_m2_less_than_m1=Fals
     # ------------------------------------------------------------
     # 1) SAFE indices + weights
     # ------------------------------------------------------------
-    kR, rz = _interp_indices_nonuniform_safe(z,  z_bank)
+    kR, rz = _interp_indices_nonuniform_safe(bk, z,  z_bank)
     kL = kR - 1
 
-    j1, r1 = _interp_indices_nonuniform_safe(m1, m1_grid)
-    j2, r2 = _interp_indices_nonuniform_safe(m2, m2_grid)
+    j1, r1 = _interp_indices_nonuniform_safe(bk, m1, m1_grid)
+    j2, r2 = _interp_indices_nonuniform_safe(bk, m2, m2_grid)
 
     # ------------------------------------------------------------
     # 2) Interpolate log p(m1 | z)

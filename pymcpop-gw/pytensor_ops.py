@@ -12,7 +12,7 @@ import rate_models
 import spin_models
 import mass_models
 from cosmology import dcfun_quad, dLfun, log_ddL_dz, Efun, Xi_vanilla, Xi_polexp, z_from_dL
-from pytensor_utils import atinterp, atinterp_uniform, atcumtrapz
+from pytensor_utils import atinterp, atinterp_uniform, atcumtrapz, attrapzvec
 
 
 import jax
@@ -251,19 +251,95 @@ def _make_pop_and_sel_core(
         m2src = m2det / onepz
 
         if interp_mass:
+            
             # pre-computing mass function for later interpolation
-            if mass_model=='DPLDP-z':
-
-
+            if mass_model=='DPLDP':
+                
                 _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
 
+
+                alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_ = mass_p
+
+                eps_m = 1e-5
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low_ + eps_m
+                m2_taper_hi = m2_lo + bk.maximum(delta_m2_, 1e-6)
+                
+                u1 = bk.linspace(0.0, 1.0, n2_taper)
+                
+                eps_t = 1e-4
+                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                
+                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+                
+
+
             
+                m1_grid_ = mass_models.build_m1_grid_DPLDP( bk, 
+                                            alpha1=alpha1_,
+                                            alpha2=alpha2_,
+                                            mb=mb_,
+                                            mu1=mu1_,
+                                            sigma1=sigma1_,
+                                            mu2=mu2_,
+                                            sigma2=sigma2_,
+                                            m1_low=m1_low_,
+                                            m_high=m_high_,
+                                            delta_m1=delta_m1_,
+                                            n_peak=interp_mass,      # or smaller if you want
+                                            n_tail_low=interp_mass//5,
+                                            n_tail_high=interp_mass//5,
+                                            #k_sigma=4.0,
+                                            n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
+                                            n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
+                                        )
+                
+                lp_m1_grid = mass_models.logpdfm1_DPLDP( bk, m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
+
+
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk, m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
+
+
+                # CDF over m2
+                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, np.inf)
+                
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = bk.log(cdf_m2)
+                
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation (must match your test)
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                
+                # Normalization for m1
+
+                lp_max = bk.max(lp_m1_grid)
+                p_shift = bk.exp(lp_m1_grid - lp_max)
+                I = attrapzvec(bk, p_shift, m1_grid_)
+                I = bk.clip(I, 1e-300, jnp.inf)
+                ln = bk.log(I) + lp_max
+                
+                # Pack for later use
+                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                interp_grids_mass = [m1_grid_, m2_grid_]
+                
+            
+            elif mass_model=='DPLDP-z':
+
+                _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
                 lambdaBBHmass_lowz, evo_params = unpack_mass_DPLDP_z(mass_p)
 
-                print("\n Chech params in pop.")
-                print(len(mass_p), len(lambdaBBHmass_lowz), len(evo_params))
-                print()
-                
+          
                 (alpha1_0, alpha2_0, mb_0,
                  mu1_0, sigma1_0, mu2_0, sigma2_0,
                  m1_low, m_high, delta_m1,
@@ -364,7 +440,8 @@ def _make_pop_and_sel_core(
                     m1_low , m_high , delta_m1 ,
                     lambda0_0, lambda1_0, lambda2_0,
                     epsilon ,
-                    *evo_params_,
+                    *evo_params
+                                                        ,
                     smoothing=smoothing,
                     simplex_repair=simplex_repair,
                     norm_gauss=norm_gauss
@@ -373,7 +450,7 @@ def _make_pop_and_sel_core(
 
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
                 p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
-                I = attrapzvec(bk, p_shift, m1_grid_, axis=1)            # (K,)
+                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
                 I = bk.clip(I, 1e-300, jnp.inf)
                 ln_bank = bk.log(I) + lp_max[:, 0]
              
