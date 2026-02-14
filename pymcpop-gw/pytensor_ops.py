@@ -729,7 +729,7 @@ class PopAndSelJAXOp(Op):
                 ):
         super().__init__()
 
-        self.zgrid = jnp.asarray(zgrid, dtype="float64")
+        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64) #jnp.asarray(zgrid, dtype="float64")
  
         self.rate_model = rate_model
         self.mass_model = mass_model

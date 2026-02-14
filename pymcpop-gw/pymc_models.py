@@ -619,7 +619,9 @@ def make_model(  priors,
     #####################################################################################################
 
 
-    vol_in_prior = any('UniformSourceFrame' in s or 'UniformComovingVolume' in s for s in dLprior)
+    vol_in_prior = any( (('UniformSourceFrame' in s or 'UniformComovingVolume' in s) and not ('bilby' in s) ) for s in dLprior)
+    vol_in_prior_from_bilby = any('UniformSourceFrame-bilby' in s or 'UniformComovingVolume-bilby' in s for s in dLprior)
+    
     none_in_prior = any('none' in s for s in dLprior)
     
     all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
@@ -629,7 +631,16 @@ def make_model(  priors,
     for n in Nevs_np:
         edges.append(edges[-1] + int(n))
 
+
+    if vol_in_prior_from_bilby:
+        print("Loading bilby pre-computed PE prior from distance for later interpolation")
+        dat = np.load("dLgrid_gpc_bilby_prior_grid_O4a.npz")
+        dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
+        PE_prior_bilby_grid =  at.as_tensor_variable(dat["prior_grid"])
+        
     if vol_in_prior:
+
+        print("Pre-computing bilby-like PE prior from distance for later interpolation")
 
         bk = ATBackend()
         zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
@@ -1720,7 +1731,7 @@ def make_model(  priors,
 
             
             if DP_m1_env:
-                print("DP mixture will be include a power-law envelope.")
+                print("DP mixture will include a power-law envelope.")
                 alpha_ = normal_from_bounds_95("alpha", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
             else:
                 alpha_ = 0.
@@ -1977,30 +1988,59 @@ def make_model(  priors,
         for i, lab in enumerate(dLprior):
         
             mask = at.eq(labels, i)
+
+            # Just for printing checks
+            idx = at.nonzero(mask)[0]     # same as at.where(mask)[0]
+            n = idx.shape[0]
+            mn = at.switch(at.gt(n, 0), idx.min(), -1)
+            mx = at.switch(at.gt(n, 0), idx.max(), -1)
         
             if lab == 'dLsq':
                 chunk = 2 * logd
+                print("Using dL^2 prior for events %s-%s "%(mn.eval(), mx.eval()))
+                
         
             elif lab == 'none':
                 chunk = at.zeros_like(log_p_pop)
+                print("Removing no PE prior for events %s-%s "%(mn.eval(), mx.eval()))
         
             else:
                 use_J = lab.endswith('-J')
                 base = lab[:-2] if use_J else lab
         
-                if base == 'UniformComovingVolume':
+                if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
+                    
                     chunk = cosmo.log_dV_dz(bk, zs_Planck15, 67.74, 0.3075, -1, dc=dc_Planck15, E=None )
         
-                elif base == 'UniformSourceFrame':
-                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, 67.74, 0.3075, -1, dc=dc_Planck15, E=None ) - at.log1p(zs_Planck15)
+                    if base == 'UniformSourceFrame':
+                        chunk +=  - at.log1p(zs_Planck15)
+                        print("Using custom UniformSourceFrame prior for events %s-%s "%(mn.eval(), mx.eval()))
+                    else:
+                        print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
+                    
+                    if use_J:
+                        chunk -= atools.log_ddL_dz(zs_Planck15, 67.74, 0.3075, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+                        print("..also removing jacodian with Planck15 cosmology")
+            
+                    if normalize_PE_prior:
+                        chunk -= log_norm_PE_prior
+                        print("..also normalizing")
+
+                elif base == 'UniformSourceFrame-bilby':
+
+                    print("Using interpolated bilby prior for events %s-%s "%(mn.eval(), mx.eval()))
+                    # interpolated prior density in 1/Gpc
+                    chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
         
-                if use_J:
-                    chunk -= atools.log_ddL_dz(zs_Planck15, 67.74, 0.3075, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
-        
-                if normalize_PE_prior:
-                    chunk -= log_norm_PE_prior
+                    # optional: enforce support -> 0 outside [min, max]
+                    # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -jnp.inf )
+                
+                else:
+                    raise ValueError(f"Unknown PE prior name base: {base}")
+
         
             log_PE_prior = at.where(mask, chunk, log_PE_prior)
+        
 
 
             
