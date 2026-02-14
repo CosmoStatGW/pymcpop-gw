@@ -97,6 +97,7 @@ def load_data_interp(fin, events_use=[]):
     nevs_dict = {}
     allnames_dict = {}
     evsuse_dict = {}
+    allnames_return = []
 
     nevs_all = 0
     Ngm_max = 0
@@ -105,7 +106,7 @@ def load_data_interp(fin, events_use=[]):
 
         print("\nLoading data from %s"%fid)
         allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
-
+                
         if events_use!=[]:
 
           
@@ -125,6 +126,9 @@ def load_data_interp(fin, events_use=[]):
             mask_ = onp.isin(allnames_, evs_use_)
             allnames_dict[fid] = allnames_
             evsuse_dict[fid] = evs_use_
+
+            allnames_return.append(evs_use_)
+            
             #print("mask_ is ")
             #print(mask_)
             if i==0:
@@ -134,7 +138,8 @@ def load_data_interp(fin, events_use=[]):
 
         else:
             mask_ = onp.full(len(allnames_), True )
-        
+            allnames_return.append(allnames_)
+            
         print('Loading sample means and covs...')
 
         try:
@@ -178,8 +183,7 @@ def load_data_interp(fin, events_use=[]):
 
         max_gmm = max(allNgm_dict[fid]) #min( max(Ngmm_all), max(Ngmm_mask) ) 
 
-        
-    
+           
         gmm_log_wts_dict[fid] = onp.load( fid+'gmm_log_wts.npy' )[mask_, :max_gmm] 
         gmm_means_dict[fid] =  onp.load( fid+'gmm_means.npy' )[mask_, :max_gmm] 
         gmm_icovs_dict[fid] =  onp.load( fid+'gmm_icovs.npy' )[mask_, :max_gmm] 
@@ -270,7 +274,8 @@ def load_data_interp(fin, events_use=[]):
             'gmm_cho_covs': gmm_cho_covs,
             'gmm_log_dets': gmm_log_dets,
             'allNgm': allNgm,
-            'Nevents': nevs_arr
+            'Nevents': nevs_arr,
+            'allnames' : allnames_return
            }
 
 

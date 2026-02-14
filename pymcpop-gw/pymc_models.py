@@ -4,6 +4,8 @@
 #    All rights reserved. Use of this source code is governed by the
 #    license that can be found in the LICENSE file.
 
+import json
+
 import pytensor_tools as atools
 import pytensor_utils_old as putils
 
@@ -38,6 +40,8 @@ import numpy as np
 eps   = 1e-30
 tinyL = 1e-300
 NEG_BIG = -np.inf
+PLANCK15_H0 = 67.9
+PLANCK15_OM = 0.3065
 
 
     
@@ -217,7 +221,7 @@ def make_model(  priors,
                  reparam_z = True,
                  reparam_mass = False,
                  priors_for_mmin='',
-                 normalize_PE_prior=True,
+                 penorm_lims=[],
                  linear_mass=False,
                  linear_z=False,
                  DP_truncate_up=False,
@@ -237,13 +241,13 @@ def make_model(  priors,
         # gw data are interpolants of single-event posteriors
         if sampling_GW=='gauss':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs = GWData
+            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs, allnames = GWData
             import numpy as np
             wts_l = np.exp(log_wts_l)
             
         elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
             # we sample single-event parameters from the actual single-event posteriors
-            wts_l, mus_l, cho_covs_l, Tobs, Nevs = GWData
+            wts_l, mus_l, cho_covs_l, Tobs, Nevs, allnames = GWData
         else:
             raise ValueError('sampling_GW can be gmm, gmm_cat, gumbel,  gauss ')
             
@@ -252,7 +256,7 @@ def make_model(  priors,
     else:
         # gw data are single-event posterior samples
         # shape of each has to be n_events, n_samples
-        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute = GWData            
+        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute , allnames = GWData            
 
         if Nsamplesuse !=-1 :
             if Nsamplesuse>allNsamples:
@@ -633,6 +637,7 @@ def make_model(  priors,
 
 
     if vol_in_prior_from_bilby:
+        
         print("Loading bilby pre-computed PE prior from distance for later interpolation")
         dat = np.load("dLgrid_gpc_bilby_prior_grid_O4a.npz")
         dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
@@ -645,22 +650,65 @@ def make_model(  priors,
         bk = ATBackend()
         zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
 
-        dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, 67.74, 0.3075, -1.) 
-        dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  67.74, 0.3075, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
+        dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
+        dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
 
     
-        if normalize_PE_prior:
-            z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
-            z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
-            print(
-    f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
-    f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
-)
-            
-            log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, 67.74, 0.3075, -1)
-            
-        
+    if ( ( vol_in_prior or vol_in_prior_from_bilby) and (penorm_lims != []) ):
 
+        print("Normalization of PE volume prior on distance required.")
+            
+#             z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
+#             z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
+#             print(
+#     f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
+#     f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
+# )
+            
+#             log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, PLANCK15_H0, PLANCK15_OM, -1)
+
+        bkNP = NPBackend()
+        
+        Nchunks = len(Nevs_np)
+        assert len(allnames) == Nchunks
+        j = 0
+        all_PE_log_norms = np.zeros(N)
+        for i in range(Nchunks):
+            
+            if  penorm_lims[i]=='none':
+                print("No normalization of PE prior on distance included for chunk %s"%i)
+                for key in allnames[i]:
+                    all_PE_log_norms[j] = 0.
+                    j+=1
+            else:
+                with open( penorm_lims[i] , 'r') as fp:
+                    plims_ = json.load(fp)
+                
+                print("Normalization of PE prior on distance for chunk %s loaded"%i)
+                
+                for key in allnames[i]:
+                    try:
+                        lims_ = plims_[key]
+                    except:
+                        raise ValueError("limits for %s not present"%key)    
+                     
+                    log_norm_PE_prior_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
+                    print(key, log_norm_PE_prior_)
+            
+                    all_PE_log_norms[j] = log_norm_PE_prior_
+                    j+=1
+            
+            print("at the end of chunk %s, index j is %s"%(i,j))
+
+        all_PE_log_norms = at.as_tensor_variable(np.asarray(all_PE_log_norms))
+    else:
+        print("No normalization of PE volume prior on distance required.")
+        all_PE_log_norms = at.zeros(Nevs_np.sum())
+
+    print("All PE log norms is ")
+    print("Shape: %s"%all_PE_log_norms.shape.eval())
+    print("Val: %s"%all_PE_log_norms.eval())
+    
     ################################################
     # Build model
     ################################################
@@ -1982,7 +2030,7 @@ def make_model(  priors,
         if vol_in_prior:
                 bk = ATBackend()
                 zs_Planck15 = cosmo.z_from_dL( bk, d, z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
-                dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, 67.74, 0.3075, -1.) 
+                dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1.) 
         
 
         for i, lab in enumerate(dLprior):
@@ -2010,7 +2058,7 @@ def make_model(  priors,
         
                 if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
                     
-                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, 67.74, 0.3075, -1, dc=dc_Planck15, E=None )
+                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1, dc=dc_Planck15, E=None )
         
                     if base == 'UniformSourceFrame':
                         chunk +=  - at.log1p(zs_Planck15)
@@ -2019,12 +2067,12 @@ def make_model(  priors,
                         print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
                     
                     if use_J:
-                        chunk -= atools.log_ddL_dz(zs_Planck15, 67.74, 0.3075, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
-                        print("..also removing jacodian with Planck15 cosmology")
+                        chunk -= atools.log_ddL_dz(zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+                        print("..also removing jacobian with Planck15 cosmology")
             
-                    if normalize_PE_prior:
-                        chunk -= log_norm_PE_prior
-                        print("..also normalizing")
+                    # if normalize_PE_prior:
+                    #     chunk -= log_norm_PE_prior
+                    #     print("..also normalizing")
 
                 elif base == 'UniformSourceFrame-bilby':
 
@@ -2039,7 +2087,7 @@ def make_model(  priors,
                     raise ValueError(f"Unknown PE prior name base: {base}")
 
         
-            log_PE_prior = at.where(mask, chunk, log_PE_prior)
+            log_PE_prior = at.where(mask, chunk, log_PE_prior) - all_PE_log_norms
         
 
 

@@ -6,7 +6,9 @@
 
 import pytensor.tensor as at
 
-import pymc as pm
+#import pymc as pm
+#from pymc.distributions.dist_math import check_parameters
+
 
 from pytensor.graph import Apply, Op
 import pytensor
@@ -17,7 +19,6 @@ from pytensor.tensor.type import TensorType
 
 
 from pytensor.gradient import disconnected_grad as stop_grad
-from pymc.distributions.dist_math import check_parameters
 
 
 _INV_INTERP_OP_CACHE = {}

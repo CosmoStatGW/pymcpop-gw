@@ -128,7 +128,8 @@ def main():
     
     
     parser.add_argument("--dLprior", nargs='+', default=['none'], type=str, required=False)
-    parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
+    #parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
+    parser.add_argument("--penorm_lims",  nargs='+', default=[], type=str, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
@@ -491,6 +492,7 @@ def main():
         gmm_log_dets =  data['gmm_log_dets']#.astype(X)
         allNgm =  data['allNgm']#.astype(X)
         Nevents =  data['Nevents']#.astype(X)
+        allnames =  data['allnames']
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
@@ -558,6 +560,8 @@ def main():
 
         allNsamples =  data['allNsamples']
         where_compute = data['where_compute']
+
+        allnames =  data['allnames']
 
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
@@ -737,7 +741,8 @@ def main():
                        gmm_means, #.astype(X), 
                        gmm_cho_covs, #.astype(X), 
                        injections['Tobs'], #.astype(X),
-                        Nevents
+                        Nevents,
+                        allnames
                       ]
         elif FLAGS.sampling_gw=='gauss':
             GWData =  [samples_means_at, #.astype(X), 
@@ -749,12 +754,13 @@ def main():
                        gmm_cho_covs, #.astype(X),
                        injections['Tobs'], #.astype(X),
                        Nevents, 
+                       allnames
                       ]
             
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
-                     injections['Tobs'], allNsamples, where_compute ]
+                     injections['Tobs'], allNsamples, where_compute, allnames ]
         
         
     print("Done.")
@@ -808,7 +814,8 @@ def main():
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
                                     dLprior = FLAGS.dLprior,
-                                    normalize_PE_prior=FLAGS.normalize_PE_prior,
+                                    #normalize_PE_prior=FLAGS.normalize_PE_prior,
+                                    penorm_lims = FLAGS.penorm_lims,
                                     sel_method=FLAGS.sel,
                                     fix_inj_len=FLAGS.fix_inj_len,
                                     use_float32 = FLAGS.use_float32,

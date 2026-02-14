@@ -66,6 +66,7 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
     """
 
     if integrate_dc=='gauss_legendre':
+        
         z_nodes = z[..., None] * x01
         
         integrand = 1.0 / Efun(bk, z_nodes, Om, w0)
@@ -81,7 +82,9 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
         dc_ = c_light / H0 * attrapzvec(bk, 1./E, zz)*1e-03
 
     elif integrate_dc=='pade':
+        
         dc_ = pc.comoving_distance_pade(z, H0, Om, w0=-1.0, p=p, q=q, xp=bk) 
+        
     else:
         raise ValueError(f"Unknown itegration method: {integrate_dc}")
         
