@@ -692,8 +692,8 @@ def make_model(  priors,
         if fix_w0:
             w0_ = at.as_tensor_variable(-1.)
         else:
-            if pade:
-                raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False")
+            if pade or integrate_dc=='pade':
+                raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False or integrate_dc=trapz or gauss_legendre")
             w0_ =  pm.Uniform('w0', lower=priors['w0'][0], upper=priors['w0'][1], initval=ivals.get('w0'))
 
             

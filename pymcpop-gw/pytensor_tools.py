@@ -81,9 +81,8 @@ def _make_z_grid_man(zres):
 def make_z_grid_piecewise_lin(zmin_a=1e-5, zmin_b=1e-3, zmid_b=3.0, zmax_c=10.0, n_tot=1200):
     """
     Piecewise-linear z grid with higher density in [zmin_b, zmid_b].
-    Total points <= 1499.
     """
-    n_tot = int(min(n_tot, 1499))
+    #n_tot = int(min(n_tot, 1499))
 
     # allocate points (tweak fractions if you want)
     nA = max(10, int(0.18 * n_tot))          # [zmin_a, zmin_b] very low-z

@@ -23,6 +23,10 @@ class NPBackend:
         return x.shape
 
     @staticmethod
+    def sign(x):
+        return np.sign(x)
+
+    @staticmethod
     def tile(x, reps):
         return np.tile(x, reps)
 
@@ -543,12 +547,13 @@ class JAXBackend:
         return jnp.max(x, axis=axis, keepdims=keepdims)
         
     minimum = staticmethod(jnp.minimum)
-    min = staticmethod(jnp.min
-                      )
+    min = staticmethod(jnp.min)
     maximum = staticmethod(jnp.maximum)
     clip = staticmethod(jnp.clip)
     where = staticmethod(jnp.where)
     ceil = staticmethod(jnp.ceil)
+    sign = staticmethod(jnp.sign)
+    
     @staticmethod
     def searchsorted(a, v, side="left"):
         return jnp.searchsorted(a, v, side=side)

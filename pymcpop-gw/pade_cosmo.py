@@ -56,7 +56,8 @@ def pade(c: onp.ndarray, m: int, n: int, *, xp=onp):
     A = xp.empty((n, n), dtype=float)
     for i in range(n):
         for j in range(n):
-            A[i, j] = c[m + i - j]
+            #A[i, j] = c[m + i - j]
+            A = _set(A, (i, j), c[m + i - j])
     q_tail = xp.linalg.solve(A, rhs)
     q = xp.concatenate([xp.array([1.0]), q_tail])  # q0=1
     p = xp.zeros(m + 1, dtype=float)
@@ -64,68 +65,86 @@ def pade(c: onp.ndarray, m: int, n: int, *, xp=onp):
         s = 0.0
         for j in range(min(k, n) + 1):
             s += q[j] * c[k - j]
-        p[k] = s
+        #p[k] = s
+        p = set1(p, k, s)
     return p[::-1], q[::-1]  # high->low for polyval
+
 
 def flat_wcdm_pade_coefficients(w0: float = -1.0, zpower: int = 0, *, xp=onp):
     coeffs = flat_wcdm_taylor_expansion(w0, zpower=zpower, xp=xp)
     # Use [7/7] approximant like wcosmo (from 17 Taylor coeffs)
     m = n = 7
     p, q = pade(coeffs, m, n, xp=xp)
-    return onp.asarray(p, dtype=float), onp.asarray(q, dtype=float)
+    return xp.asarray(p, dtype=float), xp.asarray(q, dtype=float)
 
 # -------------------------
-# PyTensor helpers
+#  helpers
 # -------------------------
-def _polyval_at_numpy_coeffs(coeffs, x):
+
+def _set(A, idx, val):
+    # Works for JAX arrays (has .at) and NumPy arrays (no .at)
+    if hasattr(A, "at"):
+        return A.at[idx].set(val)
+    A[idx] = val
+    return A
+
+def set1(x, k, v):
+    if hasattr(x, "at"):   # JAX
+        return x.at[k].set(v)
+    x[k] = v               # NumPy
+    return x
+
+
+
+def _polyval_at_numpy_coeffs(coeffs, x, xp=onp):
     """
     Horner eval with Python/NumPy coeffs (high->low). Returns a PyTensor.
     """
     cs = onp.asarray(coeffs, dtype="float64").ravel()
     if cs.size == 0:
-        return at.as_tensor_variable(0.0)
-    y = at.as_tensor_variable(cs[0])
+        return xp.asarray(0.0)
+    y = xp.asarray(cs[0])
     for c in cs[1:]:
         y = y * x + float(c)
     return y
 
-def indefinite_integral_pade_at(z, Om0, w0: float = -1.0, zpower: int = 0, p=None, q=None):
+def indefinite_integral_pade(z, Om0, w0: float = -1.0, zpower: int = 0, p=None, q=None, xp=onp):
     """
-    PyTensor Padé indefinite integral I(z) for (1+z)^k / E(z) in flat wCDM.
+    Padé indefinite integral I(z) for (1+z)^k / E(z) in flat wCDM.
     Pass p, q as NumPy arrays (high->low). No scan, no tensor coeffs.
     """
     if p is None or q is None:
         raise ValueError("Provide Padé coefficients p, q (NumPy/list, high->low).")
 
-    z   = at.as_tensor_variable(z)
-    Om0 = at.as_tensor_variable(Om0)
-    w0t = at.as_tensor_variable(w0)
-    k   = at.as_tensor_variable(zpower)
+    z   = xp.asarray(z)
+    Om0 = xp.asarray(Om0)
+    w0t = xp.asarray(w0)
+    k   = xp.asarray(zpower)
 
     # Use sign, not deprecated sgn
-    sign     = at.sign(w0t)
-    abs_sign = at.abs(sign)
-    what     = (w0t + at.abs(w0t)) / 2.0  # max(w0, 0)
+    sign     = xp.sign(w0t)
+    abs_sign = xp.abs(sign)
+    what     = (w0t + xp.abs(w0t)) / 2.0  # max(w0, 0)
 
-    gamma = at.pow(Om0, sign - abs_sign) * at.pow(1.0 - Om0, -sign - abs_sign)
-    gamma = at.pow(gamma, 0.25)
+    gamma = xp.pow(Om0, sign - abs_sign) * xp.pow(1.0 - Om0, -sign - abs_sign)
+    gamma = xp.pow(gamma, 0.25)
 
-    normalization = -2.0 * gamma * at.pow(1.0 + z, k - 0.5 - 1.5 * what)
-    x = at.pow(Om0 / (1.0 - Om0), sign) * at.pow(1.0 + z, -3.0 * at.abs(w0t))
+    normalization = -2.0 * gamma * xp.pow(1.0 + z, k - 0.5 - 1.5 * what)
+    x = xp.pow(Om0 / (1.0 - Om0), sign) * xp.pow(1.0 + z, -3.0 * xp.abs(w0t))
 
     num = _polyval_at_numpy_coeffs(p, x)
     den = _polyval_at_numpy_coeffs(q, x)
     ratio = num / den
 
     # If w0 == 0 → abs_sign == 0 → ratio**0 == 1
-    return normalization * at.pow(ratio, abs_sign)
+    return normalization * xp.pow(ratio, abs_sign)
 
-def comoving_distance_pade_at(z, H0, Om0, w0: float = -1.0, p=None, q=None):
+def comoving_distance_pade(z, H0, Om0, w0: float = -1.0, p=None, q=None, xp=onp):
     """
     d_C(z) ≈ (c/H0) * [I(z) - I(0)] with k=0.
     """
-    I_z = indefinite_integral_pade_at(z, Om0=Om0, w0=w0, zpower=0, p=p, q=q)
-    I_0 = indefinite_integral_pade_at(0.0, Om0=Om0, w0=w0, zpower=0, p=p, q=q)
-    return (C_LIGHT_KM_S / at.as_tensor_variable(H0)) * (I_z - I_0)*1e-03
+    I_z = indefinite_integral_pade(z, Om0=Om0, w0=w0, zpower=0, p=p, q=q, xp=xp)
+    I_0 = indefinite_integral_pade(0.0, Om0=Om0, w0=w0, zpower=0, p=p, q=q, xp=xp)
+    return (C_LIGHT_KM_S / H0 ) * (I_z - I_0)*1e-03
 
 

@@ -9,6 +9,8 @@ from constants import _w01_np as w01
 import jax.numpy as jnp
 import jax
 
+import pade_cosmo as pc
+p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0, xp=jnp)
 
 # ---------------------------------------------------------------------
 # Hubble
@@ -78,6 +80,8 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
         E = Efun(bk, zz, Om, w0 )
         dc_ = c_light / H0 * attrapzvec(bk, 1./E, zz)*1e-03
 
+    elif integrate_dc=='pade':
+        dc_ = pc.comoving_distance_pade(z, H0, Om, w0=-1.0, p=p, q=q, xp=bk) 
     else:
         raise ValueError(f"Unknown itegration method: {integrate_dc}")
         
@@ -104,7 +108,7 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", in
             raise ValueError(f"Unknown param='{param}' (expected 'vanilla' or 'polexp')")
 
     if dc is None:
-        dc = dcfun_quad(bk, z, H0, Om, w0, integrate_dc = integrate_dc )
+        dc = dcfun_quad( bk, z, H0, Om, w0, integrate_dc = integrate_dc )
 
     return Xi * (1.0 + z) * dc
 
