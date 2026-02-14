@@ -141,28 +141,10 @@ def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
         i += 8
 
     elif mass_model == "DPLDP":
-        # In your code you append:
-        # [alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high, delta_m1,
-        #  lambda0, lambda1, lambda2, beta, m2_low, delta_m2, epsilon,
-        #  m_g, w_g, sig_g_l, sig_g_h]
         mass = Lambda_[i:i+21]
         i += 21
 
     elif mass_model == "DPLDP-z":
-        # You append:
-        # low-z block (22):
-        #  [alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
-        #   m1_low, m_high, delta_m1, lambda0_0, lambda1_0, lambda2_0,
-        #   beta, m2_low, delta_m2, epsilon, m_g, w_g, sig_g_l, sig_g_h]
-        # plus evo params (23):
-        #  [alpha1_inf, z_alpha1, dz_alpha1,
-        #   alpha2_inf, z_alpha2, dz_alpha2,
-        #   mb_inf, z_mb, dz_mb,
-        #   mu1_inf, z_mu1, dz_mu1,
-        #   sigma1_inf, z_sigma1, dz_sigma1,
-        #   mu2_inf, z_mu2, dz_mu2,
-        #   sigma2_inf, z_sigma2, dz_sigma2,
-        #   lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda]
         mass = Lambda_[i:i+47]
         i += 47
 
@@ -212,7 +194,8 @@ def _make_pop_and_sel_core(
     K_dp: int = 30, 
     DP_truncate=False,
     DP_m1_env=False,
-    interp_mass = 0
+    interp_mass = 0,
+    integrate_dc = 'trapz'
 ):
     """Build the single source of truth JAX core function.
 
@@ -244,7 +227,8 @@ def _make_pop_and_sel_core(
   
         ##################################################
 
-        z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, z_nodes = zgrid, d_nodes = None) 
+        z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, z_nodes = zgrid
+                          , d_nodes = None, integrate_dc = integrate_dc) 
         
         onepz = 1.0 + z_evt
         m1src = m1det / onepz
@@ -478,15 +462,15 @@ def _make_pop_and_sel_core(
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
                 smoothing=smoothing, simplex_repair=simplex_repair,
                 has_m2_break=has_m2_break, norm_gauss=norm_gauss,
-                dc=None, log_ddL_dz_pre=None,
+                dc=None, 
+                log_ddL_dz_pre=None,
                 Xi=None, E=None, 
                 param=param,
-                z_grid=zgrid, 
                 verbose=verbose,
-            K_dp=K_dp, 
-            DP_truncate=DP_truncate,
-            DP_m1_env=DP_m1_env,
-            interp_mass_vals = interp_mass_vals
+                K_dp=K_dp, 
+                DP_truncate=DP_truncate,
+                DP_m1_env=DP_m1_env,
+                interp_mass_vals = interp_mass_vals
         )
 
         if skip_sel:
@@ -517,7 +501,8 @@ def _make_pop_and_sel_core(
             K_dp=K_dp,
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
-            interp_mass_vals = interp_mass_vals
+            interp_mass_vals = interp_mass_vals,
+            integrate_dc = integrate_dc
         )
 
 
@@ -555,7 +540,8 @@ class _PopAndSelJAXVJPOp(Op):
                  K_dp : int = 30,
                  DP_truncate=False,
                  DP_m1_env=False,
-                 interp_mass=0
+                 interp_mass=0,
+                 integrate_dc = 'trapz'
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -575,6 +561,7 @@ class _PopAndSelJAXVJPOp(Op):
         self.DP_truncate = DP_truncate
         self.DP_m1_env = DP_m1_env
         self.interp_mass=interp_mass
+        self.integrate_dc=integrate_dc
 
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
@@ -603,7 +590,8 @@ class _PopAndSelJAXVJPOp(Op):
             K_dp = self.K_dp,
             DP_truncate= self.DP_truncate,
             DP_m1_env = self.DP_m1_env,
-            interp_mass=self.interp_mass
+            interp_mass=self.interp_mass,
+            integrate_dc = self.integrate_dc
         )
 
 
@@ -736,7 +724,8 @@ class PopAndSelJAXOp(Op):
                  K_dp: int = 30,
                  DP_truncate = False,
                  DP_m1_env = False,
-                 interp_mass=0
+                 interp_mass=0,
+                 integrate_dc = 'trapz'
                 ):
         super().__init__()
 
@@ -756,6 +745,7 @@ class PopAndSelJAXOp(Op):
         self.chunk_inj = chunk_inj
         self.K_dp = int(K_dp)
         self.interp_mass=interp_mass
+        self.integrate_dc=integrate_dc
 
         
         self.DP_truncate=DP_truncate
@@ -785,7 +775,8 @@ class PopAndSelJAXOp(Op):
             K_dp = self.K_dp,
             DP_truncate=self.DP_truncate,
             DP_m1_env=self.DP_m1_env,
-            interp_mass=self.interp_mass
+            interp_mass=self.interp_mass,
+            integrate_dc=self.integrate_dc
         )
         self._vjp_op._parent_op = self
 
@@ -811,7 +802,8 @@ class PopAndSelJAXOp(Op):
             DP_truncate=self.DP_truncate,
             DP_m1_env=self.DP_m1_env,
             skip_sel=self.skip_sel,
-            interp_mass=self.interp_mass
+            interp_mass=self.interp_mass,
+            integrate_dc=self.integrate_dc
         )
         return jax.jit(full_f)
 

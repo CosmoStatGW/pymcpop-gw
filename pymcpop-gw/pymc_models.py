@@ -180,6 +180,7 @@ def make_model(  priors,
                 fix_Om = True,
                fix_w0 = True,
                  fix_Xi0n = True,
+                 integrate_dc = 'trapz',
                  z_pivot=0.5,
                pade=False,
                zres=150,
@@ -586,6 +587,7 @@ def make_model(  priors,
     else:
         zgrid_np = np.linspace(zmin_a, zmax_c, zres)
 
+    
     #zgrid_ = at.constant(zgrid_np)
     zgrid_ = at.as_tensor_variable(zgrid_np)
 
@@ -1944,7 +1946,8 @@ def make_model(  priors,
         K_dp = N_DP_comp_max,
         DP_truncate = DP_truncate,
         DP_m1_env = DP_m1_env,
-        interp_mass = interp_mass
+        interp_mass = interp_mass,
+        integrate_dc = integrate_dc
         )
         
         if lp_incl_inj[0] is None:

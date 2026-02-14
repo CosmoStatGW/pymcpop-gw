@@ -54,19 +54,14 @@ def log_p_pop(
     E=None,
     log_ddL_dz_pre=None,
     param="vanilla",
-    z_grid=None,
     verbose=False,
     K_dp : int = 30,
     DP_truncate = False,
     DP_m1_env = False,
-    interp_mass_vals=  None
+    interp_mass_vals=  None,
 ):
     """
-    Backend-agnostic log_p_pop_at,
-    currently supporting ONLY:
-      rate_model == "MD"
-      spin_model == "default_gauss"
-      mass_model == "DPLDP"
+    Backend-agnostic log_p_pop
     """
 
     # Cosmology hyper-params
@@ -140,7 +135,7 @@ def log_p_pop(
 
         if interp_mass_vals is not None:
             
-            lpmass = mass_models.logpdf_DPLDP_from_interp(
+            lpmass = mass_models.logpdf_DPLDPfrom_interp(
                     bk, (m1s, m2s), interp_mass_vals)
 
         else:
@@ -356,7 +351,8 @@ def log_p_pop(
     else:
         log_dthD_dth = log_ddL_dz_pre
 
-    log_dthD_dth = log_dthD_dth + 3.0 * log_one_p_z # here there is a (1+z)^2 prior removal from mass conversion and (1+z) from source-->observer time
+    log_dthD_dth = log_dthD_dth + 3.0 * log_one_p_z 
+    # here there is a (1+z)^2 prior removal from mass conversion and (1+z) from source-->observer time
 
     # population log density
     lp = lpz - log_dthD_dth + lpmass + lpspin
@@ -394,7 +390,9 @@ def sel_bias_with_uncertainty_legacy(
     K_dp: int  = 30,
     DP_truncate=False,
     DP_m1_env = False,
-    interp_mass_vals=None
+    interp_mass_vals=None,
+    integrate_dc = 'trapz'
+
 ):
     """
     Single canonical selection-bias function used by both forward and VJP.
@@ -414,9 +412,11 @@ def sel_bias_with_uncertainty_legacy(
             w0=w0,
             Xi0=Xi0,
             nXi0=nXi0,
-            z_nodes=z_grid,
-            d_nodes=None,
-            param=param,
+            z_nodes = z_grid,
+            d_nodes = None,
+            param = param,
+            integrate_dc = integrate_dc
+
         )
 
     onepz = 1.0 + zinj
@@ -440,7 +440,6 @@ def sel_bias_with_uncertainty_legacy(
         Xi=None,
         E=None,
         param=param,
-        z_grid=None,
         verbose=verbose,
         K_dp=K_dp, 
         DP_truncate=DP_truncate,
@@ -503,7 +502,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
-    interp_mass_vals=None
+    interp_mass_vals=None,
+    integrate_dc = 'trapz'
 ):
     """
     Optimized selection term (patched):
@@ -553,11 +553,11 @@ def sel_bias_with_uncertainty_streaming_vjp(
             Om,
             w0,
             Xi0,
-            nXi0,
-            
+            nXi0,     
             dc=None,
             Xi=None,
             param=param,
+            integrate_dc = integrate_dc
         )
 
     def _score_chunk(
@@ -571,6 +571,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_c,
         mask_c,
     ):
+        
         # invert z(dL) cheaply using precomputed nodes
         # atinterp(bk, x, x_nodes, y_nodes): here x=dL, x_nodes=d_nodes, y_nodes=z_nodes
         zc = atinterp(bk, dL_c, d_nodes_, z_nodes)
@@ -597,7 +598,6 @@ def sel_bias_with_uncertainty_streaming_vjp(
             Xi=None,
             E=None,
             param=param,
-            z_grid=None,
             verbose=verbose,
             K_dp=K_dp,
             DP_truncate=DP_truncate,
@@ -835,7 +835,8 @@ def sel_bias_with_uncertainty(
     K_dp: int =30,
     DP_truncate=False,
     DP_m1_env=False,
-    interp_mass_vals=None
+    interp_mass_vals=None,
+    integrate_dc = 'trapz'
 ):
     
    
@@ -854,7 +855,8 @@ def sel_bias_with_uncertainty(
             K_dp=K_dp, 
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
-            interp_mass_vals=interp_mass_vals
+            interp_mass_vals=interp_mass_vals,
+            integrate_dc = integrate_dc
             
         )
 
@@ -873,7 +875,8 @@ def sel_bias_with_uncertainty(
         K_dp=K_dp,
         DP_truncate=DP_truncate,
         DP_m1_env=DP_m1_env,
-        interp_mass_vals=interp_mass_vals
+        interp_mass_vals=interp_mass_vals,
+        integrate_dc = integrate_dc
     )
 
 

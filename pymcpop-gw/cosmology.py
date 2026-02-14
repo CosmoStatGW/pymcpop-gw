@@ -6,7 +6,8 @@ from pytensor_tools import zGridGlobals
 
 from constants import _x01_np as x01
 from constants import _w01_np as w01
-
+import jax.numpy as jnp
+import jax
 
 
 # ---------------------------------------------------------------------
@@ -49,7 +50,7 @@ def Xi_polexp(bk, z, Xi0, n):
 # ---------------------------------------------------------------------
 
 
-def dcfun_quad(bk, z, H0, Om, w0 ):
+def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
     """
     Comoving distance d_c(z) in Gpc, using Gauss–Legendre quadrature on [0,z].
 
@@ -61,20 +62,32 @@ def dcfun_quad(bk, z, H0, Om, w0 ):
     Returns:
       d_c(z) in Gpc
     """
-    
-    z_nodes = z[..., None] * x01
-    
-    integrand = 1.0 / Efun(bk, z_nodes, Om, w0)
-    
-    I = bk.sum(w01 * integrand, axis=-1)
-    
-    return (c_light / H0) * z * I * 1e-03
+
+    if integrate_dc=='gauss_legendre':
+        z_nodes = z[..., None] * x01
+        
+        integrand = 1.0 / Efun(bk, z_nodes, Om, w0)
+        
+        I = bk.sum( w01  * integrand, axis=-1)
+
+        dc_ = (c_light / H0) * z * I * 1e-03
+        
+    elif integrate_dc=='trapz':
+
+        zz = bk.linspace( 0., z, num=1000).T
+        E = Efun(bk, zz, Om, w0 )
+        dc_ = c_light / H0 * attrapzvec(bk, 1./E, zz)*1e-03
+
+    else:
+        raise ValueError(f"Unknown itegration method: {integrate_dc}")
+        
+    return dc_
 
 # ---------------------------------------------------------------------
 # luminosity distance
 # ---------------------------------------------------------------------
 
-def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla"):
+def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", integrate_dc="trapz"):
     """
     Luminosity distance d_L(z) in Gpc.
 
@@ -91,7 +104,7 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla"):
             raise ValueError(f"Unknown param='{param}' (expected 'vanilla' or 'polexp')")
 
     if dc is None:
-        dc = dcfun_quad(bk, z, H0, Om, w0 )
+        dc = dcfun_quad(bk, z, H0, Om, w0, integrate_dc = integrate_dc )
 
     return Xi * (1.0 + z) * dc
 
@@ -100,14 +113,16 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla"):
 # inversion of dL(z)
 # ---------------------------------------------------------------------
 
-def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla"):
+def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz"):
 
     
     if z_nodes is None:
-        z_nodes = zGridGlobals
+        print("warning: recomputing z nodes from zGridGlobals")
+        z_nodes = bk.asarray(zGridGlobals)
     
     if d_nodes is None:
-        d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param)
+        d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
+
 
     return atinterp(bk, dL, d_nodes, z_nodes)
         

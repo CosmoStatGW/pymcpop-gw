@@ -78,10 +78,41 @@ def _make_z_grid_man(zres):
                      np.logspace(start=1, stop=2, base=10, num=nmid), np.logspace(start=2, stop=5, base=10, num=ntails) ])))
 
 
+def make_z_grid_piecewise_lin(zmin_a=1e-5, zmin_b=1e-3, zmid_b=3.0, zmax_c=10.0, n_tot=1200):
+    """
+    Piecewise-linear z grid with higher density in [zmin_b, zmid_b].
+    Total points <= 1499.
+    """
+    n_tot = int(min(n_tot, 1499))
+
+    # allocate points (tweak fractions if you want)
+    nA = max(10, int(0.18 * n_tot))          # [zmin_a, zmin_b] very low-z
+    nB = max(50, int(0.62 * n_tot))          # [zmin_b, zmid_b] main high-accuracy region
+    nC = max(10, n_tot - nA - nB)            # [zmid_b, zmax_c] tail
+
+    # safety ordering
+    zmin_a = float(zmin_a)
+    zmin_b = float(zmin_b)
+    zmid_b = float(zmid_b)
+    zmax_c = float(zmax_c)
+    if not (0.0 <= zmin_a < zmin_b < zmid_b < zmax_c):
+        raise ValueError("Require 0 <= zmin_a < zmin_b < zmid_b < zmax_c")
+
+    zA = np.linspace(zmin_a, zmin_b, nA, dtype=np.float64)
+    zB = np.linspace(zmin_b, zmid_b, nB, dtype=np.float64)
+    zC = np.linspace(zmid_b, zmax_c, nC, dtype=np.float64)
+
+    # remove duplicates at boundaries
+    z = np.unique(np.concatenate([zA, zB, zC]))
+    return z
+
+
 def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15, mode='cheb'):
     print("make_z_grid mode: %s"%mode)
     if mode=='man':
         return _make_z_grid_man(total)
+    elif mode=='piecewise_linear':
+        return make_z_grid_piecewise_lin(zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, n_tot=total)
     elif mode=='cheb':
         raise ValueError()
         return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)

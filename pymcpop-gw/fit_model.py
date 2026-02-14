@@ -190,6 +190,8 @@ def main():
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--z_pivot", default=0, type=float, required=False)
+    parser.add_argument("--integrate_dc", default='trapz', type=str, required=False)
+    
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
@@ -832,6 +834,7 @@ def main():
                                     fix_w0 = FLAGS.fix_w0,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
                                     z_pivot=FLAGS.z_pivot,
+                                    integrate_dc = FLAGS.integrate_dc,
                                     zres = FLAGS.zres,
                                     z_grid_mode=FLAGS.z_grid_mode,
                                     zmin_a=FLAGS.zmin_a, 
