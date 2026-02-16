@@ -101,7 +101,7 @@ def log_p_pop(
 
     elif rate_model=='DPUC-vol':
         
-        lpz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc, E=E )
+        lpz = log_dV_dz(bk, z, H0, Om, w0, dc=dc, E=E )
         
         istart = 5
 
@@ -324,7 +324,7 @@ def log_p_pop(
             lpmass += log_gate
             
             #inside = (m2Src >= mmin) & (m1Src <= mmax) & (m1Src >= mmin) & (m2Src <= mmax)
-            #log_p_pop = at.switch(inside, log_p_pop, -np.inf)
+            #log_p_pop = bk.switch(inside, log_p_pop, -np.inf)
 
             logZ, Zk = mass_models.mixture_logZ_physical_vectorized( bk,
                     mux=mu[0], sdx=sd[0],

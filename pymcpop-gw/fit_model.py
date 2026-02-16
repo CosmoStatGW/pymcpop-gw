@@ -197,14 +197,14 @@ def main():
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
     parser.add_argument("--zres", default=1000, type=int, required=False)
-    parser.add_argument("--z_grid_mode", default='man', type=str, required=False)
+    parser.add_argument("--z_grid_mode", default='piecewise_linear', type=str, required=False)
     
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
     parser.add_argument("--zmid_b", default=3., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
-    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
+    parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
 
@@ -556,6 +556,7 @@ def main():
         m1d_samples = data['m1d_samples']
         m2d_samples =  data['m2d_samples']
         dL_samples =  data['dL_samples']
+        dL_prior =  data['dL_PE_prior']
         print("dL_samples shape is %s"%(str(dL_samples.shape)))
 
         allNsamples =  data['allNsamples']
@@ -563,21 +564,19 @@ def main():
 
         allnames =  data['allnames']
 
+        Nevents =  m1d_samples.shape[0]
+
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
-            # chi1_samples = at.as_tensor_variable(data['chi1_samples'])
-            # chi2_samples = at.as_tensor_variable(data['chi2_samples'])
-            # cost1_samples = at.as_tensor_variable(data['cost1_samples'])
-            # cost2_samples = at.as_tensor_variable(data['cost2_samples'])
             chi1_samples =  data['chi1_samples']
             chi2_samples =  data['chi2_samples']
             cost1_samples =  data['cost1_samples']
             cost2_samples =  data['cost2_samples']
 
-            spin_samples = [ chi1_samples, chi2_samples, cost1_samples, cost2_samples ]
+            spin_samples = onp.asarray([ chi1_samples, chi2_samples, cost1_samples, cost2_samples ])
 
         elif FLAGS.spin_model=='none':
-            spin_samples = [  ]
+            spin_samples = onp.asarray([  ])
         else:
             raise NotImplementedError()
 
@@ -760,7 +759,8 @@ def main():
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
-                     injections['Tobs'], allNsamples, where_compute, allnames ]
+                       dL_prior, 
+                     injections['Tobs'], allNsamples, where_compute, Nevents, allnames ]
         
         
     print("Done.")
@@ -778,7 +778,7 @@ def main():
 
     if FLAGS.pop_only:
         N = m1d_samples.shape[0]
-        N_successes_l = np.ones(N.eval())
+        N_successes_l = np.ones(N)
     else:   
         N_successes_l = None
 

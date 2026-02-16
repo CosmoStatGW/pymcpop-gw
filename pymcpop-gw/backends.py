@@ -4,7 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-
+from pytensor_utils import atinterp
 
 class NPBackend:
     floatX = np.float64
@@ -34,7 +34,9 @@ class NPBackend:
     def repeat(a, reps, axis=None):
         return np.repeat(a, reps, axis=axis)
 
-
+    @staticmethod
+    def interp(x, xp,fp, left=None, right=None, period=None):
+        return np.interp(x, xp, fp, left=left, right=right, period=period )
 
     @staticmethod
     def constant(x, dtype=None):
@@ -266,6 +268,9 @@ class ATBackend:
         at = ATBackend._at()
         return at.tile(x, reps)
 
+    @staticmethod
+    def interp(x, xp, fp, left=None, right=None, period=None):
+        return atinterp(x, xp, fp  )
         
     @staticmethod
     def constant(x, dtype=None):
@@ -579,6 +584,14 @@ class JAXBackend:
     @staticmethod
     def broadcast_to(x, shape):
         return jnp.broadcast_to(x,shape)
+
+    @staticmethod
+    def interp(x, xp,fp, left=None, right=None, period=None):
+        return jnp.interp(x, xp, fp, left=left, right=right, period=period )
+
+    @staticmethod
+    def trapezoid(y, x=None, dx=1.0, axis=-1):
+        return jnp.trapezoid(y, x=x, dx=dx, axis=axis )
     
     
     @staticmethod

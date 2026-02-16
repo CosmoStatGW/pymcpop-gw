@@ -195,7 +195,9 @@ def _make_pop_and_sel_core(
     DP_truncate=False,
     DP_m1_env=False,
     interp_mass = 0,
-    integrate_dc = 'trapz'
+    integrate_dc = 'trapz',
+    pop_only = False,
+    stop_grad_var_u: bool = True
 ):
     """Build the single source of truth JAX core function.
 
@@ -224,11 +226,19 @@ def _make_pop_and_sel_core(
         log_p_incl = lax.stop_gradient(log_p_incl)
         Ndraw = lax.stop_gradient(Ndraw)
 
+        if pop_only:
+            m1det  = lax.stop_gradient(m1det)
+            m2det = lax.stop_gradient(m2det)
+            dLdet = lax.stop_gradient(dLdet)
+            spins_evt = lax.stop_gradient(spins_evt)
+
   
         ##################################################
 
+
         z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, z_nodes = zgrid
                           , d_nodes = None, integrate_dc = integrate_dc) 
+
         
         onepz = 1.0 + z_evt
         m1src = m1det / onepz
@@ -303,7 +313,7 @@ def _make_pop_and_sel_core(
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
                 # NON-UNIFORM interpolation (must match your test)
-                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = bk.interp(  mcap, m2_cdf_grid, logcdf_m2 )
                 
                 # Normalization for m1
 
@@ -404,7 +414,7 @@ def _make_pop_and_sel_core(
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
                 # NON-UNIFORM interpolation
-                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
                 
 
                 # ---------
@@ -434,7 +444,7 @@ def _make_pop_and_sel_core(
 
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
                 p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
-                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
+                I = bk.trapezoid(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
                 I = bk.clip(I, 1e-300, jnp.inf)
                 ln_bank = bk.log(I) + lp_max[:, 0]
              
@@ -504,7 +514,8 @@ def _make_pop_and_sel_core(
             interp_mass_vals = interp_mass_vals,
             integrate_dc = integrate_dc
         )
-
+        if stop_grad_var_u:
+            var_u = lax.stop_gradient(var_u)
 
         return (
             logp_pop_evt,
@@ -541,7 +552,9 @@ class _PopAndSelJAXVJPOp(Op):
                  DP_truncate=False,
                  DP_m1_env=False,
                  interp_mass=0,
-                 integrate_dc = 'trapz'
+                 integrate_dc = 'trapz',
+                 stop_grad_var_u: bool = True,
+                 pop_only: bool = False
                 ):
         super().__init__()
         self.zgrid = zgrid 
@@ -562,7 +575,9 @@ class _PopAndSelJAXVJPOp(Op):
         self.DP_m1_env = DP_m1_env
         self.interp_mass=interp_mass
         self.integrate_dc=integrate_dc
-
+        self.stop_grad_var_u = stop_grad_var_u
+        self.pop_only=pop_only
+        
         self._cached_inj = None
         self._jax_vjp = self._build_jax_vjp()
 
@@ -591,7 +606,9 @@ class _PopAndSelJAXVJPOp(Op):
             DP_truncate= self.DP_truncate,
             DP_m1_env = self.DP_m1_env,
             interp_mass=self.interp_mass,
-            integrate_dc = self.integrate_dc
+            integrate_dc = self.integrate_dc,
+            stop_grad_var_u = self.stop_grad_var_u,
+            pop_only=self.pop_only,
         )
 
 
@@ -604,6 +621,8 @@ class _PopAndSelJAXVJPOp(Op):
             g_logp_pop = jnp.reshape(g_logp_pop, m1det.shape)
             g_log_mu = jnp.reshape(g_log_mu, ())
             g_var_u = jnp.reshape(g_var_u, ())
+            g_var_u = jnp.asarray(0.0, dtype=jnp.float64)
+
 
             if self.skip_sel:
                 (_, _, _), pull = jax.vjp(
@@ -664,26 +683,32 @@ class _PopAndSelJAXVJPOp(Op):
 
         m1inj_j, m2inj_j, dLinj_j, spins_inj_j, lpd_j, lpi_j, Ndraw_j = inj_cache
 
-        # Reuse last-call device-put args from the forward pass when possible
-        m1det_j = m2det_j = dLdet_j = spins_evt_j = Lambda_j = None
-        if parent is not None and getattr(parent, "_last_call", None) is not None:
-            key_cached, args_cached = parent._last_call
-            key_now = (
-                id(m1det), getattr(m1det, "shape", None),
-                id(m2det), getattr(m2det, "shape", None),
-                id(dLdet), getattr(dLdet, "shape", None),
-                id(spins_evt), getattr(spins_evt, "shape", None),
-                id(Lambda), getattr(Lambda, "shape", None),
-            )
-            if key_now == key_cached:
-                m1det_j, m2det_j, dLdet_j, spins_evt_j, Lambda_j = args_cached
-
-        if m1det_j is None:
-            m1det_j = _to_device(m1det)
-            m2det_j = _to_device(m2det)
-            dLdet_j = _to_device(dLdet)
-            spins_evt_j = _to_device(spins_evt)
+        if parent is not None and getattr(parent, "pop_only", False) and getattr(parent, "_cached_evt", None) is not None:
+            m1det_j, m2det_j, dLdet_j, spins_evt_j = parent._cached_evt
             Lambda_j = _to_device(Lambda)
+        else:
+
+    
+            # Reuse last-call device-put args from the forward pass when possible
+            m1det_j = m2det_j = dLdet_j = spins_evt_j = Lambda_j = None
+            if parent is not None and getattr(parent, "_last_call", None) is not None:
+                key_cached, args_cached = parent._last_call
+                key_now = (
+                    id(m1det), getattr(m1det, "shape", None),
+                    id(m2det), getattr(m2det, "shape", None),
+                    id(dLdet), getattr(dLdet, "shape", None),
+                    id(spins_evt), getattr(spins_evt, "shape", None),
+                    id(Lambda), getattr(Lambda, "shape", None),
+                )
+                if key_now == key_cached:
+                    m1det_j, m2det_j, dLdet_j, spins_evt_j, Lambda_j = args_cached
+
+            if m1det_j is None:
+                m1det_j = _to_device(m1det)
+                m2det_j = _to_device(m2det)
+                dLdet_j = _to_device(dLdet)
+                spins_evt_j = _to_device(spins_evt)
+                Lambda_j = _to_device(Lambda)
 
         dm1det, dm2det, ddLdet, dspins_evt, dLambda = self._jax_vjp(
             m1det_j, m2det_j, dLdet_j, spins_evt_j,
@@ -715,6 +740,7 @@ class PopAndSelJAXOp(Op):
     otypes = [at.dvector, at.dscalar, at.dscalar]
 
     def __init__(self, *, zgrid, rate_model, mass_model, spin_model,
+                 pop_only=False,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla",
                  verbose=False,
@@ -725,7 +751,8 @@ class PopAndSelJAXOp(Op):
                  DP_truncate = False,
                  DP_m1_env = False,
                  interp_mass=0,
-                 integrate_dc = 'trapz'
+                 integrate_dc = 'trapz',
+                 stop_grad_var_u: bool = True,
                 ):
         super().__init__()
 
@@ -746,6 +773,8 @@ class PopAndSelJAXOp(Op):
         self.K_dp = int(K_dp)
         self.interp_mass=interp_mass
         self.integrate_dc=integrate_dc
+        self.pop_only=pop_only
+        self.stop_grad_var_u = stop_grad_var_u
 
         
         self.DP_truncate=DP_truncate
@@ -761,6 +790,9 @@ class PopAndSelJAXOp(Op):
         # Stores: (key, (m1det_j, m2det_j, dLdet_j, spins_evt_j, Lambda_j))
         self._last_call = None
 
+        self._cached_evt = None
+        self._evt_key = None
+
         # Build and jit core forward function
         self._jax_fwd = self._build_jax_fwd()
 
@@ -768,6 +800,7 @@ class PopAndSelJAXOp(Op):
         self._vjp_op = _PopAndSelJAXVJPOp(
             zgrid=self.zgrid, 
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+            pop_only = self.pop_only,
             smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break,
             norm_gauss=norm_gauss, param=param, 
             verbose=verbose, subtract_log_p_incl=subtract_log_p_incl,
@@ -776,7 +809,8 @@ class PopAndSelJAXOp(Op):
             DP_truncate=self.DP_truncate,
             DP_m1_env=self.DP_m1_env,
             interp_mass=self.interp_mass,
-            integrate_dc=self.integrate_dc
+            integrate_dc=self.integrate_dc,
+            stop_grad_var_u = self.stop_grad_var_u
         )
         self._vjp_op._parent_op = self
 
@@ -803,7 +837,9 @@ class PopAndSelJAXOp(Op):
             DP_m1_env=self.DP_m1_env,
             skip_sel=self.skip_sel,
             interp_mass=self.interp_mass,
-            integrate_dc=self.integrate_dc
+            integrate_dc=self.integrate_dc,
+            pop_only = self.pop_only,
+            stop_grad_var_u = self.stop_grad_var_u
         )
         return jax.jit(full_f)
 
@@ -814,6 +850,8 @@ class PopAndSelJAXOp(Op):
             return Apply(self, inputs, [at.dvector(), at.dscalar(), at.dscalar()])
 
     def perform(self, node, inputs, outputs):
+
+            
             (m1det, m2det, dLdet, spins_evt,
              m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
              Lambda, Ndraw) = inputs
@@ -834,11 +872,24 @@ class PopAndSelJAXOp(Op):
 
             m1inj_j, m2inj_j, dLinj_j, spins_inj_j, lpd_j, lpi_j, Ndraw_j = self._cached_inj
 
-            # Device-put per-call inputs only if needed; also keep a last-call cache
-            m1det_j = _to_device(m1det)
-            m2det_j = _to_device(m2det)
-            dLdet_j = _to_device(dLdet)
-            spins_evt_j = _to_device(spins_evt)
+            if self.pop_only:
+                key_evt = (getattr(m1det, "shape", None), getattr(m2det, "shape", None),
+                           getattr(dLdet, "shape", None), getattr(spins_evt, "shape", None))
+                if self._cached_evt is None or self._evt_key != key_evt:
+                    self._cached_evt = (
+                        _to_device(m1det),
+                        _to_device(m2det),
+                        _to_device(dLdet),
+                        _to_device(spins_evt),
+                    )
+                    self._evt_key = key_evt
+                m1det_j, m2det_j, dLdet_j, spins_evt_j = self._cached_evt
+            else:
+                m1det_j = _to_device(m1det)
+                m2det_j = _to_device(m2det)
+                dLdet_j = _to_device(dLdet)
+                spins_evt_j = _to_device(spins_evt)
+    
             Lambda_j = _to_device(Lambda)
 
             key = (
@@ -862,20 +913,28 @@ class PopAndSelJAXOp(Op):
             outputs[2][0] = np.asarray(y3, dtype="float64")
 
     def grad(self, inputs, output_grads):
+        
             g_logp_pop, g_log_mu, g_var_u = output_grads
+            
             (m1det, m2det, dLdet, spins_evt,
              m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
              Lambda, Ndraw) = inputs
 
             g_logp_pop = _as_vec_like(g_logp_pop, m1det)
             g_log_mu   = _as_scalar(g_log_mu)
-            g_var_u    = _as_scalar(g_var_u)
+            
+
+            if self.stop_grad_var_u:
+                # >>> speed patch: never propagate var_u gradients
+                g_var_u    = at.as_tensor_variable(0.0, dtype="float64").reshape(())
+            else:
+                g_var_u    = _as_scalar(g_var_u)                
 
 
             if self.skip_sel:
-                g_log_mu = at.zeros_like(Ndraw, dtype="float64")
-                g_var_u = at.zeros_like(Ndraw, dtype="float64")
-                
+                g_log_mu = at.as_tensor_variable(0.0, dtype="float64").reshape(())
+                g_var_u  = at.as_tensor_variable(0.0, dtype="float64").reshape(())
+                            
 
             dm1det, dm2det, ddLdet, dspins_evt, dLambda = self._vjp_op(
                 m1det, m2det, dLdet, spins_evt,
@@ -892,6 +951,13 @@ class PopAndSelJAXOp(Op):
             z_lpd   = at.zeros_like(log_p_draw, dtype="float64")
             z_lpi   = at.zeros_like(log_p_incl, dtype="float64")
             z_Ndraw = at.zeros_like(Ndraw, dtype="float64")
+
+            if self.pop_only:
+                dm1det     = at.zeros_like(m1det)
+                dm2det     = at.zeros_like(m2det)
+                ddLdet     = at.zeros_like(dLdet)
+                dspins_evt = at.zeros_like(spins_evt)
+            
 
             return [
                 dm1det, dm2det, ddLdet, dspins_evt,

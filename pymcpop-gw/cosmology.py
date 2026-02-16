@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pytensor_utils import attrapzvec, atinterp
+#from pytensor_utils import attrapzvec, atinterp
 from constants import _PI, c_light
 from pytensor_tools import zGridGlobals
 
@@ -77,9 +77,9 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
         
     elif integrate_dc=='trapz':
 
-        zz = bk.linspace( 0., z, num=1000).T
+        zz = bk.linspace( 0., z, num=1000)
         E = Efun(bk, zz, Om, w0 )
-        dc_ = c_light / H0 * attrapzvec(bk, 1./E, zz)*1e-03
+        dc_ = c_light / H0 * bk.trapezoid( 1./E, x=zz, axis=0 )*1e-03
 
     elif integrate_dc=='pade':
         
@@ -131,7 +131,7 @@ def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes
         d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
 
 
-    return atinterp(bk, dL, d_nodes, z_nodes)
+    return bk.interp(dL, d_nodes, z_nodes, left = bk.min(z_nodes), right=bk.max(z_nodes) )
         
 
 
@@ -242,7 +242,6 @@ def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
     Uses:
       - dcfun_quad for dc(z)
       - log_dV_dz for log(dV/dz)
-      - attrapzvec(bk, y, x) from integrate.py
     """
     z = bk.linspace(z_min, z_max, 10000)
 
@@ -250,5 +249,5 @@ def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
     log_dVdz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc)
 
     integrand = bk.exp(log_dVdz) / (1.0 + z)
-    norm = attrapzvec(bk, integrand, z)
+    norm = bk.trapezoid(integrand, z)
     return bk.log(norm)

@@ -4,7 +4,7 @@ import numpy as np
 from pytensor_utils import attrapzvec, atcumtrapz, logtrapzexp_streaming, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY
 #from constants import _PI as PI
 from constants import max_m, _tgrid_np
-from pytensor_utils import atinterp
+#from pytensor_utils import atinterp
 
 try:
     import jax.numpy as jnp
@@ -370,7 +370,7 @@ def logC_PLP_reg( bk, m, beta, deltam, ml, smoothing='LVK'):
 
     # # log(cdf_scaled) + a gives log(cdf_original)
     # itr = atinterp_uniform(m, x0, x1, nU, bk.log(cdf_scaled) + a)
-    itr = atinterp( bk, m, xx[1:], bk.log(cdf_scaled) + a )
+    itr = bk.interp(  m, xx[1:], bk.log(cdf_scaled) + a )
     
     return itr
 
@@ -394,7 +394,7 @@ def logNorm_PLP_reg( bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass, s
 
     a = bk.max(lpdf)
     ps = bk.exp(lpdf - a)                 # <= 1, avoids overflow
-    integ = attrapzvec(bk, ps, ms)
+    integ = bk.trapezoid( ps, ms)
     #integ = bk.clip(integ, eps_int, jnp.inf)
 
     return a + bk.log(integ)
@@ -505,7 +505,8 @@ def logpdfm1_DPLDP(
     term1 = log_lambda1 + log_pnorm1
     term2 = log_lambda2 + log_pnorm2
 
-    log_mix = logsumexp2(bk, logsumexp2(bk, term0, term1), term2)
+    log_mix = bk.logaddexp( bk.logaddexp( term0, term1), term2 )
+    #logsumexp2(bk, logsumexp2(bk, term0, term1), term2)
 
     # gate: log(sigmoid_low) + log(1 - sigmoid_high)
     log_gate = log_sigmoid(bk, m1, m1_low, sl) + bk.log1p(-safe_sigmoid(bk, m1, m_high, sh))
@@ -528,22 +529,31 @@ def log_broken_power_law_DPLDP_pdf(
     eps_w=1e-12,
     t_floor=1e-12,
 ):
-    mb_pos = bk.maximum(mb, eps)
-    m1_pos = bk.maximum(m1, eps)
+    
+    # mb_pos = bk.maximum(mb, eps)
+    # m1_pos = bk.maximum(m1, eps)
 
-    log_N = log_broken_pl_norm_DPLDP(bk, alpha1, alpha2, mb_pos, m1_low, m_high, ) #eps=eps, t_floor=t_floor)
+    # safe normalization, in case it is needed
+    # log_N = log_broken_pl_norm_DPLDP(bk, alpha1, alpha2, mb_pos, m1_low, m_high, ) #eps=eps, t_floor=t_floor)
 
-    log_m1_over_mb = bk.log(m1_pos / mb_pos)
+    # Compute log normalization constant
+    norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
+    norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
+    log_N = bk.log(norm1 + norm2)
+    
+    log_m1_over_mb = bk.log( m1 / mb )
     log_val1 = -alpha1 * log_m1_over_mb
     log_val2 = -alpha2 * log_m1_over_mb
 
-    w = safe_sigmoid(bk, -m1_pos, -mb_pos, epsilon)
+    w = safe_sigmoid(bk, -m1, -mb, epsilon)
+    
     #w = bk.clip(w, eps_w, 1.0 - eps_w)
 
     log_w = bk.log(w)
     log_1mw = bk.log1p(-w)
 
-    log_mix_val = logaddexp(bk, log_w + log_val1, log_1mw + log_val2)
+    log_mix_val = bk.logaddexp( log_w + log_val1, log_1mw + log_val2)
+    
     return log_mix_val - log_N
 
 
@@ -789,21 +799,28 @@ def logC_DPLDP(
         smoothing=smoothing,
     )
 
-    a = bk.max(l2)
-    p2 = bk.exp(l2 - a)
+    p2 = bk.exp(l2)
+    
+    cdf = atcumtrapz(bk, p2, xx)
 
-    # legacy: cdf = atcumtrapz(p2, xx)
-    cdf = atcumtrapz(bk, p2, xx) #bk.stop_grad(xx))  
-    #cdf = bk.clip(cdf, 1e-300, jnp.inf)
+    return bk.interp( m, xx[1:], bk.log(cdf) )
 
-    x0 = xx[1]
-    x1 = xx[-1]
-    nU = xx.shape[0] - 1
 
-    # log(cdf_scaled) + a gives log(cdf_original)
-    #itr = atinterp_uniform(bk, m, x0, x1, nU, bk.log(cdf) + a)
-    itr = atinterp( bk, m, xx[1:], bk.log(cdf)+ a )
-    return itr
+    # a = bk.max(l2)
+    # p2 = bk.exp(l2 - a)
+
+    # # legacy: cdf = atcumtrapz(p2, xx)
+    # cdf = atcumtrapz(bk, p2, xx) #bk.stop_grad(xx))  
+    # #cdf = bk.clip(cdf, 1e-300, jnp.inf)
+
+    # x0 = xx[1]
+    # x1 = xx[-1]
+    # nU = xx.shape[0] - 1
+
+    # # log(cdf_scaled) + a gives log(cdf_original)
+    # #itr = atinterp_uniform(bk, m, x0, x1, nU, bk.log(cdf) + a)
+    # itr = atinterp( bk, m, xx[1:], bk.log(cdf)+ a )
+    # return itr
 
 
 
@@ -860,12 +877,12 @@ def logNorm_DPLDP(
         norm_gauss=norm_gauss,
     )
 
-    a = bk.max(lpdf)
-    ps = bk.exp(lpdf - a)
-    integ = attrapzvec(bk, ps, ms)
+    #a = bk.max(lpdf)
+    ps = bk.exp(lpdf)
+    integ = bk.trapezoid(ps, ms)
     #integ = bk.clip(integ, eps_int, jnp.inf)
 
-    return a + bk.log(integ)
+    return bk.log(integ) # a + 
 
 
 
@@ -1108,7 +1125,7 @@ def logpdf_DPLDP_from_interp(bk, theta, interp_vals, force_m2_less_than_m1=False
     lC     = out[1]
 
     #lpdfm2 = interp_1d_nonuniform_numpyop(m2, m2_grid, lp_m2_grid)
-    lpdfm2 = atinterp(bk, m2, m2_grid, lp_m2_grid)
+    lpdfm2 = bk.interp( m2, m2_grid, lp_m2_grid)
 
 
     
@@ -1310,6 +1327,8 @@ def logpdf_DPLDP_z( bk,
         simplex_repair=simplex_repair,
     )
 
+    return lpdf_
+
     ln = logNorm_DPLDP_z(bk,
         z,
         alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
@@ -1420,8 +1439,7 @@ def logNorm_DPLDP_z( bk,
     logp = lp_flat.reshape((K, N1))
 
 
-    return bk.log(attrapzvec(bk, bk.exp(logp), m1_grid[None, :]
-                             , axis=1))
+    return bk.log( bk.trapezoid( bk.exp(logp), m1_grid[None, :], axis=1))
 
 
 

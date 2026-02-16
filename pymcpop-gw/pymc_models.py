@@ -55,7 +55,9 @@ PLANCK15_OM = 0.3065
 
 
 # 95% central interval for Normal and 95% point for HalfNormal
-NORM_Q95 = 2.5758293035489004  # 99% point (Phi^{-1}(0.995))
+NORM_Q95 = 1.959963984540054
+NORM_Q99 = 2.5758293035489004
+# 2.5758293035489004  # 99% point (Phi^{-1}(0.995))
 #1.959963984540054  # Phi^{-1}(0.975)
 
 # For bounded-sigmoid params, choose raw sd so that 95% maps to ~[0.05, 0.95]
@@ -252,21 +254,15 @@ def make_model(  priors,
             raise ValueError('sampling_GW can be gmm, gmm_cat, gumbel,  gauss ')
             
         
-
     else:
         # gw data are single-event posterior samples
         # shape of each has to be n_events, n_samples
-        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute , allnames = GWData            
-
-        if Nsamplesuse !=-1 :
-            if Nsamplesuse>allNsamples:
-                raise ValueError("Must use less samples than those available.")
-            print("allNsamples availabe is %s, but %s will be used"%(allNsamples, Nsamplesuse))
-            allNsamples =  Nsamplesuse   
-            allNsamples_np = allNsamples #allNsamples.eval()
-        
+        m1det, m2det, d, spins, dL_prior, Tobs, allNsamples, where_compute, Nevs, allnames = GWData    
+            
         if (spin_model=='default') or (spin_model=='default_gauss'):
-           chi1, chi2, cost1, cost2 = spin_samples
+           chi1, chi2, cost1, cost2 = spins
+        elif spin_model=='none':
+            pass
         else:
             raise NotImplementedError()
 
@@ -311,11 +307,12 @@ def make_model(  priors,
             spin_model_name = 'none'
 
         if spin_model_name in ("default", "default_gauss"):
-            spinsInj = at.stack(spinsInj, axis=1)   # from [chi1,chi2,cost1,cost2] -> (ninj,4)
+            spinsInj = np.stack(spinsInj, axis=1)   # from [chi1,chi2,cost1,cost2] -> (ninj,4)
         elif spin_model_name in ("chieffchip", "chieffchip_uc"):
-            spinsInj = at.stack(spinsInj, axis=1)   # (ninj,2)
+            spinsInj = np.stack(spinsInj, axis=1)   # (ninj,2)
         else:
-            spinsInj = at.zeros((m1inj[0].shape[0], 0), dtype="float64")
+            import numpy as np
+            spinsInj = np.zeros((m1inj[0].shape[0], 0), dtype="float64")
 
     
     Ndet_np = Ndet #Ndet.eval()
@@ -340,10 +337,60 @@ def make_model(  priors,
         N_np = N #N.eval()
         Nsamples = m1det.shape[1]
         Nsamples_np = Nsamples #Nsamples.eval()
-        print("N samples max will be ")
-        print(Nsamples_np)
-        print('N:%s, n samples: %s '%(N_np, allNsamples_np))
 
+        if Nsamplesuse !=-1 :
+            if Nsamplesuse>Nsamples_np:
+                raise ValueError("Must use less samples than those available.")
+            print("Nsamples_np available is %s, but %s will be used"%(Nsamples_np, Nsamplesuse))
+            
+            m1det, m2det, d = m1det[:, :Nsamplesuse], m2det[:, :Nsamplesuse], d[:, :Nsamplesuse]
+            dL_prior = dL_prior[:, :Nsamplesuse]
+            spins = np.asarray([s[:, :Nsamplesuse] for s in spins ])
+            if (spin_model=='default') or (spin_model=='default_gauss'):
+               chi1, chi2, cost1, cost2 = chi1[:, :Nsamplesuse], chi2[:, :Nsamplesuse], cost1[:, :Nsamplesuse], cost2[:, :Nsamplesuse]
+
+            allNsamples = Nsamplesuse
+
+            Nsamples = m1det.shape[1]
+            Nsamples_np = Nsamples #Nsamples.eval()
+            allNsamples_np = np.full( N, Nsamplesuse )
+
+        else:
+            allNsamples_np = allNsamples 
+        
+        assert np.all( allNsamples_np == Nsamples_np )
+        print("N samples will be ")
+        print(Nsamples_np)
+        print('N:%s, n samples: %s '%(N_np, Nsamples_np))
+
+
+        ### reshape
+
+        if spin_model in ("default", "default_gauss"):
+            spins = np.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
+
+             
+        logd = np.log(d)
+        
+        NsamplesTot = N*Nsamples
+
+        print("Reshaping samples to %s"%NsamplesTot)
+        
+        m1det = m1det.reshape(NsamplesTot)
+        m2det = m2det.reshape(NsamplesTot)
+        d = d.reshape(NsamplesTot)
+        logd = logd.reshape(NsamplesTot)
+        dL_prior = dL_prior.reshape(NsamplesTot)
+        
+        # spins: if you store (Ne, S, nspin) -> flatten first two axes
+        spins = spins.reshape((NsamplesTot, spins.shape[-1]))
+
+       
+
+
+
+
+    
     logN = np.log(N)
 
 
@@ -623,98 +670,104 @@ def make_model(  priors,
     #####################################################################################################
 
 
-    vol_in_prior = any( (('UniformSourceFrame' in s or 'UniformComovingVolume' in s) and not ('bilby' in s) ) for s in dLprior)
-    vol_in_prior_from_bilby = any('UniformSourceFrame-bilby' in s or 'UniformComovingVolume-bilby' in s for s in dLprior)
-    
-    none_in_prior = any('none' in s for s in dLprior)
-    
-    all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
-    all_no_dL_prior = all(s == 'none' for s in dLprior)
-
-    edges = [0]
-    for n in Nevs_np:
-        edges.append(edges[-1] + int(n))
-
-
-    if vol_in_prior_from_bilby:
+    if not pop_only:
         
-        print("Loading bilby pre-computed PE prior from distance for later interpolation")
-        dat = np.load("dLgrid_gpc_bilby_prior_grid_O4a.npz")
-        dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
-        PE_prior_bilby_grid =  at.as_tensor_variable(dat["prior_grid"])
+        vol_in_prior = any( (('UniformSourceFrame' in s or 'UniformComovingVolume' in s) and not ('bilby' in s) ) for s in dLprior)
+        vol_in_prior_from_bilby = any('UniformSourceFrame-bilby' in s or 'UniformComovingVolume-bilby' in s for s in dLprior)
         
-    if vol_in_prior:
-
-        print("Pre-computing bilby-like PE prior from distance for later interpolation")
-
-        bk = ATBackend()
-        zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
-
-        dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
-        dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
-
+        none_in_prior = any('none' in s for s in dLprior)
+        
+        all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
+        all_no_dL_prior = all(s == 'none' for s in dLprior)
     
-    if ( ( vol_in_prior or vol_in_prior_from_bilby) and (penorm_lims != []) ):
-
-        print("Normalization of PE volume prior on distance required.")
+        edges = [0]
+        for n in Nevs_np:
+            edges.append(edges[-1] + int(n))
+    
+    
+        if vol_in_prior_from_bilby:
             
-#             z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
-#             z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
-#             print(
-#     f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
-#     f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
-# )
+            print("Loading bilby pre-computed PE prior from distance for later interpolation")
+            dat = np.load("dLgrid_gpc_bilby_prior_grid_O4a.npz")
+            dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
+            PE_prior_bilby_grid =  at.as_tensor_variable(dat["prior_grid"])
             
-#             log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, PLANCK15_H0, PLANCK15_OM, -1)
-
-        bkNP = NPBackend()
+        if vol_in_prior:
+    
+            print("Pre-computing bilby-like PE prior from distance for later interpolation")
+    
+            bk = ATBackend()
+            zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
+    
+            dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
+            dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
+    
         
-        Nchunks = len(Nevs_np)
-        assert len(allnames) == Nchunks
-        j = 0
-        all_PE_log_norms = np.zeros(N)
-        for i in range(Nchunks):
-            
-            if  penorm_lims[i]=='none':
-                print("No normalization of PE prior on distance included for chunk %s"%i)
-                for key in allnames[i]:
-                    all_PE_log_norms[j] = 0.
-                    j+=1
-            else:
-                with open( penorm_lims[i] , 'r') as fp:
-                    plims_ = json.load(fp)
+        if ( ( vol_in_prior or vol_in_prior_from_bilby) and (penorm_lims != []) ):
+    
+            print("Normalization of PE volume prior on distance required.")
                 
-                print("Normalization of PE prior on distance for chunk %s loaded"%i)
+    #             z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
+    #             z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
+    #             print(
+    #     f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
+    #     f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
+    # )
                 
-                for key in allnames[i]:
-                    try:
-                        lims_ = plims_[key]
-                    except:
-                        raise ValueError("limits for %s not present"%key)    
-                     
-                    log_norm_PE_prior_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
-                    print(key, log_norm_PE_prior_)
+    #             log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, PLANCK15_H0, PLANCK15_OM, -1)
+    
+            bkNP = NPBackend()
             
-                    all_PE_log_norms[j] = log_norm_PE_prior_
-                    j+=1
-            
-            print("at the end of chunk %s, index j is %s"%(i,j))
+            Nchunks = len(Nevs_np)
+            assert len(allnames) == Nchunks
+            j = 0
+            all_PE_log_norms = np.zeros(N)
+            for i in range(Nchunks):
+                
+                if  penorm_lims[i]=='none':
+                    print("No normalization of PE prior on distance included for chunk %s"%i)
+                    for key in allnames[i]:
+                        all_PE_log_norms[j] = 0.
+                        j+=1
+                else:
+                    with open( penorm_lims[i] , 'r') as fp:
+                        plims_ = json.load(fp)
+                    
+                    print("Normalization of PE prior on distance for chunk %s loaded"%i)
+                    
+                    for key in allnames[i]:
+                        try:
+                            lims_ = plims_[key]
+                        except:
+                            raise ValueError("limits for %s not present"%key)    
+                         
+                        log_norm_PE_prior_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
+                        print(key, log_norm_PE_prior_)
+                
+                        all_PE_log_norms[j] = log_norm_PE_prior_
+                        j+=1
+                
+                print("at the end of chunk %s, index j is %s"%(i,j))
+    
+            all_PE_log_norms = at.as_tensor_variable(np.asarray(all_PE_log_norms))
+        else:
+            print("No normalization of PE volume prior on distance required.")
+            all_PE_log_norms = at.zeros(Nevs_np.sum())
+    
+        
+        print("All PE log norms is ")
+        print("Shape: %s"%all_PE_log_norms.shape.eval())
+        #print("Val: %s"%all_PE_log_norms.eval())
 
-        all_PE_log_norms = at.as_tensor_variable(np.asarray(all_PE_log_norms))
-    else:
-        print("No normalization of PE volume prior on distance required.")
-        all_PE_log_norms = at.zeros(Nevs_np.sum())
-
-    print("All PE log norms is ")
-    print("Shape: %s"%all_PE_log_norms.shape.eval())
-    print("Val: %s"%all_PE_log_norms.eval())
+ 
+        
     
     ################################################
     # Build model
     ################################################
 
             
-    if 'gmm' in sampling_GW:
+    if 'gmm' in sampling_GW and not pop_only:
         # we sample single-event parameters from the actual single-event posteriors
         # need tensor variables to correctly slice inside model
         wts_l, mus_l, cho_covs_l = at.constant(wts_l), at.constant(mus_l), at.constant(cho_covs_l)
@@ -724,10 +777,7 @@ def make_model(  priors,
     
     with pm.Model(coords=coords) as model:
 
-
-
-
-        
+   
         ################################################
         # Cosmological parameters
         ################################################
@@ -1814,200 +1864,209 @@ def make_model(  priors,
         lR0 = at.log(R0)
 
     
-            
-        ################################################
-        # Individual event mass and distance
-        ###############################################
-
-        x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
-
-            
-        if 'gmm' in sampling_GW:
+        if not pop_only:    
+            ################################################
+            # Individual event mass and distance
+            ###############################################
     
-            print('Sampling m1d, m2d, dL from GMM')
-
+            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
+    
                 
-            ###################################
-            # categorical way
-
-            ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
-
-   
-            # Select means and Cholesky factors per batch
-            mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-            L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-             
-            # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-            Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
-
-                      
-            # Final transformed sample
-            samples = mu_selected + Lx                # shape (N, D)
-
-            
-            log_Mc_det = samples[:,0]/dil_factor
-            logit_q = samples[:,1]
-            logd = samples[:,2]
-            
-
-            if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
-    
-                chieff = atools.inv_flogitat(samples[:,3])
-                chip = atools.inv_logitat(samples[:,4])
-    
-            elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                # we have chi1, chi2, cost1, cost2
-                if save_thetas:
-                    chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
-                    chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
+            if 'gmm' in sampling_GW:
         
-                    cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
-                    cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
+                print('Sampling m1d, m2d, dL from GMM')
+    
+                    
+                ###################################
+                # categorical way
+    
+                ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
+    
+       
+                # Select means and Cholesky factors per batch
+                mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
+                 
+                # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+    
+                          
+                # Final transformed sample
+                samples = mu_selected + Lx                # shape (N, D)
+    
+                
+                log_Mc_det = samples[:,0]/dil_factor
+                logit_q = samples[:,1]
+                logd = samples[:,2]
+                
+    
+                if (spin_model == 'chieffchip') or (spin_model == 'chieffchip_uc') :
+        
+                    chieff = atools.inv_flogitat(samples[:,3])
+                    chip = atools.inv_logitat(samples[:,4])
+        
+                elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+                    # we have chi1, chi2, cost1, cost2
+                    if save_thetas:
+                        chi1 = pm.Deterministic('chi1', atools.inv_logitat(samples[:,3]))
+                        chi2 = pm.Deterministic('chi2', atools.inv_logitat(samples[:,4]))
+            
+                        cost1 = pm.Deterministic('cost1', atools.inv_flogitat(samples[:,5]))
+                        cost2 = pm.Deterministic('cost2', atools.inv_flogitat(samples[:,6]))
+                    else:
+                        chi1 = atools.inv_logitat(samples[:,3])
+                        chi2 = atools.inv_logitat(samples[:,4])
+                        cost1 =atools.inv_flogitat(samples[:,5])
+                        cost2 =atools.inv_flogitat(samples[:,6])
+                        
                 else:
+                    print("No spins computed")
+            
+    
+            
+            elif sampling_GW=='gauss' : # to be tested with spins
+                
+                print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
+    
+                
+                # sample = mu + L @ x   (batched)
+                #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+                samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
+    
+              
+            
+                # logp = log p(x) - log|L|
+                # d = x.shape[1]
+                log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
+    
+    
+                log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
+    
+                
+                pilik = log_px - log_det_L                                               # (N,)
+    
+                # unpack coordinates:
+                log_Mc_det = samples[:, 0]
+                logit_q    = samples[:, 1]
+                logd       = samples[:, 2]
+                
+    
+                if spin_model == 'none' :
+                    
+                    X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
+                    d_int  = 3
+    
+    
+                elif spin_model == 'default' or spin_model == 'default_gauss':
+    
                     chi1 = atools.inv_logitat(samples[:,3])
                     chi2 = atools.inv_logitat(samples[:,4])
-                    cost1 =atools.inv_flogitat(samples[:,5])
-                    cost2 =atools.inv_flogitat(samples[:,6])
-                    
-            else:
-                print("No spins computed")
         
-
-        
-        elif sampling_GW=='gauss' : # to be tested with spins
-            
-            print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
-
-            
-            # sample = mu + L @ x   (batched)
-            #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
-            samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
-
-          
-        
-            # logp = log p(x) - log|L|
-            # d = x.shape[1]
-            log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
-
-
-            log_det_L = at.sum(at.log(at.diagonal(cho_s, axis1=1, axis2=2)), axis=1)  # (N,)
-
-            
-            pilik = log_px - log_det_L                                               # (N,)
-
-            # unpack coordinates:
-            log_Mc_det = samples[:, 0]
-            logit_q    = samples[:, 1]
-            logd       = samples[:, 2]
-            
-
-            if spin_model == 'none' :
-                
-                X = at.stack([log_Mc_det, logit_q, logd ], axis=1)
-                d_int  = 3
-
-
-            elif spin_model == 'default' or spin_model == 'default_gauss':
-
-                chi1 = atools.inv_logitat(samples[:,3])
-                chi2 = atools.inv_logitat(samples[:,4])
+                    cost1 = atools.inv_flogitat(samples[:,5])
+                    cost2 = atools.inv_flogitat(samples[:,6])
     
-                cost1 = atools.inv_flogitat(samples[:,5])
-                cost2 = atools.inv_flogitat(samples[:,6])
+                    X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
+                    d_int  = 7
+    
+    
+            
+    
+                # X as (N, d)
+                #X = vals.T                                   # (N, d)
+                #print("X shape is %s"%(X[:, None, :].shape.eval()))
+                #print("mus_l shape is %s"%(mus_l.shape.eval()))
+                
+                # Broadcast X against component-wise parameters
+                # diff: (N, ngmm, d)
+                diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
+                
+                # Quadratic form using precision F = Σ^{-1}
+                # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
+    
+                
+                tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
+    
+    
+                
+                # r^T F r for each (obs, comp)
+                quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
+    
+                
+                # Component logpdfs (Multivariate Normal)
+                log_norm = (-0.5 * d_int * at.log(2*np.pi)) #.astype(work_dtype)     # scalar
+    
+                logp_components = (
+                    -0.5 * quad
+                    + log_norm
+                    - 0.5 * log_dets_l
+                    + log_wts_l
+                )                                             # (N, ngmm)
+    
+                # Mixture log-likelihood per observation: logsumexp over components
+                gwl = at.logsumexp(logp_components, axis=1, )   # (N,)
+    
+            
+            else:
+                raise NotImplementedError()
+    
+    
+            Mc = at.exp(log_Mc_det)            
+            q = atools.inv_logitat(logit_q)
+            m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
+            d = at.exp(logd)       
 
-                X = at.stack([log_Mc_det, logit_q, logd,  samples[:,3],  samples[:,4],  samples[:,5],  samples[:,6]], axis=1)
-                d_int  = 7
-
-
+            if spin_model in ("default", "default_gauss"):
+                spins = at.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
+            elif spin_model in ("chieffchip", "chieffchip_uc"):
+                spins = at.stack([chieff, chip], axis=1)              # (N,2)
+            else:
+                spins = at.zeros((m1det.shape[0], 0), dtype="float64")  # (N,0)
         
-
-            # X as (N, d)
-            #X = vals.T                                   # (N, d)
-            #print("X shape is %s"%(X[:, None, :].shape.eval()))
-            #print("mus_l shape is %s"%(mus_l.shape.eval()))
-            
-            # Broadcast X against component-wise parameters
-            # diff: (N, ngmm, d)
-            diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
-            
-            # Quadratic form using precision F = Σ^{-1}
-            # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-
-            
-            tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
-
-
-            
-            # r^T F r for each (obs, comp)
-            quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
-
-            
-            # Component logpdfs (Multivariate Normal)
-            log_norm = (-0.5 * d_int * at.log(2*np.pi)) #.astype(work_dtype)     # scalar
-
-            logp_components = (
-                -0.5 * quad
-                + log_norm
-                - 0.5 * log_dets_l
-                + log_wts_l
-            )                                             # (N, ngmm)
-
-            # Mixture log-likelihood per observation: logsumexp over components
-            gwl = at.logsumexp(logp_components, axis=1, )   # (N,)
-
+        
         
         else:
-            raise NotImplementedError()
+            # we are sampling the usual marginalise likelihood, with "only" pop parameters
+            print('We are running inference only on population parameters.')
+            
 
 
-        Mc = at.exp(log_Mc_det)            
-        q = atools.inv_logitat(logit_q)
-        m1det, m2det = atools.m1m2_from_Mcq_at(Mc, q)
-        d = at.exp(logd)                   
-            
-            
+        
         ################################################
         # Population prior and selection computation
         ################################################
 
 
-
-        if spin_model in ("default", "default_gauss"):
-            spins = at.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
-        elif spin_model in ("chieffchip", "chieffchip_uc"):
-            spins = at.stack([chieff, chip], axis=1)              # (N,2)
-        else:
-            spins = at.zeros((m1det.shape[0], 0), dtype="float64")  # (N,0)
-
-
+        
         if chunk_inj:
             print("Will process injections in chunks of %s"%chunk_inj)
 
         
         fused = PopAndSelJAXOp(
             
-        zgrid=zgrid_np,
-            
-        rate_model=rate_model,
-        mass_model=mass_model,
-        spin_model=spin_model_name,
-        
-        smoothing=smoothing,
-        simplex_repair=simplex_repair,
-        has_m2_break=has_m2_break,
-        norm_gauss=norm_gauss,
-        param=param,
-        subtract_log_p_incl = False,   
-
-        skip_sel = (sel_method=='skip'),
-
-        chunk_inj=chunk_inj,
-        K_dp = N_DP_comp_max,
-        DP_truncate = DP_truncate,
-        DP_m1_env = DP_m1_env,
-        interp_mass = interp_mass,
-        integrate_dc = integrate_dc
-        )
+            zgrid=zgrid_np,
+                
+            rate_model=rate_model,
+            mass_model=mass_model,
+            spin_model=spin_model_name,
+    
+            pop_only=pop_only,
+    
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+            param=param,
+            subtract_log_p_incl = False,   
+    
+            skip_sel = (sel_method=='skip'),
+    
+            chunk_inj=chunk_inj,
+            K_dp = N_DP_comp_max,
+            DP_truncate = DP_truncate,
+            DP_m1_env = DP_m1_env,
+            interp_mass = interp_mass,
+            integrate_dc = integrate_dc
+            )
         
         if lp_incl_inj[0] is None:
             log_p_incl_ = at.zeros_like(lpdinj[0])
@@ -2023,87 +2082,125 @@ def make_model(  priors,
 
         ################################################
 
-        labels = at.repeat(at.arange(len(Nevs_np)), Nevs_np)
 
-        log_PE_prior = at.zeros_like(log_p_pop)
 
-        if vol_in_prior:
-                bk = ATBackend()
-                zs_Planck15 = cosmo.z_from_dL( bk, d, z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
-                dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1.) 
-        
-
-        for i, lab in enumerate(dLprior):
-        
-            mask = at.eq(labels, i)
-
-            # Just for printing checks
-            idx = at.nonzero(mask)[0]     # same as at.where(mask)[0]
-            n = idx.shape[0]
-            mn = at.switch(at.gt(n, 0), idx.min(), -1)
-            mx = at.switch(at.gt(n, 0), idx.max(), -1)
-        
-            if lab == 'dLsq':
-                chunk = 2 * logd
-                print("Using dL^2 prior for events %s-%s "%(mn.eval(), mx.eval()))
-                
-        
-            elif lab == 'none':
-                chunk = at.zeros_like(log_p_pop)
-                print("Removing no PE prior for events %s-%s "%(mn.eval(), mx.eval()))
-        
-            else:
-                use_J = lab.endswith('-J')
-                base = lab[:-2] if use_J else lab
-        
-                if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
-                    
-                    chunk = cosmo.log_dV_dz(bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1, dc=dc_Planck15, E=None )
-        
-                    if base == 'UniformSourceFrame':
-                        chunk +=  - at.log1p(zs_Planck15)
-                        print("Using custom UniformSourceFrame prior for events %s-%s "%(mn.eval(), mx.eval()))
-                    else:
-                        print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
-                    
-                    if use_J:
-                        chunk -= atools.log_ddL_dz(zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
-                        print("..also removing jacobian with Planck15 cosmology")
+        if not pop_only:
             
-                    # if normalize_PE_prior:
-                    #     chunk -= log_norm_PE_prior
-                    #     print("..also normalizing")
+            labels = at.repeat( at.arange(len(Nevs_np)), Nevs_np)
 
-                elif base == 'UniformSourceFrame-bilby':
-
-                    print("Using interpolated bilby prior for events %s-%s "%(mn.eval(), mx.eval()))
-                    # interpolated prior density in 1/Gpc
-                    chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
-        
-                    # optional: enforce support -> 0 outside [min, max]
-                    # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -jnp.inf )
-                
+            log_PE_prior = at.zeros_like(log_p_pop)
+    
+            if vol_in_prior:
+                    bk = ATBackend()
+                    zs_Planck15 = cosmo.z_from_dL( bk, d, z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
+                    dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1.) 
+            
+    
+            for i, lab in enumerate(dLprior):
+            
+                mask = at.eq(labels, i)
+    
+                # Just for printing checks
+                idx = at.nonzero(mask)[0]     # same as at.where(mask)[0]
+                n = idx.shape[0]
+                mn = at.switch(at.gt(n, 0), idx.min(), -1)
+                mx = at.switch(at.gt(n, 0), idx.max(), -1)
+            
+                if lab == 'dLsq':
+                    chunk = 2 * logd
+                    print("Using dL^2 prior for events %s-%s "%(mn.eval(), mx.eval()))
+                    
+            
+                elif lab == 'none':
+                    chunk = at.zeros_like(log_p_pop)
+                    print("Removing no PE prior for events %s-%s "%(mn.eval(), mx.eval()))
+            
                 else:
-                    raise ValueError(f"Unknown PE prior name base: {base}")
-
-        
-            log_PE_prior = at.where(mask, chunk, log_PE_prior) - all_PE_log_norms
-        
-
-
+                    use_J = lab.endswith('-J')
+                    base = lab[:-2] if use_J else lab
             
+                    if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
+                        
+                        chunk = cosmo.log_dV_dz(bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1, dc=dc_Planck15, E=None )
+            
+                        if base == 'UniformSourceFrame':
+                            chunk +=  - at.log1p(zs_Planck15)
+                            print("Using custom UniformSourceFrame prior for events %s-%s "%(mn.eval(), mx.eval()))
+                        else:
+                            print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
+                        
+                        if use_J:
+                            chunk -= atools.log_ddL_dz(zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+                            print("..also removing jacobian with Planck15 cosmology")
+                
+                        # if normalize_PE_prior:
+                        #     chunk -= log_norm_PE_prior
+                        #     print("..also normalizing")
+    
+                    elif base == 'UniformSourceFrame-bilby':
+    
+                        print("Using interpolated bilby prior for events %s-%s "%(mn.eval(), mx.eval()))
+                        # interpolated prior density in 1/Gpc
+                        chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
+            
+                        # optional: enforce support -> 0 outside [min, max]
+                        # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -jnp.inf )
+                    
+                    else:
+                        raise ValueError(f"Unknown PE prior name base: {base}")
+    
+    
+                print("mask shape is %s"%mask.shape.eval())
+                print("chunk shape is %s"%chunk.shape.eval())
+                print("log_PE_prior shape is %s"%log_PE_prior.shape.eval())
+                print("all_PE_log_norms shape is %s"%all_PE_log_norms.shape.eval())
+                log_PE_prior = at.where(mask, chunk, log_PE_prior) - all_PE_log_norms
 
-        log_jacobian = at.zeros_like(log_p_pop)
-        if sampling_GW=='gauss' and not sample_from_pop:
-                # Add gw likelihood and correct for sampling prior pdf
-                log_jacobian -= pilik
-                log_jacobian += gwl
-
-        ################################################
+        else:
+            print("Using dL PE prior loaded from file.")
+            log_PE_prior =  dL_prior
         
-        #  sum log likelihoods
 
-        likelihood_val = at.sum( log_p_pop + log_jacobian - log_PE_prior )
+
+        ################################################            
+        if not pop_only:
+            log_jacobian = at.zeros_like(log_p_pop)
+            if sampling_GW=='gauss' and not sample_from_pop:
+                    # Add gw likelihood and correct for sampling prior pdf
+                    log_jacobian -= pilik
+                    log_jacobian += gwl
+    
+            
+            
+            #  sum log likelihoods
+            likelihood_val = at.sum( log_p_pop + log_jacobian - log_PE_prior )
+
+
+        else:
+
+            # marginalise over single events parameters first
+            # shape of p_pop is (hopefully) n_evs x n_samples
+            # so average over second dimension
+
+            log_p_pop = (log_p_pop - log_PE_prior).reshape((N, Nsamples))
+            log_p_pop_marg = at.logsumexp( log_p_pop, axis=1, ) - at.log(allNsamples)
+            
+            # then sum log likelihoods
+            likelihood_val = at.sum( log_p_pop_marg )  
+
+            # Check number of effective samples for computing MC integral 
+            logs2 = at.logsumexp(2*log_p_pop, axis=1,) -2*at.log(allNsamples)
+            
+            Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) 
+            # this has len = n. of observations
+            
+            if Neff_min_lik>0:
+                
+                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
+              
+            else:
+                print("No bound on effective number of samples for individual event MC integrals")
+
 
        
         # add R0*Tobs if needed. 
