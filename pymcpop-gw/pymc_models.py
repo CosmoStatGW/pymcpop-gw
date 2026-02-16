@@ -24,6 +24,7 @@ import pytensor.tensor as at
 import pytensor
 import pymc as pm
 
+import pytensor.gradient as ptg
 #from pytensor.gradient import disconnected_grad as stop_grad
 from pytensor.compile.mode import get_default_mode
 from pymc.distributions import transforms as tr
@@ -2268,25 +2269,28 @@ def make_model(  priors,
 
                     # Thresholding on likelihood variance
                     print("MC integral for sel. effect thresholded on log lik. variance")
+
+                    log_lik_var_sg = ptg.disconnected_grad(log_lik_var)
                     
                     if sel_smoothing=='sigmoid':
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
                         
-                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 )) 
+                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var_sg, log_lik_var_min*(1+0.002), 0.001 )) 
 
                     
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
 
                         selection_bias = sel_effect
-                        _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var, deltam=0.01, ml=-0.01))
+                        _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var_sg, deltam=0.01, ml=-0.01))
 
                     else:
                         print("Tapering sel effect with hard cut")
 
                         selection_bias = sel_effect
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf ))
+                                                
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var_sg <= log_lik_var_min, 0.0, -np.inf ))
 
             
             _ = pm.Potential('selection_bias', selection_bias)

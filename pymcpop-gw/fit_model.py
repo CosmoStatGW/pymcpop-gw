@@ -496,7 +496,7 @@ def main():
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
-            if FLAGS.FLAGS.events_use!=[]:
+            if FLAGS.events_use!=[]:
                 raise ValueError("Cannot select by index and name at the same time")
                 
             N_or = Nevents
