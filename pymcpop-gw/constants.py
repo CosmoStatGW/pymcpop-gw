@@ -11,6 +11,12 @@ import numpy as np
 c_light = 299792458*1e-03
 _PI = np.pi
 
+PlanckFiducials = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
+
+PLANCK15_H0 = 67.9
+PLANCK15_OM = 0.3065
+
+
 
 # ---------------------------------------------------------------------
 # Gauss–Legendre nodes for integration

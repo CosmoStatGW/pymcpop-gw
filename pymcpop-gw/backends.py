@@ -230,6 +230,16 @@ class NPBackend:
         return np.maximum.accumulate(x, axis=axis)
 
 
+    @staticmethod
+    def interp(x, xp,fp, left=None, right=None, period=None):
+        return np.interp(x, xp, fp, left=left, right=right, period=period )
+
+    @staticmethod
+    def trapezoid(y, x=None, dx=1.0, axis=-1):
+        return np.trapezoid(y, x=x, dx=dx, axis=axis )
+
+
+
 
 class ATBackend:
     """
@@ -532,6 +542,7 @@ class JAXBackend:
     # elementary
     exp = staticmethod(jnp.exp)
     log = staticmethod(jnp.log)
+    log10 = staticmethod(jnp.log10)
     log1p = staticmethod(jnp.log1p)
     sqrt = staticmethod(jnp.sqrt)
     abs = staticmethod(jnp.abs)
@@ -617,6 +628,8 @@ class JAXBackend:
     logsumexp = staticmethod(jax.scipy.special.logsumexp)
 
     stop_grad = staticmethod(jax.lax.stop_gradient)
+
+    logspace = staticmethod(jnp.logspace)
 
 
     # comparisons

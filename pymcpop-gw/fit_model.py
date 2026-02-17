@@ -161,6 +161,7 @@ def main():
     parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
     parser.add_argument("--inj_loop", default='scan-GPU', type=str, required=False)
     parser.add_argument("--interp_inj", default=0, type=int, required=False)
+    parser.add_argument("--detach_var", default=0, type=int, required=False)
     
     parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
@@ -204,7 +205,7 @@ def main():
     parser.add_argument("--zmid_b", default=3., type=float, required=False)
     parser.add_argument("--zmax_c", default=10., type=float, required=False)
     parser.add_argument("--hi_boost", default=.2, type=float, required=False)
-    parser.add_argument("--find_z_bounds", default=1, type=int, required=False)
+    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
     parser.add_argument("--is_observed", default=0, type=int, required=False)
     parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
 
@@ -880,7 +881,8 @@ def main():
                                 debug_sel_batch=FLAGS.debug_sel_batch,
                                 reparam_z = FLAGS.reparam_z,
                                  reparam_mass = FLAGS.reparam_mass,
-                                priors_for_mmin=priors_for_mmin
+                                priors_for_mmin=priors_for_mmin,
+                                detach_var = FLAGS.detach_var
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

@@ -54,11 +54,10 @@ def Xi_polexp(bk, z, Xi0, n):
 
 def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
     """
-    Comoving distance d_c(z) in Gpc, using Gauss–Legendre quadrature on [0,z].
+    Comoving distance d_c(z) in Gpc
 
     Inputs:
       z: array-like (...,)
-      x01, w01: nodes/weights on [0,1] (shape (n,))
       H0: km/s/Mpc
 
     Returns:
@@ -77,7 +76,7 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
         
     elif integrate_dc=='trapz':
 
-        zz = bk.linspace( 0., z, num=1000)
+        zz = bk.linspace( 0., z, num=500)
         E = Efun(bk, zz, Om, w0 )
         dc_ = c_light / H0 * bk.trapezoid( 1./E, x=zz, axis=0 )*1e-03
 
@@ -120,18 +119,20 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", in
 # inversion of dL(z)
 # ---------------------------------------------------------------------
 
-def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz"):
+def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5,zmax=100):
 
     
-    if z_nodes is None:
-        print("warning: recomputing z nodes from zGridGlobals")
-        z_nodes = bk.asarray(zGridGlobals)
+    z_nodes = bk.logspace(bk.log10(zmin),bk.log10(zmax), 1200)
+   
+    # if z_nodes is None:
+    #     print("warning: recomputing z nodes from zGridGlobals")
+    #     z_nodes = bk.asarray(zGridGlobals)
     
-    if d_nodes is None:
-        d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
+    #if d_nodes is None:
+    d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
 
 
-    return bk.interp(dL, d_nodes, z_nodes, left = bk.min(z_nodes), right=bk.max(z_nodes) )
+    return bk.interp(dL, d_nodes, z_nodes, left = zmin, right = zmax )
         
 
 

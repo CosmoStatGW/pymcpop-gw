@@ -8,8 +8,8 @@ C_LIGHT_KM_S = 299_792.458  # km/s
 
 import numpy as onp
 import jax.numpy as np
-import pytensor
-import pytensor.tensor as at
+#import pytensor
+#import pytensor.tensor as at
 
 
 
@@ -98,7 +98,7 @@ def set1(x, k, v):
 
 def _polyval_at_numpy_coeffs(coeffs, x, xp=onp):
     """
-    Horner eval with Python/NumPy coeffs (high->low). Returns a PyTensor.
+    Horner eval with Python/NumPy coeffs (high->low). 
     """
     cs = onp.asarray(coeffs, dtype="float64").ravel()
     if cs.size == 0:
@@ -111,7 +111,7 @@ def _polyval_at_numpy_coeffs(coeffs, x, xp=onp):
 def indefinite_integral_pade(z, Om0, w0: float = -1.0, zpower: int = 0, p=None, q=None, xp=onp):
     """
     Padé indefinite integral I(z) for (1+z)^k / E(z) in flat wCDM.
-    Pass p, q as NumPy arrays (high->low). No scan, no tensor coeffs.
+    Pass p, q as NumPy arrays (high->low). 
     """
     if p is None or q is None:
         raise ValueError("Provide Padé coefficients p, q (NumPy/list, high->low).")

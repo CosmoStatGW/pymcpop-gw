@@ -100,16 +100,32 @@ def safe_sigmoid(bk, x, x0, eps):
     return sigmoid(bk, x, x0, eps, clip=1e-15)
 
 
-def logdiffexp(bk, a, b, *, eps=1e-16):
-    """
-    Stable log(exp(a) - exp(b)) elementwise.
-    Returns -inf where b >= a.
-    """
-    delta = bk.minimum(b - a, 0.0)     # <= 0
-    ed = bk.exp(delta)                # in [0,1]
+# def logdiffexp(bk, a, b, *, eps=1e-16):
+#     """
+#     Stable log(exp(a) - exp(b)) elementwise.
+#     Returns -inf where b >= a.
+#     """
+#     delta = bk.minimum(b - a, 0.0)     # <= 0
+#     ed = bk.exp(delta)                # in [0,1]
 
-    out = a + bk.log1p(-bk.minimum(ed, 1.0 - eps))
-    return bk.where(b < a, out, -np.inf)
+#     out = a + bk.log1p(-bk.minimum(ed, 1.0 - eps))
+#     return bk.where(b < a, out, -np.inf)
+
+def logdiffexp(bk, a, b):
+    # returns log(exp(a) - exp(b)); -inf if b >= a
+    return bk.where(
+        a > b,
+        a + bk.log1p(-bk.exp(b - a)),
+        -jnp.inf,
+    )
+
+
+def logdiffexp_safe(a, b, eps=1e-16):
+    delta = bk.minimum(b - a, 0.0)           # <= 0
+    ed = bk.exp(delta)                        # in (0,1]
+    ed = bk.minimum(ed, 1.0 - eps)
+    out = a + bk.log1p(-ed)
+    return bk.where(b < a, out, -jnp.inf)
 
 
 # ---------------------------------------------------------------------

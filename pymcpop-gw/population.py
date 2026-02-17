@@ -7,10 +7,12 @@ from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, 
 from rate_models import log_p_z_MD_unnorm
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 import mass_models
+import spin_models
 from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid
-from pytensor_utils import logsumexp as _logsumexp
-from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
-from pytensor_utils import atinterp, atinterp_uniform
+#from pytensor_utils import logsumexp as _logsumexp
+
+#from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
+#from pytensor_utils import atinterp, atinterp_uniform
 
 import jax.numpy as jnp
 from jax import lax
@@ -23,9 +25,153 @@ except Exception as e:
 
 
 
+
+
 def _zeros_like_tree(x):
     # works for arrays, scalars, and lists/tuples of arrays
     return jax.tree_util.tree_map(lambda a: jnp.zeros_like(a), x)
+
+
+
+
+
+
+def _make_pop_and_sel_core(
+    *,
+    bk,
+    #zgrid,
+    rate_model,
+    mass_model,
+    spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    norm_gauss,
+    param,
+    verbose,
+    subtract_log_p_incl,
+    skip_sel=False,
+    chunk_inj=0,
+    K_dp: int = 30, 
+    DP_truncate=False,
+    DP_m1_env=False,
+    interp_mass = 0,
+    integrate_dc = 'trapz',
+    pop_only = False,
+    stop_grad_var_u: bool = True,
+    return_var = False
+):
+    """Build the single source of truth JAX core function.
+
+    Returns a pure function:
+        (evt arrays..., inj arrays..., Lambda, Ndraw) -> (logp_pop_evt, log_mu, var_u)
+    """
+
+
+    def _f(
+        m1det, m2det, dLdet, spins_evt,
+        m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
+        Lambda, Ndraw,
+    ):
+        
+        
+        theta5 = Lambda[:5]
+        H0, Om, w0, Xi0, nXi0 = theta5
+
+
+        
+        m1inj = lax.stop_gradient(m1inj)
+        m2inj = lax.stop_gradient(m2inj)
+        dLinj = lax.stop_gradient(dLinj)
+        spins_inj = lax.stop_gradient(spins_inj)
+        log_p_draw = lax.stop_gradient(log_p_draw)
+        log_p_incl = lax.stop_gradient(log_p_incl)
+        Ndraw = lax.stop_gradient(Ndraw)
+
+        if pop_only:
+            m1det  = lax.stop_gradient(m1det)
+            m2det = lax.stop_gradient(m2det)
+            dLdet = lax.stop_gradient(dLdet)
+            spins_evt = lax.stop_gradient(spins_evt)
+
+  
+        ##################################################
+
+
+        z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
+                          #z_nodes = zgrid, d_nodes = None, 
+                            integrate_dc = integrate_dc) 
+
+        
+        onepz = 1.0 + z_evt
+        m1src = m1det / onepz
+        m2src = m2det / onepz
+
+        interp_mass_vals = None
+
+        ##################################################
+
+        logp_pop_evt = log_p_pop(
+            bk,
+            m1src, m2src, z_evt, dLdet, spin_models._spins_as_list(spins_evt, spin_model), 
+            Lambda,
+            rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+                smoothing=smoothing, simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break, norm_gauss=norm_gauss,
+                dc=None, 
+                log_ddL_dz_pre=None,
+                Xi=None, E=None, 
+                param=param,
+                verbose=verbose,
+                K_dp=K_dp, 
+                DP_truncate=DP_truncate,
+                DP_m1_env=DP_m1_env,
+                interp_mass_vals = interp_mass_vals
+        )
+
+        if skip_sel:
+             return (
+            logp_pop_evt,
+            jnp.asarray(0., dtype=jnp.float64).reshape(()),
+            jnp.asarray(0., dtype=jnp.float64).reshape(()),
+        )
+            
+            
+        ##################################################
+        
+        log_mu, var_u = sel_bias_with_uncertainty(
+            bk,
+            m1inj, m2inj, dLinj,
+            spins_inj,
+            log_p_draw, log_p_incl,
+            Lambda, Ndraw,
+            rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+            smoothing=smoothing, simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break, norm_gauss=norm_gauss,
+            param=param, 
+            #z_grid=zgrid, 
+            verbose=verbose,
+            subtract_log_p_incl=subtract_log_p_incl,
+            use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
+            sel_chunk_size=chunk_inj,            # <--- tune
+            K_dp=K_dp,
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals = interp_mass_vals,
+            integrate_dc = integrate_dc,
+            return_var = return_var
+            
+        )
+        if stop_grad_var_u:
+            var_u = lax.stop_gradient(var_u)
+
+        return (
+            logp_pop_evt,
+            jnp.asarray(log_mu, dtype=jnp.float64).reshape(()),
+            jnp.asarray(var_u, dtype=jnp.float64).reshape(()),
+        )
+
+    return _f
 
 
 
@@ -384,14 +530,15 @@ def sel_bias_with_uncertainty_legacy(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    z_grid=None,
+    #z_grid=None,
     verbose=False,
     subtract_log_p_incl=False,
     K_dp: int  = 30,
     DP_truncate=False,
     DP_m1_env = False,
     interp_mass_vals=None,
-    integrate_dc = 'trapz'
+    integrate_dc = 'trapz', 
+    return_var = True
 
 ):
     """
@@ -412,8 +559,8 @@ def sel_bias_with_uncertainty_legacy(
             w0=w0,
             Xi0=Xi0,
             nXi0=nXi0,
-            z_nodes = z_grid,
-            d_nodes = None,
+            #z_nodes = z_grid,
+            #d_nodes = None,
             param = param,
             integrate_dc = integrate_dc
 
@@ -455,18 +602,24 @@ def sel_bias_with_uncertainty_legacy(
 
     # fast two-logsumexp reduction
     x = log_sel_b
-    m = bk.max(x)
+    m = bk.max(x, axis=0)
     u = bk.exp(x - m)
     s1 = bk.sum(u)
-    s2 = bk.sum(u * u)
+
+    Ndraw = bk.asarray(Ndraw, dtype=jnp.float64)
+    logN = bk.log(Ndraw)
     lse1 = m + bk.log(s1)
+    log_mu = lse1 - logN
+
+    if not return_var:
+        return log_mu, bk.zeros_like(log_mu)
+    
+    s2 = bk.sum(u * u)
     lse2 = 2.0 * m + bk.log(s2)
 
-    logN = bk.log(Ndraw)
-    log_mu = lse1 - logN
     logs2  = lse2 - logN
 
-    var_log_lik_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 1.0) - bk.log(Ndraw - 1.0)
+    var_log_lik_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 0. ) - bk.log(Ndraw - 1.0)
     return log_mu, var_log_lik_u
 
 
@@ -496,14 +649,15 @@ def sel_bias_with_uncertainty_streaming_vjp(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    z_grid=None,
+    #z_grid=None,
     verbose=False,
     chunk_size: int = 65536,
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
     interp_mass_vals=None,
-    integrate_dc = 'trapz'
+    integrate_dc = 'trapz',
+    return_var = True
 ):
     """
     Optimized selection term (patched):
@@ -522,9 +676,9 @@ def sel_bias_with_uncertainty_streaming_vjp(
     """
     B = int(chunk_size) if chunk_size and chunk_size > 0 else 0
 
-    if z_grid is None:
-        raise ValueError("z_grid must be provided for z(dL) inversion.")
-    z_nodes = jnp.asarray(z_grid)
+    #if z_grid is None:
+    #    raise ValueError("z_grid must be provided for z(dL) inversion.")
+    #z_nodes = jnp.asarray(z_grid)
 
     def _pad_to_multiple(x, n_pad, *, mode="edge"):
         n = x.shape[0]
@@ -574,7 +728,13 @@ def sel_bias_with_uncertainty_streaming_vjp(
         
         # invert z(dL) cheaply using precomputed nodes
         # atinterp(bk, x, x_nodes, y_nodes): here x=dL, x_nodes=d_nodes, y_nodes=z_nodes
-        zc = atinterp(bk, dL_c, d_nodes_, z_nodes)
+        #zc = atinterp(bk, dL_c, d_nodes_, z_nodes)
+
+        H0, Om, w0, Xi0, nXi0 = Lambda_[0], Lambda_[1], Lambda_[2], Lambda_[3], Lambda_[4]
+        
+        zc = z_from_dL(bk, dL_c, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
+                          #z_nodes = zgrid, d_nodes = None, 
+                            integrate_dc = integrate_dc) 
 
         onepz = 1.0 + zc
         m1Src = m1_c / onepz
@@ -602,7 +762,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             K_dp=K_dp,
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
-            interp_mass_vals=interp_mass_vals
+            interp_mass_vals=interp_mass_vals,
+            return_var = return_var
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -692,14 +853,17 @@ def sel_bias_with_uncertainty_streaming_vjp(
         (m_fin, s1_fin, s2_fin), _ = lax.scan(body, init, jnp.arange(n_chunks, dtype=jnp.int32))
 
         lse1 = m_fin + jnp.log(s1_fin)
-        lse2 = 2.0 * m_fin + jnp.log(s2_fin)
-
         logN = jnp.log(Ndraw_)
         log_mu = lse1 - logN
-        logs2 = lse2 - logN
 
-        var_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 1.0) - jnp.log(Ndraw_ - 1.0)
-        return log_mu, var_u
+        if not return_var:
+            return log_mu, bk.zeros_like(log_mu)
+        else:
+            lse2 = 2.0 * m_fin + jnp.log(s2_fin)
+            logs2 = lse2 - logN
+    
+            var_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 0. ) - jnp.log(Ndraw_ - 1.0)
+            return log_mu, var_u
 
     def _sel_fwd(
         Lambda_,
@@ -756,7 +920,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
             mc = lax.dynamic_slice(mask, (start,), (B_use,))
 
             def score_wrapped(Lam_, dnodes_):
-                return _score_chunk(Lam_, dnodes_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
+                return _score_chunk(Lam_, dnodes_, m1c, m2c, dLc, spc, lpdc, lpic, mc, )
 
             # Differentiate only w.r.t (Lambda, d_nodes); NEVER w.r.t 1e6 injection arrays
             x, pull = jax.vjp(score_wrapped, Lambda_, d_nodes)
@@ -826,7 +990,7 @@ def sel_bias_with_uncertainty(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    z_grid=None,
+    #z_grid=None,
     verbose=False,
     subtract_log_p_incl=False,
     # new flags
@@ -836,7 +1000,8 @@ def sel_bias_with_uncertainty(
     DP_truncate=False,
     DP_m1_env=False,
     interp_mass_vals=None,
-    integrate_dc = 'trapz'
+    integrate_dc = 'trapz',
+    return_var = True
 ):
     
    
@@ -849,14 +1014,15 @@ def sel_bias_with_uncertainty(
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             smoothing=smoothing, simplex_repair=simplex_repair,
             has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
-            z_grid=z_grid, 
+            #z_grid=z_grid, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             K_dp=K_dp, 
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
             interp_mass_vals=interp_mass_vals,
-            integrate_dc = integrate_dc
+            integrate_dc = integrate_dc,
+            return_var = return_var
             
         )
 
@@ -869,14 +1035,15 @@ def sel_bias_with_uncertainty(
         rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
         smoothing=smoothing, simplex_repair=simplex_repair,
         has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
-        z_grid=z_grid,
+        #z_grid=z_grid,
         verbose=verbose,
         chunk_size=sel_chunk_size,
         K_dp=K_dp,
         DP_truncate=DP_truncate,
         DP_m1_env=DP_m1_env,
         interp_mass_vals=interp_mass_vals,
-        integrate_dc = integrate_dc
+        integrate_dc = integrate_dc,
+        return_var = return_var
     )
 
 

@@ -178,7 +178,7 @@ def unpack_mass_DPLDP_z(mass_params):
 def _make_pop_and_sel_core(
     *,
     bk,
-    zgrid,
+    #zgrid,
     rate_model,
     mass_model,
     spin_model,
@@ -236,8 +236,9 @@ def _make_pop_and_sel_core(
         ##################################################
 
 
-        z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, z_nodes = zgrid
-                          , d_nodes = None, integrate_dc = integrate_dc) 
+        z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
+                          #z_nodes = zgrid, d_nodes = None, 
+                            integrate_dc = integrate_dc) 
 
         
         onepz = 1.0 + z_evt
@@ -503,7 +504,7 @@ def _make_pop_and_sel_core(
             smoothing=smoothing, simplex_repair=simplex_repair,
             has_m2_break=has_m2_break, norm_gauss=norm_gauss,
             param=param, 
-            z_grid=zgrid, 
+            #z_grid=zgrid, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
@@ -542,7 +543,8 @@ class _PopAndSelJAXVJPOp(Op):
     ]
     otypes = [at.dvector, at.dvector, at.dvector, at.dmatrix, at.dvector]
 
-    def __init__(self, *, zgrid,  rate_model, mass_model, spin_model,
+    def __init__(self, *, # zgrid,  
+                 rate_model, mass_model, spin_model,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla", 
                  verbose=False,
@@ -557,7 +559,7 @@ class _PopAndSelJAXVJPOp(Op):
                  pop_only: bool = False
                 ):
         super().__init__()
-        self.zgrid = zgrid 
+        #self.zgrid = zgrid 
 
         self.rate_model = rate_model
         self.mass_model = mass_model
@@ -584,12 +586,12 @@ class _PopAndSelJAXVJPOp(Op):
     def _build_jax_vjp(self):
         bk = JAXBackend()
 
-        cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
+        #cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
  
 
         core_f = _make_pop_and_sel_core(
             bk=bk,
-            zgrid=cosmo_zgrid,
+            #zgrid=cosmo_zgrid,
             rate_model=self.rate_model,
             mass_model=self.mass_model,
             spin_model=self.spin_model,
@@ -739,7 +741,8 @@ class PopAndSelJAXOp(Op):
     ]
     otypes = [at.dvector, at.dscalar, at.dscalar]
 
-    def __init__(self, *, zgrid, rate_model, mass_model, spin_model,
+    def __init__(self, *, # zgrid, 
+                 rate_model, mass_model, spin_model,
                  pop_only=False,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla",
@@ -756,7 +759,7 @@ class PopAndSelJAXOp(Op):
                 ):
         super().__init__()
 
-        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64) #jnp.asarray(zgrid, dtype="float64")
+        #self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64) #jnp.asarray(zgrid, dtype="float64")
  
         self.rate_model = rate_model
         self.mass_model = mass_model
@@ -798,7 +801,7 @@ class PopAndSelJAXOp(Op):
 
         # Build vjp op (shares caches via _parent_op pointer)
         self._vjp_op = _PopAndSelJAXVJPOp(
-            zgrid=self.zgrid, 
+            #zgrid=self.zgrid, 
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             pop_only = self.pop_only,
             smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break,
@@ -820,7 +823,7 @@ class PopAndSelJAXOp(Op):
        
         full_f = _make_pop_and_sel_core(
             bk=self._bk,
-            zgrid=self.zgrid,
+            #zgrid=self.zgrid,
             rate_model=self.rate_model,
             mass_model=self.mass_model,
             spin_model=self.spin_model,

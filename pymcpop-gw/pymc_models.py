@@ -229,7 +229,8 @@ def make_model(  priors,
                  linear_z=False,
                  DP_truncate_up=False,
                  DP_truncate_low=False,
-                 DP_m1_env = False
+                 DP_m1_env = False,
+                 detach_var = False
                 ):
 
 
@@ -474,7 +475,7 @@ def make_model(  priors,
 
 
         if find_z_bounds:
-            print("\nFinding optimal points for redshift interpolation...")
+            print("\nChecking bounds of redshift interpolation...")
             print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
         
             min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
@@ -488,15 +489,18 @@ def make_model(  priors,
     
             
             
-            zmin_b = min(zmin_b, max(min_z, z_min_data))
+            #zmin_b = min(zmin_b, max(min_z, z_min_data))
     
-            zmin_a = min( zmin_a, min(min_z, z_min_data))
+            #zmin_a = min( zmin_a, min(min_z, z_min_data))
             
-            zmid_b = min( zmid_b, z_max_data )
-            zmax_c = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
+            #zmid_b = min( zmid_b, z_max_data )
+            #zmax_c = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
     
-            print("Redshift values found, overwriting default:")
+            print("Redshift values, default:")
             print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+
+            assert zmax_c<=100
+            assert zmin_a>=1e-05
 
 
         if (mass_model in ('DPUC', 'DP') and find_m_bounds):
@@ -630,24 +634,22 @@ def make_model(  priors,
             
     
     #####################################################################################################
-    if not linear_z:
-        zgrid_np = atools.make_z_grid(
-        total=zres,
-        zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode
-        #mid_boost=8.0, edge_frac=0.08, end_boost=0.5
-    )
-    else:
-        zgrid_np = np.linspace(zmin_a, zmax_c, zres)
+
+    # if not linear_z:
+    #     zgrid_np = atools.make_z_grid(
+    #     total=zres,
+    #     zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode
+    # )
+    # else:
+    #     zgrid_np = np.linspace(zmin_a, zmax_c, zres)
 
     
-    #zgrid_ = at.constant(zgrid_np)
-    zgrid_ = at.as_tensor_variable(zgrid_np)
+    # zgrid_ = at.as_tensor_variable(zgrid_np)
 
     
-    print("z grid for interpolation built. Resolution: %s"%zgrid_.shape.eval())
-    print("z min: %s , z max: %s"%(zgrid_np.min(), zgrid_np.max()))
-    #print("is z grid constant check:")
-    #print(isinstance(zgrid_, at.TensorConstant))
+    # print("z grid for interpolation built. Resolution: %s"%zgrid_.shape.eval())
+    # print("z min: %s , z max: %s"%(zgrid_np.min(), zgrid_np.max()))
+
 
     #####################################################################################################
 
@@ -1929,15 +1931,10 @@ def make_model(  priors,
                 
                 print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
     
-                
-                # sample = mu + L @ x   (batched)
-                #samples = mus_s + at.matmul(cho_s, x[..., None])[..., 0]      # (N, d)
+    
                 samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
     
-              
-            
-                # logp = log p(x) - log|L|
-                # d = x.shape[1]
+       
                 log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
     
     
@@ -1970,20 +1967,8 @@ def make_model(  priors,
                     d_int  = 7
     
     
-            
-    
-                # X as (N, d)
-                #X = vals.T                                   # (N, d)
-                #print("X shape is %s"%(X[:, None, :].shape.eval()))
-                #print("mus_l shape is %s"%(mus_l.shape.eval()))
-                
-                # Broadcast X against component-wise parameters
-                # diff: (N, ngmm, d)
+        
                 diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
-                
-                # Quadratic form using precision F = Σ^{-1}
-                # tmp = F @ diff[..., None]  -> (N, ngmm, d, 1) -> squeeze to (N, ngmm, d)
-    
                 
                 tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
     
@@ -2044,7 +2029,7 @@ def make_model(  priors,
         
         fused = PopAndSelJAXOp(
             
-            zgrid=zgrid_np,
+            #zgrid=zgrid_np,
                 
             rate_model=rate_model,
             mass_model=mass_model,
@@ -2254,7 +2239,13 @@ def make_model(  priors,
             else:
                 log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
             
-     
+
+            if detach_var:
+                print("Detach log_lik_var from gradient")
+                log_lik_var_sg = ptg.disconnected_grad(log_lik_var)
+            else:
+                log_lik_var_sg = log_lik_var
+                
 
             if ((Neff_min==0) and (log_lik_var_min==0)):
                 print("No condition on number of effective points in MC integral for sel. effect")
@@ -2270,7 +2261,6 @@ def make_model(  priors,
                     # Thresholding on likelihood variance
                     print("MC integral for sel. effect thresholded on log lik. variance")
 
-                    log_lik_var_sg = ptg.disconnected_grad(log_lik_var)
                     
                     if sel_smoothing=='sigmoid':
                         # smooth with sigmoid 
