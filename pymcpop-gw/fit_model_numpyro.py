@@ -79,7 +79,33 @@ class Logger(object):
 
 
 
+def jitter_positive(v, key, eps):
+    v = jnp.asarray(v)
+    noise = jax.random.normal(key, shape=v.shape)
+    return v * jnp.exp(eps * noise)   # strictly > 0, relative
 
+
+def jitter_uniform(v, a, b, key, eps, margin=1e-6):
+    v = jnp.asarray(v)
+    a = jnp.asarray(a, dtype=v.dtype)
+    b = jnp.asarray(b, dtype=v.dtype)
+
+    t = (v - a) / (b - a)
+    t = jnp.clip(t, margin, 1 - margin)
+
+    z = jnp.log(t) - jnp.log1p(-t)              # logit
+    z = z + eps * jax.random.normal(key, v.shape)
+    t2 = jax.nn.sigmoid(z)
+
+    return a + (b - a) * t2
+
+
+def jitter_simplex(v, key, eps):
+    v = jnp.asarray(v)
+    v = jnp.clip(v, 1e-12, 1.0)      # avoid log(0)
+    y = jnp.log(v)
+    y = y + eps * jax.random.normal(key, shape=v.shape)
+    return jax.nn.softmax(y)
 
 
 
@@ -734,13 +760,24 @@ def main():
         fix_Om=bool(FLAGS.fix_Om),
         fix_w0=bool(FLAGS.fix_w0),
         fix_Xi0n=bool(FLAGS.fix_Xi0n),
+        reparam_mass = bool(FLAGS.reparam_mass)
     )
 
 
+    ##########################################################################
+    ##########################################################################
+    # INITIALIZE 
+    ##########################################################################
+    ##########################################################################
     
     init_vals = {k: v for k, v in ivals.items()}
+    rng_key = random.PRNGKey(0)
 
-    if FLAGS.mass_model=='DPLDP':
+    if FLAGS.mass_model=='DPLDP' and FLAGS.reparam_mass:
+
+        for drop in ["mb","u","v","sigma1","sigma2","delta_m1","delta_m2","alpha1","alpha2"]:
+            init_vals.pop(drop, None)
+        
         mb_a, mb_b = priors["mb"][0], priors["mb"][1]
         mb0 = jm.bounded_sigmoid_raw_init(ivals.get("mb"), mb_a, mb_b)
         if mb0 is not None:
@@ -749,6 +786,9 @@ def main():
         u0 = jm.unit_interval_sigmoid_raw_init(ivals.get("u"))
         if u0 is not None:
             init_vals["u_raw"] = u0
+        v0 = jm.unit_interval_sigmoid_raw_init(ivals.get("v"))
+        if v0 is not None:
+            init_vals["v_raw"] = v0
 
 
         if "alpha_bar" not in init_vals:
@@ -775,7 +815,7 @@ def main():
 
 
         for nm in ("delta_m1", "delta_m2", "sigma1", "sigma2"):
-            raw = jm.floored_lognormal_raw_init(init_vals, nm, priors)
+            raw = jm.floored_lognormal_raw_init(ivals, nm, priors)
             if raw is not None:
                 init_vals[f"{nm}_raw"] = raw
 
@@ -785,26 +825,31 @@ def main():
             init_vals["lambda"] = jnp.asarray(init_vals["lambda"], dtype=jnp.float64)
 
 
+
+    # convert everything to jnp arrays (no python lists)
+    # init_vals = { k: jnp.asarray(v) + FLAGS.eps_init * jnp.asarray(np.random.normal())
+    # for k, v in init_vals.items()
+    #             }
+    keys = jax.random.split(rng_key, len(init_vals))
+    init_vals = {
+    k: jnp.asarray(v)    for (k, v), kk in zip(init_vals.items(), keys)
+        }
     
-    init_vals = {k: _as_jax(v) for k, v in init_vals.items()}
-            
+    # ensure x init exists and is small-ish (with eps_init )
+    N  = int(lik_data.Nobs)
+    nd = int(lik_data.mus_s.shape[1])
+    if "x" not in init_vals:
+        # deterministic init is fine; or draw with a fixed seed once outside
+        init_vals["x"] = jnp.asarray( FLAGS.eps_init*np.random.normal(loc=0.0, scale=1.0, size=(N, nd)) , dtype=jnp.float64)
+        
 
-    init_strategy = init_to_value(values=init_vals)
-    fallback_init_strategy = init_to_feasible()
-
-    
-    rng_key = random.PRNGKey(0)
-
-    # --- NUTS kernel config ---
-    nuts = NUTS(
-        model_numpyro,
-        target_accept_prob=float(FLAGS.target_accept),
-        max_tree_depth=int(FLAGS.max_tree_depth),
-        dense_mass=bool(FLAGS.dense_mass),  # dense within each chain
-    )
     
     # --- Initialize (lets you plug in mass matrix if you have one) ---
     # Try init_to_value first; if it fails, fallback to feasible.
+    
+    init_strategy = init_to_value(values=init_vals)
+    fallback_init_strategy = init_to_feasible()
+
     try:
         init_key, rng_key = random.split(rng_key)
         res = initialize_model(
@@ -812,10 +857,8 @@ def main():
             model_numpyro,
             init_strategy=init_strategy,
             dynamic_args=False
-            
-            
-            ,
         )
+        print("✅ init_to_value; initial values used.")
     except Exception as e:
         print("⚠️ init_to_value failed; falling back to init_to_feasible.")
         print("   error:", repr(e))
@@ -826,15 +869,7 @@ def main():
             init_strategy=fallback_init_strategy,
             dynamic_args=False,
         )
-
-    # if len(res) == 3:
-    #     init_state, init_params, model_trace = res
-    #     potential_fn = None
-    #     postprocess_fn = None
-    # else:
-    #     # current numpyro: (init_params, potential_fn, postprocess_fn, model_trace)
-    #     init_params, potential_fn, postprocess_fn, model_trace = res
-    #     init_state = None
+        
 
     # --- Robust unpack of initialize_model across numpyro versions ---
     potential_fn = None
@@ -866,141 +901,10 @@ def main():
     
     if potential_fn is None or (not callable(potential_fn)):
         raise RuntimeError("potential_fn was not produced by initialize_model; cannot time grad/potential.")
+  
 
 
-    print("potential_fn type:", type(potential_fn))  # should be functools.partial or a function
-    print("init_params leaves:", len(jax.tree_util.tree_leaves(init_params)))
 
-
-    
-    if FLAGS.check_init:
-        
-        print()
-        print('Checking initial point...')
-        print()
-
-        from jax.tree_util import tree_leaves
-        import functools, inspect, time
-    
-        from jax import random
-        
-        def _l2norm(tree):
-            leaves = tree_leaves(tree)
-            return jnp.sqrt(jnp.sum(jnp.array([jnp.sum(x * x) for x in leaves])))
-        
-        print("\n[CHECK] Timing *likelihood* (your loglik) at init point...")
-        
-        # 1) Get constrained initial values from NumPyro
-        init_constrained = postprocess_fn(init_params)   # dict of sample-site values (constrained space)
-        
-        # 2) Pull x and build Lambda in the SAME order as your model_numpyro Lambda_list
-        x0 = init_constrained["x"]
-        
-        # --- rebuild Lambda0 exactly like in model_numpyro ---
-        # cosmology:
-        H0_  = init_constrained.get("H0",  jnp.asarray(params_fix["H0"],  jnp.float64))
-        Om_  = init_constrained.get("Om",  jnp.asarray(params_fix["Om"],  jnp.float64))
-        w0_  = init_constrained.get("w0",  jnp.asarray(-1.0, jnp.float64))
-        Xi0_ = init_constrained.get("Xi0", jnp.asarray(1.0,  jnp.float64))
-        nXi0_= init_constrained.get("nXi0",jnp.asarray(0.0,  jnp.float64))
-        Lambda_list0 = [H0_, Om_, w0_, Xi0_, nXi0_]
-        
-        # rate MD:
-        if rate_model in ("MD", "DPUC-vol-MD"):
-            Lambda_list0 += [
-                init_constrained["gamma"],
-                init_constrained["kappa"],
-                init_constrained["zp"],
-            ]
-        
-        # spin default_gauss (if used):
-        if spin_model == "default_gauss":
-            Lambda_list0 += [
-                init_constrained["muChi"],
-                init_constrained["sigmaChi"],
-                init_constrained["zeta"],
-                init_constrained["sigmat"],
-            ]
-        
-        # mass DPLDP (if used):
-        if mass_model == "DPLDP":
-            # NOTE: if some are deterministic in your model, they will still appear in init_constrained
-            Lambda_list0 += [
-                init_constrained["alpha1"],
-                init_constrained["alpha2"],
-                init_constrained["mb"],
-                init_constrained["mu1"],
-                init_constrained["sigma1"],
-                init_constrained["mu2"],
-                init_constrained["sigma2"],
-                init_constrained["m1_low"],
-                init_constrained["m_high"],
-                init_constrained["delta_m1"],
-                init_constrained["lambda0"],
-                init_constrained["lambda1"],
-                init_constrained["lambda2"],
-                init_constrained["beta"],
-                init_constrained["m2_low"],
-                init_constrained["delta_m2"],
-                init_constrained["epsilon"],
-                init_constrained["m_g"],
-                init_constrained["w_g"],
-                init_constrained["sig_g_l"],
-                init_constrained["sig_g_h"],
-            ]
-        
-        Lambda0 = jnp.asarray(Lambda_list0, dtype=jnp.float64)
-        
-        # lR0 (you said you already wired it)
-        lR0_0 = init_constrained.get("lR0", None)
-        
-        # 3) JIT + grads of *your* loglik
-        ll_fn = lambda Lam, x: loglik(Lam, x, lR0=lR0_0)
-        ll_jit = jax.jit(ll_fn)
-        
-        gLam_jit = jax.jit(jax.grad(lambda Lam: ll_fn(Lam, x0)))
-        gx_jit   = jax.jit(jax.grad(lambda x:   ll_fn(Lambda0, x)))
-        
-        # compile + first run
-        t0 = time.perf_counter()
-        ll0 = ll_jit(Lambda0, x0).block_until_ready()
-        t1 = time.perf_counter()
-        
-        gLam0 = gLam_jit(Lambda0)
-        gLam0n = _l2norm(gLam0).block_until_ready()
-        t2 = time.perf_counter()
-        
-        gx0 = gx_jit(x0)
-        gx0n = _l2norm(gx0).block_until_ready()
-        t3 = time.perf_counter()
-        
-        # steady-state run
-        t4 = time.perf_counter()
-        ll1 = ll_jit(Lambda0, x0).block_until_ready()
-        t5 = time.perf_counter()
-        
-        print(f"[TIMING] compile+run loglik: {(t1-t0):.3f}s")
-        print(f"[TIMING] compile+run grad Lambda: {(t2-t1):.3f}s")
-        print(f"[TIMING] compile+run grad x: {(t3-t2):.3f}s")
-        print(f"[TIMING] run loglik: {(t5-t4)*1e3:.2f} ms")
-        print(f"[INIT]   loglik={float(ll1):.6e}  ||g_Lambda||={float(gLam0n):.6e}  ||g_x||={float(gx0n):.6e}\n")
-        
-    # --- Optional: custom mass matrix / inverse mass matrix ---
-    # If you want to provide a mass matrix, do it by passing init_params and/or
-    # setting kernel to use an adapted mass matrix. The simplest robust path:
-    # let NUTS adapt mass matrix during warmup (recommended).
-    #
-    # If you *must* provide one:
-    #   nuts = NUTS(..., dense_mass=True) and use `init_state` from initialize_model with
-    #   a custom inverse_mass_matrix in the kernel init (advanced).
-    #
-    # For now: rely on warmup adaptation.
-
-    print()
-    print('*'*80)
-    print('Sampling with numpyro with %s method...' %(FLAGS.chain_method))
-    print('*'*80)
-    print()
 
 
     # ---- what the model is sampling (from trace) ----
@@ -1028,7 +932,59 @@ def main():
         val = model_trace[n]["value"]
         print(f"  - {n:20s}  shape={tuple(np.shape(val))}")
 
+
+    # Lambda sites = all sampled sites except the big latent x
+    lambda_sites = [n for n in sample_sites if n != "x"]
+    
+    # Safety: if your model ever has other huge latents, exclude them here too:
+    # lambda_sites = [n for n in lambda_sites if n not in ("x", "something_else_big")]
+    
+    # NumPyro expects a list of tuples (each tuple is one dense block)
+    dense_blocks = [tuple(lambda_sites)] if len(lambda_sites) > 1 else False
+    print("[INFO] dense_mass blocks:", dense_blocks)
+
     print()
+
+    if FLAGS.check_init:
+        
+        print()
+        print('Checking initial point...')
+        print()
+
+        raise NotImplementedError()
+
+
+
+    ##########################################################################
+    ##########################################################################
+    # SAMPLE 
+    ##########################################################################
+    ##########################################################################
+
+    
+    # --- NUTS kernel config ---
+    nuts = NUTS(
+        model_numpyro,
+        target_accept_prob=float(FLAGS.target_accept),
+        max_tree_depth=int(FLAGS.max_tree_depth),
+        dense_mass = dense_blocks,  # dense within each chain
+        step_size=1e-2,              # <-- seed a not-too-small epsilon
+        adapt_step_size=True,        # keep adaptation ON
+        adapt_mass_matrix=True,
+        find_heuristic_step_size = False,
+        regularize_mass_matrix = 1e-03,
+        forward_mode_differentiation = False
+    )
+    
+
+
+    print()
+    print('*'*80)
+    print('Sampling with numpyro with %s method...' %(FLAGS.chain_method))
+    print('*'*80)
+    print()
+
+
     
     num_warmup = int(FLAGS.ntune)
     num_samples = int(FLAGS.nsteps)
@@ -1059,7 +1015,7 @@ def main():
     run_key, rng_key = random.split(rng_key)
     mcmc.run(run_key)
     
-    mcmc.print_summary()
+    #mcmc.print_summary()
     samples = mcmc.get_samples(group_by_chain=True)
 
 
@@ -1067,9 +1023,7 @@ def main():
     az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
 
     # also save raw samples in npz
-    np.savez(os.path.join(FLAGS.fout, "trace.npz"), **{k: 
-                                                       
-                                                       np.asarray(v) for k, v in samples.items()})
+    np.savez(os.path.join(FLAGS.fout, "trace.npz"), **{k: np.asarray(v) for k, v in samples.items()})
 
 
 

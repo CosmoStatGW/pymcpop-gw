@@ -1287,6 +1287,18 @@ def main():
             # Print only the names of variables that are sampled
             print(vnames)
 
+            # NOT SUPPORTED
+            # if uses_numpyro and FLAGS.dense_mass:
+            #     lambda_sites = [i for i,n in enumerate(vnames) if n != "x"]
+        
+            #     # Safety: if your model ever has other huge latents, exclude them here too:
+            #     # lambda_sites = [n for n in lambda_sites if n not in ("x", "something_else_big")]
+                
+            #     # NumPyro expects a list of tuples (each tuple is one dense block)
+            #     dense_blocks = [tuple(lambda_sites)] if len(lambda_sites) > 1 else False
+            #     print("[INFO] dense_mass blocks:", dense_blocks)
+            # else:
+            #     dense_blocks = 0
             
             sampler_kwargs = {
                     "draws": FLAGS.nsteps,
@@ -1377,7 +1389,7 @@ def main():
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
-                                        "dense_mass": FLAGS.dense_mass,   # set True if dim ≤ ~50 and strong correlations
+                                        "dense_mass": FLAGS.dense_mass, 
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3,

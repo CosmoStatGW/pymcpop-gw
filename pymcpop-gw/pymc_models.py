@@ -9,7 +9,7 @@ import json
 import pytensor_tools as atools
 import pytensor_utils_old as putils
 
-from pytensor_utils import atinterp, pack1d, pack1d_with_layout
+from pytensor_utils import atinterp, pack1d, pack1d_with_layout, logdiffexp
 
 from pytensor_ops import PopAndSelJAXOp
 import cosmology as cosmo
@@ -308,12 +308,12 @@ def make_model(  priors,
             spinsInj = []
             spin_model_name = 'none'
 
+        import numpy as np
         if spin_model_name in ("default", "default_gauss"):
             spinsInj = np.stack(spinsInj, axis=1)   # from [chi1,chi2,cost1,cost2] -> (ninj,4)
         elif spin_model_name in ("chieffchip", "chieffchip_uc"):
             spinsInj = np.stack(spinsInj, axis=1)   # (ninj,2)
         else:
-            import numpy as np
             spinsInj = np.zeros((m1inj[0].shape[0], 0), dtype="float64")
 
     
@@ -369,7 +369,8 @@ def make_model(  priors,
         ### reshape
 
         if spin_model in ("default", "default_gauss"):
-            spins = np.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
+            spins = np.transpose( np.stack([chi1, chi2, cost1, cost2], axis=1) , (0,2,1) ) # (N,4)
+            print("spins shape is %s"%str(spins.shape))
 
              
         logd = np.log(d)
@@ -2130,7 +2131,7 @@ def make_model(  priors,
                         chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
             
                         # optional: enforce support -> 0 outside [min, max]
-                        # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -jnp.inf )
+                        # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -np.inf )
                     
                     else:
                         raise ValueError(f"Unknown PE prior name base: {base}")
@@ -2174,18 +2175,43 @@ def make_model(  priors,
             # then sum log likelihoods
             likelihood_val = at.sum( log_p_pop_marg )  
 
+            
             # Check number of effective samples for computing MC integral 
-            logs2 = at.logsumexp(2*log_p_pop, axis=1,) -2*at.log(allNsamples)
+            print("log_p_pop shape")
+            print(log_p_pop.shape.eval())
+            logs2 = at.logsumexp(2*log_p_pop, axis=1) -2*at.log(allNsamples)
+
+            print("logs2 shape")
+            print(logs2.shape.eval())
             
             Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) 
             # this has len = n. of observations
+
+
+            print("Neff_lik shape")
+            print(Neff_lik.shape.eval())
+
+            print("Neff_lik example")
+            print(Neff_lik.eval()[:10])
             
             if Neff_min_lik>0:
                 
                 _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
               
             else:
-                print("No bound on effective number of samples for individual event MC integrals")
+
+                log_var_log_lik_evs_all = logdiffexp( ATBackend(), logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
+
+                print("log_var_log_lik_evs_all shape")
+                print(log_var_log_lik_evs_all.shape.eval())
+
+                var_log_lik_evs = at.sum( at.exp(log_var_log_lik_evs_all) )
+
+                print("var_log_lik_evs ")
+                print(var_log_lik_evs.eval())
+
+                
+                print("No bound on effective number of samples for individual event MC integrals. Uncertainty will be propagated to total log lik. variance")
 
 
        
@@ -2235,16 +2261,24 @@ def make_model(  priors,
      
 
             if marginal_R0:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*logN ) )
+                log_lik_var_selb = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*logN ) )
             else:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+                log_lik_var_selb = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+
+            
+            if not pop_only:
+                log_lik_var = log_lik_var_selb + var_log_lik_evs
+            else:
+                log_lik_var = log_lik_var_selb 
             
 
             if detach_var:
                 print("Detach log_lik_var from gradient")
                 log_lik_var_sg = ptg.disconnected_grad(log_lik_var)
+                log_lik_var_selb_sg = ptg.disconnected_grad(log_lik_var_selb)
             else:
                 log_lik_var_sg = log_lik_var
+                log_lik_var_selb_sg = log_lik_var_selb
                 
 
             if ((Neff_min==0) and (log_lik_var_min==0)):
@@ -2253,7 +2287,10 @@ def make_model(  priors,
             else:
                 if log_lik_var_min==0:
 
-                   raise NotImplementedError()
+                    Neff = N**2 / ( log_lik_var_selb_sg + (N**2)/Ndraw )
+
+                    #raise NotImplementedError()
+                    _ = pm.Potential("bound_selb_Neff", at.switch(Neff >= Neff_min, 0.0, -np.inf ))
 
                 
                 elif Neff_min==0:

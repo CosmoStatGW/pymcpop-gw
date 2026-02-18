@@ -903,65 +903,97 @@ def make_model_jax(  priors,
         # Mass model (DPLDP)
         # -------------------------
         if mass_model == "DPLDP":
-            # epsilon fixed in your PyMC snippet
+            # epsilon fixed 
             epsilon_ = jnp.asarray(0.1, dtype=jnp.float64)
             numpyro.deterministic("epsilon", epsilon_)
-    
-            # You said: assume helpers exist w/ same signature; so we call them.
-            # Replace these calls with your own numpyro implementations if needed.
-    
-            if priors["alpha1"] != priors["alpha2"]:
-                raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
-    
-            # bounds -> mid and sigma
-            a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-            a_mid = 0.5 * (a_low + a_high)
-            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
 
-         
-            # reparam latents
-            # initvals are handled by init_strategy outside (init_to_value),
-            # so we just declare the sample sites.
-            a_bar  = numpyro.sample("alpha_bar",  dist.Normal(a_mid, a_sig), )
-            a_diff = numpyro.sample("alpha_diff", dist.Normal(0.0, jnp.sqrt(2.0) * a_sig), )
+
+            if reparam_mass:
+
         
-            # deterministics
-            alpha1_ = numpyro.deterministic("alpha1", a_bar - 0.5 * a_diff)
-            alpha2_ = numpyro.deterministic("alpha2", a_bar + 0.5 * a_diff)
+                if priors["alpha1"] != priors["alpha2"]:
+                    raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+        
+                # bounds -> mid and sigma
+                a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+                a_mid = 0.5 * (a_low + a_high)
+                a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+    
+             
+                # reparam latents
+                # initvals are handled by init_strategy outside (init_to_value),
+                # so we just declare the sample sites.
+                a_bar  = numpyro.sample("alpha_bar",  dist.Normal(a_mid, a_sig), )
+                a_diff = numpyro.sample("alpha_diff", dist.Normal(0.0, jnp.sqrt(2.0) * a_sig), )
+            
+                # deterministics
+                alpha1_ = numpyro.deterministic("alpha1", a_bar - 0.5 * a_diff)
+                alpha2_ = numpyro.deterministic("alpha2", a_bar + 0.5 * a_diff)
+    
+    
+                
+                beta_ = normal_from_bounds_95("beta", priors["beta"][0], priors["beta"][1] )
+        
+                mb_a, mb_b = priors["mb"][0], priors["mb"][1]
+                mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=RAW_SD_95)
+                
+                
+                sigma1_          = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], median_frac=0.2)
+                sigma2_          = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], median_frac=0.2 )
+    
+                
+                
+                mu1_             = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1])
+                mu2_             = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1] )
+
+                # just in case mu1 gets too small
+                numpyro.factor("mu1_neg_guard", jnp.where(mu1_ < 0.0, -jnp.inf, 0.0))
 
 
-            
-            beta_ = normal_from_bounds_95("beta", priors["beta"][0], priors["beta"][1] )
-    
-            mb_a, mb_b = priors["mb"][0], priors["mb"][1]
-            mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=RAW_SD_95)
-            
-            
-            sigma1_          = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], median_frac=0.2)
-            sigma2_          = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], median_frac=0.2 )
+                
+                u = unit_interval_sigmoid("u", raw_sigma=RAW_SD_95 )
+                m1_low_ = 3.0 + (10.0 - 3.0) * jnp.sqrt(u)
+                numpyro.deterministic("m1_low", m1_low_)
+        
+                v = unit_interval_sigmoid("v",raw_sigma=RAW_SD_95)
+                m2_low_ = 3.0 + v * (m1_low_ - 3.0)
+                numpyro.deterministic("m2_low", m2_low_)
+        
+                m_high_ = jnp.asarray(300.0, dtype=jnp.float64)
+                numpyro.deterministic("m_high", m_high_)
+        
+                delta_m1_ = floored_lognormal_q95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], median_frac=0.2 )
+                delta_m2_ = floored_lognormal_q95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], median_frac=0.2 )
+        
+                numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
+                numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
 
-            
-            
-            mu1_             = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1])
-            mu2_             = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1] )
-    
-            u = unit_interval_sigmoid("u", raw_sigma=RAW_SD_95 )
-            m1_low_ = 3.0 + (10.0 - 3.0) * jnp.sqrt(u)
-            numpyro.deterministic("m1_low", m1_low_)
-    
-            v = unit_interval_sigmoid("v",raw_sigma=RAW_SD_95)
-            m2_low_ = 3.0 + v * (m1_low_ - 3.0)
-            numpyro.deterministic("m2_low", m2_low_)
-    
-            m_high_ = jnp.asarray(300.0, dtype=jnp.float64)
-            numpyro.deterministic("m_high", m_high_)
-    
-            delta_m1_ = floored_lognormal_q95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], median_frac=0.2 )
-            delta_m2_ = floored_lognormal_q95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], median_frac=0.2 )
-    
-            numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
-            numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
-    
+            else:
+                alpha1_ = numpyro.sample("alpha1", dist.Uniform(priors["alpha1"][0], priors["alpha1"][1]))
+                alpha2_ = numpyro.sample("alpha2", dist.Uniform(priors["alpha2"][0], priors["alpha2"][1]))
+
+                beta_ = numpyro.sample("beta", dist.Uniform(priors["beta"][0], priors["beta"][1]))
+
+                mb_ = numpyro.sample("mb", dist.Uniform(priors["mb"][0], priors["mb"][1]))
+                sigma1_ = numpyro.sample("sigma1", dist.Uniform(priors["sigma1"][0], priors["sigma1"][1]))
+                sigma2_ = numpyro.sample("sigma2", dist.Uniform(priors["sigma2"][0], priors["sigma2"][1]))
+                mu1_ = numpyro.sample("mu1", dist.Uniform(priors["mu1"][0], priors["mu1"][1]))
+                mu2_ = numpyro.sample("mu2", dist.Uniform(priors["mu2"][0], priors["mu2"][1]))
+                delta_m1_ = numpyro.sample("delta_m1", dist.Uniform(priors["delta_m1"][0], priors["delta_m1"][1]))
+                delta_m2_ = numpyro.sample("delta_m2", dist.Uniform(priors["delta_m2"][0], priors["delta_m2"][1]))
+
+                u = numpyro.sample("u", dist.Uniform(0, 1))
+                m1_low_ = 3.0 + (10.0 - 3.0) * jnp.sqrt(u)
+                numpyro.deterministic("m1_low", m1_low_)
+        
+                v = numpyro.sample("v", dist.Uniform(0, 1))
+                m2_low_ = 3.0 + v * (m1_low_ - 3.0)
+                numpyro.deterministic("m2_low", m2_low_)
+        
+                m_high_ = jnp.asarray(300.0, dtype=jnp.float64)
+                numpyro.deterministic("m_high", m_high_)
+
+                
             # Dirichlet for lambda weights
             lambda_vec = numpyro.sample("lambda", dist.Dirichlet(jnp.asarray([1.0, 1.0, 1.0])))
             # if you want to actually use init values, do it via init_strategy (recommended)
@@ -1004,7 +1036,9 @@ def make_model_jax(  priors,
         # -------------------------
         # Pack Lambda -> jnp array
         # -------------------------
-        Lambda = jnp.asarray(Lambda_list, dtype=jnp.float64)
+        #Lambda = jnp.asarray(Lambda_list, dtype=jnp.float64)
+        Lambda = jnp.stack([jnp.asarray(z, dtype=jnp.float64) for z in Lambda_list])
+
     
         # -------------------------
         # Latent GW aux x (gauss path)
