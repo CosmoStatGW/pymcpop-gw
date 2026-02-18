@@ -2196,7 +2196,7 @@ def make_model(  priors,
             
             if Neff_min_lik>0:
                 
-                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
+                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik, -np.inf, 0. ) ) )
               
             else:
 
