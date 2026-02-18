@@ -956,6 +956,7 @@ def sel_bias_with_uncertainty_legacy(
 #  sel. bias with streaming 
 # ---------------------------------------------------------------------
 
+
 def sel_bias_with_uncertainty_streaming_vjp(
     bk,
     m1inj,
@@ -975,36 +976,30 @@ def sel_bias_with_uncertainty_streaming_vjp(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    #z_grid=None,
+    #z_grid=None,                # kept for API compatibility; unused now
     verbose=False,
     chunk_size: int = 65536,
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
     interp_mass_vals=None,
-    integrate_dc = 'trapz',
+    integrate_dc="trapz",
     return_var = True
 ):
     """
     Optimized selection term (patched):
       - forward: streaming (one-pass) computation of log_mu and var_u
       - backward: custom VJP that differentiates ONLY log_mu w.r.t. Lambda
-      - z(dL) inversion: uses interpolation with nodes (z_grid, d_nodes)
-      - d_nodes = dLfun(..., z_grid, Lambda_cosmo) is computed ONCE per call (not per chunk)
-      - no gradients are ever taken w.r.t. the 1e6 injection arrays
+      - z(dL) inversion: delegated to z_from_dL (internal handling of nodes)
+      - no gradients are ever taken w.r.t. the injection arrays
 
     Assumes these exist/imported:
-      - dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, x01, w01, dc=None, Xi=None, param=...)
-      - atinterp(bk, x, x_nodes, y_nodes)  # returns y(x) with nodes (x_nodes -> y_nodes)
+      - z_from_dL(bk, dL, H0, Om, w0, Xi0, nXi0, integrate_dc=...)
       - log_p_pop(...)
       - logdiffexp_bk(bk, a, b)
       - jax, jnp, lax
     """
     B = int(chunk_size) if chunk_size and chunk_size > 0 else 0
-
-    #if z_grid is None:
-    #    raise ValueError("z_grid must be provided for z(dL) inversion.")
-    #z_nodes = jnp.asarray(z_grid)
 
     def _pad_to_multiple(x, n_pad, *, mode="edge"):
         n = x.shape[0]
@@ -1022,27 +1017,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     def _make_mask(n, n_pad):
         return jnp.arange(n_pad) < n
 
-    # def _nodes_from_lambda(Lambda_):
-    #     # Cosmology hyper-params (must match your convention)
-    #     H0, Om, w0, Xi0, nXi0 = Lambda_[0], Lambda_[1], Lambda_[2], Lambda_[3], Lambda_[4]
-    #     # Compute d_nodes once: dL(z_nodes; Lambda_cosmo)
-    #     return dLfun(
-    #         bk,
-    #         z_nodes,
-    #         H0,
-    #         Om,
-    #         w0,
-    #         Xi0,
-    #         nXi0,     
-    #         dc=None,
-    #         Xi=None,
-    #         param=param,
-    #         integrate_dc = integrate_dc
-    #     )
-
     def _score_chunk(
         Lambda_,
-        #d_nodes_,
         m1_c,
         m2_c,
         dL_c,
@@ -1051,16 +1027,20 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_c,
         mask_c,
     ):
-        
-        # invert z(dL) cheaply using precomputed nodes
-        # atinterp(bk, x, x_nodes, y_nodes): here x=dL, x_nodes=d_nodes, y_nodes=z_nodes
-        #zc = atinterp(bk, dL_c, d_nodes_, z_nodes)
-
+        # Cosmology hyper-params (must match your convention)
         H0, Om, w0, Xi0, nXi0 = Lambda_[0], Lambda_[1], Lambda_[2], Lambda_[3], Lambda_[4]
-        
-        zc = z_from_dL(bk, dL_c, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
-                          #z_nodes = zgrid, d_nodes = None, 
-                            integrate_dc = integrate_dc) 
+
+        # Invert z(dL) via your new internal routine (no z_nodes/d_nodes here)
+        zc = z_from_dL(
+            bk,
+            dL_c,
+            H0=H0,
+            Om=Om,
+            w0=w0,
+            Xi0=Xi0,
+            nXi0=nXi0,
+            integrate_dc=integrate_dc,
+        )
 
         onepz = 1.0 + zc
         m1Src = m1_c / onepz
@@ -1120,9 +1100,6 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpi_,
         Ndraw_,
     ):
-        # compute d_nodes ONCE
-        #d_nodes = _nodes_from_lambda(Lambda_)
-
         n = m1_.shape[0]
         if B == 0:
             n_chunks, n_pad, B_use = 1, n, n
@@ -1180,6 +1157,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
         (m_fin, s1_fin, s2_fin), _ = lax.scan(body, init, jnp.arange(n_chunks, dtype=jnp.int32))
 
         lse1 = m_fin + jnp.log(s1_fin)
+
         logN = jnp.log(Ndraw_)
         log_mu = lse1 - logN
 
@@ -1192,17 +1170,15 @@ def sel_bias_with_uncertainty_streaming_vjp(
             var_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 0. ) - jnp.log(Ndraw_ - 1.0)
             return log_mu, var_u
 
+
     def _sel_fwd(
         Lambda_,
         m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_,
     ):
-        # compute d_nodes ONCE and save it for backward
-        #d_nodes = _nodes_from_lambda(Lambda_)
-        
         log_mu, var_u = _sel_fwd_only(Lambda_, m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_)
         lse1 = log_mu + jnp.log(Ndraw_)
+        # save what backward needs; no d_nodes anymore
         res = (lse1, Ndraw_, Lambda_, m1_, m2_, dL_, spins_, lpd_, lpi_)
-        
         return (log_mu, var_u), res
 
     def _sel_bwd(res, g):
@@ -1232,8 +1208,7 @@ def sel_bias_with_uncertainty_streaming_vjp(
         lpdp = _pad_to_multiple(lpd_, n_pad, mode="edge")
         lpip = _pad_to_multiple(lpi_, n_pad, mode="edge")
 
-        dLambda_direct = jnp.zeros_like(Lambda_)
-        #d_dnodes_total = jnp.zeros_like(d_nodes)  # size ~ 1-2k
+        dLambda_acc = jnp.zeros_like(Lambda_)
 
         def body(carry, k):
             dLam_acc = carry
@@ -1248,28 +1223,24 @@ def sel_bias_with_uncertainty_streaming_vjp(
             lpic = lax.dynamic_slice(lpip, (start,), (B_use,))
             mc = lax.dynamic_slice(mask, (start,), (B_use,))
 
-            def score_wrapped(Lam_, dnodes_):
-                return _score_chunk(Lam_, m1c, m2c, dLc, spc, lpdc, lpic, mc, )
+            def score_wrapped(Lam_):
+                return _score_chunk(Lam_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
 
-            # Differentiate only w.r.t (Lambda, ); NEVER w.r.t 1e6 injection arrays
-            x, pull = jax.vjp(score_wrapped, Lambda_, )
+            # Differentiate only w.r.t Lambda; NEVER w.r.t injection arrays
+            x, pull = jax.vjp(score_wrapped, Lambda_)
             w = jnp.exp(x - lse1)
             cot = g_log_mu * w
 
-            dLam_c = pull(cot)
-            return dLam_acc + dLam_c , None
+            (dLam_c,) = pull(cot)
+            return dLam_acc + dLam_c, None
 
-        dLambda, _ = lax.scan(
-            body,
-            dLambda_direct,
+        dLambda_acc, _ = lax.scan(
+            lambda carry, k: body(carry, k),
+            dLambda_acc,
             jnp.arange(n_chunks, dtype=jnp.int32),
         )
 
-        # Chain d_dnodes_total back to Lambda through d_nodes(Lambda)
-        #_, pull_nodes = jax.vjp(_nodes_from_lambda, Lambda_)
-        #(dLambda_from_nodes,) = pull_nodes(d_dnodes_total)
-
-        #dLambda = dLambda_direct + dLambda_from_nodes
+        dLambda = dLambda_acc
 
         zeros_m1 = jnp.zeros_like(m1_)
         zeros_m2 = jnp.zeros_like(m2_)

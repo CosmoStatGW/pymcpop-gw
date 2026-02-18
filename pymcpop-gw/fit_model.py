@@ -133,7 +133,7 @@ def main():
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
-    parser.add_argument("--sampling_gw", default='gmm_cat', type=str, required=False)
+    parser.add_argument("--sampling_gw", default='gauss', type=str, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
