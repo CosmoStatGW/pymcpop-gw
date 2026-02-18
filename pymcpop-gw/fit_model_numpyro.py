@@ -888,43 +888,102 @@ def main():
             leaves = tree_leaves(tree)
             return jnp.sqrt(jnp.sum(jnp.array([jnp.sum(x * x) for x in leaves])))
         
-        print("\n[CHECK] Timing potential and grad at init_params...")
+        print("\n[CHECK] Timing *likelihood* (your loglik) at init point...")
         
-        # Use a fixed PRNG key for timing/eval (so pe is a pure fn of params).
-        # IMPORTANT: potential_fn in your run needs rng_key.
-        pe_key = init_key  # reuse init_key from initialize_model
-        # (or: pe_key, rng_key = random.split(rng_key))
+        # 1) Get constrained initial values from NumPyro
+        init_constrained = postprocess_fn(init_params)   # dict of sample-site values (constrained space)
         
-        def pe(params):
-            return potential_fn(pe_key, params)
+        # 2) Pull x and build Lambda in the SAME order as your model_numpyro Lambda_list
+        x0 = init_constrained["x"]
         
-        pot_jit  = jax.jit(pe)
-        grad_jit = jax.jit(jax.grad(pe))
+        # --- rebuild Lambda0 exactly like in model_numpyro ---
+        # cosmology:
+        H0_  = init_constrained.get("H0",  jnp.asarray(params_fix["H0"],  jnp.float64))
+        Om_  = init_constrained.get("Om",  jnp.asarray(params_fix["Om"],  jnp.float64))
+        w0_  = init_constrained.get("w0",  jnp.asarray(-1.0, jnp.float64))
+        Xi0_ = init_constrained.get("Xi0", jnp.asarray(1.0,  jnp.float64))
+        nXi0_= init_constrained.get("nXi0",jnp.asarray(0.0,  jnp.float64))
+        Lambda_list0 = [H0_, Om_, w0_, Xi0_, nXi0_]
         
-        # compile + run
+        # rate MD:
+        if rate_model in ("MD", "DPUC-vol-MD"):
+            Lambda_list0 += [
+                init_constrained["gamma"],
+                init_constrained["kappa"],
+                init_constrained["zp"],
+            ]
+        
+        # spin default_gauss (if used):
+        if spin_model == "default_gauss":
+            Lambda_list0 += [
+                init_constrained["muChi"],
+                init_constrained["sigmaChi"],
+                init_constrained["zeta"],
+                init_constrained["sigmat"],
+            ]
+        
+        # mass DPLDP (if used):
+        if mass_model == "DPLDP":
+            # NOTE: if some are deterministic in your model, they will still appear in init_constrained
+            Lambda_list0 += [
+                init_constrained["alpha1"],
+                init_constrained["alpha2"],
+                init_constrained["mb"],
+                init_constrained["mu1"],
+                init_constrained["sigma1"],
+                init_constrained["mu2"],
+                init_constrained["sigma2"],
+                init_constrained["m1_low"],
+                init_constrained["m_high"],
+                init_constrained["delta_m1"],
+                init_constrained["lambda0"],
+                init_constrained["lambda1"],
+                init_constrained["lambda2"],
+                init_constrained["beta"],
+                init_constrained["m2_low"],
+                init_constrained["delta_m2"],
+                init_constrained["epsilon"],
+                init_constrained["m_g"],
+                init_constrained["w_g"],
+                init_constrained["sig_g_l"],
+                init_constrained["sig_g_h"],
+            ]
+        
+        Lambda0 = jnp.asarray(Lambda_list0, dtype=jnp.float64)
+        
+        # lR0 (you said you already wired it)
+        lR0_0 = init_constrained.get("lR0", None)
+        
+        # 3) JIT + grads of *your* loglik
+        ll_fn = lambda Lam, x: loglik(Lam, x, lR0=lR0_0)
+        ll_jit = jax.jit(ll_fn)
+        
+        gLam_jit = jax.jit(jax.grad(lambda Lam: ll_fn(Lam, x0)))
+        gx_jit   = jax.jit(jax.grad(lambda x:   ll_fn(Lambda0, x)))
+        
+        # compile + first run
         t0 = time.perf_counter()
-        pot0 = pot_jit(init_params).block_until_ready()
+        ll0 = ll_jit(Lambda0, x0).block_until_ready()
         t1 = time.perf_counter()
         
-        g0 = grad_jit(init_params)
-        gn0 = _l2norm(g0).block_until_ready()
+        gLam0 = gLam_jit(Lambda0)
+        gLam0n = _l2norm(gLam0).block_until_ready()
         t2 = time.perf_counter()
         
-        # steady-state run
+        gx0 = gx_jit(x0)
+        gx0n = _l2norm(gx0).block_until_ready()
         t3 = time.perf_counter()
-        pot1 = pot_jit(init_params).block_until_ready()
-        t4 = time.perf_counter()
         
-        g1 = grad_jit(init_params)
-        gn1 = _l2norm(g1).block_until_ready()
+        # steady-state run
+        t4 = time.perf_counter()
+        ll1 = ll_jit(Lambda0, x0).block_until_ready()
         t5 = time.perf_counter()
         
-        print(f"[TIMING] compile+run potential: {(t1-t0):.3f} s")
-        print(f"[TIMING] compile+run grad:      {(t2-t1):.3f} s")
-        print(f"[TIMING] run potential:         {(t4-t3)*1e3:.2f} ms")
-        print(f"[TIMING] run grad:              {(t5-t4)*1e3:.2f} ms")
-        print(f"[INIT]   potential={float(pot1):.6e}  grad_norm={float(gn1):.6e}\n")
-
+        print(f"[TIMING] compile+run loglik: {(t1-t0):.3f}s")
+        print(f"[TIMING] compile+run grad Lambda: {(t2-t1):.3f}s")
+        print(f"[TIMING] compile+run grad x: {(t3-t2):.3f}s")
+        print(f"[TIMING] run loglik: {(t5-t4)*1e3:.2f} ms")
+        print(f"[INIT]   loglik={float(ll1):.6e}  ||g_Lambda||={float(gLam0n):.6e}  ||g_x||={float(gx0n):.6e}\n")
         
     # --- Optional: custom mass matrix / inverse mass matrix ---
     # If you want to provide a mass matrix, do it by passing init_params and/or
@@ -1027,7 +1086,7 @@ if __name__=='__main__':
 
     import multiprocessing as mp
     try:
-        mp.set_start_method("spawn")
+        mp.set_start_method("spawn", force=True)
         print("Spawn set")
     except RuntimeError:
         pass  # already set

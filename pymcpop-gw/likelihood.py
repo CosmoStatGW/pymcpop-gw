@@ -328,7 +328,7 @@ def _gw_terms_from_x(
 # -----------------------------
 
 def make_loglik_gauss(
-    core_fn: Callable,   # your _make_pop_and_sel_core(...) result (already built with return_var=False)
+    core_fn: Callable,   #  _make_pop_and_sel_core(...) result 
     data: LikDataGauss,
 ) -> Callable:
     """
