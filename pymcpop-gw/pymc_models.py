@@ -2285,7 +2285,10 @@ def make_model(  priors,
                 print("No condition on number of effective points in MC integral for sel. effect")
                 selection_bias =  sel_effect #pm.Deterministic("sel_bias", sel_effect )
             else:
+                
                 if log_lik_var_min==0:
+
+                    selection_bias =  sel_effect
 
                     Neff = N**2 / ( log_lik_var_selb_sg + (N**2)/Ndraw )
 
@@ -2319,6 +2322,7 @@ def make_model(  priors,
                                                 
                         _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var_sg <= log_lik_var_min, 0.0, -np.inf ))
 
+            
             
             _ = pm.Potential('selection_bias', selection_bias)
 
