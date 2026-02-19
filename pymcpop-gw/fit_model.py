@@ -49,6 +49,8 @@ os.environ["XLA_FLAGS"] = (
         f"intra_op_parallelism_threads={NTH} "
         "inter_op_parallelism_threads=1"
     )
+
+print()
 print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
 
 import json

@@ -344,9 +344,37 @@ def make_model(  priors,
             if Nsamplesuse>Nsamples_np:
                 raise ValueError("Must use less samples than those available.")
             print("Nsamples_np available is %s, but %s will be used"%(Nsamples_np, Nsamplesuse))
+
+            print("dL shape before cut is %s"%str(d.shape))
+
+            print("dL start ")
+            print(d[:5])
+
+
+            print("dL prior shape before cut is %s"%str(dL_prior.shape))
+
+            print("dL prior start ")
+            print(dL_prior[:5])
+
+
+            
             
             m1det, m2det, d = m1det[:, :Nsamplesuse], m2det[:, :Nsamplesuse], d[:, :Nsamplesuse]
             dL_prior = dL_prior[:, :Nsamplesuse]
+            
+
+            print("dL shape after cut is %s"%str(d.shape))
+
+            print("dL start ")
+            print(d[:5])
+
+
+            print("dL prior shape after cut is %s"%str(dL_prior.shape))
+
+            print("dL prior start ")
+            print(dL_prior[:5])
+            
+            
             spins = np.asarray([s[:, :Nsamplesuse] for s in spins ])
             if (spin_model=='default') or (spin_model=='default_gauss'):
                chi1, chi2, cost1, cost2 = chi1[:, :Nsamplesuse], chi2[:, :Nsamplesuse], cost1[:, :Nsamplesuse], cost2[:, :Nsamplesuse]
@@ -1107,19 +1135,29 @@ def make_model(  priors,
             Lambda_ += [lamP_, alpha_, beta_, deltam_, ml_, mh_, muM_, sM_ ]
 
 
-        elif mass_model=='DPLDP':
+        elif mass_model=='DPLDP' or mass_model=='PLDP':
 
-            print('Modeling mass distribution with Double Power Law + Double Peak ')
+            if mass_model=='DPLDP':
+                
+                print('Modeling mass distribution with Double Power Law + Double Peak ')
 
+            else:
+                print('Modeling mass distribution with single Power Law + Double Peak ')
+
+            
             epsilon_  = pm.Deterministic( "epsilon", at.as_tensor_variable( 0.1 ) )
 
             
             if not reparam_mass:
 
-                alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
-                alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
-                
-                mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+                alpha1_ = pm.Uniform("alpha1", lower=priors["alpha1"][0], upper=priors["alpha1"][1], initval=ivals.get("alpha1"))
+
+                if mass_model == "DPLDP":
+                    alpha2_ = pm.Uniform("alpha2", lower=priors["alpha2"][0], upper=priors["alpha2"][1], initval=ivals.get("alpha2"))
+                    mb_     = pm.Uniform("mb", lower=priors["mb"][0], upper=priors["mb"][1], initval=ivals.get("mb"))
+                else:
+                    alpha2_ = pm.Deterministic("alpha2", alpha1_)   # same name: alpha2
+                    mb_     = pm.Deterministic("mb", at.as_tensor_variable(35.0))
                 
                 mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
                 sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
@@ -1154,38 +1192,66 @@ def make_model(  priors,
                 # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
 
                 print("Using reparametrized mass priros")
-    
-                if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+
+                if mass_model=='DPLDP':
+                    if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+                        
+                    # bounds -> mid and sigma (same as helper)
+                    a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+                    a_mid = 0.5 * (a_low + a_high)
+                    a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
                     
-                # bounds -> mid and sigma (same as helper)
-                a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-                a_mid = 0.5 * (a_low + a_high)
-                a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
-                
-                # reparam
-                a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
-                                   initval=ivals.get("alpha_bar", ivals.get("alpha1")))
-                a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
-                                   initval=ivals.get("alpha_diff", 0.0))
-                
-                alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
-                alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+                    # reparam
+                    a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
+                                       initval=ivals.get("alpha_bar", ivals.get("alpha1")))
+                    a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
+                                       initval=ivals.get("alpha_diff", 0.0))
+                    
+                    alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
+                    alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+
+
+                    mb_a, mb_b = priors["mb"][0], priors["mb"][1]
+    
+                    # set init in raw-space using logit of normalized initval (if provided)
+                    mb_raw_init = None
+                    if ivals.get("mb") is not None:
+                        t = float((ivals["mb"] - mb_a) / (mb_b - mb_a))
+                        t = np.clip(t, 1e-6, 1 - 1e-6)
+                        mb_raw_init = np.log(t / (1 - t))
+                    
+                    mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
+                    mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+
+                else:
+                    # alpha_bar prior on same bounds as before (95% within [a_low, a_high])
+                    a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+                    a_mid = 0.5 * (a_low + a_high)
+                    a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+                    
+                    a_bar = pm.Normal(
+                        "alpha_bar",
+                        mu=a_mid,
+                        sigma=a_sig,
+                        initval=ivals.get("alpha_bar", ivals.get("alpha1")),
+                    )
+
+                    a_diff = pm.Deterministic("alpha_diff",  at.as_tensor_variable(0.0))
+                    
+                    # enforce single slope: alpha1 == alpha2 == alpha_bar
+                    alpha1_ = pm.Deterministic("alpha1", a_bar)
+                    alpha2_ = pm.Deterministic("alpha2", a_bar)
+                    
+                    # fix break mass (optional but recommended for identifiability)
+                    mb_ = pm.Deterministic("mb", at.as_tensor_variable(35.0))
+
+                    
     
     
                 beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
                 
                 
-                mb_a, mb_b = priors["mb"][0], priors["mb"][1]
-    
-                # set init in raw-space using logit of normalized initval (if provided)
-                mb_raw_init = None
-                if ivals.get("mb") is not None:
-                    t = float((ivals["mb"] - mb_a) / (mb_b - mb_a))
-                    t = np.clip(t, 1e-6, 1 - 1e-6)
-                    mb_raw_init = np.log(t / (1 - t))
-                
-                mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
-                mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+               
     
                   
                 # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---

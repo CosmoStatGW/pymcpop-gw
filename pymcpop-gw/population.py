@@ -103,7 +103,7 @@ def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
         mass = Lambda_[i:i+8]
         i += 8
 
-    elif mass_model == "DPLDP":
+    elif mass_model == "DPLDP" or mass_model == "PLDP":
         mass = Lambda_[i:i+21]
         i += 21
 
@@ -216,7 +216,7 @@ def _make_pop_and_sel_core(
         if interp_mass:
             
             # pre-computing mass function for later interpolation
-            if mass_model=='DPLDP':
+            if mass_model=='DPLDP' or mass_model == "PLDP":
                 
                 _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
 
@@ -603,7 +603,7 @@ def log_p_pop(
     # -----------------------
     
     # DPLDP
-    if mass_model == "DPLDP":
+    if mass_model == "DPLDP" or mass_model == "PLDP":
 
         if interp_mass_vals is not None:
             
