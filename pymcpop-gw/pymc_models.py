@@ -1432,8 +1432,30 @@ def make_model(  priors,
             # mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
             # mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
 
-            mu1_0 = normal_from_bounds_95("mu1_0", priors["mu1_0"][0], priors["mu1_0"][1], initval=ivals.get("mu1_0"))
-            mu2_0 = normal_from_bounds_95("mu2_0", priors["mu2_0"][0], priors["mu2_0"][1], initval=ivals.get("mu2_0"))
+            # mu1_0 = normal_from_bounds_95("mu1_0", priors["mu1_0"][0], priors["mu1_0"][1], initval=ivals.get("mu1_0"))
+            # mu2_0 = normal_from_bounds_95("mu2_0", priors["mu2_0"][0], priors["mu2_0"][1], initval=ivals.get("mu2_0"))
+
+
+            mu1_a, mu1_b = priors["mu1_0"][0], priors["mu1_0"][1]
+            mu1_raw_init = None
+            if ivals.get("mu1_0") is not None:
+                t1 = float((ivals["mu1_0"] - mu1_a) / (mu1_b - mu1_a))
+                t1 = np.clip(t1, 1e-6, 1 - 1e-6)
+                mu1_raw_init = np.log(t1 / (1 - t1))
+            
+            mu1_raw = pm.Normal("mu1_raw", mu=0.0, sigma=RAW_SD_95, initval=mu1_raw_init)
+            mu1_0 = pm.Deterministic("mu1_0", mu1_a + (mu1_b - mu1_a) * pm.math.sigmoid(mu1_raw))
+
+            
+            mu2_a, mu2_b = priors["mu2_0"][0], priors["mu2_0"][1]
+            mu2_raw_init = None
+            if ivals.get("mu2_0") is not None:
+                t2 = float((ivals["mu2_0"] - mu2_a) / (mu2_b - mu2_a))
+                t2 = np.clip(t2, 1e-6, 1 - 1e-6)
+                mu2_raw_init = np.log(t2 / (1 - t2))
+            
+            mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
+            mu2_0 = pm.Deterministic("mu2_0", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
  
 
             
