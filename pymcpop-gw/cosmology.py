@@ -119,10 +119,10 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", in
 # inversion of dL(z)
 # ---------------------------------------------------------------------
 
-def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5,zmax=100):
+def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5, zmax=100):
 
     
-    z_nodes = bk.logspace(bk.log10(zmin),bk.log10(zmax), 1200)
+    z_nodes = bk.logspace( bk.log10(zmin), bk.log10(zmax), 1200)
    
     # if z_nodes is None:
     #     print("warning: recomputing z nodes from zGridGlobals")

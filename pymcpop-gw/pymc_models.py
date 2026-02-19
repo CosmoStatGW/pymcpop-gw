@@ -721,15 +721,15 @@ def make_model(  priors,
             dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
             PE_prior_bilby_grid =  at.as_tensor_variable(dat["prior_grid"])
             
-        if vol_in_prior:
+        # if vol_in_prior:
     
-            print("Pre-computing bilby-like PE prior from distance for later interpolation")
+        #     print("Pre-computing bilby-like PE prior from distance for later interpolation")
     
-            bk = ATBackend()
-            zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
+        #     bk = ATBackend()
+        #     zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
     
-            dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
-            dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
+        #     dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
+        #     dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
     
         
         if ( ( vol_in_prior or vol_in_prior_from_bilby) and (penorm_lims != []) ):
@@ -2236,7 +2236,7 @@ def make_model(  priors,
     
             if vol_in_prior:
                     bk = ATBackend()
-                    zs_Planck15 = cosmo.z_from_dL( bk, d, z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
+                    zs_Planck15 = cosmo.z_from_dL( bk, d, H0=PLANCK15_H0, Om=PLANCK15_OM, w0=-1, Xi0=1., nXi0=0.)  #z_nodes = zgrid_dLp, d_nodes = dL_grid_Planck15 )
                     dc_Planck15 = cosmo.dcfun_quad( bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1.) 
             
     

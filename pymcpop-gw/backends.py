@@ -4,7 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from pytensor_utils import atinterp
+from pytensor_utils import atinterp, attrapzvec
 
 class NPBackend:
     floatX = np.float64
@@ -280,7 +280,13 @@ class ATBackend:
 
     @staticmethod
     def interp(x, xp, fp, left=None, right=None, period=None):
-        return atinterp(x, xp, fp  )
+        at = ATBackend._at()
+        return atinterp(at, x, xp, fp  )
+
+    @staticmethod
+    def trapezoid(y, x=None, dx=1.0, axis=-1):
+        at = ATBackend._at()
+        return attrapzvec(at, y, x=x, axis=axis)
         
     @staticmethod
     def constant(x, dtype=None):
@@ -318,6 +324,16 @@ class ATBackend:
             out = out.astype(dtype)
         return out
 
+    @staticmethod
+    def logspace(minval, maxval, num, dtype=None):
+        at = ATBackend._at()
+        #minval = at.cast(minval, "float64"); maxval = at.cast(maxval, "float64")
+        t = at.linspace(minval, maxval, num)
+        out = at.power(10.0, t)   # since callers already pass log10 endpoints
+        if dtype is not None:
+            out = out.astype(dtype)
+        return out
+
     # ---- math ----
     @staticmethod
     def exp(x):
@@ -333,6 +349,11 @@ class ATBackend:
     def log1p(x):
         at = ATBackend._at()
         return at.log1p(x)
+
+    @staticmethod
+    def log10(x):
+        at = ATBackend._at()
+        return at.log10(x)
 
     @staticmethod
     def sqrt(x):
