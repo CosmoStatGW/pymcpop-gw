@@ -20,27 +20,36 @@ def early_parse(argv):
 
 
 early = early_parse(sys.argv[1:])
-
-
 NTH = early.nth if early.nth is not None else 1
+
 os.environ["JAX_ENABLE_X64"] = "1"
 os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
 os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
-#os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
-#os.environ.setdefault("JAX_LOG_COMPILES", "1")
-
-
+# BLAS/OpenMP caps
 os.environ["OMP_NUM_THREADS"]      = str(NTH)
 os.environ["OPENBLAS_NUM_THREADS"] = str(NTH)
 os.environ["MKL_NUM_THREADS"]      = str(NTH)
 os.environ["NUMEXPR_NUM_THREADS"]  = str(NTH)
 os.environ["BLIS_NUM_THREADS"]     = str(NTH)
 os.environ["OMP_DYNAMIC"]          = "FALSE"
-os.environ["OMP_PROC_BIND"]        = "FALSE"
 os.environ["KMP_AFFINITY"]         = "disabled"
+os.environ["KMP_BLOCKTIME"]        = "0"
 
+# also cap common threadpool names
+os.environ["TF_NUM_INTRAOP_THREADS"] = str(NTH)
+os.environ["TF_NUM_INTEROP_THREADS"] = "1"
 
+os.environ["ACCELERATE_MAX_THREADS"] = str(NTH)
+
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(NTH)   # macOS Accelerate
+os.environ["XLA_FLAGS"] = (
+        "--xla_force_host_platform_device_count=1 "
+        "--xla_cpu_multi_thread_eigen=false "
+        f"intra_op_parallelism_threads={NTH} "
+        "inter_op_parallelism_threads=1"
+    )
+print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
 
 import json
 import warnings
@@ -219,13 +228,16 @@ def main():
 
     parser.add_argument("--xla_cpu_multi_thread_eigen", default='false', type=str, required=False)
 
-    parser.add_argument("--nth", type=int, default=None)
+    parser.add_argument("--nth", type=int, default=1)
 
 
 
     FLAGS = parser.parse_args()
 
 
+    # after FLAGS = parser.parse_args():
+    if FLAGS.nth is not None and FLAGS.nth != NTH:
+        raise ValueError(f"--nth mismatch: early {NTH} vs parsed {FLAGS.nth}")
 
 
     from tqdm import tqdm 
@@ -286,22 +298,25 @@ def main():
     # Are we doing PyMC multiprocessing chains?
     using_pymc_multiproc = (FLAGS.sampler not in ("numpyro","blackjax")) and (FLAGS.ncores > 1)
     
-    if using_pymc_multiproc:
-        # one JAX device per OS process (chain)
-        if FLAGS.xla_cpu_multi_thread_eigen=='true':
-            print(f"⚠️ Warning: xla_cpu_multi_thread_eigen ({FLAGS.xla_cpu_multi_thread_eigen}) asked, but sampler is using_pymc_multiproc. "
-            "Do this if you have good handling of your memory load.")
-        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen={FLAGS.xla_cpu_multi_thread_eigen}"
-    else:
-        # single-process JAX multi-device (numpyro/blackjax parallel)
-        if FLAGS.xla_cpu_multi_thread_eigen=='false':
-            print(f"⚠️ Warning: xla_cpu_multi_thread_eigen ({FLAGS.xla_cpu_multi_thread_eigen}) asked, but sampler not using_pymc_multiproc. "
-            "Setting --xla_cpu_multi_thread_eigen=true")
-        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores} --xla_cpu_multi_thread_eigen=true"
+
+    # if using_pymc_multiproc:
+    #     os.environ["XLA_FLAGS"] = (
+    #         "--xla_force_host_platform_device_count=1 "
+    #         "--xla_cpu_multi_thread_eigen=false "
+    #         f"intra_op_parallelism_threads={NTH} "
+    #         "inter_op_parallelism_threads=1"
+    #     )
+    # else:
+    #     os.environ["XLA_FLAGS"] = (
+    #         f"--xla_force_host_platform_device_count={FLAGS.ncores} "
+    #         "--xla_cpu_multi_thread_eigen=false "
+    #         f"intra_op_parallelism_threads={NTH} "
+    #         "inter_op_parallelism_threads=1"
+    #     )
+
+
+        
     
-
-    print("XLA_FLAGS (final) =", os.environ.get("XLA_FLAGS", ""))
-
     # ----------------------------------------------------
     # 2️⃣ Import libraries (now they see the environment)
     # ----------------------------------------------------
@@ -309,6 +324,10 @@ def main():
     import jax
     jax.config.update("jax_enable_x64", True)
     jax.config.update("jax_default_matmul_precision", "highest")
+
+    print("XLA_FLAGS =", os.environ.get("XLA_FLAGS"))
+    print("VECLIB_MAXIMUM_THREADS =", os.environ.get("VECLIB_MAXIMUM_THREADS"))
+
 
 
     from jax.experimental.compilation_cache import compilation_cache as cc

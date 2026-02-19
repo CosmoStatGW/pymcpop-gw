@@ -20,26 +20,47 @@ def early_parse(argv):
 
 
 early = early_parse(sys.argv[1:])
-
-
 NTH = early.nth if early.nth is not None else 1
+
 os.environ["JAX_ENABLE_X64"] = "1"
 os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
 os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
-#os.environ.setdefault("JAX_TRACEBACK_FILTERING", "off")
-#os.environ.setdefault("JAX_LOG_COMPILES", "1")
-
-
+# BLAS/OpenMP caps
 os.environ["OMP_NUM_THREADS"]      = str(NTH)
 os.environ["OPENBLAS_NUM_THREADS"] = str(NTH)
 os.environ["MKL_NUM_THREADS"]      = str(NTH)
 os.environ["NUMEXPR_NUM_THREADS"]  = str(NTH)
 os.environ["BLIS_NUM_THREADS"]     = str(NTH)
 os.environ["OMP_DYNAMIC"]          = "FALSE"
-os.environ["OMP_PROC_BIND"]        = "FALSE"
 os.environ["KMP_AFFINITY"]         = "disabled"
+os.environ["KMP_BLOCKTIME"]        = "0"
 
+# also cap common threadpool names
+os.environ["TF_NUM_INTRAOP_THREADS"] = str(NTH)
+os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+
+os.environ["ACCELERATE_MAX_THREADS"] = str(NTH)
+
+os.environ["VECLIB_MAXIMUM_THREADS"] = str(NTH)   # macOS Accelerate
+
+
+# JAX uses a threadpool; this often works better than intra/inter flags on macOS
+# os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_DISABLE_MOST_OPTIMIZATIONS"] = "0"
+os.environ["JAX_NUM_THREADS"] = str(NTH)   # try: 1
+
+
+# IMPORTANT: cap XLA’s own CPU threadpool
+os.environ["XLA_FLAGS"] = (
+    "--xla_force_host_platform_device_count=1 "
+    "--xla_cpu_multi_thread_eigen=false "
+    "--xla_cpu_enable_fast_math=false"
+)
+
+
+
+print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
 
 
 import json
@@ -338,17 +359,17 @@ def main():
     # IMPORTANT: this must be set BEFORE importing jax.
     # If user requested xla_cpu_multi_thread_eigen='false' but we are in single-process mode,
     # we force it to true because it tends to behave better for multi-device CPU runs.
-    xla_eigen = FLAGS.xla_cpu_multi_thread_eigen
-    if xla_eigen == "false" and FLAGS.chain_method in ("parallel", "vectorized"):
-        print("⚠️ Overriding --xla_cpu_multi_thread_eigen=false -> true for NumPyro single-process chains.")
-        xla_eigen = "true"
+    # xla_eigen = FLAGS.xla_cpu_multi_thread_eigen
+    # if xla_eigen == "false" and FLAGS.chain_method in ("parallel", "vectorized"):
+    #     print("⚠️ Overriding --xla_cpu_multi_thread_eigen=false -> true for NumPyro single-process chains.")
+    #     xla_eigen = "true"
     
-    os.environ["XLA_FLAGS"] = (
-        f"--xla_force_host_platform_device_count={device_count} "
-        f"--xla_cpu_multi_thread_eigen={xla_eigen}"
-    )
+    # os.environ["XLA_FLAGS"] = (
+    #     f"--xla_force_host_platform_device_count={device_count} "
+    #     f"--xla_cpu_multi_thread_eigen={xla_eigen}"
+    # )
     
-    print("XLA_FLAGS (final) =", os.environ.get("XLA_FLAGS", ""))
+    # print("XLA_FLAGS (final) =", os.environ.get("XLA_FLAGS", ""))
     
     # ----------------------------------------------------
     # 2️⃣ Import libraries (now they see the environment)
