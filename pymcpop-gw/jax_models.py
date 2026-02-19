@@ -935,7 +935,7 @@ def make_model_jax(  priors,
                 beta_ = normal_from_bounds_95("beta", priors["beta"][0], priors["beta"][1] )
         
                 mb_a, mb_b = priors["mb"][0], priors["mb"][1]
-                mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=RAW_SD_95)
+                mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=1)
                 
                 
                 sigma1_          = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], median_frac=0.2)
@@ -943,19 +943,21 @@ def make_model_jax(  priors,
     
                 
                 
-                mu1_             = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1])
-                mu2_             = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1] )
-
+                # mu1_             = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1])
+                # mu2_             = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1] )
                 # just in case mu1 gets too small
-                numpyro.factor("mu1_neg_guard", jnp.where(mu1_ < 0.0, -jnp.inf, 0.0))
+                #numpyro.factor("mu1_neg_guard", jnp.where(mu1_ < 0.0, -jnp.inf, 0.0))
 
+                mu1_ = bounded_sigmoid("mu1", priors["mu1"][0], priors["mu1"][1], raw_sigma=1)
+                mu2_ = bounded_sigmoid("mu2", priors["mu2"][0], priors["mu2"][1], raw_sigma=1)
 
                 
-                u = unit_interval_sigmoid("u", raw_sigma=RAW_SD_95 )
+                
+                u = unit_interval_sigmoid("u", raw_sigma=1 )
                 m1_low_ = 3.0 + (10.0 - 3.0) * jnp.sqrt(u)
                 numpyro.deterministic("m1_low", m1_low_)
         
-                v = unit_interval_sigmoid("v",raw_sigma=RAW_SD_95)
+                v = unit_interval_sigmoid("v",raw_sigma=1)
                 m2_low_ = 3.0 + v * (m1_low_ - 3.0)
                 numpyro.deterministic("m2_low", m2_low_)
         
@@ -965,8 +967,8 @@ def make_model_jax(  priors,
                 delta_m1_ = floored_lognormal_q95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], median_frac=0.2 )
                 delta_m2_ = floored_lognormal_q95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], median_frac=0.2 )
         
-                numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
-                numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
+                #numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
+                #numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
 
             else:
                 alpha1_ = numpyro.sample("alpha1", dist.Uniform(priors["alpha1"][0], priors["alpha1"][1]))

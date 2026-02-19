@@ -390,9 +390,6 @@ def make_model(  priors,
 
        
 
-
-
-
     
     logN = np.log(N)
 
@@ -1114,152 +1111,190 @@ def make_model(  priors,
 
             print('Modeling mass distribution with Double Power Law + Double Peak ')
 
-            # alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
-            # alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
-            # mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
-            # mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
-            # sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
-            # mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
-            # sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
-            # u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
-            # m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
-            # v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
-            # m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            # m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
-            # delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            # lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(ivals.get("lambda")))
-            # lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
-            # lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
-            # lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
-            # beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
-            # delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            
-            
             epsilon_  = pm.Deterministic( "epsilon", at.as_tensor_variable( 0.1 ) )
 
+            
+            if not reparam_mass:
 
-            # --- Slopes / locations: Normal with bounds as 95% typical range ---
-            # alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
-            # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
-
-            if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+                alpha1_   = pm.Uniform("alpha1",   lower=priors["alpha1"][0],   upper=priors["alpha1"][1],   initval=ivals.get("alpha1"))
+                alpha2_   = pm.Uniform("alpha2",   lower=priors["alpha2"][0],   upper=priors["alpha2"][1],   initval=ivals.get("alpha2"))
                 
-            # bounds -> mid and sigma (same as helper)
-            a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-            a_mid = 0.5 * (a_low + a_high)
-            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+                mb_       = pm.Uniform("mb",       lower=priors["mb"][0],       upper=priors["mb"][1],       initval=ivals.get("mb"))
+                
+                mu1_      = pm.Uniform("mu1",      lower=priors["mu1"][0],      upper=priors["mu1"][1],      initval=ivals.get("mu1"))
+                sigma1_   = pm.Uniform("sigma1",   lower=priors["sigma1"][0],   upper=priors["sigma1"][1],   initval=ivals.get("sigma1"))
+                
+                mu2_      = pm.Uniform("mu2",      lower=priors["mu2"][0],      upper=priors["mu2"][1],      initval=ivals.get("mu2"))
+                sigma2_   = pm.Uniform("sigma2",   lower=priors["sigma2"][0],   upper=priors["sigma2"][1],   initval=ivals.get("sigma2"))
+                
+                u         = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+                m1_low_   = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+                
+                v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+                m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+                
+                m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
+                
+                delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+                delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+                
+                lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(ivals.get("lambda")))
+                lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+                lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+                lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+                
+                beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
+                
             
-            # reparam
-            a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
-                               initval=ivals.get("alpha_bar", ivals.get("alpha1")))
-            a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
-                               initval=ivals.get("alpha_diff", 0.0))
             
-            alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
-            alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+            else:
+
+                # --- Slopes / locations: Normal with bounds as 95% typical range ---
+                # alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
+                # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
+
+                print("Using reparametrized mass priros")
+    
+                if priors["alpha1"] != priors["alpha2"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1']} vs {priors['alpha2']}")
+                    
+                # bounds -> mid and sigma (same as helper)
+                a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
+                a_mid = 0.5 * (a_low + a_high)
+                a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+                
+                # reparam
+                a_bar  = pm.Normal("alpha_bar",  mu=a_mid, sigma=a_sig,
+                                   initval=ivals.get("alpha_bar", ivals.get("alpha1")))
+                a_diff = pm.Normal("alpha_diff", mu=0.0,   sigma=np.sqrt(2.0) * a_sig,
+                                   initval=ivals.get("alpha_diff", 0.0))
+                
+                alpha1_ = pm.Deterministic("alpha1", a_bar - 0.5 * a_diff)
+                alpha2_ = pm.Deterministic("alpha2", a_bar + 0.5 * a_diff)
+    
+    
+                beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
+                
+                
+                mb_a, mb_b = priors["mb"][0], priors["mb"][1]
+    
+                # set init in raw-space using logit of normalized initval (if provided)
+                mb_raw_init = None
+                if ivals.get("mb") is not None:
+                    t = float((ivals["mb"] - mb_a) / (mb_b - mb_a))
+                    t = np.clip(t, 1e-6, 1 - 1e-6)
+                    mb_raw_init = np.log(t / (1 - t))
+                
+                mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
+                mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+    
+                  
+                # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
+                # sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
+                # sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
+                
+                sigma1_ = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], initval=ivals.get("sigma1"))
+                sigma2_ = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], initval=ivals.get("sigma2"))
+    
+    
+                # mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
+                # mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
 
 
-            beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
-            
-            
-            mb_a, mb_b = priors["mb"][0], priors["mb"][1]
+                mu1_a, mu1_b = priors["mu1"][0], priors["mu1"][1]
+                mu1_raw_init = None
+                if ivals.get("mu1") is not None:
+                    t1 = float((ivals["mu1"] - mu1_a) / (mu1_b - mu1_a))
+                    t1 = np.clip(t1, 1e-6, 1 - 1e-6)
+                    mu1_raw_init = np.log(t1 / (1 - t1))
+                
+                mu1_raw = pm.Normal("mu1_raw", mu=0.0, sigma=RAW_SD_95, initval=mu1_raw_init)
+                mu1_ = pm.Deterministic("mu1", mu1_a + (mu1_b - mu1_a) * pm.math.sigmoid(mu1_raw))
 
-            # set init in raw-space using logit of normalized initval (if provided)
-            mb_raw_init = None
-            if ivals.get("mb") is not None:
-                t = float((ivals["mb"] - mb_a) / (mb_b - mb_a))
-                t = np.clip(t, 1e-6, 1 - 1e-6)
-                mb_raw_init = np.log(t / (1 - t))
-            
-            mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
-            mb_ = pm.Deterministic("mb", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
-
-              
-            # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
-            # sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
-            # sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
-            
-            sigma1_ = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], initval=ivals.get("sigma1"))
-            sigma2_ = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], initval=ivals.get("sigma2"))
-
-
-            mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
-            mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
-  
-
-            # midpoints from your old "typical range" bounds
-            # mu1_mid = 0.5 * (priors["mu1"][0] + priors["mu1"][1])
-            # mu2_mid = 0.5 * (priors["mu2"][0] + priors["mu2"][1])
-            
-            # # dimensionless offsets in sigma-units
-            # z_mu1 = pm.Normal("z_mu1", mu=0.0, sigma=1.0, initval=0.0)
-            # z_mu2 = pm.Normal("z_mu2", mu=0.0, sigma=1.0, initval=0.0)
-            
-            # # coupled means
-            # mu1_ = pm.Deterministic("mu1", mu1_mid + z_mu1 * sigma1_)
-            # mu2_ = pm.Deterministic("mu2", mu2_mid + z_mu2 * sigma2_)
-
-            
-            # delta_m1_ = floored_halfnormal_typmax95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-            # delta_m2_ = floored_halfnormal_typmax95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], initval=ivals.get("delta_m2"))
-            
-            # --- Triangle constraint for m1_low, m2_low preserved ---
-            u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
-            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
-            
-            v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
-            m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-            
-            m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
-
-            # # --- Reparam: sample taper end instead of delta_m1 ---
-            # d1_floor = priors["delta_m1"][0]
-            # d1_typ   = priors["delta_m1"][1]  # interpret as typical max for delta_m1
-            
-            # # w1 in (0,1) with ~95% away from edges
-            # w1 = unit_interval_sigmoid("w1_delta_m1", initval=ivals.get("w1_delta_m1"), raw_sigma=RAW_SD_95)
-            
-            # m1_taper_end_ = pm.Deterministic(
-            #     "m1_taper_end",
-            #     m1_low_ + d1_floor + (d1_typ - d1_floor) * w1
-            # )
-            
-            # delta_m1_ = pm.Deterministic("delta_m1", m1_taper_end_ - m1_low_)
-
-
-            # d2_floor = priors["delta_m2"][0]
-            # d2_typ   = priors["delta_m2"][1]
-            
-            # w2 = unit_interval_sigmoid("w2_delta_m2", initval=ivals.get("w2_delta_m2"), raw_sigma=RAW_SD_95)
-            
-            # m2_taper_end_ = pm.Deterministic(
-            #     "m2_taper_end",
-            #     m2_low_ + d2_floor + (d2_typ - d2_floor) * w2
-            # )
-            
-            # delta_m2_ = pm.Deterministic("delta_m2", m2_taper_end_ - m2_low_)
-
-            # delta_m1 + taper end
-            d1_floor = priors["delta_m1"][0]
-            d1_typ   = priors["delta_m1"][1]
-            delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"))
-            m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
-            
-            # delta_m2 + taper end
-            d2_floor = priors["delta_m2"][0]
-            d2_typ   = priors["delta_m2"][1]
-            delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"))
-            m2_taper_end_ = pm.Deterministic("m2_taper_end", m2_low_ + delta_m2_)
-
-                        
-            # --- Lambda  ---
-            lam_init = ivals.get("lambda")
-            if lam_init is None:
-                lam_init = np.array([1/3, 1/3, 1/3])
-            lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(lam_init))
-            lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
-            lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
-            lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
+                
+                mu2_a, mu2_b = priors["mu2"][0], priors["mu2"][1]
+                mu2_raw_init = None
+                if ivals.get("mu2") is not None:
+                    t2 = float((ivals["mu2"] - mu2_a) / (mu2_b - mu2_a))
+                    t2 = np.clip(t2, 1e-6, 1 - 1e-6)
+                    mu2_raw_init = np.log(t2 / (1 - t2))
+                
+                mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
+                mu2_ = pm.Deterministic("mu2", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
+      
+    
+                # midpoints from your old "typical range" bounds
+                # mu1_mid = 0.5 * (priors["mu1"][0] + priors["mu1"][1])
+                # mu2_mid = 0.5 * (priors["mu2"][0] + priors["mu2"][1])
+                
+                # # dimensionless offsets in sigma-units
+                # z_mu1 = pm.Normal("z_mu1", mu=0.0, sigma=1.0, initval=0.0)
+                # z_mu2 = pm.Normal("z_mu2", mu=0.0, sigma=1.0, initval=0.0)
+                
+                # # coupled means
+                # mu1_ = pm.Deterministic("mu1", mu1_mid + z_mu1 * sigma1_)
+                # mu2_ = pm.Deterministic("mu2", mu2_mid + z_mu2 * sigma2_)
+    
+                
+                # delta_m1_ = floored_halfnormal_typmax95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], initval=ivals.get("delta_m1"))
+                # delta_m2_ = floored_halfnormal_typmax95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], initval=ivals.get("delta_m2"))
+                
+                # --- Triangle constraint for m1_low, m2_low preserved ---
+                u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
+                m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+                
+                v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
+                m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
+                
+                m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+    
+                # # --- Reparam: sample taper end instead of delta_m1 ---
+                # d1_floor = priors["delta_m1"][0]
+                # d1_typ   = priors["delta_m1"][1]  # interpret as typical max for delta_m1
+                
+                # # w1 in (0,1) with ~95% away from edges
+                # w1 = unit_interval_sigmoid("w1_delta_m1", initval=ivals.get("w1_delta_m1"), raw_sigma=RAW_SD_95)
+                
+                # m1_taper_end_ = pm.Deterministic(
+                #     "m1_taper_end",
+                #     m1_low_ + d1_floor + (d1_typ - d1_floor) * w1
+                # )
+                
+                # delta_m1_ = pm.Deterministic("delta_m1", m1_taper_end_ - m1_low_)
+    
+    
+                # d2_floor = priors["delta_m2"][0]
+                # d2_typ   = priors["delta_m2"][1]
+                
+                # w2 = unit_interval_sigmoid("w2_delta_m2", initval=ivals.get("w2_delta_m2"), raw_sigma=RAW_SD_95)
+                
+                # m2_taper_end_ = pm.Deterministic(
+                #     "m2_taper_end",
+                #     m2_low_ + d2_floor + (d2_typ - d2_floor) * w2
+                # )
+                
+                # delta_m2_ = pm.Deterministic("delta_m2", m2_taper_end_ - m2_low_)
+    
+                # delta_m1 + taper end
+                d1_floor = priors["delta_m1"][0]
+                d1_typ   = priors["delta_m1"][1]
+                delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"))
+                m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
+                
+                # delta_m2 + taper end
+                d2_floor = priors["delta_m2"][0]
+                d2_typ   = priors["delta_m2"][1]
+                delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"))
+                m2_taper_end_ = pm.Deterministic("m2_taper_end", m2_low_ + delta_m2_)
+    
+                            
+                # --- Lambda  ---
+                lam_init = ivals.get("lambda")
+                if lam_init is None:
+                    lam_init = np.array([1/3, 1/3, 1/3])
+                lambda_vec = pm.Dirichlet("lambda", a=np.asarray([1, 1, 1]), initval=np.asarray(lam_init))
+                lambda0_  = pm.Deterministic("lambda0", lambda_vec[0])
+                lambda1_  = pm.Deterministic("lambda1", lambda_vec[1])
+                lambda2_  = pm.Deterministic("lambda2", lambda_vec[2])
 
 
 
@@ -2177,39 +2212,23 @@ def make_model(  priors,
 
             
             # Check number of effective samples for computing MC integral 
-            print("log_p_pop shape")
-            print(log_p_pop.shape.eval())
             logs2 = at.logsumexp(2*log_p_pop, axis=1) -2*at.log(allNsamples)
 
-            print("logs2 shape")
-            print(logs2.shape.eval())
             
             Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) 
             # this has len = n. of observations
 
+        
+            log_var_log_lik_evs_all = logdiffexp( ATBackend(), logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
 
-            print("Neff_lik shape")
-            print(Neff_lik.shape.eval())
-
-            print("Neff_lik example")
-            print(Neff_lik.eval()[:10])
+            var_log_lik_evs = at.sum( at.exp(log_var_log_lik_evs_all) )
             
             if Neff_min_lik>0:
-                
+
+                print("Bound on effective number of samples for individual event MC integrals. Min requested: %s"%Neff_min_lik)
                 _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik, -np.inf, 0. ) ) )
               
             else:
-
-                log_var_log_lik_evs_all = logdiffexp( ATBackend(), logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
-
-                print("log_var_log_lik_evs_all shape")
-                print(log_var_log_lik_evs_all.shape.eval())
-
-                var_log_lik_evs = at.sum( at.exp(log_var_log_lik_evs_all) )
-
-                print("var_log_lik_evs ")
-                print(var_log_lik_evs.eval())
-
                 
                 print("No bound on effective number of samples for individual event MC integrals. Uncertainty will be propagated to total log lik. variance")
 
@@ -2261,29 +2280,36 @@ def make_model(  priors,
      
 
             if marginal_R0:
-                log_lik_var_selb = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*logN ) )
+                log_lik_var_selb_ =  at.exp(var_ll_u_+2*logN ) 
             else:
-                log_lik_var_selb = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+                log_lik_var_selb_ = at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) 
 
             
-            if not pop_only:
-                log_lik_var = log_lik_var_selb + var_log_lik_evs
+            if pop_only:
+                log_lik_var_ = log_lik_var_selb_ + var_log_lik_evs
+                print("Log lik. variance will include contribution from individual event integrals")
             else:
-                log_lik_var = log_lik_var_selb 
+                log_lik_var_ = log_lik_var_selb_ 
+                print("Log lik. variance will be just from selection effect.")
             
 
             if detach_var:
                 print("Detach log_lik_var from gradient")
-                log_lik_var_sg = ptg.disconnected_grad(log_lik_var)
-                log_lik_var_selb_sg = ptg.disconnected_grad(log_lik_var_selb)
+                log_lik_var_sg = ptg.disconnected_grad(log_lik_var_)
+                log_lik_var_selb_sg = ptg.disconnected_grad(log_lik_var_selb_ )
             else:
-                log_lik_var_sg = log_lik_var
-                log_lik_var_selb_sg = log_lik_var_selb
-                
+                log_lik_var_sg = log_lik_var_
+                log_lik_var_selb_sg = log_lik_var_selb_
 
+
+            # Track log lik. variance 
+            log_lik_var_save = pm.Deterministic('log_lik_var', log_lik_var_sg )
+            log_lik_var_selb_save = pm.Deterministic('log_lik_var_selb', log_lik_var_selb_sg )
+
+            
             if ((Neff_min==0) and (log_lik_var_min==0)):
                 print("No condition on number of effective points in MC integral for sel. effect")
-                selection_bias =  sel_effect #pm.Deterministic("sel_bias", sel_effect )
+                selection_bias =  sel_effect
             else:
                 
                 if log_lik_var_min==0:
@@ -2293,13 +2319,15 @@ def make_model(  priors,
                     Neff = N**2 / ( log_lik_var_selb_sg + (N**2)/Ndraw )
 
                     #raise NotImplementedError()
-                    _ = pm.Potential("bound_selb_Neff", at.switch(Neff >= Neff_min, 0.0, -np.inf ))
+                    _ = pm.Potential("bound_selb_Neff", at.switch(Neff >= Neff_min*N, 0.0, -np.inf ))
+
+                    print("Bound on effective number of samples for selection effect. Min requested: %s x Nobs"%Neff_min)
 
                 
                 elif Neff_min==0:
 
                     # Thresholding on likelihood variance
-                    print("MC integral for sel. effect thresholded on log lik. variance")
+                    print("MC integral for sel. effect thresholded on log lik. variance. Max requested: %s"%log_lik_var_min)
 
                     
                     if sel_smoothing=='sigmoid':
@@ -2342,6 +2370,5 @@ def make_model(  priors,
             
 
     return model
-
 
 

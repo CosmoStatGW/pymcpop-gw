@@ -775,7 +775,7 @@ def main():
 
     if FLAGS.mass_model=='DPLDP' and FLAGS.reparam_mass:
 
-        for drop in ["mb","u","v","sigma1","sigma2","delta_m1","delta_m2","alpha1","alpha2"]:
+        for drop in ["mb","u","v","mu1","mu2","sigma1","sigma2","delta_m1","delta_m2","alpha1","alpha2"]:
             init_vals.pop(drop, None)
         
         mb_a, mb_b = priors["mb"][0], priors["mb"][1]
@@ -789,6 +789,16 @@ def main():
         v0 = jm.unit_interval_sigmoid_raw_init(ivals.get("v"))
         if v0 is not None:
             init_vals["v_raw"] = v0
+
+        mu1a, mu1b = priors["mu1"][0], priors["mu1"][1]
+        mu10 = jm.bounded_sigmoid_raw_init(ivals.get("mu1"), mu1a, mu1b)
+        if mu10 is not None:
+            init_vals["mu1_raw"] = mu10
+        
+        mu2a, mu2b = priors["mu2"][0], priors["mu2"][1]
+        mu20 = jm.bounded_sigmoid_raw_init(ivals.get("mu2"), mu2a, mu2b)
+        if mu20 is not None:
+            init_vals["mu2_raw"] = mu20
 
 
         if "alpha_bar" not in init_vals:
@@ -1018,17 +1028,88 @@ def main():
     #mcmc.print_summary()
     samples = mcmc.get_samples(group_by_chain=True)
 
+    
 
-    idata = az.from_numpyro(mcmc)
-    az.to_netcdf(idata, os.path.join(FLAGS.fout, "trace.nc"))
+    ################################################
+    # Save and exit
+    ################################################
 
-    # also save raw samples in npz
-    np.savez(os.path.join(FLAGS.fout, "trace.npz"), **{k: np.asarray(v) for k, v in samples.items()})
+    
+    print( "\nDone." )
+    print("\nSaving trace...")
+    try:
+        idata = az.from_numpyro(mcmc)
+        tout = os.path.join(FLAGS.fout, "trace.nc")
+        az.to_netcdf(idata, tout)
+    
+        # also save raw samples in npz
+        np.savez(os.path.join(FLAGS.fout, "trace.npz"), **{k: np.asarray(v) for k, v in samples.items()})
 
-
+        print("✅ Trace saved in %s"%tout)
+    except Exception as e:
+        print(e)
+        print("⚠️ Saving failed !")
 
 
     
+    ################################################
+    # Plot
+    ################################################
+
+
+    print("\nMaking summary plots...")
+
+    
+    import matplotlib.pyplot as plt
+
+    vplot = dense_blocks[0]
+
+    try:
+        print("Plotting trace...")
+        az.plot_trace(trace, var_names = vplot, );
+        plt.savefig( os.path.join(FLAGS.fout, 'trace.pdf'), bbox_inches='tight')
+        plt.close()
+    except:
+        print('No trace plot produced')
+
+    try:
+        import corner
+        print("Plotting corner...")
+        _ = corner.corner(
+            trace,
+            var_names = vplot,
+            labels = vplot,  
+            color='darkred',
+            plot_points=False,
+            levels=[0.68, 0.90],
+            show_titles=True, 
+            title_kwargs={"fontsize": 15, }, label_kwargs={"fontsize": 15},
+            density=True,
+            smooth=0.9, 
+            fill_contours=True,
+             bins=20, 
+            title_fmt='.2f', 
+            hist_bin_factor=1,
+            quantiles=[0.05, 0.5, 0.95],
+    )
+    
+        plt.savefig( os.path.join(FLAGS.fout, 'corner_all.pdf'), bbox_inches='tight')
+        plt.close()
+    except:
+        print('No corner plot produced')
+
+    print("\nDone.")
+    #########
+
+    
+    print()
+    print('*'*80)
+    print('END. Results are saved in: %s'%FLAGS.fout)
+    print('*'*80)
+    print()
+
+    
+    myLog.close()
 
 
 
