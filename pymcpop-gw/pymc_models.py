@@ -1170,8 +1170,9 @@ def make_model(  priors,
                 
                 v         = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
                 m2_low_   = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
-                
-                m_high_   = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
+
+                m_high_   = pm.Uniform("m_high",      lower=priors["m_high"][0],      upper=priors["m_high"][1],      initval=ivals.get("m_high", 150)) 
+                #pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X)  )
                 
                 delta_m1_ = pm.Uniform("delta_m1", lower=priors["delta_m1"][0], upper=priors["delta_m1"][1], initval=ivals.get("delta_m1"))
                 delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
@@ -1311,7 +1312,23 @@ def make_model(  priors,
                 v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
                 m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
                 
-                m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+                #m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
+
+                # targets for mmax itself
+                mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
+                mmax_q95    = priors["m_high"][1]   # e.g. 200.0
+                
+                # implied targets for delta = mmax - m1_low
+                delta_med = at.maximum(mmax_median - m1_low_, 1e-6)
+                delta_q95 = at.maximum(mmax_q95    - m1_low_, 1e-6)
+                
+                # LogNormal: median = exp(mu), q95 = exp(mu + sigma*NORM_Q95)
+                mu_delta    = at.log(delta_med)
+                sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+                
+                delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+                m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
+                
     
                 # # --- Reparam: sample taper end instead of delta_m1 ---
                 # d1_floor = priors["delta_m1"][0]
@@ -1487,7 +1504,24 @@ def make_model(  priors,
             m1_low_  = pm.Deterministic("m1_low", (3 + (10 - 3) * at.sqrt(u)) ) #.astype(X) )
             v        = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
             m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)) ) #.astype(X))
-            m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X))
+            
+            
+            #m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X))
+
+            # targets for mmax itself
+            mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
+            mmax_q95    = priors["m_high"][1]   # e.g. 200.0
+            
+            # implied targets for delta = mmax - m1_low
+            delta_med = at.maximum(mmax_median - m1_low_, 1e-6)
+            delta_q95 = at.maximum(mmax_q95    - m1_low_, 1e-6)
+            
+            # LogNormal: median = exp(mu), q95 = exp(mu + sigma*NORM_Q95)
+            mu_delta    = at.log(delta_med)
+            sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+            
+            delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+            m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
             
 
 
