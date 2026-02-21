@@ -12,6 +12,7 @@ from jax import lax
 import cosmology as cosmo
 from backends import JAXBackend
 
+bk = JAXBackend()
 
 # -----------------------------
 # small helpers (pure JAX)
@@ -146,7 +147,7 @@ def _log_PE_prior_evt(
     z_planck15 = _interp1d_monotonic(dL_evt_gpc, data.dL_grid_Planck15, data.zgrid_dLp)
     dc_planck15 = _interp1d_monotonic(z_planck15, data.zgrid_dLp, data.dc_grid_Planck15)
 
-    bk = JAXBackend()
+    
 
     def chunk_prior_from_code(code: jnp.ndarray) -> jnp.ndarray:
         # returns vector (N,)
@@ -338,7 +339,7 @@ def make_loglik_gauss(
     Nobs = int(data.Nobs)
 
     @jax.jit
-    def loglik(Lambda: jnp.ndarray, x: jnp.ndarray, lR0=None) -> jnp.ndarray:
+    def loglik(Lambda: jnp.ndarray, x: jnp.ndarray, lR0=0.) -> jnp.ndarray:
         # GW terms from x
         m1det, m2det, dLdet, spins_evt, log_jac_evt, logd = _gw_terms_from_x(x, data)
 

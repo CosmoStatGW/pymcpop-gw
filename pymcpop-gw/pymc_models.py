@@ -2187,12 +2187,14 @@ def make_model(  priors,
         
         fused = PopAndSelJAXOp(
             
-            #zgrid=zgrid_np,
+            
                 
             rate_model=rate_model,
             mass_model=mass_model,
             spin_model=spin_model_name,
-    
+
+            zgrid = constants.z_nodes_np,
+            
             pop_only=pop_only,
     
             smoothing=smoothing,
@@ -2402,7 +2404,7 @@ def make_model(  priors,
      
 
             if marginal_R0:
-                log_lik_var_selb_ =  at.exp(var_ll_u_+2*logN ) 
+                log_lik_var_selb_ =  at.exp( var_ll_u_+2*logN ) 
             else:
                 log_lik_var_selb_ = at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) 
 

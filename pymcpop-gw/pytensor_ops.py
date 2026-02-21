@@ -100,10 +100,12 @@ class _PopAndSelJAXVJPOp(Op):
                  interp_mass=0,
                  integrate_dc = 'trapz',
                  stop_grad_var_u: bool = True,
-                 pop_only: bool = False
+                 pop_only: bool = False,
+                 zgrid = None
                 ):
         super().__init__()
-        #self.zgrid = zgrid 
+        
+        self.zgrid = zgrid 
 
         self.rate_model = rate_model
         self.mass_model = mass_model
@@ -130,12 +132,15 @@ class _PopAndSelJAXVJPOp(Op):
     def _build_jax_vjp(self):
         bk = JAXBackend()
 
-        #cosmo_zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
+        zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
  
 
         core_f = _make_pop_and_sel_core(
+            
             bk=bk,
-            #zgrid=cosmo_zgrid,
+            
+            z_nodes = zgrid,
+            
             rate_model=self.rate_model,
             mass_model=self.mass_model,
             spin_model=self.spin_model,
@@ -286,8 +291,9 @@ class PopAndSelJAXOp(Op):
     ]
     otypes = [at.dvector, at.dscalar, at.dscalar]
 
-    def __init__(self, *, # zgrid, 
+    def __init__(self, *, 
                  rate_model, mass_model, spin_model,
+                 zgrid = None, 
                  pop_only=False,
                  smoothing="LVK", simplex_repair=False, has_m2_break=False, norm_gauss="uplow",
                  param="vanilla",
@@ -304,7 +310,7 @@ class PopAndSelJAXOp(Op):
                 ):
         super().__init__()
 
-        #self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64) #jnp.asarray(zgrid, dtype="float64")
+        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64)
  
         self.rate_model = rate_model
         self.mass_model = mass_model
@@ -346,7 +352,6 @@ class PopAndSelJAXOp(Op):
 
         # Build vjp op (shares caches via _parent_op pointer)
         self._vjp_op = _PopAndSelJAXVJPOp(
-            #zgrid=self.zgrid, 
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             pop_only = self.pop_only,
             smoothing=smoothing, simplex_repair=simplex_repair, has_m2_break=has_m2_break,
@@ -358,7 +363,8 @@ class PopAndSelJAXOp(Op):
             DP_m1_env=self.DP_m1_env,
             interp_mass=self.interp_mass,
             integrate_dc=self.integrate_dc,
-            stop_grad_var_u = self.stop_grad_var_u
+            stop_grad_var_u = self.stop_grad_var_u,
+            zgrid = self.zgrid
         )
         self._vjp_op._parent_op = self
 
@@ -368,7 +374,7 @@ class PopAndSelJAXOp(Op):
        
         full_f = _make_pop_and_sel_core(
             bk=self._bk,
-            #zgrid=self.zgrid,
+            z_nodes = self.zgrid,
             rate_model=self.rate_model,
             mass_model=self.mass_model,
             spin_model=self.spin_model,

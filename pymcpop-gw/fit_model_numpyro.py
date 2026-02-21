@@ -24,7 +24,7 @@ NTH = early.nth if early.nth is not None else 1
 
 os.environ["JAX_ENABLE_X64"] = "1"
 os.environ["JAX_DEFAULT_DTYPE_BITS"] = "64"
-os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
+#os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 
 # BLAS/OpenMP caps
 os.environ["OMP_NUM_THREADS"]      = str(NTH)
@@ -53,14 +53,12 @@ os.environ["JAX_NUM_THREADS"] = str(NTH)   # try: 1
 
 # IMPORTANT: cap XLA’s own CPU threadpool
 os.environ["XLA_FLAGS"] = (
-    "--xla_force_host_platform_device_count=1 "
-    "--xla_cpu_multi_thread_eigen=false "
-    "--xla_cpu_enable_fast_math=false"
+    "--xla_cpu_enable_fast_math=true"
 )
 
 
 print()
-print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
+#print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
 
 
 import json
@@ -243,7 +241,7 @@ def main():
     parser.add_argument("--nchains", default=1, type=int, required=False)
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.9, type=float, required=False)
-    parser.add_argument("--chain_method", default='vectorized', type=str, required=False)
+    parser.add_argument("--chain_method", default='sequential', type=str, required=False)
     parser.add_argument("--jax_debug_nans", default=0, type=int, required=False)
     parser.add_argument("--dense_mass", default=0, type=int, required=False)
     parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
@@ -255,7 +253,7 @@ def main():
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--z_pivot", default=0, type=float, required=False)
-    parser.add_argument("--integrate_dc", default='trapz', type=str, required=False)
+    parser.add_argument("--integrate_dc", default='pade', type=str, required=False)
     
     
     parser.add_argument("--param", default='vanilla', type=str, required=False)
@@ -280,7 +278,7 @@ def main():
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
 
-    parser.add_argument("--xla_cpu_multi_thread_eigen", default='false', type=str, required=False)
+    parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
 
     parser.add_argument("--nth", type=int, default=None)
 
@@ -359,17 +357,20 @@ def main():
     # IMPORTANT: this must be set BEFORE importing jax.
     # If user requested xla_cpu_multi_thread_eigen='false' but we are in single-process mode,
     # we force it to true because it tends to behave better for multi-device CPU runs.
-    # xla_eigen = FLAGS.xla_cpu_multi_thread_eigen
-    # if xla_eigen == "false" and FLAGS.chain_method in ("parallel", "vectorized"):
-    #     print("⚠️ Overriding --xla_cpu_multi_thread_eigen=false -> true for NumPyro single-process chains.")
-    #     xla_eigen = "true"
+    xla_eigen = FLAGS.xla_cpu_multi_thread_eigen
+    if xla_eigen == "false" and FLAGS.chain_method in ("parallel", "vectorized"):
+        print("⚠️ Overriding --xla_cpu_multi_thread_eigen=false -> true for NumPyro single-process chains.")
+        xla_eigen = "true"
     
-    # os.environ["XLA_FLAGS"] = (
-    #     f"--xla_force_host_platform_device_count={device_count} "
-    #     f"--xla_cpu_multi_thread_eigen={xla_eigen}"
-    # )
+    xla_flags = [
+        f"--xla_force_host_platform_device_count={device_count}",
+        f"--xla_cpu_multi_thread_eigen={xla_eigen}",
+        "--xla_cpu_enable_fast_math=true",
+    ]
     
-    # print("XLA_FLAGS (final) =", os.environ.get("XLA_FLAGS", ""))
+    os.environ["XLA_FLAGS"] = " ".join(xla_flags)
+    print("XLA_FLAGS (final) =", os.environ["XLA_FLAGS"])
+    
     
     # ----------------------------------------------------
     # 2️⃣ Import libraries (now they see the environment)
@@ -377,7 +378,7 @@ def main():
     
     import jax
     jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_default_matmul_precision", "highest")
+    #jax.config.update("jax_default_matmul_precision", "highest")
     
     from jax.experimental.compilation_cache import compilation_cache as cc
     cc.set_cache_dir("/tmp/jax_cache")
@@ -982,8 +983,9 @@ def main():
         print('Checking initial point...')
         print()
 
-        raise NotImplementedError()
+        #raise NotImplementedError()
 
+        print("⚠️ Not yet available.")
 
 
     ##########################################################################

@@ -120,19 +120,18 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", in
 # ---------------------------------------------------------------------
 
 def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5, zmax=100):
-
     
-    z_nodes = bk.logspace( bk.log10(zmin), bk.log10(zmax), 1200)
    
-    # if z_nodes is None:
-    #     print("warning: recomputing z nodes from zGridGlobals")
-    #     z_nodes = bk.asarray(zGridGlobals)
+    if z_nodes is None:
+        print("warning: recomputing z nodes")
+        z_nodes = bk.logspace( bk.log10(zmin), bk.log10(zmax), 1200)    
     
-    #if d_nodes is None:
-    d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
+    if d_nodes is None:
+        print("warning: recomputing d nodes")
+        d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
 
 
-    return bk.interp(dL, d_nodes, z_nodes, left = zmin, right = zmax )
+    return bk.interp(dL, d_nodes, z_nodes, left = "extrapolate", right = "extrapolate" )
         
 
 

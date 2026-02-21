@@ -159,7 +159,8 @@ def _make_pop_and_sel_core(
     integrate_dc = 'trapz',
     pop_only = False,
     stop_grad_var_u: bool = True,
-    return_var = True
+    return_var = True,
+    z_nodes = None
 ):
     """Build the single source of truth JAX core function.
 
@@ -199,8 +200,11 @@ def _make_pop_and_sel_core(
         ##################################################
         # Obtain zs from distance-redshift inversion
 
+        d_nodes = dLfun( bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc )
+
         z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
-                          #z_nodes = zgrid, d_nodes = None, 
+                          z_nodes = z_nodes, 
+                          d_nodes = d_nodes, 
                             integrate_dc = integrate_dc) 
 
         
@@ -339,7 +343,7 @@ def _make_pop_and_sel_core(
                 
                 m2_grid_ = bk.concatenate([seg1[:-1], seg2])
 
-                m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, zgrid,
+                m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, z_nodes,
                 # low-z hyperparameters
                 mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
                 # high-z (asymptotic) hyperparameters
@@ -389,11 +393,11 @@ def _make_pop_and_sel_core(
                 # ---------
                 # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
                 # ---------
-                K  = zgrid.shape[0]
+                K  = z_nodes.shape[0]
                 N1 = m1_grid_.shape[0]
                 
                 M = bk.broadcast_to(m1_grid_[None, :], (K, N1))
-                Z = bk.broadcast_to(zgrid[:, None],   (K, N1))
+                Z = bk.broadcast_to(z_nodes[:, None],   (K, N1))
                 
                 lp_flat = mass_models.logpdfm1_DPLDP_z( bk, 
                     M.reshape((K * N1,)),
@@ -419,7 +423,7 @@ def _make_pop_and_sel_core(
              
                 # Pack for later use (include z_bank)
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
-                interp_grids_mass = [m1_grid_, m2_grid_, zgrid]
+                interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
                 
 
             
@@ -475,7 +479,8 @@ def _make_pop_and_sel_core(
             smoothing=smoothing, simplex_repair=simplex_repair,
             has_m2_break=has_m2_break, norm_gauss=norm_gauss,
             param=param, 
-            #z_grid=zgrid, 
+            z_grid=z_nodes, 
+            d_nodes = d_nodes, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
@@ -856,7 +861,8 @@ def sel_bias_with_uncertainty_legacy(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    #z_grid=None,
+    z_grid=None,
+    d_nodes = None, 
     verbose=False,
     subtract_log_p_incl=False,
     K_dp: int  = 30,
@@ -885,8 +891,8 @@ def sel_bias_with_uncertainty_legacy(
             w0=w0,
             Xi0=Xi0,
             nXi0=nXi0,
-            #z_nodes = z_grid,
-            #d_nodes = None,
+            z_nodes = z_grid,
+            d_nodes = d_nodes,
             param = param,
             integrate_dc = integrate_dc
 
@@ -976,7 +982,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    #z_grid=None,                # kept for API compatibility; unused now
+    z_grid=None,                # kept for API compatibility; unused now
+    d_nodes = None, 
     verbose=False,
     chunk_size: int = 65536,
     K_dp: int = 30,
@@ -1040,6 +1047,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             Xi0=Xi0,
             nXi0=nXi0,
             integrate_dc=integrate_dc,
+            z_nodes = z_grid,
+            d_nodes = d_nodes,
         )
 
         onepz = 1.0 + zc
@@ -1290,7 +1299,8 @@ def sel_bias_with_uncertainty(
     has_m2_break=False,
     norm_gauss="uplow",
     param="vanilla",
-    #z_grid=None,
+    z_grid=None,
+    d_nodes = None, 
     verbose=False,
     subtract_log_p_incl=False,
     # new flags
@@ -1314,7 +1324,8 @@ def sel_bias_with_uncertainty(
             rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
             smoothing=smoothing, simplex_repair=simplex_repair,
             has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
-            #z_grid=z_grid, 
+            z_grid=z_grid, 
+            d_nodes = d_nodes, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
             K_dp=K_dp, 
@@ -1335,7 +1346,8 @@ def sel_bias_with_uncertainty(
         rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
         smoothing=smoothing, simplex_repair=simplex_repair,
         has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
-        #z_grid=z_grid,
+        z_grid=z_grid,
+        d_nodes = d_nodes, 
         verbose=verbose,
         chunk_size=sel_chunk_size,
         K_dp=K_dp,

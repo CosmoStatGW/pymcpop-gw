@@ -1,7 +1,7 @@
 import pytensor.tensor as at
 import pade_cosmo as pc
 import numpy as np
-
+import jax.numpy as jnp
 
 # ---------------------------------------------------------------------
 # Physical constants
@@ -40,6 +40,8 @@ w01_at = at.as_tensor_variable(_w01_np)     # shape (n,)
 _x01_at = x01_at
 _w01_at = w01_at
 
+
+
 # ---------------------------------------------------------------------
 # Coefficients for pade approxiamtion of dc
 # ---------------------------------------------------------------------
@@ -60,3 +62,10 @@ _tgrid_at = at.as_tensor_variable(_tgrid_np)  # if you really want stop_grad, do
 
 def _get_t_grid():
     return _tgrid_at
+
+
+
+z_nodes_jax = jnp.logspace( jnp.log10(1e-05), jnp.log10(100), 1200)
+
+z_nodes_np = np.logspace( np.log10(1e-05), np.log10(100), 1200)
+

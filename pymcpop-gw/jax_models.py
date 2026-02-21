@@ -17,7 +17,7 @@ import cosmology as cosmo
 from backends import NPBackend, JAXBackend
 from likelihood import LikDataGauss, encode_dLprior_list, make_loglik_gauss
 from population import _make_pop_and_sel_core
-from constants import PlanckFiducials, PLANCK15_H0, PLANCK15_OM
+from constants import PlanckFiducials, PLANCK15_H0, PLANCK15_OM, z_nodes_jax
 
 
 
@@ -236,6 +236,7 @@ def build_core_and_loglik_gauss_popnot(
     # selection handling
     skip_sel=False,              # keep False for your current pop_only=False workflow
     verbose=False,
+    z_nodes = None
 ):
     """
     Build the population/selection core and the final log-likelihood callable:
@@ -259,6 +260,7 @@ def build_core_and_loglik_gauss_popnot(
         norm_gauss=data.norm_gauss,
         param=data.param,
         verbose=bool(verbose),
+        z_nodes = z_nodes,
 
         # matches your likelihood core signature expectations
         subtract_log_p_incl=bool(data.subtract_log_p_incl),
@@ -826,8 +828,9 @@ def make_model_jax(  priors,
         DP_m1_env=DP_m1_env,
         interp_mass=interp_mass,
         stop_grad_var_u=True,
-        skip_sel=False,
-        verbose=False,
+        skip_sel = False,
+        verbose= False,
+        z_nodes = z_nodes_jax
     )
 
     # `loglik` is now a jitted callable:
