@@ -200,7 +200,8 @@ def _make_pop_and_sel_core(
         ##################################################
         # Obtain zs from distance-redshift inversion
 
-        d_nodes = dLfun( bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc )
+        d_nodes = None
+        #dLfun( bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc )
 
         z_evt = z_from_dL(bk, dLdet, H0=H0, Om=Om, w0=w0, Xi0=Xi0, nXi0=nXi0, 
                           z_nodes = z_nodes, 

@@ -123,11 +123,11 @@ def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes
     
    
     if z_nodes is None:
-        print("warning: recomputing z nodes")
+        #print("warning: recomputing z nodes")
         z_nodes = bk.logspace( bk.log10(zmin), bk.log10(zmax), 1200)    
     
     if d_nodes is None:
-        print("warning: recomputing d nodes")
+        #print("warning: recomputing d nodes")
         d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
 
 
