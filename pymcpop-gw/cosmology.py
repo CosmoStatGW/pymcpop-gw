@@ -235,7 +235,7 @@ def log_ddL_dz(
 # ---------------------------------------------------------------------
 
 
-def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
+def compute_log_norm_UniformSourceFrame(bk, d_min, d_max, H0, Om0, w0, ):
     """
     Backend-agnostic compute_log_norm_UniformSourceFrame.
 
@@ -243,6 +243,9 @@ def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
       - dcfun_quad for dc(z)
       - log_dV_dz for log(dV/dz)
     """
+
+    z_min, z_max = z_from_dL(bk, bk.asarray([d_min, d_max]), H0=H0, Om=Om0, w0=w0, Xi0=1, nXi0=0, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5, zmax=100)
+    
     z = bk.linspace(z_min, z_max, 10000)
 
     dc = dcfun_quad(bk, z, H0, Om0, w0,)
@@ -250,4 +253,4 @@ def compute_log_norm_UniformSourceFrame(bk, z_min, z_max, H0, Om0, w0, ):
 
     integrand = bk.exp(log_dVdz) / (1.0 + z)
     norm = bk.trapezoid(integrand, z)
-    return bk.log(norm)
+    return bk.log(norm), z_min, z_max

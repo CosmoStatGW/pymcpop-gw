@@ -230,7 +230,8 @@ def make_model(  priors,
                  DP_truncate_up=False,
                  DP_truncate_low=False,
                  DP_m1_env = False,
-                 detach_var = False
+                 detach_var = False,
+                 remove_spin_prior=False
                 ):
 
 
@@ -421,7 +422,7 @@ def make_model(  priors,
         print(d[:5]**2)
 
         print("log(dL_prior) start ")
-        print( (dL_log_prior[:5]**2) )
+        print( (dL_log_prior[:5]) )
         
         # spins: if you store (Ne, S, nspin) -> flatten first two axes
         spins = spins.reshape((NsamplesTot, spins.shape[-1]))
@@ -780,8 +781,9 @@ def make_model(  priors,
                         except:
                             raise ValueError("limits for %s not present"%key)    
                          
-                        log_norm_PE_prior_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
-                        print(key, log_norm_PE_prior_)
+                        log_norm_PE_prior_, zmin_, zmax_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0]/1000, lims_[1]/1000, 67.9, 0.3065, -1)
+                        
+                        print(key, lims_[0]/1000, lims_[1]/1000, zmin_, zmax_, log_norm_PE_prior_)
                 
                         all_PE_log_norms[j] = log_norm_PE_prior_
                         j+=1
@@ -2311,7 +2313,12 @@ def make_model(  priors,
                     else:
                         raise ValueError(f"Unknown PE prior name base: {base}")
     
-    
+                if remove_spin_prior:
+                    print("Removing PE spin prior")
+                    amax = 0.99
+                    spinp= (1./amax)*(1./amax)*0.5*0.5  
+                    chunk -= at.log(spinp)
+                    
                 print("mask shape is %s"%mask.shape.eval())
                 print("chunk shape is %s"%chunk.shape.eval())
                 print("log_PE_prior shape is %s"%log_PE_prior.shape.eval())

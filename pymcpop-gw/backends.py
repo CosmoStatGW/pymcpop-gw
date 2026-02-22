@@ -232,11 +232,14 @@ class NPBackend:
 
     @staticmethod
     def interp(x, xp,fp, left=None, right=None, period=None):
-        return np.interp(x, xp, fp, left=left, right=right, period=period )
+        return np.interp(x, xp, fp, left=None, right=None, period=period )
 
     @staticmethod
     def trapezoid(y, x=None, dx=1.0, axis=-1):
         return np.trapezoid(y, x=x, dx=dx, axis=axis )
+
+    logspace = staticmethod(np.logspace)
+    log10 = staticmethod(np.log10)
 
 
 

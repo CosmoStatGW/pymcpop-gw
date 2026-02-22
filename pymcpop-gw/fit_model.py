@@ -132,6 +132,8 @@ def main():
     #parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
     parser.add_argument("--penorm_lims",  nargs='+', default=[], type=str, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
+    parser.add_argument("--remove_spin_prior", default=0, type=int, required=False)
+    
     
     
     parser.add_argument("--sampling_gw", default='gauss', type=str, required=False)
@@ -893,7 +895,8 @@ def main():
                                 reparam_z = FLAGS.reparam_z,
                                  reparam_mass = FLAGS.reparam_mass,
                                 priors_for_mmin=priors_for_mmin,
-                                detach_var = FLAGS.detach_var
+                                detach_var = FLAGS.detach_var,
+                                remove_spin_prior = FLAGS.remove_spin_prior
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
