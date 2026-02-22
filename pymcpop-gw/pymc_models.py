@@ -2041,7 +2041,7 @@ def make_model(  priors,
                 ###################################
                 # categorical way
     
-                ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) #.astype(int_dtype) )
+                ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) 
     
        
                 # Select means and Cholesky factors per batch
@@ -2049,7 +2049,10 @@ def make_model(  priors,
                 L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
                  
                 # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+                #Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+
+                Lx = at.matmul(L_selected, x[..., None])[..., 0]   # (N,D,D) @ (N,D,1) -> (N,D)
+                # or: Lx = at.batched_dot(L_selected, x)
     
                           
                 # Final transformed sample
@@ -2090,7 +2093,10 @@ def make_model(  priors,
                 print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
     
     
-                samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
+                #samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
+
+                Lx = at.matmul(cho_s, x[..., None])[..., 0]   # (N,d,d) @ (N,d,1) -> (N,d)
+                samples = mus_s + Lx
     
        
                 log_px = -0.5 * at.sum(x**2, axis=1) - 0.5 * nd_np * at.log(2*np.pi)    # (N,)
