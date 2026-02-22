@@ -371,8 +371,7 @@ def make_model(  priors,
 
             print("dL prior shape after cut is %s"%str(dL_prior.shape))
 
-            print("dL prior start ")
-            print(dL_prior[:5])
+           
             
             
             spins = np.asarray([s[:, :Nsamplesuse] for s in spins ])
@@ -412,6 +411,17 @@ def make_model(  priors,
         d = d.reshape(NsamplesTot)
         logd = logd.reshape(NsamplesTot)
         dL_prior = dL_prior.reshape(NsamplesTot)
+
+        dL_log_prior = np.log(dL_prior)
+
+        print("dL prior start ")
+        print(dL_prior[:5])
+
+        print("dL^2 start ")
+        print(d[:5]**2)
+
+        print("log(dL_prior) start ")
+        print( (dL_log_prior[:5]**2) )
         
         # spins: if you store (Ne, S, nspin) -> flatten first two axes
         spins = spins.reshape((NsamplesTot, spins.shape[-1]))
@@ -2310,7 +2320,7 @@ def make_model(  priors,
 
         else:
             print("Using dL PE prior loaded from file.")
-            log_PE_prior =  dL_prior
+            log_PE_prior =  dL_log_prior
         
 
 

@@ -218,7 +218,7 @@ def main():
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
 
-    parser.add_argument("--xla_cpu_multi_thread_eigen", default='false', type=str, required=False)
+    parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
 
     parser.add_argument("--nth", type=int, default=1)
 
@@ -295,7 +295,7 @@ def main():
         if FLAGS.xla_cpu_multi_thread_eigen=='true':
             print(f"⚠️ Warning: xla_cpu_multi_thread_eigen ({FLAGS.xla_cpu_multi_thread_eigen}) asked, but sampler is using_pymc_multiproc. "
             "Do this if you have good handling of your memory load.")
-        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen={FLAGS.xla_cpu_multi_thread_eigen} --xla_cpu_enable_fast_math=true"
+        os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={FLAGS.ncores} --xla_cpu_multi_thread_eigen={FLAGS.xla_cpu_multi_thread_eigen} --xla_cpu_enable_fast_math=true"
     else:
         # single-process JAX multi-device (numpyro/blackjax parallel)
         if FLAGS.xla_cpu_multi_thread_eigen=='false':
