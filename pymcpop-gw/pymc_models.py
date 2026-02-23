@@ -1201,9 +1201,7 @@ def make_model(  priors,
             else:
 
                 # --- Slopes / locations: Normal with bounds as 95% typical range ---
-                # alpha1_ = normal_from_bounds_95("alpha1", priors["alpha1"][0], priors["alpha1"][1], initval=ivals.get("alpha1"))
-                # alpha2_ = normal_from_bounds_95("alpha2", priors["alpha2"][0], priors["alpha2"][1], initval=ivals.get("alpha2"))
-
+          
                 print("Using reparametrized mass priros")
 
                 if mass_model=='DPLDP':
@@ -1268,16 +1266,11 @@ def make_model(  priors,
     
                   
                 # --- Widths: floor + HalfNormal, with priors[*][1] treated as 95% typical max ---
-                # sigma1_   = floored_halfnormal_typmax95("sigma1",   priors["sigma1"][0],   priors["sigma1"][1],   initval=ivals.get("sigma1"))
-                # sigma2_   = floored_halfnormal_typmax95("sigma2",   priors["sigma2"][0],   priors["sigma2"][1],   initval=ivals.get("sigma2"))
-                
+                  
                 sigma1_ = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], initval=ivals.get("sigma1"))
                 sigma2_ = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], initval=ivals.get("sigma2"))
     
-    
-                # mu1_ = normal_from_bounds_95("mu1", priors["mu1"][0], priors["mu1"][1], initval=ivals.get("mu1"))
-                # mu2_ = normal_from_bounds_95("mu2", priors["mu2"][0], priors["mu2"][1], initval=ivals.get("mu2"))
-
+   
 
                 mu1_a, mu1_b = priors["mu1"][0], priors["mu1"][1]
                 mu1_raw_init = None
@@ -1300,22 +1293,6 @@ def make_model(  priors,
                 mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
                 mu2_ = pm.Deterministic("mu2", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
       
-    
-                # midpoints from your old "typical range" bounds
-                # mu1_mid = 0.5 * (priors["mu1"][0] + priors["mu1"][1])
-                # mu2_mid = 0.5 * (priors["mu2"][0] + priors["mu2"][1])
-                
-                # # dimensionless offsets in sigma-units
-                # z_mu1 = pm.Normal("z_mu1", mu=0.0, sigma=1.0, initval=0.0)
-                # z_mu2 = pm.Normal("z_mu2", mu=0.0, sigma=1.0, initval=0.0)
-                
-                # # coupled means
-                # mu1_ = pm.Deterministic("mu1", mu1_mid + z_mu1 * sigma1_)
-                # mu2_ = pm.Deterministic("mu2", mu2_mid + z_mu2 * sigma2_)
-    
-                
-                # delta_m1_ = floored_halfnormal_typmax95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], initval=ivals.get("delta_m1"))
-                # delta_m2_ = floored_halfnormal_typmax95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], initval=ivals.get("delta_m2"))
                 
                 # --- Triangle constraint for m1_low, m2_low preserved ---
                 u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
@@ -1324,7 +1301,6 @@ def make_model(  priors,
                 v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
                 m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
                 
-                #m_high_ = pm.Deterministic("m_high", at.as_tensor_variable(300.0))
 
                 # targets for mmax itself
                 mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
@@ -1341,33 +1317,6 @@ def make_model(  priors,
                 delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
                 m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
                 
-    
-                # # --- Reparam: sample taper end instead of delta_m1 ---
-                # d1_floor = priors["delta_m1"][0]
-                # d1_typ   = priors["delta_m1"][1]  # interpret as typical max for delta_m1
-                
-                # # w1 in (0,1) with ~95% away from edges
-                # w1 = unit_interval_sigmoid("w1_delta_m1", initval=ivals.get("w1_delta_m1"), raw_sigma=RAW_SD_95)
-                
-                # m1_taper_end_ = pm.Deterministic(
-                #     "m1_taper_end",
-                #     m1_low_ + d1_floor + (d1_typ - d1_floor) * w1
-                # )
-                
-                # delta_m1_ = pm.Deterministic("delta_m1", m1_taper_end_ - m1_low_)
-    
-    
-                # d2_floor = priors["delta_m2"][0]
-                # d2_typ   = priors["delta_m2"][1]
-                
-                # w2 = unit_interval_sigmoid("w2_delta_m2", initval=ivals.get("w2_delta_m2"), raw_sigma=RAW_SD_95)
-                
-                # m2_taper_end_ = pm.Deterministic(
-                #     "m2_taper_end",
-                #     m2_low_ + d2_floor + (d2_typ - d2_floor) * w2
-                # )
-                
-                # delta_m2_ = pm.Deterministic("delta_m2", m2_taper_end_ - m2_low_)
     
                 # delta_m1 + taper end
                 d1_floor = priors["delta_m1"][0]
@@ -1418,10 +1367,6 @@ def make_model(  priors,
             # -------------------------
             # Low-z (z≈0) hyperparameters (same as before)
             # -------------------------
-            # alpha1_0  = pm.Uniform("alpha1_0",  lower=priors["alpha1_0"][0],  upper=priors["alpha1_0"][1],  initval=ivals.get("alpha1_0"))
-            # alpha2_0  = pm.Uniform("alpha2_0",  lower=priors["alpha2_0"][0],  upper=priors["alpha2_0"][1],  initval=ivals.get("alpha2_0"))
-            # mb_0      = pm.Uniform("mb_0",      lower=priors["mb_0"][0],      upper=priors["mb_0"][1],      initval=ivals.get("mb_0"))
-            # beta_     = pm.Uniform("beta",     lower=priors["beta"][0],     upper=priors["beta"][1],     initval=ivals.get("beta"))
 
 
             if priors["alpha1_0"] != priors["alpha2_0"]: raise ValueError(f"alpha1/alpha2 priors differ: {priors['alpha1_0']} vs {priors['alpha2_0']}")
@@ -1457,14 +1402,6 @@ def make_model(  priors,
 
 
             
-            
-            # mu1_0     = pm.Uniform("mu1_0",     lower=priors["mu1_0"][0],     upper=priors["mu1_0"][1],     initval=ivals.get("mu1_0"))
-            # mu2_0     = pm.Uniform("mu2_0",     lower=priors["mu2_0"][0],     upper=priors["mu2_0"][1],     initval=ivals.get("mu2_0"))
-
-            # mu1_0 = normal_from_bounds_95("mu1_0", priors["mu1_0"][0], priors["mu1_0"][1], initval=ivals.get("mu1_0"))
-            # mu2_0 = normal_from_bounds_95("mu2_0", priors["mu2_0"][0], priors["mu2_0"][1], initval=ivals.get("mu2_0"))
-
-
             mu1_a, mu1_b = priors["mu1_0"][0], priors["mu1_0"][1]
             mu1_raw_init = None
             if ivals.get("mu1_0") is not None:
@@ -1486,39 +1423,45 @@ def make_model(  priors,
             mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
             mu2_0 = pm.Deterministic("mu2_0", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
  
-
+            # same as DPLDP
+            sigma1_0 = floored_lognormal_q95("sigma1_0", priors["sigma1_0"][0], priors["sigma1_0"][1], initval=ivals.get("sigma1_0"))
+            sigma2_0 = floored_lognormal_q95("sigma2_0", priors["sigma2_0"][0], priors["sigma2_0"][1], initval=ivals.get("sigma2_0"))
+            
+            # alternative: truncated lognormal
+            # sigma1_0 = pm.Truncated(
+            #             "sigma1_0",
+            #             pm.LogNormal.dist(mu=np.log(0.6), sigma=0.9),
+            #             lower=priors["sigma1_0"][0],
+            #             upper=priors["sigma1_0"][1],
+            #             initval=ivals.get("sigma1_0"),
+            #         )
             
             
-            #sigma1_0  = pm.Uniform("sigma1_0",  lower=priors["sigma1_0"][0],  upper=priors["sigma1_0"][1],  initval=ivals.get("sigma1_0"))
-            sigma1_0 = pm.Truncated(
-                        "sigma1_0",
-                        pm.LogNormal.dist(mu=np.log(0.6), sigma=0.9),
-                        lower=priors["sigma1_0"][0],
-                        upper=priors["sigma1_0"][1],
-                        initval=ivals.get("sigma1_0"),
-                    )
-            
-            
-            #sigma2_0  = pm.Uniform("sigma2_0",  lower=priors["sigma2_0"][0],  upper=priors["sigma2_0"][1],  initval=ivals.get("sigma2_0"))
-            sigma2_0 = pm.Truncated(
-                        "sigma2_0",
-                        pm.LogNormal.dist(mu=np.log(4.0), sigma=0.9),
-                        lower=priors["sigma2_0"][0],
-                        upper=priors["sigma2_0"][1],
-                        initval=ivals.get("sigma2_0"),
-                    )
+            # sigma2_0 = pm.Truncated(
+            #             "sigma2_0",
+            #             pm.LogNormal.dist(mu=np.log(4.0), sigma=0.9),
+            #             lower=priors["sigma2_0"][0],
+            #             upper=priors["sigma2_0"][1],
+            #             initval=ivals.get("sigma2_0"),
+            #         )
             
             
             
             
             # m1_low, m2_low, m_high as in your original block
-            u        = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
-            m1_low_  = pm.Deterministic("m1_low", (3 + (10 - 3) * at.sqrt(u)) ) #.astype(X) )
-            v        = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
-            m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)) ) #.astype(X))
+            # u        = pm.Uniform("u", 0, 1, initval=ivals.get("u"))
+            # m1_low_  = pm.Deterministic("m1_low", (3 + (10 - 3) * at.sqrt(u)) ) #.astype(X) )
+            # v        = pm.Uniform("v", 0, 1, initval=ivals.get("v"))
+            # m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)) ) #.astype(X))
+
+             # --- Triangle constraint for m1_low, m2_low preserved ---
+            u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
+            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            
+            v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
+            m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
             
             
-            #m_high_  = pm.Deterministic("m_high", at.as_tensor_variable(300.0)) #.astype(X))
 
             # targets for mmax itself
             mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
@@ -1536,11 +1479,6 @@ def make_model(  priors,
             m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
             
 
-
-            # delta_m1_ = pm.Uniform("delta_m1",  lower=priors["delta_m1"][0],upper=priors["delta_m1"][1],initval=ivals.get("delta_m1"))
-            # # secondary-mass hyperparams (unchanged unless you also evolve them)
-            
-            # delta_m2_ = pm.Uniform("delta_m2", lower=priors["delta_m2"][0], upper=priors["delta_m2"][1], initval=ivals.get("delta_m2"))
 
             # delta_m1 + taper end
             d1_floor = priors["delta_m1"][0]
