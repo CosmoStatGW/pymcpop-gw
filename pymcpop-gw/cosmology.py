@@ -119,7 +119,7 @@ def dLfun(bk, z, H0, Om, w0, Xi0, nXi0, *, dc=None, Xi=None, param="vanilla", in
 # inversion of dL(z)
 # ---------------------------------------------------------------------
 
-def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-5, zmax=100):
+def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes = None, d_nodes = None, param="vanilla", integrate_dc="trapz", zmin=1e-4, zmax=100):
     
    
     if z_nodes is None:

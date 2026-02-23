@@ -2211,7 +2211,7 @@ def make_model(  priors,
             mass_model=mass_model,
             spin_model=spin_model_name,
 
-            zgrid = constants.z_nodes_np,
+            zgrid = None, #constants.z_nodes_np,
             
             pop_only=pop_only,
     

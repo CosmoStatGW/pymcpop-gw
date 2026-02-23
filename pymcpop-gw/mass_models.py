@@ -781,9 +781,11 @@ def logC_DPLDP(
     smoothing="LVK",
 ):
     
-    _tgrid = _tgrid_np 
+    #_tgrid = _tgrid_np 
 
-    xx = m2_low + (max_m - m2_low) * _tgrid  
+    #xx = m2_low + (max_m - m2_low) * _tgrid  
+
+    xx = bk.logspace( bk.log10(m2_low), bk.log10(max_m), 1000 )  
 
     l2 = logpdfm2_PLP_reg(
         bk,
@@ -851,9 +853,11 @@ def logNorm_DPLDP(
     using max-subtraction.
     """
     
-    _tgrid = _tgrid_np #_get_t_grid()
+    #_tgrid = _tgrid_np #_get_t_grid()
 
-    ms = m1_low + (m_high - m1_low) * _tgrid
+    #ms = m1_low + (m_high - m1_low) * _tgrid
+
+    ms = bk.logspace( bk.log10(m1_low), bk.log10(m_high), 1000 )  
 
     lpdf = logpdfm1_DPLDP(
         bk,

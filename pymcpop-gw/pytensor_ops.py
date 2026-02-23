@@ -105,7 +105,7 @@ class _PopAndSelJAXVJPOp(Op):
                 ):
         super().__init__()
         
-        self.zgrid = zgrid 
+        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64)  if zgrid is not None else None
 
         self.rate_model = rate_model
         self.mass_model = mass_model
@@ -130,16 +130,15 @@ class _PopAndSelJAXVJPOp(Op):
         self._jax_vjp = self._build_jax_vjp()
 
     def _build_jax_vjp(self):
+        
         bk = JAXBackend()
-
-        zgrid = jnp.asarray(self.zgrid, dtype=jnp.float64)
  
 
         core_f = _make_pop_and_sel_core(
             
             bk=bk,
             
-            z_nodes = zgrid,
+            z_nodes = self.zgrid,
             
             rate_model=self.rate_model,
             mass_model=self.mass_model,
@@ -310,7 +309,7 @@ class PopAndSelJAXOp(Op):
                 ):
         super().__init__()
 
-        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64)
+        self.zgrid = jnp.asarray(zgrid, dtype=jnp.float64) if zgrid is not None else None
  
         self.rate_model = rate_model
         self.mass_model = mass_model
