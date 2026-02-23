@@ -575,6 +575,8 @@ class JAXBackend:
     square = staticmethod(jnp.square)
     erf = staticmethod(jax.scipy.special.erf)
     erfc = staticmethod(jax.scipy.special.erfc)
+    power = staticmethod(jnp.power)
+    
     @staticmethod
     def pow(x1, x2):
         return jnp.pow(x1, x2)

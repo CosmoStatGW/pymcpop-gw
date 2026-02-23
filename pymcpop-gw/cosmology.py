@@ -12,6 +12,29 @@ import jax
 import pade_cosmo as pc
 p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0, xp=jnp)
 
+
+# ---------------------------------------------------------------------
+# quick approximations
+# ---------------------------------------------------------------------
+
+
+
+def Phi(bk, x):
+    num = 1 + 1.320*x + 0.4415* bk.power(x,2) + 0.02656*bk.power(x,3)
+    den = 1 + 1.392*x + 0.5121* bk.power(x,2) + 0.03944*bk.power(x,3)
+    return num/den
+    
+
+def Om_of_z(bk, z, Om0):
+    return (1.0-Om0)/Om0/bk.power(1.0+z,3)
+
+
+def comoving_distance_flatLCDM_approx(bk, z, H0, Om0):
+    D_H = (c_light/1.0e3)  / H0 #Mpc
+    dist = 2.*D_H * (Phi(bk, Om_of_z(bk, 0., Om0)) - Phi(bk, Om_of_z(bk, z, Om0))/bk.sqrt(1.+z))/bk.sqrt(Om0) # in Mpc
+    return dist/1000
+
+
 # ---------------------------------------------------------------------
 # Hubble
 # ---------------------------------------------------------------------
@@ -83,6 +106,10 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
     elif integrate_dc=='pade':
         
         dc_ = pc.comoving_distance_pade(z, H0, Om, w0=-1.0, p=p, q=q, xp=bk) 
+
+    elif integrate_dc=='quick':
+        #print("quick pade approx")
+        dc_ = comoving_distance_flatLCDM_approx(bk, z, H0, Om, )
         
     else:
         raise ValueError(f"Unknown itegration method: {integrate_dc}")

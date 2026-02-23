@@ -1006,7 +1006,8 @@ def main():
         adapt_mass_matrix=True,
         find_heuristic_step_size = False,
         regularize_mass_matrix = 1e-03,
-        forward_mode_differentiation = False
+        forward_mode_differentiation = False,
+        
     )
     
 
