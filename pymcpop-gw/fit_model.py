@@ -1399,7 +1399,7 @@ def main():
                                 # "cores": 1,                         # JAX: single OS process
                                 "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
-                                    "jitter": True, 
+                                    "jitter": False, 
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
