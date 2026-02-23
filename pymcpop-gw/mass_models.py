@@ -801,8 +801,6 @@ def logpdf_DPLDP(
         return lpdf
 
 
-
-
 def logC_DPLDP_fast(
     bk,
     m,
@@ -817,120 +815,55 @@ def logC_DPLDP_fast(
     smoothing="LVK",
 ):
     """
-    Fast replacement for the original logC_DPLDP when the ONLY non-analytic part
-    is the low-mass smoothing S (i.e. ignore extra m2 regularization sigmoid and
-    has_m2_break mask in the normalization correction).
+    Fast conditional normalization with split integral:
 
-    Computes, for upper limit m:
-        C(m) = ∫_{m2_low}^{m} x^beta S(x) dx
-             = C0(m) - ΔC(m)
+      C(m) = ∫_{m2_low}^{m} x^beta S(x) dx
 
-    where
-        C0(m) = ∫_{m2_low}^{m} x^beta dx            (analytic)
-        ΔC(m) = ∫_{m2_low}^{min(m, m2_low+deltam)} x^beta [1-S(x)] dx   (numeric local correction)
+    using:
+      - local NUMERIC part on [m2_low, min(m, m2_low+deltam)]
+      - tail ANALYTIC part on [m2_low+deltam, m] where S(x)=1 (for logS_PLP)
 
-    The correction is only integrated on the interval where smoothing is non-trivial.
-
-    Notes
-    -----
-    - This implementation assumes the smoothing is `logS_PLP(...)` as provided.
-    - `has_m2_break` and the break-related args are kept only for signature compatibility
-      and are intentionally ignored in this fast correction.
+    Assumptions (as agreed):
+      - smoothing correction only from logS_PLP
+      - ignore has_m2_break / extra masks in normalization
+      - params valid; final support mask elsewhere
+      - return 0.0 out of support because this term is subtracted upstream
     """
-
-    print("THis is logC_DPLDP")
-
-    # Keep signature compatibility; this replacement is specifically for the smoothing-only correction.
-    # If someone passes has_m2_break=True, we ignore it by design here.
     _ = (m_g, w_g, sig_g_low, sig_g_high, has_m2_break, smoothing)
 
-    eps = 1e-300
-    m_upper = m
     a = m2_low
+    b = m2_low + deltam
+    valid = m > a
 
-    # -----------------------------
-    # 1) Analytic base normalization C0(m) = ∫_a^m x^beta dx
-    #    Stable in log-space, including beta ~ -1.
-    # -----------------------------
-    loga = bk.log(a)
-    logm = bk.log(bk.maximum(m_upper, a))  # avoid invalid log if m<a during intermediate evals
-    t = beta + 1.0
-    dlog = logm - loga  # >= 0 after max(...)
+    # neutral upper for internal eval; out-of-support gets overwritten to 0.0 at end
+    m_eff = bk.maximum(m, a)
 
-    # General branch: log( (m^t - a^t)/t )
-    # = t*loga + log|expm1(t*dlog)| - log|t|
-    logC0_general = t * loga + bk.log(bk.abs(bk.expm1(t * dlog)) + eps) - bk.log(bk.abs(t) + eps)
+    # local interval [a, min(m,b)]
+    u1 = bk.minimum(m_eff, b)
+    span1 = u1 - a
 
-    # Special/near-special branch beta = -1 (t=0): ∫ x^{-1} dx = log(m/a)
-    logC0_log = bk.log(bk.maximum(dlog, eps))
-
-    # Smooth-ish selection with a threshold (works for scalar beta and array m)
-    use_log_branch = bk.abs(t) < 1e-8
-    logC0 = bk.where(use_log_branch, logC0_log, logC0_general)
-
-    # If m <= a, the integral is zero => logC = -inf
-    valid_upper = m_upper > a
-    logC0 = bk.where(valid_upper, logC0, -jnp.inf)
-
-    # -----------------------------
-    # 2) Local correction ΔC(m) over [a, min(m, a+deltam)]
-    #    Only where smoothing differs from ~1.
-    # -----------------------------
-    # If deltam <= 0, no smoothing interval -> no correction
-    delta_pos = bk.maximum(deltam, 0.0)
-    b_corr = bk.minimum(m_upper, a + delta_pos)
-    span = bk.maximum(b_corr - a, 0.0)
-
-    # Fixed local quadrature grid (cheap, gradient-friendly, vectorizable)
     Ncorr = 64
-    u = bk.linspace(0.0, 1.0, Ncorr)  # shape (Ncorr,)
-    x = a + span[..., None] * u        # shape (..., Ncorr)
+    u = bk.linspace(0.0, 1.0, Ncorr)
+    x = a + span1[..., None] * u
 
-    # logS_PLP is assumed (per your instruction)
     lS = logS_PLP(bk, x, deltam, a)
+    f_local = bk.exp(beta * bk.log(x) + lS)
+    I_local = span1 * bk.trapezoid(f_local, u)
 
-    # 1 - S, computed stably from logS <= 0
-    # 1 - exp(lS) = -expm1(lS)
-    one_minus_S = -bk.expm1(lS)
+    # analytic tail on [b, m] if m>b, else zero
+    # ∫ x^beta dx = ∫ x^{-alpha} dx with alpha = -beta
+    low_tail = b
+    high_tail = bk.maximum(m_eff, b)  # = m_eff if m>b else b
+    logI_tail = log_norm_truncated_pl(bk, -beta, low_tail, high_tail)
+    I_tail = bk.exp(logI_tail) - 1.0 * 0.0  # keep as simple expression
 
-    # x^beta * (1-S)
-    integrand = bk.exp(beta * bk.log(bk.maximum(x, a))) * one_minus_S
+    # turn off tail when m<=b (single where only here, cheaper than many guards)
+    I_tail = bk.where(m_eff > b, I_tail, 0.0)
 
-    # Trapezoid on the normalized parameter u in [0,1], then multiply by span
-    # ∫_a^{a+span} f(x) dx = span * ∫_0^1 f(a+span*u) du
-    if Ncorr >= 2:
-        du = 1.0 / (Ncorr - 1.0)
-        trap_u = du * (
-            0.5 * integrand[..., 0]
-            + bk.sum(integrand[..., 1:-1], axis=-1)
-            + 0.5 * integrand[..., -1]
-        )
-    else:
-        trap_u = integrand[..., 0] * 0.0
+    C = I_local + I_tail
+    logC = bk.log(C + 1e-300)
 
-    corr = span * trap_u
-    corr = bk.where(span > 0.0, corr, 0.0)
-
-    # -----------------------------
-    # 3) Stable log subtraction: logC = log(C0 - corr)
-    # -----------------------------
-    # If no correction, return logC0 directly.
-    has_corr = corr > 0.0
-    logcorr = bk.where(has_corr, bk.log(corr + eps), -jnp.inf)
-
-    # logC = logC0 + log(1 - exp(logcorr - logC0))
-    d = logcorr - logC0
-    # Clamp d to < 0 to avoid numerical accidents (corr should be < C0)
-    d = bk.minimum(d, -1e-15)
-
-    logC = bk.where(
-        has_corr,
-        logC0 + bk.log1p(-bk.exp(d)),
-        logC0,
-    )
-
-    # Final support guard
-    return bk.where(valid_upper, logC, 0.)
+    return bk.where(valid, logC, 0.0)
 
 
 def logC_DPLDP(
@@ -975,181 +908,6 @@ def logC_DPLDP(
 
 
 
-def logNorm_DPLDP_fast(
-    bk,
-    alpha1,
-    alpha2,
-    mb,
-    mu1,
-    sigma1,
-    mu2,
-    sigma2,
-    m1_low,
-    m_high,
-    delta_m1,
-    lambda0,
-    lambda1,
-    lambda2,
-    epsilon,
-    smoothing="LVK",
-    simplex_repair=False,
-    eps_int=1e-300,
-    norm_gauss="uplow",
-):
-    """
-    Fast approximate log normalization for p(m1), using:
-      C = C0 - Δ
-
-    where
-      C0 = ∫ mix(m1) dm1                (analytic, ignoring log_S and ignoring log_gate)
-      Δ  = ∫ mix(m1) * (1 - S(m1)) dm1  (numeric local correction only on smoothing interval)
-
-    IMPORTANT:
-    - This intentionally ignores `log_gate` (per user choice / approximation).
-    - The correction only accounts for the low-mass smoothing `log_S`.
-    - Best aligned with `norm_gauss="uplow"` where the mixture components are normalized PDFs.
-    """
-
-    # -----------------------------
-    # 1) Mixture weights (same logic as logpdfm1_DPLDP)
-    # -----------------------------
-    eps_w = 1e-15
-    if not simplex_repair:
-        log_lambda0 = bk.log(lambda0)
-        log_lambda1 = bk.log(lambda1)
-        log_lambda2 = bk.log(lambda2)
-    else:
-        lam0 = bk.clip(lambda0, eps_w, 1.0 - eps_w)
-        lam1 = bk.clip(lambda1, eps_w, 1.0 - eps_w)
-        lam2_raw = 1.0 - lam0 - lam1
-        lam2 = eps_w + bk.log1p(bk.exp(lam2_raw - eps_w))
-
-        denom = lam0 + lam1 + lam2
-        lam0 = lam0 / denom
-        lam1 = lam1 / denom
-        lam2 = lam2 / denom
-
-        log_lambda0 = bk.log(lam0)
-        log_lambda1 = bk.log(lam1)
-        log_lambda2 = bk.log(lam2)
-
-    # -----------------------------
-    # 2) Analytic base normalization C0 (ignoring log_S and log_gate)
-    # -----------------------------
-    # For norm_gauss="uplow", each component is a normalized PDF on [m1_low, m_high]
-    # so C0 = lambda0 + lambda1 + lambda2.
-    #
-    # For other norm_gauss modes, this exact simplification is no longer guaranteed.
-    # We keep a conservative fallback (original numeric integration without log_S)
-    # only for those rare modes.
-    if norm_gauss == "uplow":
-        logC0 = bk.logaddexp(bk.logaddexp(log_lambda0, log_lambda1), log_lambda2)
-    else:
-        # Fallback: numeric integral of UNSMOOTHED mixture only (still cheaper than full old path if rare)
-        ms0 = bk.logspace(bk.log10(m1_low), bk.log10(m_high), 512)
-
-        log_ppl0 = log_broken_power_law_DPLDP_pdf(
-            bk, ms0, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon
-        )
-
-        if norm_gauss == "low-once":
-            log_pnorm10 = truncGausslowerupper_at_lpdf(bk, ms0, mu1, sigma1, xmin=m1_low)
-            log_pnorm20 = -0.5 * ((ms0 - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
-        elif norm_gauss == "none":
-            log_pnorm10 = -0.5 * ((ms0 - mu1) / sigma1) ** 2 - bk.log(sigma1) - 0.5 * bk.log(2.0 * PI)
-            log_pnorm20 = -0.5 * ((ms0 - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
-        else:
-            raise ValueError("norm_gauss can be uplow, low-once, or none (others not implemented here)")
-
-        term0 = log_lambda0 + log_ppl0
-        term1 = log_lambda1 + log_pnorm10
-        term2 = log_lambda2 + log_pnorm20
-        log_mix0 = bk.logaddexp(bk.logaddexp(term0, term1), term2)
-
-        p0 = bk.exp(log_mix0)
-        C0 = bk.trapezoid(p0, ms0)
-        logC0 = bk.log(bk.maximum(C0, eps_int))
-
-    # -----------------------------
-    # 3) Local smoothing correction Δ over interval where S is non-trivial
-    #    For the provided logS_PLP, S transitions on [m1_low, m1_low + delta_m1]
-    # -----------------------------
-    delta_pos = bk.maximum(delta_m1, 0.0)
-    b_corr = bk.minimum(m_high, m1_low + delta_pos)
-    span = bk.maximum(b_corr - m1_low, 0.0)
-
-    Ncorr = 96
-    u = bk.linspace(0.0, 1.0, Ncorr)
-    ms = m1_low + span * u
-
-    # Base mixture logpdf WITHOUT log_S and WITHOUT log_gate
-    log_ppl = log_broken_power_law_DPLDP_pdf(
-        bk, ms, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon
-    )
-
-    if norm_gauss == "uplow":
-        log_pnorm1 = truncGausslowerupper_at_lpdf(bk, ms, mu1, sigma1, xmin=m1_low, xmax=m_high)
-        log_pnorm2 = truncGausslowerupper_at_lpdf(bk, ms, mu2, sigma2, xmin=m1_low, xmax=m_high)
-    elif norm_gauss == "low-once":
-        log_pnorm1 = truncGausslowerupper_at_lpdf(bk, ms, mu1, sigma1, xmin=m1_low)
-        log_pnorm2 = -0.5 * ((ms - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
-    elif norm_gauss == "none":
-        log_pnorm1 = -0.5 * ((ms - mu1) / sigma1) ** 2 - bk.log(sigma1) - 0.5 * bk.log(2.0 * PI)
-        log_pnorm2 = -0.5 * ((ms - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
-    else:
-        raise ValueError("norm_gauss can be uplow, low-once, or none (others not implemented here)")
-
-    term0 = log_lambda0 + log_ppl
-    term1 = log_lambda1 + log_pnorm1
-    term2 = log_lambda2 + log_pnorm2
-    log_mix = bk.logaddexp(bk.logaddexp(term0, term1), term2)
-
-    if smoothing == "LVK":
-        # If you want to support LVK exactly here, replace this by your actual LVK taper.
-        # The correction logic is unchanged.
-        lS = logS_PLP_LVK(bk, ms, delta_m1, m1_low)
-    else:
-        lS = logS_PLP(bk, ms, delta_m1, m1_low)
-
-    # 1 - S from logS <= 0
-    one_minus_S = -bk.expm1(lS)
-    integrand = bk.exp(log_mix) * one_minus_S
-
-    if Ncorr >= 2:
-        du = 1.0 / (Ncorr - 1.0)
-        trap_u = du * (
-            0.5 * integrand[0]
-            + bk.sum(integrand[1:-1], axis=0)
-            + 0.5 * integrand[-1]
-        )
-    else:
-        trap_u = 0.0
-
-    corr = span * trap_u
-    corr = bk.where(span > 0.0, corr, 0.0)
-
-    # -----------------------------
-    # 4) Stable log subtraction: logC = log(C0 - corr)
-    #    Regularize by forcing 0 <= corr <= (1 - eps_rel) * C0
-    # -----------------------------
-    eps_rel = 1e-12
-
-    C0 = bk.exp(logC0)
-
-    # corr should be nonnegative; clamp for safety
-    corr = bk.maximum(corr, 0.0)
-
-    # force corr to stay strictly below C0 so log(C0-corr) is finite
-    corr = bk.minimum(corr, (1.0 - eps_rel) * C0)
-
-    # If no smoothing interval, corr = 0 and this reduces to logC0
-    # stable subtraction in linear space (safe after clamp)
-    C = C0 - corr
-
-    # absolute floor to avoid log(0) in pathological cases
-    C = bk.maximum(C, eps_int)
-
-    return bk.log(C)
 
 
 
@@ -1217,6 +975,134 @@ def logNorm_DPLDP(
     return bk.log(integ) # a + 
 
 
+
+
+def logNorm_DPLDP_fast(
+    bk,
+    alpha1,
+    alpha2,
+    mb,
+    mu1,
+    sigma1,
+    mu2,
+    sigma2,
+    m1_low,
+    m_high,
+    delta_m1,
+    lambda0,
+    lambda1,
+    lambda2,
+    epsilon,
+    smoothing="LVK",
+    simplex_repair=False,
+    eps_int=1e-300,
+    norm_gauss="uplow",
+):
+    """
+    Fast approximate m1 normalization with split integral (ignoring log_gate):
+
+      ∫ mix(m) S(m) dm
+        = ∫_{m1_low}^{m1_low+delta_m1} mix(m) S(m) dm     (numeric local)
+        + ∫_{m1_low+delta_m1}^{m_high} mix(m) dm          (numeric tail, unsmoothed)
+
+    This avoids C0-corr subtraction (and its extra where/clamp/min/max overhead).
+
+    Assumptions (as agreed):
+      - parameters validated
+      - final support mask handled elsewhere
+      - ignore log_gate in normalization
+      - use logS_PLP for smoothing in this fast path
+    """
+    # weights (kept compatible with your current logic)
+    eps_w = 1e-15
+    if not simplex_repair:
+        log_lambda0 = bk.log(lambda0)
+        log_lambda1 = bk.log(lambda1)
+        log_lambda2 = bk.log(lambda2)
+    else:
+        lam0 = bk.clip(lambda0, eps_w, 1.0 - eps_w)
+        lam1 = bk.clip(lambda1, eps_w, 1.0 - eps_w)
+        lam2_raw = 1.0 - lam0 - lam1
+        lam2 = eps_w + bk.log1p(bk.exp(lam2_raw - eps_w))
+        denom = lam0 + lam1 + lam2
+        lam0 = lam0 / denom
+        lam1 = lam1 / denom
+        lam2 = lam2 / denom
+        log_lambda0 = bk.log(lam0)
+        log_lambda1 = bk.log(lam1)
+        log_lambda2 = bk.log(lam2)
+
+    # split point where S reaches 1 for logS_PLP
+    b = bk.minimum(m1_low + delta_m1, m_high)
+
+    # ---- local smoothed chunk [m1_low, b] ----
+    Nloc = 96
+    u = bk.linspace(0.0, 1.0, Nloc)
+    span_loc = b - m1_low
+    ms_loc = m1_low + span_loc * u
+
+    log_ppl_loc = log_broken_power_law_DPLDP_pdf(
+        bk, ms_loc, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon
+    )
+
+    if norm_gauss == "uplow":
+        log_pnorm1_loc = truncGausslowerupper_at_lpdf(bk, ms_loc, mu1, sigma1, xmin=m1_low, xmax=m_high)
+        log_pnorm2_loc = truncGausslowerupper_at_lpdf(bk, ms_loc, mu2, sigma2, xmin=m1_low, xmax=m_high)
+    elif norm_gauss == "low-once":
+        log_pnorm1_loc = truncGausslowerupper_at_lpdf(bk, ms_loc, mu1, sigma1, xmin=m1_low)
+        log_pnorm2_loc = -0.5 * ((ms_loc - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
+    elif norm_gauss == "none":
+        log_pnorm1_loc = -0.5 * ((ms_loc - mu1) / sigma1) ** 2 - bk.log(sigma1) - 0.5 * bk.log(2.0 * PI)
+        log_pnorm2_loc = -0.5 * ((ms_loc - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
+    else:
+        raise ValueError("norm_gauss can be uplow, low-once, or none")
+
+    term0_loc = log_lambda0 + log_ppl_loc
+    term1_loc = log_lambda1 + log_pnorm1_loc
+    term2_loc = log_lambda2 + log_pnorm2_loc
+    log_mix_loc = bk.logaddexp(bk.logaddexp(term0_loc, term1_loc), term2_loc)
+
+    # fast path uses logS_PLP explicitly (no runtime branch)
+    lS_loc = logS_PLP(bk, ms_loc, delta_m1, m1_low)
+
+    I_loc = span_loc * bk.trapezoid(bk.exp(log_mix_loc + lS_loc), u)
+
+    # ---- unsmoothed tail chunk [b, m_high] ----
+    # numeric tail to avoid subtraction path and extra guards
+    Ntail = 256
+    v = bk.linspace(0.0, 1.0, Ntail)
+    span_tail = m_high - b
+    ms_tail = b + span_tail * v
+
+    log_ppl_tail = log_broken_power_law_DPLDP_pdf(
+        bk, ms_tail, alpha1, alpha2, mb, m1_low, m_high, epsilon=epsilon
+    )
+
+    if norm_gauss == "uplow":
+        log_pnorm1_tail = truncGausslowerupper_at_lpdf(bk, ms_tail, mu1, sigma1, xmin=m1_low, xmax=m_high)
+        log_pnorm2_tail = truncGausslowerupper_at_lpdf(bk, ms_tail, mu2, sigma2, xmin=m1_low, xmax=m_high)
+    elif norm_gauss == "low-once":
+        log_pnorm1_tail = truncGausslowerupper_at_lpdf(bk, ms_tail, mu1, sigma1, xmin=m1_low)
+        log_pnorm2_tail = -0.5 * ((ms_tail - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
+    elif norm_gauss == "none":
+        log_pnorm1_tail = -0.5 * ((ms_tail - mu1) / sigma1) ** 2 - bk.log(sigma1) - 0.5 * bk.log(2.0 * PI)
+        log_pnorm2_tail = -0.5 * ((ms_tail - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
+    else:
+        raise ValueError("norm_gauss can be uplow, low-once, or none")
+
+    term0_tail = log_lambda0 + log_ppl_tail
+    term1_tail = log_lambda1 + log_pnorm1_tail
+    term2_tail = log_lambda2 + log_pnorm2_tail
+    log_mix_tail = bk.logaddexp(bk.logaddexp(term0_tail, term1_tail), term2_tail)
+
+    I_tail = span_tail * bk.trapezoid(bk.exp(log_mix_tail), v)
+
+    I = I_loc + I_tail
+    return bk.log(I + eps_int)
+
+
+
+    
 
 def build_m1_grid_DPLDP( bk, 
     alpha1, alpha2, mb,
@@ -1659,7 +1545,6 @@ def logpdf_DPLDP_z( bk,
         simplex_repair=simplex_repair,
     )
 
-    return lpdf_
 
     ln = logNorm_DPLDP_z(bk,
         z,

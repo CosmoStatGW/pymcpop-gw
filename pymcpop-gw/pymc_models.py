@@ -192,6 +192,7 @@ def make_model(  priors,
                pade=False,
                zres=150,
                 z_grid_mode='cheb',
+                 rebuild_z = True,
                 zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
                  find_z_bounds = False,
                params_fix=None,
@@ -790,14 +791,14 @@ def make_model(  priors,
                 
                 print("at the end of chunk %s, index j is %s"%(i,j))
     
-            all_PE_log_norms = at.as_tensor_variable(np.asarray(all_PE_log_norms))
+            all_PE_log_norms = np.asarray(all_PE_log_norms)
         else:
             print("No normalization of PE volume prior on distance required.")
-            all_PE_log_norms = at.zeros(Nevs_np.sum())
+            all_PE_log_norms = np.zeros(Nevs_np.sum())
     
         
         print("All PE log norms is ")
-        print("Shape: %s"%all_PE_log_norms.shape.eval())
+        print("Shape: %s"%all_PE_log_norms.shape)
         #print("Val: %s"%all_PE_log_norms.eval())
 
  
@@ -2084,9 +2085,9 @@ def make_model(  priors,
         
                 diff = X[:, None, :] - mus_l[:, :, :d_int]                  # (N, 1, d) - (N, ngmm, d)
                 
-                tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
-    
-    
+                #tmp = at.matmul(icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]   # (N, ngmm, d)
+                tmp = at.sum(icovs_l[:, :, :d_int, :d_int] * diff[..., None, :], axis=-1)
+                
                 
                 # r^T F r for each (obs, comp)
                 quad = at.sum(diff * tmp, axis=-1)            # (N, ngmm)
@@ -2140,6 +2141,13 @@ def make_model(  priors,
         if chunk_inj:
             print("Will process injections in chunks of %s"%chunk_inj)
 
+        zgrid = None
+        if rebuild_z and interp_mass and mass_model=='DPLDP-z':
+            print("⚠️ Warning: asked rebuild_z but interpolation on z-mass grid will be used for this model. Using pre-defined z grid.")
+            zgrid = constants.z_nodes_np
+        elif not rebuild_z:
+            zgrid = constants.z_nodes_np
+            print("Using fixed z grid")
         
         fused = PopAndSelJAXOp(
             
@@ -2149,7 +2157,7 @@ def make_model(  priors,
             mass_model=mass_model,
             spin_model=spin_model_name,
 
-            zgrid = None, #constants.z_nodes_np,
+            zgrid = zgrid,
             
             pop_only=pop_only,
     
@@ -2259,8 +2267,8 @@ def make_model(  priors,
                     
                 print("mask shape is %s"%mask.shape.eval())
                 print("chunk shape is %s"%chunk.shape.eval())
-                print("log_PE_prior shape is %s"%log_PE_prior.shape.eval())
-                print("all_PE_log_norms shape is %s"%all_PE_log_norms.shape.eval())
+                #print("log_PE_prior shape is %s"%log_PE_prior.shape.eval())
+                #print("all_PE_log_norms shape is %s"%all_PE_log_norms.shape.eval())
                 log_PE_prior = at.where(mask, chunk, log_PE_prior) - all_PE_log_norms
 
         else:

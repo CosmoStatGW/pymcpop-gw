@@ -12,7 +12,7 @@ from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, lo
 #from pytensor_utils import logsumexp as _logsumexp
 
 #from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
-#from pytensor_utils import atinterp, atinterp_uniform
+from pytensor_utils import atinterp, atinterp_uniform, atcumtrapz, attrapzvec
 
 import jax.numpy as jnp
 from jax import lax
@@ -418,7 +418,7 @@ def _make_pop_and_sel_core(
 
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
                 p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
-                I = bk.trapezoid(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
+                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
                 I = bk.clip(I, 1e-300, jnp.inf)
                 ln_bank = bk.log(I) + lp_max[:, 0]
              
