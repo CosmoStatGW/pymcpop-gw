@@ -32,7 +32,7 @@ def Om_of_z(bk, z, Om0):
 def comoving_distance_flatLCDM_approx(bk, z, H0, Om0):
     D_H = (c_light/1.0e3)  / H0 #Mpc
     dist = 2.*D_H * (Phi(bk, Om_of_z(bk, 0., Om0)) - Phi(bk, Om_of_z(bk, z, Om0))/bk.sqrt(1.+z))/bk.sqrt(Om0) # in Mpc
-    return dist/1000
+    return dist
 
 
 # ---------------------------------------------------------------------
