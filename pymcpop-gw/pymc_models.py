@@ -1476,7 +1476,7 @@ def make_model(  priors,
             mu_delta    = at.log(delta_med)
             sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
             
-            delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+            delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta, initval=300)
             m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
             
 

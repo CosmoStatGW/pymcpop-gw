@@ -892,6 +892,7 @@ def main():
         )
         print("✅ init_to_value; initial values used.")
     except Exception as e:
+        print(e)
         print("⚠️ init_to_value failed; falling back to init_to_feasible.")
         print("   error:", repr(e))
         init_key, rng_key = random.split(rng_key)

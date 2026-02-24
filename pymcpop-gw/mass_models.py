@@ -1911,8 +1911,8 @@ def logpdf_DPLDP_z( bk,
     x_l    = (z - z_lambda) / dz_lambda
     S_l    = 0.5 * (1.0 + bk.tanh(x_l))
 
-    lambda2_0   = 1.0 - lambda0_0 - lambda1_0
-    lambda2_inf = 1.0 - lambda0_inf - lambda1_inf
+    #lambda2_0   = 1.0 - lambda0_0 - lambda1_0
+    #lambda2_inf = 1.0 - lambda0_inf - lambda1_inf
 
     lambda0 = (1.0 - S_l) * lambda0_0 + S_l * lambda0_inf
     lambda1 = (1.0 - S_l) * lambda1_0 + S_l * lambda1_inf
@@ -2083,7 +2083,7 @@ def build_m1_grid_DPLDP_z( bk,
     n_tail_high=400,  # points in high-mass tail
     k_sigma=4.0,      # how many sigmas around each Gaussian to cover
     n_taper=10, 
-     n_taper_eff = 200
+    n_taper_eff = 200
 ):
     """
     Symbolic non-uniform m1 grid for the DPLDP-z mass model (with redshift evolution).
