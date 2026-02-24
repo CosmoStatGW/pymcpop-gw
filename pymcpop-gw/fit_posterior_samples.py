@@ -43,7 +43,7 @@ from dataStructures.mockData import GWMockData
 
 
 import data_tools as dt
-import pytensor_utils as ptools
+import pytensor_utils_old as ptools
 
 #######################################################################################
 #######################################################################################
@@ -823,8 +823,8 @@ parser.add_argument("--dil_factor", default=1, type=float, required=False)
 parser.add_argument("--n_gmm_min", default=1, type=int, required=False)
 parser.add_argument("--n_gmm_max", default=10, type=int, required=False)
 parser.add_argument("--fin_data", default='', type=str, required=True)
-parser.add_argument("--fnames", nargs='+', type=str, required=True)
-parser.add_argument("--metadata", nargs='+', type=str, required=True)
+parser.add_argument("--fnames", nargs='+', type=str, required=True) # this is like O1, O2 , ... leave empty string for sim. data
+parser.add_argument("--metadata", nargs='+', type=str, required=False)
 parser.add_argument("--fout", default='GWTC-fits', type=str, required=False)
 parser.add_argument("--ps_prior", default='nocosmo', type=str, required=False)
 parser.add_argument("--plot", default=1, type=int, required=False)
@@ -833,6 +833,8 @@ parser.add_argument("--inclination", default=0, type=int, required=False)
 parser.add_argument("--spins", default='default', type=str, required=False)
 parser.add_argument("--imin", default=0, type=int, required=False)
 parser.add_argument("--imax", default=-1, type=int, required=False)
+parser.add_argument("--reweight", default=0, type=int, required=False)
+
 
 if __name__=='__main__':
     
@@ -918,7 +920,8 @@ if __name__=='__main__':
             data = GWMockData( fname_, 
                                 SNR_th=FLAGS.snr_th, 
                                 which_spins=FLAGS.spins,
-                                inclination=FLAGS.inclination
+                                inclination=FLAGS.inclination,
+                               reweight=FLAGS.reweight
                              )
 
 

@@ -74,7 +74,69 @@ def _log_ndtr_safe(bk, z):
     return bk.log(Phi)
 
 
+
+def _log1mexp(bk, a):
+    """
+    Stable log(1 - exp(-a)) for a > 0.
+    """
+    log2 = bk.log(2.0)
+    return bk.where(
+        a > log2,
+        bk.log1p(-bk.exp(-a)),
+        bk.log(-bk.expm1(-a)),
+    )
+
+
+def _logdiffexp_posordered(bk, x, y):
+    """
+    Stable log(exp(x) - exp(y)) assuming x >= y.
+    """
+    return x + _log1mexp(bk, x - y)
+
+
 def truncGausslowerupper_at_lpdf(
+    bk,
+    x,
+    loc,
+    scale,
+    xmin=0.0,
+    xmax=1.0,
+    truncate=False,
+):
+    # z-scores for truncation bounds
+    za = (xmin - loc) / scale
+    zb = (xmax - loc) / scale
+
+    # log CDFs
+    logPhia = _log_ndtr(bk, za)
+    logPhib = _log_ndtr(bk, zb)
+
+    # log SFs: log(1 - Phi(z)) = log Phi(-z)
+    logSFa = _log_ndtr(bk, -za)
+    logSFb = _log_ndtr(bk, -zb)
+
+    # Two equivalent ways to compute log( Phi(zb) - Phi(za) ):
+    #   cdf form: logdiffexp(logPhib, logPhia)
+    #   sf  form: logdiffexp(logSFa, logSFb)  [better in right tail]
+    #
+    # Heuristic: if both bounds are on the right tail, use SF form.
+    use_sf = (za > 0.0) & (zb > 0.0)
+
+    logZ_cdf = _logdiffexp_posordered(bk, logPhib, logPhia)
+    logZ_sf  = _logdiffexp_posordered(bk, logSFa,  logSFb)
+    logZ = bk.where(use_sf, logZ_sf, logZ_cdf)
+
+    # Gaussian logpdf
+    z = (x - loc) / scale
+    logp = -bk.log(scale) - 0.5 * bk.log(2.0 * PI) - 0.5 * z * z - logZ
+
+    if truncate:
+        return bk.where((x >= xmin) & (x <= xmax), logp, -jnp.inf)
+    return logp
+
+
+
+def truncGausslowerupper_at_lpdf_std(
     bk,
     x,
     loc,
@@ -100,6 +162,35 @@ def truncGausslowerupper_at_lpdf(
 
     if truncate:
         return bk.where((x >= xmin) & (x <= xmax), logp, -jnp.inf)
+        #log_gate = log_sigmoid(bk, x, xmin, 0.05) + bk.log1p(-safe_sigmoid(bk, x, xmax, 0.05))
+        #return logp + log_gate 
+    return logp
+
+
+
+def truncGausslower_at_lpdf(
+    bk,
+    x,
+    loc,
+    scale,
+    xmin=0.0,
+    xmax=1.0,   # kept for same signature; unused
+    truncate=False,
+):
+    # lower-truncation z-score
+    za = (xmin - loc) / scale
+
+    # log normalizer: log(1 - Phi(za)) = log(Phi(-za))
+    logZ = _log_ndtr(bk, -za)
+
+    # gaussian logpdf part
+    z = (x - loc) / scale
+    logp = -bk.log(scale) - 0.5 * bk.log(2.0 * PI) - 0.5 * z * z - logZ
+
+    if truncate:
+        return bk.where(x >= xmin, logp, -jnp.inf)
+        #log_gate = log_sigmoid(bk, x, xmin, 0.05)
+        #return logp + log_gate
     return logp
 
 
@@ -208,11 +299,25 @@ def mixture_logZ_physical_vectorized( bk,
 # Smoothings
 # ---------------------------------------------------------------------
 
-def logS_PLP(bk, m, deltam, ml, eps=1e-12):
+def logS_PLP_std(bk, m, deltam, ml, eps=1e-12):
     t = (m - ml) / bk.maximum(deltam, eps)
     t = bk.clip(t, eps, 1.0 - eps)
     S = t * t * (3.0 - 2.0 * t)
     return bk.log(bk.clip(S, eps, 1.0))
+
+
+def logS_PLP(bk, m, deltam, ml, eps=1e-12):
+    d = bk.maximum(deltam, eps)
+    t = (m - ml) / d
+
+    tmid = bk.clip(t, eps, 1.0 - eps)
+    log_mid = 2.0 * bk.log(tmid) + bk.log(3.0 - 2.0 * tmid)
+
+    return bk.where(
+        t <= 0.0,
+        -jnp.inf,
+        bk.where(t >= 1.0, 0.0, log_mid),
+    )
 
 
 def logS_PLP_LVK(bk, m, deltam, ml):
@@ -516,11 +621,12 @@ def logpdfm1_DPLDP(
     )
 
     if norm_gauss == "uplow":
-        log_pnorm1 = truncGausslowerupper_at_lpdf(bk, m1, mu1, sigma1, xmin=m1_low, xmax=m_high, truncate=False)
-        log_pnorm2 = truncGausslowerupper_at_lpdf(bk, m1, mu2, sigma2, xmin=m1_low, xmax=m_high, truncate=False)
+        log_pnorm1 = truncGausslowerupper_at_lpdf(bk, m1, mu1, sigma1, xmin=m1_low, xmax=m_high, truncate=True)
+        log_pnorm2 = truncGausslowerupper_at_lpdf(bk, m1, mu2, sigma2, xmin=m1_low, xmax=m_high, truncate=True)
 
     elif norm_gauss == "low-once":
-        log_pnorm1 = truncGausslowerupper_at_lpdf(bk, m1, mu1, sigma1, xmin=m1_low, truncate=True)
+        #print("norm_gauss is low-once")
+        log_pnorm1 = truncGausslower_at_lpdf(bk, m1, mu1, sigma1, xmin=m1_low, truncate=True)
         log_pnorm2 = -0.5 * ((m1 - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
 
     elif norm_gauss == "none":
@@ -751,6 +857,7 @@ def logpdf_DPLDP(
         smoothing=smoothing,
     )
 
+
     lC = logC_DPLDP(
         bk,
         m1,
@@ -801,6 +908,7 @@ def logpdf_DPLDP(
         return lpdf
 
 
+
 def logC_DPLDP_fast(
     bk,
     m,
@@ -815,55 +923,85 @@ def logC_DPLDP_fast(
     smoothing="LVK",
 ):
     """
-    Fast conditional normalization with split integral:
+    Analytic C(m) for has_m2_break=False under hard-edge smoothstep gate:
 
-      C(m) = ∫_{m2_low}^{m} x^beta S(x) dx
+      C(m) = ∫_{m2_low}^{min(m,max_m)} x^beta S(x) dx
+           = I1 + I2
 
-    using:
-      - local NUMERIC part on [m2_low, min(m, m2_low+deltam)]
-      - tail ANALYTIC part on [m2_low+deltam, m] where S(x)=1 (for logS_PLP)
-
-    Assumptions (as agreed):
-      - smoothing correction only from logS_PLP
-      - ignore has_m2_break / extra masks in normalization
-      - params valid; final support mask elsewhere
-      - return 0.0 out of support because this term is subtracted upstream
+    where S(x)=0 below a, smoothstep on [a,a+d], and 1 above a+d.
+    Assumes beta is scalar and m is array-like.
     """
-    _ = (m_g, w_g, sig_g_low, sig_g_high, has_m2_break, smoothing)
+    if has_m2_break:
+        raise NotImplementedError("Optimized analytic logC_DPLDP assumes has_m2_break=False")
 
     a = m2_low
-    b = m2_low + deltam
-    valid = m > a
+    d = deltam
+    b = a + d
 
-    # neutral upper for internal eval; out-of-support gets overwritten to 0.0 at end
-    m_eff = bk.maximum(m, a)
+    # Upper integration limit (match original support cap)
+    u = bk.minimum(m, max_m)
 
-    # local interval [a, min(m,b)]
-    u1 = bk.minimum(m_eff, b)
-    span1 = u1 - a
+    # Clip ramp upper endpoint into [a, b]
+    # This makes ramp integral automatically zero when u <= a, and full when u >= b.
+    ur = bk.minimum(bk.maximum(u, a), b)
 
-    Ncorr = 64
-    u = bk.linspace(0.0, 1.0, Ncorr)
-    x = a + span1[..., None] * u
+    # Precompute smoothstep polynomial coefficients in x:
+    # 3((x-a)/d)^2 - 2((x-a)/d)^3 = c3 x^3 + c2 x^2 + c1 x + c0
+    invd = 1.0 / d
+    invd2 = invd * invd
+    invd3 = invd2 * invd
 
-    lS = logS_PLP(bk, x, deltam, a)
-    f_local = bk.exp(beta * bk.log(x) + lS)
-    I_local = span1 * bk.trapezoid(f_local, u)
+    a2 = a * a
+    a3 = a2 * a
 
-    # analytic tail on [b, m] if m>b, else zero
-    # ∫ x^beta dx = ∫ x^{-alpha} dx with alpha = -beta
-    low_tail = b
-    high_tail = bk.maximum(m_eff, b)  # = m_eff if m>b else b
-    logI_tail = log_norm_truncated_pl(bk, -beta, low_tail, high_tail)
-    I_tail = bk.exp(logI_tail) - 1.0 * 0.0  # keep as simple expression
+    c3 = -2.0 * invd3
+    c2 =  3.0 * invd2 + 6.0 * a * invd3
+    c1 = -6.0 * a * invd2 - 6.0 * a2 * invd3
+    c0 =  3.0 * a2 * invd2 + 2.0 * a3 * invd3
 
-    # turn off tail when m<=b (single where only here, cheaper than many guards)
-    I_tail = bk.where(m_eff > b, I_tail, 0.0)
+    # Exponents used in ramp antiderivative
+    p0 = beta + 1.0
+    p1 = beta + 2.0
+    p2 = beta + 3.0
+    p3 = beta + 4.0
 
-    C = I_local + I_tail
-    logC = bk.log(C + 1e-300)
+    # Constant lower-end powers (scalars) reused across all m
+    a_p0 = a ** p0
+    a_p1 = a ** p1
+    a_p2 = a ** p2
+    a_p3 = a ** p3
 
-    return bk.where(valid, logC, 0.0)
+    # Ramp endpoint powers (vectorized over m)
+    ur_p0 = ur ** p0
+    ur_p1 = ur ** p1
+    ur_p2 = ur ** p2
+    ur_p3 = ur ** p3
+
+    # I1 = sum_k c_k * ∫_a^ur x^(beta+k) dx
+    #     = c0*(ur^(β+1)-a^(β+1))/(β+1) + ... + c3*(ur^(β+4)-a^(β+4))/(β+4)
+    I1 = (
+        c0 * (ur_p0 - a_p0) / p0
+        + c1 * (ur_p1 - a_p1) / p1
+        + c2 * (ur_p2 - a_p2) / p2
+        + c3 * (ur_p3 - a_p3) / p3
+    )
+
+    # Tail contribution: ∫_b^u x^beta dx for u>b, else 0
+    # Implemented branchlessly via ut=max(u,b): integral is zero when u<=b.
+    ut = bk.maximum(u, b)
+    q = beta + 1.0
+
+    b_q = b ** q          # scalar
+    ut_q = ut ** q        # vector
+
+    I2 = (ut_q - b_q) / q
+
+    # Total CDF-like normalization
+    C = I1 + I2
+
+    # Guard log arg because bk.where may evaluate both branches
+    C_safe = bk.where(u > a, C, 1.0)
+    return bk.where(u > a, bk.log(C_safe), 0.0)
 
 
 def logC_DPLDP(
@@ -905,6 +1043,200 @@ def logC_DPLDP(
     cdf = atcumtrapz(bk, p2, xx)
 
     return bk.interp( m, xx[1:], bk.log(cdf) )
+
+
+
+def logNorm_DPLDP_fast(
+    bk,
+    alpha1,
+    alpha2,
+    mb,
+    mu1,
+    sigma1,
+    mu2,
+    sigma2,
+    m1_low,
+    m_high,
+    delta_m1,
+    lambda0,
+    lambda1,
+    lambda2,
+    epsilon,
+    smoothing="LVK",
+    simplex_repair=False,
+    eps_int=1e-300,
+    norm_gauss="uplow",
+):
+    """
+    JAX-compatible analytic normalization under assumptions:
+      - a = m1_low < mb < H = m_high
+      - d = delta_m1 > 0, b = a + d < H
+      - alpha1 > 1, alpha2 > 1
+      - hard-edge approximation (ignore sigmoid gates / epsilon smoothing)
+      - smoothstep S on [a,b], S=1 on [b,H]
+
+    Returns log(I1 + I2), where
+      I1 = ∫_a^b S(x) * mix(x) dx
+      I2 = ∫_b^H mix(x) dx
+    """
+
+    # weights (keep API compatibility)
+    if not simplex_repair:
+        lam0 = lambda0
+        lam1 = lambda1
+        lam2 = lambda2
+    else:
+        eps_w = 1e-15
+        lam0 = bk.clip(lambda0, eps_w, 1.0 - eps_w)
+        lam1 = bk.clip(lambda1, eps_w, 1.0 - eps_w)
+        lam2_raw = 1.0 - lam0 - lam1
+        lam2 = eps_w + bk.log1p(bk.exp(lam2_raw - eps_w))
+        den = lam0 + lam1 + lam2
+        lam0 = lam0 / den
+        lam1 = lam1 / den
+        lam2 = lam2 / den
+
+    a = m1_low
+    H = m_high
+    d = delta_m1
+    b = a + d
+
+    # ------------------------------------------------------------
+    # Smoothstep ramp polynomial on [a,b]:
+    # S(x) = 3((x-a)/d)^2 - 2((x-a)/d)^3 = c3 x^3 + c2 x^2 + c1 x + c0
+    # ------------------------------------------------------------
+    invd = 1.0 / d
+    invd2 = invd * invd
+    invd3 = invd2 * invd
+
+    a2 = a * a
+    a3 = a2 * a
+
+    c3 = -2.0 * invd3
+    c2 =  3.0 * invd2 + 6.0 * a * invd3
+    c1 = -6.0 * a * invd2 - 6.0 * a2 * invd3
+    c0 =  3.0 * a2 * invd2 + 2.0 * a3 * invd3
+
+    def pint(p, L, U):
+        # branchless zero for U<L via clipping endpoint
+        Uc = bk.maximum(U, L)
+        return (Uc ** (p + 1.0) - L ** (p + 1.0)) / (p + 1.0)
+
+    # ------------------------------------------------------------
+    # Broken power-law component (hard break, normalized on [a,H])
+    # JAX-safe: no Python branching on traced values
+    # ------------------------------------------------------------
+    norm1 = (H * (H / mb) ** (-alpha2) - mb) / (1.0 - alpha2)
+    norm2 = (mb - a * (a / mb) ** (-alpha1)) / (1.0 - alpha1)
+    NBPL = norm1 + norm2
+
+    sL = (mb ** alpha1) / NBPL
+    sR = (mb ** alpha2) / NBPL
+
+    # Ramp [a,b], split branchlessly at mb
+    ramp_left_hi = bk.minimum(b, mb)
+    ramp_right_lo = bk.maximum(a, mb)
+
+    I1_bpl = (
+        c0 * sL * pint(-alpha1 + 0.0, a, ramp_left_hi)
+        + c1 * sL * pint(-alpha1 + 1.0, a, ramp_left_hi)
+        + c2 * sL * pint(-alpha1 + 2.0, a, ramp_left_hi)
+        + c3 * sL * pint(-alpha1 + 3.0, a, ramp_left_hi)
+        + c0 * sR * pint(-alpha2 + 0.0, ramp_right_lo, b)
+        + c1 * sR * pint(-alpha2 + 1.0, ramp_right_lo, b)
+        + c2 * sR * pint(-alpha2 + 2.0, ramp_right_lo, b)
+        + c3 * sR * pint(-alpha2 + 3.0, ramp_right_lo, b)
+    )
+
+    # Tail [b,H], split branchlessly at mb
+    tail_left_hi = bk.minimum(H, mb)
+    tail_right_lo = bk.maximum(b, mb)
+
+    I2_bpl = (
+        sL * pint(-alpha1, b, tail_left_hi)
+        + sR * pint(-alpha2, tail_right_lo, H)
+    )
+
+    # ------------------------------------------------------------
+    # Gaussian helpers (raw normal N(mu,sig), then normalize per mode)
+    # ------------------------------------------------------------
+    inv_sqrt_2pi = 1.0 / bk.sqrt(2.0 * PI)
+
+    def phi_std(z):
+        return inv_sqrt_2pi * bk.exp(-0.5 * z * z)
+
+    def Phi_std(z):
+        # uses your stable _log_ndtr
+        return bk.exp(_log_ndtr(bk, z))
+
+    def g_plain_raw_from_z(zL, zU):
+        return Phi_std(zU) - Phi_std(zL)
+
+    def g_moments_0_3_from_z(zL, zU, mu, sig):
+        # Mk = ∫_L^U x^k N(x|mu,sig) dx, k=0..3
+        FL = Phi_std(zL)
+        FU = Phi_std(zU)
+        dF = FU - FL
+
+        pL = phi_std(zL)
+        pU = phi_std(zU)
+
+        A1 = pL - pU
+        A2 = dF - (zU * pU - zL * pL)
+        A3 = (zL * zL + 2.0) * pL - (zU * zU + 2.0) * pU
+
+        mu2 = mu * mu
+        mu3 = mu2 * mu
+        s2 = sig * sig
+        s3 = s2 * sig
+
+        M0 = dF
+        M1 = mu * dF + sig * A1
+        M2 = mu2 * dF + 2.0 * mu * sig * A1 + s2 * A2
+        M3 = mu3 * dF + 3.0 * mu2 * sig * A1 + 3.0 * mu * s2 * A2 + s3 * A3
+        return M0, M1, M2, M3
+
+    def g_split_S(mu, sig, mode):
+        # fixed endpoints for this problem
+        za = (a - mu) / sig
+        zb = (b - mu) / sig
+        zH = (H - mu) / sig
+
+        # I1 raw = ∫_a^b S(x) N(x|mu,sig) dx
+        M0, M1, M2, M3 = g_moments_0_3_from_z(za, zb, mu, sig)
+        I1_raw = c0 * M0 + c1 * M1 + c2 * M2 + c3 * M3
+
+        # I2 raw = ∫_b^H N(x|mu,sig) dx
+        I2_raw = g_plain_raw_from_z(zb, zH)
+
+        if mode == "uplow":
+            Z = g_plain_raw_from_z(za, zH)
+            return I1_raw / Z, I2_raw / Z
+
+        if mode == "low-once":
+            Z = bk.exp(_log_ndtr(bk, -za))  # 1 - Phi(za)
+            return I1_raw / Z, I2_raw / Z
+
+        # mode == "none"
+        return I1_raw, I2_raw
+
+    # norm_gauss is a Python string (static), so Python branching here is fine
+    if norm_gauss == "uplow":
+        I1_g1, I2_g1 = g_split_S(mu1, sigma1, "uplow")
+        I1_g2, I2_g2 = g_split_S(mu2, sigma2, "uplow")
+    elif norm_gauss == "low-once":
+        I1_g1, I2_g1 = g_split_S(mu1, sigma1, "low-once")
+        I1_g2, I2_g2 = g_split_S(mu2, sigma2, "none")
+    elif norm_gauss == "none":
+        I1_g1, I2_g1 = g_split_S(mu1, sigma1, "none")
+        I1_g2, I2_g2 = g_split_S(mu2, sigma2, "none")
+    else:
+        raise ValueError("norm_gauss can be uplow, low-once, or none")
+
+    I1 = lam0 * I1_bpl + lam1 * I1_g1 + lam2 * I1_g2
+    I2 = lam0 * I2_bpl + lam1 * I2_g1 + lam2 * I2_g2
+
+    return bk.log(I1 + I2)
 
 
 
@@ -973,6 +1305,74 @@ def logNorm_DPLDP(
     #integ = bk.clip(integ, eps_int, jnp.inf)
 
     return bk.log(integ) # a + 
+
+
+
+
+
+def logC_DPLDP_fast(
+    bk,
+    m,
+    beta,
+    deltam,
+    m2_low,
+    m_g=45,
+    w_g=80,
+    sig_g_low=5,
+    sig_g_high=5,
+    has_m2_break=False,
+    smoothing="LVK",
+):
+    """
+    Fast conditional normalization with split integral:
+
+      C(m) = ∫_{m2_low}^{m} x^beta S(x) dx
+
+    using:
+      - local NUMERIC part on [m2_low, min(m, m2_low+deltam)]
+      - tail ANALYTIC part on [m2_low+deltam, m] where S(x)=1 (for logS_PLP)
+
+    Assumptions (as agreed):
+      - smoothing correction only from logS_PLP
+      - ignore has_m2_break / extra masks in normalization
+      - params valid; final support mask elsewhere
+      - return 0.0 out of support because this term is subtracted upstream
+    """
+    _ = (m_g, w_g, sig_g_low, sig_g_high, has_m2_break, smoothing)
+
+    a = m2_low
+    b = m2_low + deltam
+    valid = m > a
+
+    # neutral upper for internal eval; out-of-support gets overwritten to 0.0 at end
+    m_eff = bk.maximum(m, a)
+
+    # local interval [a, min(m,b)]
+    u1 = bk.minimum(m_eff, b)
+    span1 = u1 - a
+
+    Ncorr = 64
+    u = bk.linspace(0.0, 1.0, Ncorr)
+    x = a + span1[..., None] * u
+
+    lS = logS_PLP(bk, x, deltam, a)
+    f_local = bk.exp(beta * bk.log(x) + lS)
+    I_local = span1 * bk.trapezoid(f_local, u)
+
+    # analytic tail on [b, m] if m>b, else zero
+    # ∫ x^beta dx = ∫ x^{-alpha} dx with alpha = -beta
+    low_tail = b
+    high_tail = bk.maximum(m_eff, b)  # = m_eff if m>b else b
+    logI_tail = log_norm_truncated_pl(bk, -beta, low_tail, high_tail)
+    I_tail = bk.exp(logI_tail) - 1.0 * 0.0  # keep as simple expression
+
+    # turn off tail when m<=b (single where only here, cheaper than many guards)
+    I_tail = bk.where(m_eff > b, I_tail, 0.0)
+
+    C = I_local + I_tail
+    logC = bk.log(C + 1e-300)
+
+    return bk.where(valid, logC, 0.0)
 
 
 

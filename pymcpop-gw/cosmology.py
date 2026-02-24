@@ -9,13 +9,14 @@ from constants import _w01_np as w01
 import jax.numpy as jnp
 import jax
 
-import pade_cosmo as pc
-p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0, xp=jnp)
 
 
 # ---------------------------------------------------------------------
 # quick approximations
 # ---------------------------------------------------------------------
+
+import pade_cosmo as pc
+p, q = pc.flat_wcdm_pade_coefficients(w0=-1.0, zpower=0, xp=jnp)
 
 
 
@@ -30,8 +31,8 @@ def Om_of_z(bk, z, Om0):
 
 
 def comoving_distance_flatLCDM_approx(bk, z, H0, Om0):
-    D_H = (c_light/1.0e3)  / H0 #Mpc
-    dist = 2.*D_H * (Phi(bk, Om_of_z(bk, 0., Om0)) - Phi(bk, Om_of_z(bk, z, Om0))/bk.sqrt(1.+z))/bk.sqrt(Om0) # in Mpc
+    D_H = (c_light/1.0e3)  / H0 
+    dist = 2.*D_H * (Phi(bk, Om_of_z(bk, 0., Om0)) - Phi(bk, Om_of_z(bk, z, Om0))/bk.sqrt(1.+z))/bk.sqrt(Om0) # Gpc
     return dist
 
 

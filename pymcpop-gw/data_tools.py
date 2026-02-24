@@ -9,16 +9,24 @@ import sys
 
 
 
-def load_data_samples(fin, nmax=None, events_use=[]):
+def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
 
     allnames_return = []
     for i,fid in enumerate(fin):
 
         print("\nLoading data from %s"%fid)
 
+        is_h5 = str(fid).lower().endswith((".h5", ".hdf5"))
 
-        allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
-                
+        if is_h5:
+
+            with h5py.File(fid, "r") as f:
+                gwnames = props["gwnames"][:]        # may be bytes -> decode if needed
+                allnames_ = [x.decode() if isinstance(x, bytes) else x for x in gwnames]
+        else:
+            allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
+
+        
         if events_use!=[]: 
     
             evs_use_ = onp.loadtxt( events_use[i], dtype=str )
@@ -43,30 +51,78 @@ def load_data_samples(fin, nmax=None, events_use=[]):
 
         print('Loading posterior samples...')
 
-        m1d_samples_raw_ = onp.load( fid+'m1d_samples.npy' )
-        print("samples shape:")
-        print(m1d_samples_raw_.shape)
+        if is_h5:
+            
+            with h5py.File(fid, "r") as f:
+                
+                
+                if not use_rw:
+                    pe = f["posteriors"]                 # group
+                else:
+                    print("Using re-werighted samples.")
+                    pe = f["posteriors_reweight"]     # group
+                
+                
+                
+                prior = f["prior"]                   # group
+                props = f["properties"]              # group
+            
+                # examples: load datasets into memory
+                dL_samples_ = pe["dL"][mask_]                     # original posterior draws
+                #dL_samples_rw_ = pe_rw["dL"][mask_]               # reweighted draws
+                dL_PE_prior_ = prior["dL"][mask_]               # prior values
 
-        m1d_samples_ = m1d_samples_raw_[mask_]
-        print("samples shape after mask:")
-        print(m1d_samples_.shape)
+                m1d_samples_raw_ = pe['m1det']
+                print("samples shape:")
+                print(m1d_samples_raw_.shape)
+                
+                m1d_samples_ = m1d_samples_raw_[mask_]
+                m2d_samples_ = pe["m2det"][mask_]
+
+                print("samples shape after mask:")
+                print(m1d_samples_.shape)
+
+                try:
+                    chi1_samples_ = pe['chi_1'][mask_]
+                    chi2_samples_ = pe['chi_2'][mask_]
+                    cost1_samples_ = pe['cos_t_1'][mask_]
+                    cost2_samples_ = pe['cos_t_2'][mask_]
+                except Exception as e:
+                    print(e)
+                    chi1_samples_ = onp.zeros_like(m1d_samples_)
+                    chi2_samples_ = onp.zeros_like(m1d_samples_)
+                    cost1_samples_ = onp.zeros_like(m1d_samples_)
+                    cost2_samples_ = onp.zeros_like(m1d_samples_)
+                    
+                
+
+        else:
+            m1d_samples_raw_ = onp.load( fid+'m1d_samples.npy' )
+            print("samples shape:")
+            print(m1d_samples_raw_.shape)
+    
+            m1d_samples_ = m1d_samples_raw_[mask_]
+            print("samples shape after mask:")
+            print(m1d_samples_.shape)
+            
+            m2d_samples_ = onp.load( fid+'m2d_samples.npy' )[mask_]
+            dL_samples_ = onp.load( fid+'dL_samples.npy' )[mask_]
+    
+            dL_PE_prior_ = onp.load( fid+'dL_PE_prior.npy' )[mask_]
+    
+            try:
+                chi1_samples_ = onp.load( fid+'chi1_samples.npy' )[mask_]
+                chi2_samples_ = onp.load( fid+'chi2_samples.npy' )[mask_]
+                cost1_samples_ = onp.load( fid+'cost1_samples.npy' )[mask_]
+                cost2_samples_ = onp.load( fid+'cost2_samples.npy' )[mask_]
+            except Exception as e:
+                print(e)
+                chi1_samples_ = onp.zeros_like(m1d_samples_)
+                chi2_samples_ = onp.zeros_like(m1d_samples_)
+                cost1_samples_ = onp.zeros_like(m1d_samples_)
+                cost2_samples_ = onp.zeros_like(m1d_samples_)
+
         
-        m2d_samples_ = onp.load( fid+'m2d_samples.npy' )[mask_]
-        dL_samples_ = onp.load( fid+'dL_samples.npy' )[mask_]
-
-        dL_PE_prior_ = onp.load( fid+'dL_PE_prior.npy' )[mask_]
-
-        try:
-            chi1_samples_ = onp.load( fid+'chi1_samples.npy' )[mask_]
-            chi2_samples_ = onp.load( fid+'chi2_samples.npy' )[mask_]
-            cost1_samples_ = onp.load( fid+'cost1_samples.npy' )[mask_]
-            cost2_samples_ = onp.load( fid+'cost2_samples.npy' )[mask_]
-        except Exception as e:
-            print(e)
-            chi1_samples_ = onp.zeros_like(m1d_samples_)
-            chi2_samples_ = onp.zeros_like(m1d_samples_)
-            cost1_samples_ = onp.zeros_like(m1d_samples_)
-            cost2_samples_ = onp.zeros_like(m1d_samples_)
         
         where_compute_=~onp.isnan(m1d_samples_)
         allNsamples_ = where_compute_.sum(axis=-1) #onp.load( fid+'allnsamples.npy' )

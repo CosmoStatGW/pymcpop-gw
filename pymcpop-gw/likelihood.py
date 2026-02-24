@@ -104,6 +104,7 @@ class LikDataGauss:
     allTobs: Optional[jnp.ndarray] = None          # (nchunks,)
     # number of events
     Nobs: int = 0
+    logNobs: Optional[jnp.float64] = 0
 
     # model meta
     spin_model: str = "none"
@@ -365,6 +366,8 @@ def make_loglik_gauss(
             ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
             #raise NotImplementedError("non-marginal_R0 hook not wired yet")
 
+        log_var = jnp.exp( log_var+2*data.logNobs )
+        
         # optional: detatch gradient
         log_var = lax.stop_gradient(log_var)
         

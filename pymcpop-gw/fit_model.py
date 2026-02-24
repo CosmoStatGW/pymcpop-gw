@@ -1409,7 +1409,8 @@ def main():
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3,
-                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
+                                        "find_heuristic_step_size": False,# let NumPyro pick a good initial step
+                                        "step_size":0.01,
                                         "max_tree_depth": FLAGS.max_tree_depth,
                                         "forward_mode_differentiation": False,
                                     },

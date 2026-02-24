@@ -42,7 +42,7 @@ def _stack_spins_inj(spinsInj, ninj: int, spin_model: str) -> np.ndarray:
         if len(spinsInj) == 0:
             # be strict: empty spins with non-none model is inconsistent
             raise ValueError("spinsInj is empty but spin_model != 'none'")
-        comps = [np.asarray(s, dtype=np.float64) for s in spinsInj]
+        comps = [ np.squeeze(np.asarray(s, dtype=np.float64)) for s in spinsInj]
         k = len(comps)
         if k not in (2, 4):
             raise ValueError(f"spinsInj list must have length 2 or 4, got {k}")
@@ -200,8 +200,10 @@ def pack_data_gauss_popnot(
 
         # optional poisson term inputs (wired later)
         Nevs_per_chunk=jnp.asarray(Nevs_np, dtype=jnp.int32),
-        allTobs=allTobs,
-        Nobs=N,
+        allTobs= None if allTobs is None else jnp.asarray(allTobs, dtype=jnp.float64),
+        
+        Nobs = jnp.asarray(N, dtype=jnp.float64),
+        logNobs = jnp.log(N),
 
         # meta
         spin_model=str(spin_model),
@@ -766,7 +768,7 @@ def make_model_jax(  priors,
                         except:
                             raise ValueError("limits for %s not present"%key)    
                          
-                        log_norm_PE_prior_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
+                        log_norm_PE_prior_, _, _ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
                         print(key, log_norm_PE_prior_)
                 
                         all_PE_log_norms[j] = log_norm_PE_prior_
@@ -875,9 +877,20 @@ def make_model_jax(  priors,
         # Rate model (MD)
         # -------------------------
         if rate_model in ("MD", "DPUC-vol-MD"):
-            gamma_ = numpyro.sample("gamma", dist.Uniform(priors["gamma"][0], priors["gamma"][1]))
-            kappa_ = numpyro.sample("kappa", dist.Uniform(priors["kappa"][0], priors["kappa"][1]))
-            zp_    = numpyro.sample("zp",    dist.Uniform(priors["zp"][0],    priors["zp"][1]))
+            # gamma_ = numpyro.sample("gamma", dist.Uniform(priors["gamma"][0], priors["gamma"][1]))
+            # kappa_ = numpyro.sample("kappa", dist.Uniform(priors["kappa"][0], priors["kappa"][1]))
+            # zp_    = numpyro.sample("zp",    dist.Uniform(priors["zp"][0],    priors["zp"][1]))
+
+            # Uniform[a,b]  ->  raw ~ Normal, then affine(sigmoid(raw))
+            gamma_a, gamma_b = priors["gamma"]
+            kappa_a, kappa_b = priors["kappa"]
+            zp_a, zp_b       = priors["zp"]
+            
+            gamma_ = bounded_sigmoid("gamma", gamma_a, gamma_b, raw_sigma=RAW_SD_95)
+            kappa_ = bounded_sigmoid("kappa", kappa_a, kappa_b, raw_sigma=RAW_SD_95)
+            zp_    = bounded_sigmoid("zp",    zp_a,    zp_b,    raw_sigma=RAW_SD_95)
+
+
             Lambda_list += [gamma_, kappa_, zp_]
     
         # -------------------------
@@ -888,15 +901,37 @@ def make_model_jax(  priors,
             # but implemented for numpyro (or made backend-agnostic).
             # If not, replace these blocks with direct numpyro.sample definitions.
     
-            muChi_    = helper_muChi("muChi", priors, ivals)          # -> scalar
-            sigmaChi_ = helper_sigmaChi("sigmaChi", priors, ivals)    # -> scalar
-            zeta_     = helper_zeta("zeta", priors, ivals)            # -> scalar
-            sigmat_   = helper_sigmat("sigmat", priors, ivals)        # -> scalar
-    
-            numpyro.deterministic("muChi", muChi_)
+            # muChi in [a,b] via sigmoid reparam
+            muChi_a, muChi_b = priors["muChi"]
+            muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma=RAW_SD_95)
+            
+            # sigmaChi in [a,b] but sigmoid in log-space
+            sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
+            sigmaChi_raw = numpyro.sample("sigmaChi_raw", dist.Normal(0.0, RAW_SD_95))
+            log_sigmaChi = (
+                np.log(sigmaChi_a)
+                + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * jax.nn.sigmoid(sigmaChi_raw)
+            )
+            sigmaChi_ = jnp.exp(log_sigmaChi)
             numpyro.deterministic("sigmaChi", sigmaChi_)
-            numpyro.deterministic("zeta", zeta_)
+            
+            # zeta in [a,b] via sigmoid reparam
+            zeta_a, zeta_b = priors["zeta"]
+            zeta_ = bounded_sigmoid("zeta", zeta_a, zeta_b, raw_sigma=RAW_SD_95)
+            
+            # sigmat = floor + HalfNormal(raw), with typmax interpreted as ~95% point
+            HN_Q95_TO_SIGMA = 1.959963984540054
+            sigmat_floor, sigmat_typmax = priors["sigmat"]
+            raw_typ = max(1e-12, sigmat_typmax - sigmat_floor)
+            sigmat_sigma = raw_typ / HN_Q95_TO_SIGMA
+            
+            sigmat_raw = numpyro.sample("sigmat_raw", dist.HalfNormal(sigmat_sigma))
+            sigmat_ = sigmat_floor + sigmat_raw
             numpyro.deterministic("sigmat", sigmat_)
+    
+
+
+            
     
             Lambda_list += [muChi_, sigmaChi_, zeta_, sigmat_]
     
@@ -1062,7 +1097,7 @@ def make_model_jax(  priors,
         # likelihood variance bound:
         numpyro.factor(
             "bound_log_lik_var",
-            jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -jnp.inf),
+            jnp.where( log_lik_var_sg  <= log_lik_var_min, 0.0, -jnp.inf),
         )
         
         
