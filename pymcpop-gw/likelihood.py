@@ -362,15 +362,13 @@ def make_loglik_gauss(
 
         # optional R0*Tobs term (only if not marginal_R0)
         if not data.marginal_R0:
-            # Here we just expose the hook.
             ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
-            #raise NotImplementedError("non-marginal_R0 hook not wired yet")
 
-        log_var = jnp.exp( log_var+2*data.logNobs )
+        var_log_lik = jnp.exp( log_var+2*data.logNobs )
         
         # optional: detatch gradient
-        log_var = lax.stop_gradient(log_var)
+        var_log_lik = lax.stop_gradient(var_log_lik)
         
-        return ll, log_var
+        return ll, var_log_lik
 
     return loglik

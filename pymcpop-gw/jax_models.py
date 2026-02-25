@@ -1091,21 +1091,32 @@ def make_model_jax(  priors,
         # Likelihood factor
         # -------------------------
         ll, log_lik_var_sg = loglik(Lambda, x, lR0=lR0)
+
+        # Uncomment for debugging
+        # jax.debug.print("ll = {}", ll)
+        # jax.debug.print("ll finite? {}", jnp.all(jnp.isfinite(jnp.asarray(ll))))
+
         numpyro.factor("likelihood", ll)
 
-
         # likelihood variance bound:
-        numpyro.factor(
-            "bound_log_lik_var",
-            jnp.where( log_lik_var_sg  <= log_lik_var_min, 0.0, -jnp.inf),
-        )
-        
+       
+        gate_llv = jax.nn.log_sigmoid((log_lik_var_min - log_lik_var_sg) / 0.005)
+
+        # hard version 
+        # gate_llv = jnp.where(jnp.isfinite(log_lik_var_sg) & (log_lik_var_sg <= log_lik_var_min), 0.0, -jnp.inf)
+
+        # Uncomment for debugging
+        # jax.debug.print("log_lik_var_sg = {}", log_lik_var_sg)
+        # jax.debug.print("gate_llv = {}", gate_llv)
+        # jax.debug.print("log_lik_var_sg finite? {}", jnp.isfinite(log_lik_var_sg))
+
+        numpyro.factor("bound_log_lik_var", gate_llv)
         
 
 
         # optional for debugging/outputs
         numpyro.deterministic("loglik", ll)
-        numpyro.deterministic("log_lik_var_sg", log_lik_var_sg)
+        numpyro.deterministic("log_lik_var", log_lik_var_sg)
         
         
         
