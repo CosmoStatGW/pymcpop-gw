@@ -354,6 +354,9 @@ def make_loglik_gauss(
         # PE prior correction (eventwise)
         log_PE_prior_evt = _log_PE_prior_evt(dLdet, logd, data)
 
+        # jax.debug.print("log_PE_prior_evt = {}", log_PE_prior_evt)
+        # jax.debug.print("dLdet = {}", dLdet)
+
         # sum event contributions
         ll_evt = jnp.sum(logp_pop_evt + log_jac_evt - log_PE_prior_evt)
 
