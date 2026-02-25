@@ -516,7 +516,8 @@ def make_model_jax(  priors,
                  DP_truncate_up=False,
                  DP_truncate_low=False,
                  DP_m1_env = False,
-                 detach_var = False
+                 detach_var = False,
+                    remove_spin_prior = False
                 ):
 
 
@@ -768,8 +769,9 @@ def make_model_jax(  priors,
                         except:
                             raise ValueError("limits for %s not present"%key)    
                          
-                        log_norm_PE_prior_, _, _ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
-                        print(key, log_norm_PE_prior_)
+                        log_norm_PE_prior_, za, zb = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0]/1000, lims_[1]/1000, 67.9, 0.3065, -1)
+                        print("event, dmin [Gpc], dmax [Gpc], zmin, zmax, log_norm")
+                        print(key, lims_[0]/1000, lims_[1]/1000, za, zb, log_norm_PE_prior_)
                 
                         all_PE_log_norms[j] = log_norm_PE_prior_
                         j+=1
@@ -782,7 +784,17 @@ def make_model_jax(  priors,
             all_PE_log_norms = np.zeros(Nevs_np.sum(), dtype=np.float64)
 
     
-        
+        if remove_spin_prior:
+            print("Removing PE spin prior")
+            amax = 0.99
+            spinp= (1./amax)*(1./amax)*0.5*0.5  
+
+            # all_PE_log_norms is later subtraceted to log_PE_prior, so we subtract log(spinp) here
+            # this will result in adding log(spinp) to the log_PE_prior which is subtracted itself
+            # to the likelihood. 
+            all_PE_log_norms -= np.log(spinp)
+
+             
         print("All PE log norms is ")
         print("Shape: %s"%all_PE_log_norms.shape)
 

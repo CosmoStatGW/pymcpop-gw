@@ -439,14 +439,14 @@ def make_model(  priors,
 
         dL_log_prior = np.log(dL_prior)
 
-        print("dL prior start ")
-        print(dL_prior[:5])
+        # print("dL prior start ")
+        # print(dL_prior[:5])
 
-        print("dL^2 start ")
-        print(d[:5]**2)
+        # print("dL^2 start ")
+        # print(d[:5]**2)
 
-        print("log(dL_prior) start ")
-        print( (dL_log_prior[:5]) )
+        # print("log(dL_prior) start ")
+        # print( (dL_log_prior[:5]) )
         
         # spins: if you store (Ne, S, nspin) -> flatten first two axes
         spins = spins.reshape((NsamplesTot, spins.shape[-1]))
@@ -756,29 +756,12 @@ def make_model(  priors,
             dLgrid_bilby_gpc = at.as_tensor_variable(dat["dLgrid_gpc"])
             PE_prior_bilby_grid =  at.as_tensor_variable(dat["prior_grid"])
             
-        # if vol_in_prior:
-    
-        #     print("Pre-computing bilby-like PE prior from distance for later interpolation")
-    
-        #     bk = ATBackend()
-        #     zgrid_dLp =  at.constant(atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode))
-    
-        #     dc_grid_Planck15 = cosmo.dcfun_quad(bk, zgrid_dLp, PLANCK15_H0, PLANCK15_OM, -1.) 
-        #     dL_grid_Planck15 = cosmo.dLfun(bk, zgrid_dLp,  PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_grid_Planck15, Xi=None, param='vanilla')      
     
         
         if ( ( vol_in_prior or vol_in_prior_from_bilby) and (penorm_lims != []) ):
     
             print("Normalization of PE volume prior on distance required.")
                 
-    #             z_bounds = cosmo.z_from_dL( bk, at.constant(np.asarray([0.1/1000, 40000/1000])), z_nodes =zgrid_dLp, d_nodes =dL_grid_Planck15 )
-    #             z_min_PE_prior, z_max_PE_prior = z_bounds[0] , z_bounds[1]
-    #             print(
-    #     f"normalization of uniform-in-com-vol prior between dL=[{0.1/1000}, {40000/1000}] Gpc, "
-    #     f"i.e. z=[{z_min_PE_prior.eval()}, {z_max_PE_prior.eval()}]"
-    # )
-                
-    #             log_norm_PE_prior = cosmo.compute_log_norm_UniformSourceFrame(bk, z_min_PE_prior, z_max_PE_prior, PLANCK15_H0, PLANCK15_OM, -1)
     
             bkNP = NPBackend()
             
@@ -2190,7 +2173,7 @@ def make_model(  priors,
                     print("Removing PE spin prior")
                     amax = 0.99
                     spinp= (1./amax)*(1./amax)*0.5*0.5  
-                    chunk -= at.log(spinp)
+                    chunk += at.log(spinp)
                     
                 print("mask shape is %s"%mask.shape.eval())
                 print("chunk shape is %s"%chunk.shape.eval())

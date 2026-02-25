@@ -278,6 +278,10 @@ def main():
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
 
+    parser.add_argument("--remove_spin_prior", default=0, type=int, required=False)
+
+    
+
     parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
 
     parser.add_argument("--nth", type=int, default=None)
@@ -782,7 +786,8 @@ def main():
         fix_Om=bool(FLAGS.fix_Om),
         fix_w0=bool(FLAGS.fix_w0),
         fix_Xi0n=bool(FLAGS.fix_Xi0n),
-        reparam_mass = bool(FLAGS.reparam_mass)
+        reparam_mass = bool(FLAGS.reparam_mass),
+        remove_spin_prior =  bool(FLAGS.remove_spin_prior)
     )
 
 
