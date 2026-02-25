@@ -850,7 +850,9 @@ def make_model_jax(  priors,
         if fix_Om:
             Om_ = jnp.asarray(params_fix["Om"], dtype=jnp.float64)
         else:
-            Om_ = numpyro.sample("Om", dist.Uniform(priors["Om"][0], priors["Om"][1]))
+            #Om_ = numpyro.sample("Om", dist.Uniform(priors["Om"][0], priors["Om"][1]))
+
+            Om_ = bounded_sigmoid("Om", priors["Om"][0], priors["Om"][1], raw_sigma=1)
     
         if fix_w0:
             w0_ = jnp.asarray(-1.0, dtype=jnp.float64)
@@ -862,7 +864,8 @@ def make_model_jax(  priors,
         if fix_H0:
             H0_ = jnp.asarray(params_fix["H0"], dtype=jnp.float64)
         else:
-            H0_ = numpyro.sample("H0", dist.Uniform(priors["H0"][0], priors["H0"][1]))
+            #H0_ = numpyro.sample("H0", dist.Uniform(priors["H0"][0], priors["H0"][1]))
+            H0_ = bounded_sigmoid("H0", priors["H0"][0], priors["H0"][1], raw_sigma=1.5)
     
         if fix_Xi0n:
             Xi0_  = jnp.asarray(1.0, dtype=jnp.float64)
@@ -886,9 +889,9 @@ def make_model_jax(  priors,
             kappa_a, kappa_b = priors["kappa"]
             zp_a, zp_b       = priors["zp"]
             
-            gamma_ = bounded_sigmoid("gamma", gamma_a, gamma_b, raw_sigma=RAW_SD_95)
-            kappa_ = bounded_sigmoid("kappa", kappa_a, kappa_b, raw_sigma=RAW_SD_95)
-            zp_    = bounded_sigmoid("zp",    zp_a,    zp_b,    raw_sigma=RAW_SD_95)
+            gamma_ = bounded_sigmoid("gamma", gamma_a, gamma_b, raw_sigma = 1.5 )
+            kappa_ = bounded_sigmoid("kappa", kappa_a, kappa_b, raw_sigma=1 )
+            zp_    = bounded_sigmoid("zp",    zp_a,    zp_b,    raw_sigma=1 )
 
 
             Lambda_list += [gamma_, kappa_, zp_]
@@ -903,21 +906,24 @@ def make_model_jax(  priors,
     
             # muChi in [a,b] via sigmoid reparam
             muChi_a, muChi_b = priors["muChi"]
-            muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma=RAW_SD_95)
+            muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma = 1.5 )
             
             # sigmaChi in [a,b] but sigmoid in log-space
+            # sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
+            # sigmaChi_raw = numpyro.sample("sigmaChi_raw", dist.Normal(0.0, RAW_SD_95))
+            # log_sigmaChi = (
+            #     np.log(sigmaChi_a)
+            #     + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * jax.nn.sigmoid(sigmaChi_raw)
+            # )
+            # sigmaChi_ = jnp.exp(log_sigmaChi)
+            # numpyro.deterministic("sigmaChi", sigmaChi_)
+
             sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
-            sigmaChi_raw = numpyro.sample("sigmaChi_raw", dist.Normal(0.0, RAW_SD_95))
-            log_sigmaChi = (
-                np.log(sigmaChi_a)
-                + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * jax.nn.sigmoid(sigmaChi_raw)
-            )
-            sigmaChi_ = jnp.exp(log_sigmaChi)
-            numpyro.deterministic("sigmaChi", sigmaChi_)
+            sigmaChi_ = bounded_sigmoid("sigmaChi", sigmaChi_a, sigmaChi_b, raw_sigma=1.5)
             
             # zeta in [a,b] via sigmoid reparam
             zeta_a, zeta_b = priors["zeta"]
-            zeta_ = bounded_sigmoid("zeta", zeta_a, zeta_b, raw_sigma=RAW_SD_95)
+            zeta_ = bounded_sigmoid("zeta", zeta_a, zeta_b, raw_sigma = 1.5)
             
             # sigmat = floor + HalfNormal(raw), with typmax interpreted as ~95% point
             HN_Q95_TO_SIGMA = 1.959963984540054
@@ -973,11 +979,11 @@ def make_model_jax(  priors,
                 beta_ = normal_from_bounds_95("beta", priors["beta"][0], priors["beta"][1] )
         
                 mb_a, mb_b = priors["mb"][0], priors["mb"][1]
-                mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=1)
+                mb_ = bounded_sigmoid("mb", mb_a, mb_b, raw_sigma=1 )
                 
                 
                 sigma1_          = floored_lognormal_q95("sigma1", priors["sigma1"][0], priors["sigma1"][1], median_frac=0.2)
-                sigma2_          = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], median_frac=0.2 )
+                sigma2_          = floored_lognormal_q95("sigma2", priors["sigma2"][0], priors["sigma2"][1], median_frac=0.3 )
     
                 
                 
@@ -986,27 +992,60 @@ def make_model_jax(  priors,
                 # just in case mu1 gets too small
                 #numpyro.factor("mu1_neg_guard", jnp.where(mu1_ < 0.0, -jnp.inf, 0.0))
 
-                mu1_ = bounded_sigmoid("mu1", priors["mu1"][0], priors["mu1"][1], raw_sigma=1)
-                mu2_ = bounded_sigmoid("mu2", priors["mu2"][0], priors["mu2"][1], raw_sigma=1)
+                mu1_ = bounded_sigmoid("mu1", priors["mu1"][0], priors["mu1"][1], raw_sigma=1.25 )
+                mu2_ = bounded_sigmoid("mu2", priors["mu2"][0], priors["mu2"][1], raw_sigma=1.25 )
 
                 
                 
                 u = unit_interval_sigmoid("u", raw_sigma=1 )
-                m1_low_ = 3.0 + (10.0 - 3.0) * jnp.sqrt(u)
+                m1_low_ = 3.0 + (10.0 - 3.0) * u**1.5 #jnp.sqrt(u)
                 numpyro.deterministic("m1_low", m1_low_)
         
                 v = unit_interval_sigmoid("v",raw_sigma=1)
                 m2_low_ = 3.0 + v * (m1_low_ - 3.0)
                 numpyro.deterministic("m2_low", m2_low_)
         
-                m_high_ = jnp.asarray(300.0, dtype=jnp.float64)
-                numpyro.deterministic("m_high", m_high_)
-        
-                delta_m1_ = floored_lognormal_q95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], median_frac=0.2 )
-                delta_m2_ = floored_lognormal_q95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], median_frac=0.2 )
+                        
+                delta_m1_ = floored_lognormal_q95("delta_m1", priors["delta_m1"][0], priors["delta_m1"][1], median_frac=0.3 )
+                delta_m2_ = floored_lognormal_q95("delta_m2", priors["delta_m2"][0], priors["delta_m2"][1], median_frac=0.3 )
         
                 #numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
                 #numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
+
+                
+                # m_high_ = jnp.asarray(300.0, dtype=jnp.float64)
+                # numpyro.deterministic("m_high", m_high_)
+
+                
+                # m_high = m1_low + delta_mmax, with delta_mmax ~ LogNormal whose median/q95 track m1_low
+
+                # mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
+                # mmax_q95    = priors["m_high"][1]
+                
+                # delta_med = jnp.maximum(mmax_median - m1_low_, 1e-6)
+                # delta_q95 = jnp.maximum(mmax_q95    - m1_low_, 1e-6)
+                
+                # mu_delta = jnp.log(delta_med)
+                # sigma_delta = (jnp.log(delta_q95) - mu_delta) / NORM_Q95
+                
+                # delta_mmax = numpyro.sample("delta_mmax", dist.LogNormal(loc=mu_delta, scale=sigma_delta))
+                # m_high_ = m1_low_ + delta_mmax
+                # numpyro.deterministic("m_high", m_high_)
+
+                mhigh_floor = priors["m_high"][0]   # e.g. 80
+                mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
+                mmax_q95    = priors["m_high"][1]
+                
+                delta_med = jnp.maximum(mmax_median - mhigh_floor, 1e-6)
+                delta_q95 = jnp.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                
+                mu_delta = jnp.log(delta_med)
+                sigma_delta = (jnp.log(delta_q95) - mu_delta) / NORM_Q95
+                
+                delta_mhigh = numpyro.sample("delta_mhigh", dist.LogNormal(loc=mu_delta, scale=sigma_delta))
+                m_high_ = mhigh_floor + delta_mhigh
+                numpyro.deterministic("m_high", m_high_)
+                
 
             else:
                 alpha1_ = numpyro.sample("alpha1", dist.Uniform(priors["alpha1"][0], priors["alpha1"][1]))
@@ -1092,26 +1131,26 @@ def make_model_jax(  priors,
         # -------------------------
         ll, log_lik_var_sg = loglik(Lambda, x, lR0=lR0)
 
-        # Uncomment for debugging
+        ## Uncomment for debugging
         # jax.debug.print("ll = {}", ll)
         # jax.debug.print("ll finite? {}", jnp.all(jnp.isfinite(jnp.asarray(ll))))
 
+        #ll_safe = jnp.where(jnp.isfinite(ll), ll, -1e30)
         numpyro.factor("likelihood", ll)
 
-        # likelihood variance bound:
-       
-        gate_llv = jax.nn.log_sigmoid((log_lik_var_min - log_lik_var_sg) / 0.005)
+        
+        ## likelihood variance bound:
+        #gate_llv = jax.nn.log_sigmoid((log_lik_var_min - log_lik_var_sg) / 0.01)
+        ## hard version 
+        gate_llv = jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30)
 
-        # hard version 
-        # gate_llv = jnp.where(jnp.isfinite(log_lik_var_sg) & (log_lik_var_sg <= log_lik_var_min), 0.0, -jnp.inf)
-
-        # Uncomment for debugging
+        ## Uncomment for debugging
         # jax.debug.print("log_lik_var_sg = {}", log_lik_var_sg)
         # jax.debug.print("gate_llv = {}", gate_llv)
         # jax.debug.print("log_lik_var_sg finite? {}", jnp.isfinite(log_lik_var_sg))
 
+        #gate_llv_safe = jnp.where(jnp.isfinite(gate_llv), gate_llv, -1e30)
         numpyro.factor("bound_log_lik_var", gate_llv)
-        
 
 
         # optional for debugging/outputs

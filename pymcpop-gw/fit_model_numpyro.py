@@ -797,7 +797,7 @@ def main():
 
     if FLAGS.mass_model=='DPLDP' and FLAGS.reparam_mass:
 
-        for drop in ["mb","u","v","mu1","mu2","sigma1","sigma2","delta_m1","delta_m2","alpha1","alpha2"]:
+        for drop in ["mb","u","v","mu1","mu2","sigma1","sigma2","delta_m1","delta_m2","alpha1","alpha2", "gamma", "kappa", "zp", "H0", "Om"]:
             init_vals.pop(drop, None)
         
         mb_a, mb_b = priors["mb"][0], priors["mb"][1]
@@ -812,15 +812,13 @@ def main():
         if v0 is not None:
             init_vals["v_raw"] = v0
 
-        mu1a, mu1b = priors["mu1"][0], priors["mu1"][1]
-        mu10 = jm.bounded_sigmoid_raw_init(ivals.get("mu1"), mu1a, mu1b)
-        if mu10 is not None:
-            init_vals["mu1_raw"] = mu10
+        for k in ("mu1", "mu2", "gamma", "kappa", "zp", "H0", "Om"):
+            pa, pb = priors[k][0], priors[k][1]
+            p0 = jm.bounded_sigmoid_raw_init(ivals.get(k), pa, pb)
+            if p0 is not None:
+                init_vals[k+"_raw"] = p0
         
-        mu2a, mu2b = priors["mu2"][0], priors["mu2"][1]
-        mu20 = jm.bounded_sigmoid_raw_init(ivals.get("mu2"), mu2a, mu2b)
-        if mu20 is not None:
-            init_vals["mu2_raw"] = mu20
+    
 
 
         if "alpha_bar" not in init_vals:
@@ -851,10 +849,73 @@ def main():
             if raw is not None:
                 init_vals[f"{nm}_raw"] = raw
 
+
+        # if ivals.get("m_high") is not None:
+        #     m_high_ = ivals.get("m_high")
+        # else:
+        #     m_high_ = (priors["m_high"][1]+priors["m_high"][0])*0.5
+        #print("m_high init: %s"%m_high_)
+
+        mhigh_floor = float(priors["m_high"][0])
+        m_high0 = float(ivals.get("m_high", 0.5 * (priors["m_high"][0] + priors["m_high"][1])))
+        init_vals["delta_mhigh"] = max(1e-6, m_high0 - mhigh_floor)
+
+        # # need an init for m1_low (deterministic from u); use ivals if present, else reconstruct 
+        # if ivals.get("m1_low") is not None:
+        #     m1_low0 = float(ivals["m1_low"])
+        # elif ivals.get("u") is not None:
+        #     m1_low0 = 3.0 + (10.0 - 3.0) * float(ivals["u"])**1.5 #np.sqrt(float(ivals["u"]))
+        # elif init_vals.get("u_raw") is not None:
+        #     u0 = 1.0 / (1.0 + np.exp(-float(init_vals["u_raw"])))
+        #     m1_low0 = 3.0 + (10.0 - 3.0) * u0**1.5 #np.sqrt(u0)
+        # else:
+        #     m1_low0 = 0.5 * (3.0 + 10.0)  # fallback (rough)
+        
+        # init_vals["delta_mmax"] = max(1e-6, float(m_high_) - m1_low0)
+
         # IMPORTANT: if you provide init for Dirichlet variable "lambda"
         # it MUST be a JAX array, not a list:
         if "lambda" in init_vals and not isinstance(init_vals["lambda"], jnp.ndarray):
             init_vals["lambda"] = jnp.asarray(init_vals["lambda"], dtype=jnp.float64)
+
+
+        # --- add spins reparam init values (same style as mass block) ---
+
+        for drop in ["muChi", "sigmaChi", "zeta", "sigmat"]:
+            init_vals.pop(drop, None)
+        
+        # muChi in [a,b] via bounded sigmoid  -> init site is "muChi_raw"
+        muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
+        muChi0 = jm.bounded_sigmoid_raw_init(ivals.get("muChi"), muChi_a, muChi_b)
+        if muChi0 is not None:
+            init_vals["muChi_raw"] = muChi0
+        
+        # zeta in [a,b] via bounded sigmoid  -> init site is "zeta_raw"
+        zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
+        zeta0 = jm.bounded_sigmoid_raw_init(ivals.get("zeta"), zeta_a, zeta_b)
+        if zeta0 is not None:
+            init_vals["zeta_raw"] = zeta0
+        
+        # sigmaChi in [a,b] but sigmoid in log-space -> raw init from log-space fraction
+        # if ivals.get("sigmaChi") is not None:
+        #     sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
+        #     ls_a = np.log(float(sigmaChi_a))
+        #     ls_b = np.log(float(sigmaChi_b))
+        #     ls0 = np.log(float(ivals["sigmaChi"]))
+        #     t = (ls0 - ls_a) / (ls_b - ls_a)
+        #     t = np.clip(t, 1e-6, 1.0 - 1e-6)
+        #     init_vals["sigmaChi_raw"] = np.log(t / (1.0 - t))
+
+        sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
+        sigmaChi0 = jm.bounded_sigmoid_raw_init(ivals.get("sigmaChi"), sigmaChi_a, sigmaChi_b)
+        if sigmaChi0 is not None:
+            init_vals["sigmaChi_raw"] = sigmaChi0
+        
+        # sigmat = floor + HalfNormal(raw) -> init site is "sigmat_raw" (nonnegative)
+        if ivals.get("sigmat") is not None:
+            sigmat_floor = float(priors["sigmat"][0])
+            init_vals["sigmat_raw"] = max(0.0, float(ivals["sigmat"]) - sigmat_floor)
+
 
 
 
