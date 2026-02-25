@@ -908,15 +908,6 @@ def make_model_jax(  priors,
             muChi_a, muChi_b = priors["muChi"]
             muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma = 1.5 )
             
-            # sigmaChi in [a,b] but sigmoid in log-space
-            # sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
-            # sigmaChi_raw = numpyro.sample("sigmaChi_raw", dist.Normal(0.0, RAW_SD_95))
-            # log_sigmaChi = (
-            #     np.log(sigmaChi_a)
-            #     + (np.log(sigmaChi_b) - np.log(sigmaChi_a)) * jax.nn.sigmoid(sigmaChi_raw)
-            # )
-            # sigmaChi_ = jnp.exp(log_sigmaChi)
-            # numpyro.deterministic("sigmaChi", sigmaChi_)
 
             sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
             sigmaChi_ = bounded_sigmoid("sigmaChi", sigmaChi_a, sigmaChi_b, raw_sigma=1.5)

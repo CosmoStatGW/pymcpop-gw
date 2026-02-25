@@ -220,6 +220,7 @@ def main():
 
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
+    parser.add_argument("--reparam_cosmo", default=0, type=int, required=False)
 
     parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
 
@@ -896,6 +897,7 @@ def main():
                                 debug_sel_batch=FLAGS.debug_sel_batch,
                                 reparam_z = FLAGS.reparam_z,
                                  reparam_mass = FLAGS.reparam_mass,
+                                reparam_cosmo = FLAGS.reparam_cosmo,
                                 priors_for_mmin=priors_for_mmin,
                                 detach_var = FLAGS.detach_var,
                                 remove_spin_prior = FLAGS.remove_spin_prior
@@ -1428,8 +1430,13 @@ def main():
             else:
 
                 
-                ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
-                sampler_kwargs["step"] = pm.NUTS(target_accept=ta, max_treedepth=FLAGS.max_tree_depth)
+                
+
+                if FLAGS.dense_mass:
+                    sampler_kwargs["init"] = "adapt_full"
+                else:
+                    ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
+                    sampler_kwargs["step"] = pm.NUTS(target_accept=ta, max_treedepth=FLAGS.max_tree_depth)
 
     
 
@@ -1488,6 +1495,7 @@ def main():
                     trace = pm.sample(nuts_sampler='pymc', 
                                       idata_kwargs={"log_likelihood": False},
                                       callback=cb,
+                                      max_treedepth=FLAGS.max_tree_depth, 
                                       **sampler_kwargs,    
                                      )
 
