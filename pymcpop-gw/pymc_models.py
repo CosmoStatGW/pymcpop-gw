@@ -1017,15 +1017,15 @@ def make_model(  priors,
 
              
             muChi_a, muChi_b = priors["muChi"]
-            muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma = 1.5, initval=ivals.get("muChi") )
+            muChi_ = bounded_sigmoid("muChi", muChi_a, muChi_b, raw_sigma = 1.5, initval=ivals.get("muChi", 0.024) )
             
 
             sigmaChi_a, sigmaChi_b = priors["sigmaChi"]
-            sigmaChi_ = bounded_sigmoid("sigmaChi", sigmaChi_a, sigmaChi_b, raw_sigma=1.5, initval=ivals.get("sigmaChi"))
+            sigmaChi_ = bounded_sigmoid("sigmaChi", sigmaChi_a, sigmaChi_b, raw_sigma=1.5, initval=ivals.get("sigmaChi", 0.32))
             
             # zeta in [a,b] via sigmoid reparam
             zeta_a, zeta_b = priors["zeta"]
-            zeta_ = bounded_sigmoid("zeta", zeta_a, zeta_b, raw_sigma = 1.5, initval=ivals.get("zeta"))
+            zeta_ = bounded_sigmoid("zeta", zeta_a, zeta_b, raw_sigma = 1.5, initval=ivals.get("zeta", 0.2))
             
            
             
@@ -1038,7 +1038,10 @@ def make_model(  priors,
             
             sigmat_raw_init = None
             if ivals.get("sigmat") is not None:
-                sigmat_raw_init = max(0.0, ivals["sigmat"] - sigmat_floor)
+                st = ivals["sigmat"]
+            else:
+                st=3.
+            sigmat_raw_init = max(0.0, st - sigmat_floor)
             
             sigmat_raw = pm.HalfNormal("sigmat_raw", sigma=sigmat_sigma, initval=sigmat_raw_init)
             sigmat_ = pm.Deterministic("sigmat", sigmat_floor + sigmat_raw)
@@ -1299,44 +1302,49 @@ def make_model(  priors,
             beta_   = normal_from_bounds_95("beta",   priors["beta"][0],   priors["beta"][1],   initval=ivals.get("beta"))
             
             
-            mb_a, mb_b = priors["mb_0"][0], priors["mb_0"][1]
+            # mb_a, mb_b = priors["mb_0"][0], priors["mb_0"][1]
 
-            # set init in raw-space using logit of normalized initval (if provided)
-            mb_raw_init = None
-            if ivals.get("mb_0") is not None:
-                t = float((ivals["mb_0"] - mb_a) / (mb_b - mb_a))
-                t = np.clip(t, 1e-6, 1 - 1e-6)
-                mb_raw_init = np.log(t / (1 - t))
+            # # set init in raw-space using logit of normalized initval (if provided)
+            # mb_raw_init = None
+            # if ivals.get("mb_0") is not None:
+            #     t = float((ivals["mb_0"] - mb_a) / (mb_b - mb_a))
+            #     t = np.clip(t, 1e-6, 1 - 1e-6)
+            #     mb_raw_init = np.log(t / (1 - t))
             
-            mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
-            mb_0 = pm.Deterministic("mb_0", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
+            # mb_raw = pm.Normal("mb_raw", mu=0.0, sigma=RAW_SD_95, initval=mb_raw_init)
+            # mb_0 = pm.Deterministic("mb_0", mb_a + (mb_b - mb_a) * pm.math.sigmoid(mb_raw))
 
+            mb_0 = bounded_sigmoid("mb_0", priors["mb_0"][0], priors["mb_0"][1], raw_sigma=1, initval=ivals.get("mb_0", 35) )
 
-            
-            mu1_a, mu1_b = priors["mu1_0"][0], priors["mu1_0"][1]
-            mu1_raw_init = None
-            if ivals.get("mu1_0") is not None:
-                t1 = float((ivals["mu1_0"] - mu1_a) / (mu1_b - mu1_a))
-                t1 = np.clip(t1, 1e-6, 1 - 1e-6)
-                mu1_raw_init = np.log(t1 / (1 - t1))
-            
-            mu1_raw = pm.Normal("mu1_raw", mu=0.0, sigma=RAW_SD_95, initval=mu1_raw_init)
-            mu1_0 = pm.Deterministic("mu1_0", mu1_a + (mu1_b - mu1_a) * pm.math.sigmoid(mu1_raw))
 
             
-            mu2_a, mu2_b = priors["mu2_0"][0], priors["mu2_0"][1]
-            mu2_raw_init = None
-            if ivals.get("mu2_0") is not None:
-                t2 = float((ivals["mu2_0"] - mu2_a) / (mu2_b - mu2_a))
-                t2 = np.clip(t2, 1e-6, 1 - 1e-6)
-                mu2_raw_init = np.log(t2 / (1 - t2))
+            # mu1_a, mu1_b = priors["mu1_0"][0], priors["mu1_0"][1]
+            # mu1_raw_init = None
+            # if ivals.get("mu1_0") is not None:
+            #     t1 = float((ivals["mu1_0"] - mu1_a) / (mu1_b - mu1_a))
+            #     t1 = np.clip(t1, 1e-6, 1 - 1e-6)
+            #     mu1_raw_init = np.log(t1 / (1 - t1))
             
-            mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
-            mu2_0 = pm.Deterministic("mu2_0", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
+            # mu1_raw = pm.Normal("mu1_raw", mu=0.0, sigma=RAW_SD_95, initval=mu1_raw_init)
+            # mu1_0 = pm.Deterministic("mu1_0", mu1_a + (mu1_b - mu1_a) * pm.math.sigmoid(mu1_raw))
+
+            
+            # mu2_a, mu2_b = priors["mu2_0"][0], priors["mu2_0"][1]
+            # mu2_raw_init = None
+            # if ivals.get("mu2_0") is not None:
+            #     t2 = float((ivals["mu2_0"] - mu2_a) / (mu2_b - mu2_a))
+            #     t2 = np.clip(t2, 1e-6, 1 - 1e-6)
+            #     mu2_raw_init = np.log(t2 / (1 - t2))
+            
+            # mu2_raw = pm.Normal("mu2_raw", mu=0.0, sigma=RAW_SD_95, initval=mu2_raw_init)
+            # mu2_0 = pm.Deterministic("mu2_0", mu2_a + (mu2_b - mu2_a) * pm.math.sigmoid(mu2_raw))
+
+            mu1_0 = bounded_sigmoid("mu1_0", priors["mu1_0"][0], priors["mu1_0"][1], raw_sigma=1.25, initval=ivals.get("mu1_0") )
+            mu2_0 = bounded_sigmoid("mu2_0", priors["mu2_0"][0], priors["mu2_0"][1], raw_sigma=1.25, initval=ivals.get("mu2_0") )
  
             # same as DPLDP
-            sigma1_0 = floored_lognormal_q95("sigma1_0", priors["sigma1_0"][0], priors["sigma1_0"][1], initval=ivals.get("sigma1_0"))
-            sigma2_0 = floored_lognormal_q95("sigma2_0", priors["sigma2_0"][0], priors["sigma2_0"][1], initval=ivals.get("sigma2_0"))
+            sigma1_0 = floored_lognormal_q95("sigma1_0", priors["sigma1_0"][0], priors["sigma1_0"][1], initval=ivals.get("sigma1_0"), median_frac=0.2)
+            sigma2_0 = floored_lognormal_q95("sigma2_0", priors["sigma2_0"][0], priors["sigma2_0"][1], initval=ivals.get("sigma2_0"), median_frac=0.3)
             
             # alternative: truncated lognormal
             # sigma1_0 = pm.Truncated(
@@ -1366,41 +1374,54 @@ def make_model(  priors,
             # m2_low_  = pm.Deterministic("m2_low", (3 + v * (m1_low_ - 3)) ) #.astype(X))
 
              # --- Triangle constraint for m1_low, m2_low preserved ---
-            u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=RAW_SD_95)
-            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * at.sqrt(u))
+            u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=1)
+            m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * u**1.5 )
             
-            v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=RAW_SD_95)
+            v = unit_interval_sigmoid("v", initval=ivals.get("v"), raw_sigma=1)
             m2_low_ = pm.Deterministic("m2_low", 3 + v * (m1_low_ - 3))
             
             
 
-            # targets for mmax itself
-            mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
-            mmax_q95    = priors["m_high"][1]   # e.g. 200.0
+            # # targets for mmax itself
+            # mmax_median = mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1]) # typical mmax
+            # mmax_q95    = priors["m_high"][1]   # e.g. 200.0
             
-            # implied targets for delta = mmax - m1_low
-            delta_med = at.maximum(mmax_median - m1_low_, 1e-6)
-            delta_q95 = at.maximum(mmax_q95    - m1_low_, 1e-6)
+            # # implied targets for delta = mmax - m1_low
+            # delta_med = at.maximum(mmax_median - m1_low_, 1e-6)
+            # delta_q95 = at.maximum(mmax_q95    - m1_low_, 1e-6)
             
-            # LogNormal: median = exp(mu), q95 = exp(mu + sigma*NORM_Q95)
+            # # LogNormal: median = exp(mu), q95 = exp(mu + sigma*NORM_Q95)
+            # mu_delta    = at.log(delta_med)
+            # sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+            
+            # delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta, initval=300)
+            # m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
+
+            mhigh_floor = priors["m_high"][0]
+            mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
+            mmax_q95    = priors["m_high"][1]
+            
+            delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
+            delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+            
             mu_delta    = at.log(delta_med)
             sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
             
-            delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta, initval=300)
-            m_high_      = pm.Deterministic("m_high", m1_low_ + delta_mmax)
+            delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta)
+            m_high_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
             
 
 
             # delta_m1 + taper end
             d1_floor = priors["delta_m1"][0]
             d1_typ   = priors["delta_m1"][1]
-            delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"))
+            delta_m1_ = floored_lognormal_q95("delta_m1", d1_floor, d1_typ, initval=ivals.get("delta_m1"), median_frac=0.3)
             m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
             
             # delta_m2 + taper end
             d2_floor = priors["delta_m2"][0]
             d2_typ   = priors["delta_m2"][1]
-            delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"))
+            delta_m2_ = floored_lognormal_q95("delta_m2", d2_floor, d2_typ, initval=ivals.get("delta_m2"), median_frac=0.3)
             m2_taper_end_ = pm.Deterministic("m2_taper_end", m2_low_ + delta_m2_)
 
             

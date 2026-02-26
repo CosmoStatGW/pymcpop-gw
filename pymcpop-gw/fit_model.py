@@ -1495,7 +1495,7 @@ def main():
                     trace = pm.sample(nuts_sampler='pymc', 
                                       idata_kwargs={"log_likelihood": False},
                                       callback=cb,
-                                      max_treedepth=FLAGS.max_tree_depth, 
+                                      #max_treedepth=FLAGS.max_tree_depth, 
                                       **sampler_kwargs,    
                                      )
 
