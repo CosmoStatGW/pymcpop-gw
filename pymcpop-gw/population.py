@@ -416,6 +416,7 @@ def _make_pop_and_sel_core(
                 )
                 lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
 
+
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
                 p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
                 I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)

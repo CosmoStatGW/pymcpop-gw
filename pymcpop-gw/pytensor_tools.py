@@ -118,6 +118,11 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
         return make_z_grid_cheb(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost, low_boost=low_boost)
     elif mode=='fixed':
         return make_z_grid_fixed(total=total, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c)
+    
+    elif mode=='std':
+        return np.logspace( np.log10(zmin_a), np.log10(zmax_c), total)
+    elif mode=='lin':
+        return np.linspace(zmin_a, zmax_c, total)
     else:
         raise ValueError()
 

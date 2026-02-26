@@ -250,7 +250,6 @@ def make_model(  priors,
                  priors_for_mmin='',
                  penorm_lims=[],
                  linear_mass=False,
-                 linear_z=False,
                  DP_truncate_up=False,
                  DP_truncate_low=False,
                  DP_m1_env = False,
@@ -499,7 +498,19 @@ def make_model(  priors,
         params_fix=PLPeakO3params
 
 
- 
+    zgrid = None
+    build = False
+    
+    if rebuild_z and interp_mass and mass_model=='DPLDP-z':
+        print("⚠️ Warning: asked rebuild_z but interpolation on z-mass grid will be used for this model. Using pre-defined z grid.")
+        #zgrid = constants.z_nodes_np
+        build = True
+        find_z_bounds = True
+    elif not rebuild_z:
+        #zgrid = constants.z_nodes_np
+        print("Using fixed z grid")
+        build = True
+        find_z_bounds = True
 
 
     
@@ -550,18 +561,28 @@ def make_model(  priors,
     
             
             
-            #zmin_b = min(zmin_b, max(min_z, z_min_data))
+            zmin_b_safe = min(zmin_b, max(min_z, z_min_data))
     
-            #zmin_a = min( zmin_a, min(min_z, z_min_data))
+            zmin_a_safe = min( zmin_a, min(min_z, z_min_data))
             
-            #zmid_b = min( zmid_b, z_max_data )
-            #zmax_c = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
-    
-            print("Redshift values, default:")
-            print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+            zmid_b_safe = min( zmid_b, z_max_data )
+            zmax_c_safe = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
 
-            assert zmax_c<=100
-            assert zmin_a>=1e-05
+            if build:
+                print("Redshift values, default:")
+                print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
+
+                if zmax_c_safe<=zmax_c:
+                    print("max bound safe")
+                else:
+                    print("⚠️ zmax was %s but max from data is %s. set to %s"%(zmax_c, zmax_c_safe, zmax_c_safe) )
+                    zmax_c = zmax_c_safe*(1+0.1)
+                if zmin_a_safe>=zmin_a:
+                    print("min bound safe")
+                else:
+                    print("⚠️ zmin was %s but min from data is %s. set to %s"%(zmin_a, zmin_a_safe, zmin_a_safe) )
+                    zmin_a = zmin_a_safe*(1-0.1)
+
 
 
         if (mass_model in ('DPUC', 'DP') and find_m_bounds):
@@ -693,26 +714,29 @@ def make_model(  priors,
             print("lp_incl_inj is ")
             print(lp_incl_inj)
             
-    
-    #####################################################################################################
-
-    # if not linear_z:
-    #     zgrid_np = atools.make_z_grid(
-    #     total=zres,
-    #     zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode
-    # )
-    # else:
-    #     zgrid_np = np.linspace(zmin_a, zmax_c, zres)
-
-    
-    # zgrid_ = at.as_tensor_variable(zgrid_np)
-
-    
-    # print("z grid for interpolation built. Resolution: %s"%zgrid_.shape.eval())
-    # print("z min: %s , z max: %s"%(zgrid_np.min(), zgrid_np.max()))
 
 
     #####################################################################################################
+
+
+
+    
+    if build:
+
+        zgrid = atools.make_z_grid(
+            total=zres,
+            zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode
+        )
+
+       
+        
+        print("z grid for interpolation built. Mode: %s Resolution: %s"%(z_grid_mode, zgrid.shape))
+        print("z min: %s , z max: %s"%(zgrid.min(), zgrid.max()))
+
+        
+
+    #####################################################################################################
+
 
     if z_pivot!=0:
 
@@ -731,6 +755,8 @@ def make_model(  priors,
         Ez_max = max(Ez_corners)#.astype(X)
 
 
+
+    
     #####################################################################################################
 
 
@@ -2072,13 +2098,7 @@ def make_model(  priors,
         if chunk_inj:
             print("Will process injections in chunks of %s"%chunk_inj)
 
-        zgrid = None
-        if rebuild_z and interp_mass and mass_model=='DPLDP-z':
-            print("⚠️ Warning: asked rebuild_z but interpolation on z-mass grid will be used for this model. Using pre-defined z grid.")
-            zgrid = constants.z_nodes_np
-        elif not rebuild_z:
-            zgrid = constants.z_nodes_np
-            print("Using fixed z grid")
+        
         
         fused = PopAndSelJAXOp(
             
