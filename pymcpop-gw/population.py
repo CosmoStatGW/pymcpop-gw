@@ -965,7 +965,7 @@ def sel_bias_with_uncertainty_legacy(
 # ---------------------------------------------------------------------
 
 
-def sel_bias_with_uncertainty_streaming_vjp(
+def sel_bias_with_uncertainty_streaming_vjp_clean(
     bk,
     m1inj,
     m2inj,
@@ -1276,7 +1276,340 @@ def sel_bias_with_uncertainty_streaming_vjp(
 
 
 
+def sel_bias_with_uncertainty_streaming_vjp(
+    bk,
+    m1inj,
+    m2inj,
+    dLinj,
+    spinsInj,
+    log_p_draw,
+    log_p_incl,
+    Lambda,
+    Ndraw,
+    *,
+    rate_model,
+    mass_model,
+    spin_model,
+    smoothing="LVK",
+    simplex_repair=False,
+    has_m2_break=False,
+    norm_gauss="uplow",
+    param="vanilla",
+    z_grid=None,                # kept for API compatibility; used as z_nodes in z_from_dL
+    d_nodes=None,
+    verbose=False,
+    chunk_size: int = 65536,
+    K_dp: int = 30,
+    DP_truncate=False,
+    DP_m1_env=False,
+    interp_mass_vals=None,
+    integrate_dc="trapz",
+    return_var=True,
+):
+    """
+    Optimized selection term with correct custom VJP behavior when interp_mass_vals depends on Lambda.
 
+    Key fix:
+      - interp_mass_vals is passed as an EXPLICIT argument to the custom_vjp core,
+        and the backward rule returns gradients w.r.t. BOTH (Lambda, interp_mass_vals).
+      - This prevents "closed-over value" CustomVJPException and allows gradients to
+        flow through the precomputed interpolation banks.
+
+    Assumes these exist/imported:
+      - z_from_dL(bk, dL, H0, Om, w0, Xi0, nXi0, integrate_dc=..., z_nodes=..., d_nodes=...)
+      - log_p_pop(...)
+      - logdiffexp_bk(bk, a, b)
+      - jax, jnp, lax
+    """
+
+    if interp_mass_vals is None:
+        raise ValueError(
+            "sel_bias_with_uncertainty_streaming_vjp requires interp_mass_vals != None "
+            "for the 'no closed-over tracer' fix. If you truly want no interpolation, "
+            "use the non-interp selection routine or pass interp_mass_vals explicitly."
+        )
+
+    B = int(chunk_size) if chunk_size and chunk_size > 0 else 0
+
+    def _pad_to_multiple(x, n_pad, *, mode="edge"):
+        n = x.shape[0]
+        pad = n_pad - n
+        if pad == 0:
+            return x
+        if x.ndim == 1:
+            tail = jnp.repeat(x[-1:], pad, axis=0) if mode == "edge" else jnp.zeros((pad,), dtype=x.dtype)
+            return jnp.concatenate([x, tail], axis=0)
+        if x.ndim == 2:
+            tail = jnp.repeat(x[-1:, :], pad, axis=0) if mode == "edge" else jnp.zeros((pad, x.shape[1]), dtype=x.dtype)
+            return jnp.concatenate([x, tail], axis=0)
+        raise ValueError("Unexpected ndim for padding")
+
+    def _make_mask(n, n_pad):
+        return jnp.arange(n_pad) < n
+
+    def _zeros_like_pytree(tree):
+        return jax.tree_util.tree_map(lambda a: jnp.zeros_like(a), tree)
+
+    def _add_pytrees(a, b):
+        return jax.tree_util.tree_map(lambda x, y: x + y, a, b)
+
+    def _score_chunk(
+        Lambda_,
+        interp_mass_vals_,
+        m1_c,
+        m2_c,
+        dL_c,
+        spins_c,
+        lpd_c,
+        lpi_c,
+        mask_c,
+    ):
+        # Cosmology hyper-params (must match your convention)
+        H0, Om, w0, Xi0, nXi0 = Lambda_[0], Lambda_[1], Lambda_[2], Lambda_[3], Lambda_[4]
+
+        # Invert z(dL)
+        zc = z_from_dL(
+            bk,
+            dL_c,
+            H0=H0,
+            Om=Om,
+            w0=w0,
+            Xi0=Xi0,
+            nXi0=nXi0,
+            integrate_dc=integrate_dc,
+            z_nodes=z_grid,
+            d_nodes=d_nodes,
+        )
+
+        onepz = 1.0 + zc
+        m1Src = m1_c / onepz
+        m2Src = m2_c / onepz
+
+        lp_pop = log_p_pop(
+            bk,
+            m1Src, m2Src, zc, dL_c,
+            spins_c,
+            Lambda_,
+            rate_model=rate_model,
+            mass_model=mass_model,
+            spin_model=spin_model,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+            # let log_p_pop compute cosmo auxiliaries internally
+            dc=None,
+            log_ddL_dz_pre=None,
+            Xi=None,
+            E=None,
+            param=param,
+            verbose=verbose,
+            K_dp=K_dp,
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals=interp_mass_vals_,
+        )
+
+        x = lp_pop - lpd_c - lpi_c
+        x = jnp.where(mask_c, x, -jnp.inf)  # padded entries contribute nothing
+        return x  # (B,)
+
+    @jax.custom_vjp
+    def _sel_core(
+        Lambda_,
+        interp_mass_vals_,
+        # injection constants (we return zero grads for these)
+        m1_,
+        m2_,
+        dL_,
+        spins_,
+        lpd_,
+        lpi_,
+        Ndraw_,
+    ):
+        log_mu_, var_u_ = _sel_fwd_only(
+            Lambda_, interp_mass_vals_, m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_
+        )
+        return log_mu_, var_u_
+
+    def _sel_fwd_only(
+        Lambda_,
+        interp_mass_vals_,
+        m1_,
+        m2_,
+        dL_,
+        spins_,
+        lpd_,
+        lpi_,
+        Ndraw_,
+    ):
+        n = m1_.shape[0]
+        if B == 0:
+            n_chunks, n_pad, B_use = 1, n, n
+        else:
+            n_chunks = (n + B - 1) // B
+            n_pad = n_chunks * B
+            B_use = B
+
+        mask = _make_mask(n, n_pad)
+
+        m1p = _pad_to_multiple(m1_, n_pad, mode="edge")
+        m2p = _pad_to_multiple(m2_, n_pad, mode="edge")
+        dLp = _pad_to_multiple(dL_, n_pad, mode="edge")
+        spinsp = _pad_to_multiple(spins_, n_pad, mode="edge")
+        lpdp = _pad_to_multiple(lpd_, n_pad, mode="edge")
+        lpip = _pad_to_multiple(lpi_, n_pad, mode="edge")
+
+        init = (
+            jnp.array(-jnp.inf, dtype=jnp.float64),  # m
+            jnp.array(0.0, dtype=jnp.float64),       # s1
+            jnp.array(0.0, dtype=jnp.float64),       # s2
+        )
+
+        def body(carry, k):
+            m, s1, s2 = carry
+            start = k * B_use
+            z0 = jnp.array(0, dtype=start.dtype)
+
+            m1c = lax.dynamic_slice(m1p, (start,), (B_use,))
+            m2c = lax.dynamic_slice(m2p, (start,), (B_use,))
+            dLc = lax.dynamic_slice(dLp, (start,), (B_use,))
+            spc = lax.dynamic_slice(spinsp, (start, z0), (B_use, spinsp.shape[1]))
+            lpdc = lax.dynamic_slice(lpdp, (start,), (B_use,))
+            lpic = lax.dynamic_slice(lpip, (start,), (B_use,))
+            mc = lax.dynamic_slice(mask, (start,), (B_use,))
+
+            x = _score_chunk(Lambda_, interp_mass_vals_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
+
+            m_chunk = jnp.max(x)
+            m_new = jnp.maximum(m, m_chunk)
+
+            scale1 = jnp.exp(m - m_new)
+            u1 = jnp.exp(x - m_new)
+            s1_new = s1 * scale1 + jnp.sum(u1)
+
+            if not return_var:
+                s2_new = jnp.zeros_like(s1_new)
+            else:
+                scale2 = jnp.exp(2.0 * (m - m_new))
+                u2 = jnp.exp(2.0 * (x - m_new))
+                s2_new = s2 * scale2 + jnp.sum(u2)
+
+            return (m_new, s1_new, s2_new), None
+
+        (m_fin, s1_fin, s2_fin), _ = lax.scan(body, init, jnp.arange(n_chunks, dtype=jnp.int32))
+
+        lse1 = m_fin + jnp.log(s1_fin)
+        logN = jnp.log(Ndraw_)
+        log_mu = lse1 - logN
+
+        if not return_var:
+            return log_mu, bk.zeros_like(log_mu)
+        else:
+            lse2 = 2.0 * m_fin + jnp.log(s2_fin)
+            logs2 = lse2 - logN
+            var_u = logdiffexp_bk(bk, logs2 - 2.0 * log_mu, 0.0) - jnp.log(Ndraw_ - 1.0)
+            return log_mu, var_u
+
+    def _sel_fwd(
+        Lambda_,
+        interp_mass_vals_,
+        m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_,
+    ):
+        log_mu, var_u = _sel_fwd_only(
+            Lambda_, interp_mass_vals_, m1_, m2_, dL_, spins_, lpd_, lpi_, Ndraw_
+        )
+        lse1 = log_mu + jnp.log(Ndraw_)
+        # Save what backward needs
+        res = (lse1, Ndraw_, Lambda_, interp_mass_vals_, m1_, m2_, dL_, spins_, lpd_, lpi_)
+        return (log_mu, var_u), res
+
+    def _sel_bwd(res, g):
+        (lse1, Ndraw_, Lambda_, interp_mass_vals_, m1_, m2_, dL_, spins_, lpd_, lpi_) = res
+        g_log_mu, g_var_u = g
+
+        # do not differentiate var_u
+        g_var_u = jnp.array(0.0, dtype=jnp.float64)
+
+        n = m1_.shape[0]
+        # robust: if B <= 0 or B >= n, avoid padding/chunking
+        if (B is None) or (B <= 0) or (B >= n):
+            n_chunks = 1
+            n_pad = n
+            B_use = n
+        else:
+            n_chunks = (n + B - 1) // B
+            n_pad = n_chunks * B
+            B_use = B
+
+        mask = _make_mask(n, n_pad)
+
+        m1p = _pad_to_multiple(m1_, n_pad, mode="edge")
+        m2p = _pad_to_multiple(m2_, n_pad, mode="edge")
+        dLp = _pad_to_multiple(dL_, n_pad, mode="edge")
+        spinsp = _pad_to_multiple(spins_, n_pad, mode="edge")
+        lpdp = _pad_to_multiple(lpd_, n_pad, mode="edge")
+        lpip = _pad_to_multiple(lpi_, n_pad, mode="edge")
+
+        dLambda_acc = jnp.zeros_like(Lambda_)
+        dInterp_acc = _zeros_like_pytree(interp_mass_vals_)
+
+        def body(carry, k):
+            dLam_acc, dInt_acc = carry
+            start = k * B_use
+            z0 = jnp.array(0, dtype=start.dtype)
+
+            m1c = lax.dynamic_slice(m1p, (start,), (B_use,))
+            m2c = lax.dynamic_slice(m2p, (start,), (B_use,))
+            dLc = lax.dynamic_slice(dLp, (start,), (B_use,))
+            spc = lax.dynamic_slice(spinsp, (start, z0), (B_use, spinsp.shape[1]))
+            lpdc = lax.dynamic_slice(lpdp, (start,), (B_use,))
+            lpic = lax.dynamic_slice(lpip, (start,), (B_use,))
+            mc = lax.dynamic_slice(mask, (start,), (B_use,))
+
+            def score_wrapped(Lam_, interp_):
+                return _score_chunk(Lam_, interp_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
+
+            # Differentiate w.r.t BOTH (Lambda, interp_mass_vals)
+            x, pull = jax.vjp(score_wrapped, Lambda_, interp_mass_vals_)
+            w = jnp.exp(x - lse1)
+            cot = g_log_mu * w
+
+            dLam_c, dInterp_c = pull(cot)
+            return (dLam_acc + dLam_c, _add_pytrees(dInt_acc, dInterp_c)), None
+
+        (dLambda_acc, dInterp_acc), _ = lax.scan(
+            body,
+            (dLambda_acc, dInterp_acc),
+            jnp.arange(n_chunks, dtype=jnp.int32),
+        )
+
+        dLambda = dLambda_acc
+        dInterp = dInterp_acc
+
+        zeros_m1 = jnp.zeros_like(m1_)
+        zeros_m2 = jnp.zeros_like(m2_)
+        zeros_dL = jnp.zeros_like(dL_)
+        zeros_sp = jnp.zeros_like(spins_)
+        zeros_lpd = jnp.zeros_like(lpd_)
+        zeros_lpi = jnp.zeros_like(lpi_)
+        zeros_N = jnp.zeros_like(jnp.asarray(Ndraw_).reshape(()))
+
+        # grads must match _sel_core arg order:
+        # (Lambda, interp_mass_vals, m1, m2, dL, spins, lpd, lpi, Ndraw)
+        return (dLambda, dInterp, zeros_m1, zeros_m2, zeros_dL, zeros_sp, zeros_lpd, zeros_lpi, zeros_N)
+
+    _sel_core.defvjp(_sel_fwd, _sel_bwd)
+
+    log_mu, var_u = _sel_core(
+        Lambda,
+        interp_mass_vals,
+        m1inj, m2inj, dLinj, spinsInj, log_p_draw, log_p_incl,
+        jnp.asarray(Ndraw).reshape(()),
+    )
+    return log_mu, var_u
+
+    
 
 # ---------------------------------------------------------------------
 #  sel. bias wrapper

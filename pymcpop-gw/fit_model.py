@@ -1755,7 +1755,7 @@ if __name__=='__main__':
 
     import multiprocessing as mp
     try:
-        mp.set_start_method("spawn")
+        mp.set_start_method("spawn", force=True)
         print("Spawn set")
     except RuntimeError:
         pass  # already set

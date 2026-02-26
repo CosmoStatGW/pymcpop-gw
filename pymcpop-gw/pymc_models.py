@@ -547,41 +547,44 @@ def make_model(  priors,
 
 
         if find_z_bounds:
-            print("\nChecking bounds of redshift interpolation...")
-            print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
+            if pop_only:
+                print("⚠️ check on redshift grid bound not spported ! please ensure it is wide enough. " )
+            else:
+                print("\nChecking bounds of redshift interpolation...")
+                print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at.eval().min(), atools.zGridGlobals_at.eval().max()))
+            
+                min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
+                                              priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                              int(N), int(nd),
+                                            dLinj,
+                                            z_from_dL_fn,
+                                              sampling_GW,
+                                              trials=1000, 
+                                             )
         
-            min_z, max_z, z_min_data, z_max_data = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
-                                          priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
-                                          int(N), int(nd),
-                                        dLinj,
-                                        z_from_dL_fn,
-                                          sampling_GW,
-                                          trials=1000, 
-                                         )
+                
+                
+                zmin_b_safe = min(zmin_b, max(min_z, z_min_data))
+        
+                zmin_a_safe = min( zmin_a, min(min_z, z_min_data))
+                
+                zmid_b_safe = min( zmid_b, z_max_data )
+                zmax_c_safe = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
     
-            
-            
-            zmin_b_safe = min(zmin_b, max(min_z, z_min_data))
+                if build:
+                    print("Redshift values, default:")
+                    print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
     
-            zmin_a_safe = min( zmin_a, min(min_z, z_min_data))
-            
-            zmid_b_safe = min( zmid_b, z_max_data )
-            zmax_c_safe = max(zmax_c, max(z_max_data, max_z))*(1+0.1)
-
-            if build:
-                print("Redshift values, default:")
-                print("zmin_a=%s, zmin_b=%s, zmid_b=%s, zmax_c=%s"%(zmin_a, zmin_b, zmid_b, zmax_c))
-
-                if zmax_c_safe<=zmax_c:
-                    print("max bound safe")
-                else:
-                    print("⚠️ zmax was %s but max from data is %s. set to %s"%(zmax_c, zmax_c_safe, zmax_c_safe) )
-                    zmax_c = zmax_c_safe*(1+0.1)
-                if zmin_a_safe>=zmin_a:
-                    print("min bound safe")
-                else:
-                    print("⚠️ zmin was %s but min from data is %s. set to %s"%(zmin_a, zmin_a_safe, zmin_a_safe) )
-                    zmin_a = zmin_a_safe*(1-0.1)
+                    if zmax_c_safe<=zmax_c:
+                        print("max bound safe")
+                    else:
+                        print("⚠️ zmax was %s but max from data is %s. set to %s"%(zmax_c, zmax_c_safe, zmax_c_safe) )
+                        zmax_c = zmax_c_safe*(1+0.1)
+                    if zmin_a_safe>=zmin_a:
+                        print("min bound safe")
+                    else:
+                        print("⚠️ zmin was %s but min from data is %s. set to %s"%(zmin_a, zmin_a_safe, zmin_a_safe) )
+                        zmin_a = zmin_a_safe*(1-0.1)
 
 
 
