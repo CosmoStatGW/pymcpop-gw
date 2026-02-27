@@ -492,7 +492,8 @@ def _make_pop_and_sel_core(
             DP_m1_env=DP_m1_env,
             interp_mass_vals = interp_mass_vals,
             integrate_dc = integrate_dc,
-            return_var = return_var
+            return_var = return_var,
+            interp_mass = interp_mass
             
         )
         if stop_grad_var_u:
@@ -1646,7 +1647,8 @@ def sel_bias_with_uncertainty(
     DP_m1_env=False,
     interp_mass_vals=None,
     integrate_dc = 'trapz',
-    return_var = True
+    return_var = True,
+    interp_mass = False
 ):
     
    
@@ -1672,26 +1674,50 @@ def sel_bias_with_uncertainty(
             
         )
 
+    else:
+        if interp_mass:
+            
+            return sel_bias_with_uncertainty_streaming_vjp(
+                bk,
+                m1inj, m2inj, dLinj, spinsInj,
+                log_p_draw, log_p_incl,
+                Lambda, Ndraw,
+                rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+                smoothing=smoothing, simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
+                z_grid=z_grid,
+                d_nodes = d_nodes, 
+                verbose=verbose,
+                chunk_size=sel_chunk_size,
+                K_dp=K_dp,
+                DP_truncate=DP_truncate,
+                DP_m1_env=DP_m1_env,
+                interp_mass_vals=interp_mass_vals,
+                integrate_dc = integrate_dc,
+                return_var = return_var
+            )
 
-    return sel_bias_with_uncertainty_streaming_vjp(
-        bk,
-        m1inj, m2inj, dLinj, spinsInj,
-        log_p_draw, log_p_incl,
-        Lambda, Ndraw,
-        rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
-        smoothing=smoothing, simplex_repair=simplex_repair,
-        has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
-        z_grid=z_grid,
-        d_nodes = d_nodes, 
-        verbose=verbose,
-        chunk_size=sel_chunk_size,
-        K_dp=K_dp,
-        DP_truncate=DP_truncate,
-        DP_m1_env=DP_m1_env,
-        interp_mass_vals=interp_mass_vals,
-        integrate_dc = integrate_dc,
-        return_var = return_var
-    )
+            
+        else:
+            return sel_bias_with_uncertainty_streaming_vjp_clean(
+                bk,
+                m1inj, m2inj, dLinj, spinsInj,
+                log_p_draw, log_p_incl,
+                Lambda, Ndraw,
+                rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+                smoothing=smoothing, simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break, norm_gauss=norm_gauss, param=param, 
+                z_grid=z_grid,
+                d_nodes = d_nodes, 
+                verbose=verbose,
+                chunk_size=sel_chunk_size,
+                K_dp=K_dp,
+                DP_truncate=DP_truncate,
+                DP_m1_env=DP_m1_env,
+                interp_mass_vals=interp_mass_vals,
+                integrate_dc = integrate_dc,
+                return_var = return_var
+            )
 
 
 
