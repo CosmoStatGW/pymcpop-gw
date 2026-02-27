@@ -909,100 +909,6 @@ def logpdf_DPLDP(
 
 
 
-def logC_DPLDP_fast(
-    bk,
-    m,
-    beta,
-    deltam,
-    m2_low,
-    m_g=45,
-    w_g=80,
-    sig_g_low=5,
-    sig_g_high=5,
-    has_m2_break=False,
-    smoothing="LVK",
-):
-    """
-    Analytic C(m) for has_m2_break=False under hard-edge smoothstep gate:
-
-      C(m) = ∫_{m2_low}^{min(m,max_m)} x^beta S(x) dx
-           = I1 + I2
-
-    where S(x)=0 below a, smoothstep on [a,a+d], and 1 above a+d.
-    Assumes beta is scalar and m is array-like.
-    """
-    if has_m2_break:
-        raise NotImplementedError("Optimized analytic logC_DPLDP assumes has_m2_break=False")
-
-    a = m2_low
-    d = deltam
-    b = a + d
-
-    # Upper integration limit (match original support cap)
-    u = bk.minimum(m, max_m)
-
-    # Clip ramp upper endpoint into [a, b]
-    # This makes ramp integral automatically zero when u <= a, and full when u >= b.
-    ur = bk.minimum(bk.maximum(u, a), b)
-
-    # Precompute smoothstep polynomial coefficients in x:
-    # 3((x-a)/d)^2 - 2((x-a)/d)^3 = c3 x^3 + c2 x^2 + c1 x + c0
-    invd = 1.0 / d
-    invd2 = invd * invd
-    invd3 = invd2 * invd
-
-    a2 = a * a
-    a3 = a2 * a
-
-    c3 = -2.0 * invd3
-    c2 =  3.0 * invd2 + 6.0 * a * invd3
-    c1 = -6.0 * a * invd2 - 6.0 * a2 * invd3
-    c0 =  3.0 * a2 * invd2 + 2.0 * a3 * invd3
-
-    # Exponents used in ramp antiderivative
-    p0 = beta + 1.0
-    p1 = beta + 2.0
-    p2 = beta + 3.0
-    p3 = beta + 4.0
-
-    # Constant lower-end powers (scalars) reused across all m
-    a_p0 = a ** p0
-    a_p1 = a ** p1
-    a_p2 = a ** p2
-    a_p3 = a ** p3
-
-    # Ramp endpoint powers (vectorized over m)
-    ur_p0 = ur ** p0
-    ur_p1 = ur ** p1
-    ur_p2 = ur ** p2
-    ur_p3 = ur ** p3
-
-    # I1 = sum_k c_k * ∫_a^ur x^(beta+k) dx
-    #     = c0*(ur^(β+1)-a^(β+1))/(β+1) + ... + c3*(ur^(β+4)-a^(β+4))/(β+4)
-    I1 = (
-        c0 * (ur_p0 - a_p0) / p0
-        + c1 * (ur_p1 - a_p1) / p1
-        + c2 * (ur_p2 - a_p2) / p2
-        + c3 * (ur_p3 - a_p3) / p3
-    )
-
-    # Tail contribution: ∫_b^u x^beta dx for u>b, else 0
-    # Implemented branchlessly via ut=max(u,b): integral is zero when u<=b.
-    ut = bk.maximum(u, b)
-    q = beta + 1.0
-
-    b_q = b ** q          # scalar
-    ut_q = ut ** q        # vector
-
-    I2 = (ut_q - b_q) / q
-
-    # Total CDF-like normalization
-    C = I1 + I2
-
-    # Guard log arg because bk.where may evaluate both branches
-    C_safe = bk.where(u > a, C, 1.0)
-    return bk.where(u > a, bk.log(C_safe), 0.0)
-
 
 def logC_DPLDP(
     bk,
@@ -1043,6 +949,74 @@ def logC_DPLDP(
     cdf = atcumtrapz(bk, p2, xx)
 
     return bk.interp( m, xx[1:], bk.log(cdf) )
+
+
+
+
+def logNorm_DPLDP(
+    bk,
+    alpha1,
+    alpha2,
+    mb,
+    mu1,
+    sigma1,
+    mu2,
+    sigma2,
+    m1_low,
+    m_high,
+    delta_m1,
+    lambda0,
+    lambda1,
+    lambda2,
+    epsilon,
+    smoothing="LVK",
+    simplex_repair=False,
+    eps_int=1e-300,
+    norm_gauss="uplow",
+):
+    """
+    Overflow-safe log normalization:
+      log ∫ exp(logpdfm1_DPLDP(ms)) dms
+    using max-subtraction.
+    """
+    
+    #_tgrid = _tgrid_np #_get_t_grid()
+
+    #ms = m1_low + (m_high - m1_low) * _tgrid
+
+    ms = bk.logspace( bk.log10(m1_low), bk.log10(m_high), 1000 )  
+
+    lpdf = logpdfm1_DPLDP(
+        bk,
+        ms,
+        alpha1,
+        alpha2,
+        mb,
+        mu1,
+        sigma1,
+        mu2,
+        sigma2,
+        m1_low,
+        m_high,
+        delta_m1,
+        lambda0,
+        lambda1,
+        lambda2,
+        epsilon,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+        norm_gauss=norm_gauss,
+    )
+
+    #a = bk.max(lpdf)
+    ps = bk.exp(lpdf)
+    integ = bk.trapezoid(ps, ms)
+    #integ = bk.clip(integ, eps_int, jnp.inf)
+
+    return bk.log(integ) # a + 
+
+
+
 
 
 
@@ -1243,71 +1217,99 @@ def logNorm_DPLDP_fast(
 
 
 
-
-def logNorm_DPLDP(
+def logC_DPLDP_fast(
     bk,
-    alpha1,
-    alpha2,
-    mb,
-    mu1,
-    sigma1,
-    mu2,
-    sigma2,
-    m1_low,
-    m_high,
-    delta_m1,
-    lambda0,
-    lambda1,
-    lambda2,
-    epsilon,
+    m,
+    beta,
+    deltam,
+    m2_low,
+    m_g=45,
+    w_g=80,
+    sig_g_low=5,
+    sig_g_high=5,
+    has_m2_break=False,
     smoothing="LVK",
-    simplex_repair=False,
-    eps_int=1e-300,
-    norm_gauss="uplow",
 ):
     """
-    Overflow-safe log normalization:
-      log ∫ exp(logpdfm1_DPLDP(ms)) dms
-    using max-subtraction.
+    Analytic C(m) for has_m2_break=False under hard-edge smoothstep gate:
+
+      C(m) = ∫_{m2_low}^{min(m,max_m)} x^beta S(x) dx
+           = I1 + I2
+
+    where S(x)=0 below a, smoothstep on [a,a+d], and 1 above a+d.
+    Assumes beta is scalar and m is array-like.
     """
-    
-    #_tgrid = _tgrid_np #_get_t_grid()
+    if has_m2_break:
+        raise NotImplementedError("Optimized analytic logC_DPLDP assumes has_m2_break=False")
 
-    #ms = m1_low + (m_high - m1_low) * _tgrid
+    a = m2_low
+    d = deltam
+    b = a + d
 
-    ms = bk.logspace( bk.log10(m1_low), bk.log10(m_high), 1000 )  
+    # Upper integration limit (match original support cap)
+    u = bk.minimum(m, max_m)
 
-    lpdf = logpdfm1_DPLDP(
-        bk,
-        ms,
-        alpha1,
-        alpha2,
-        mb,
-        mu1,
-        sigma1,
-        mu2,
-        sigma2,
-        m1_low,
-        m_high,
-        delta_m1,
-        lambda0,
-        lambda1,
-        lambda2,
-        epsilon,
-        smoothing=smoothing,
-        simplex_repair=simplex_repair,
-        norm_gauss=norm_gauss,
+    # Clip ramp upper endpoint into [a, b]
+    # This makes ramp integral automatically zero when u <= a, and full when u >= b.
+    ur = bk.minimum(bk.maximum(u, a), b)
+
+    # Precompute smoothstep polynomial coefficients in x:
+    # 3((x-a)/d)^2 - 2((x-a)/d)^3 = c3 x^3 + c2 x^2 + c1 x + c0
+    invd = 1.0 / d
+    invd2 = invd * invd
+    invd3 = invd2 * invd
+
+    a2 = a * a
+    a3 = a2 * a
+
+    c3 = -2.0 * invd3
+    c2 =  3.0 * invd2 + 6.0 * a * invd3
+    c1 = -6.0 * a * invd2 - 6.0 * a2 * invd3
+    c0 =  3.0 * a2 * invd2 + 2.0 * a3 * invd3
+
+    # Exponents used in ramp antiderivative
+    p0 = beta + 1.0
+    p1 = beta + 2.0
+    p2 = beta + 3.0
+    p3 = beta + 4.0
+
+    # Constant lower-end powers (scalars) reused across all m
+    a_p0 = a ** p0
+    a_p1 = a ** p1
+    a_p2 = a ** p2
+    a_p3 = a ** p3
+
+    # Ramp endpoint powers (vectorized over m)
+    ur_p0 = ur ** p0
+    ur_p1 = ur ** p1
+    ur_p2 = ur ** p2
+    ur_p3 = ur ** p3
+
+    # I1 = sum_k c_k * ∫_a^ur x^(beta+k) dx
+    #     = c0*(ur^(β+1)-a^(β+1))/(β+1) + ... + c3*(ur^(β+4)-a^(β+4))/(β+4)
+    I1 = (
+        c0 * (ur_p0 - a_p0) / p0
+        + c1 * (ur_p1 - a_p1) / p1
+        + c2 * (ur_p2 - a_p2) / p2
+        + c3 * (ur_p3 - a_p3) / p3
     )
 
-    #a = bk.max(lpdf)
-    ps = bk.exp(lpdf)
-    integ = bk.trapezoid(ps, ms)
-    #integ = bk.clip(integ, eps_int, jnp.inf)
+    # Tail contribution: ∫_b^u x^beta dx for u>b, else 0
+    # Implemented branchlessly via ut=max(u,b): integral is zero when u<=b.
+    ut = bk.maximum(u, b)
+    q = beta + 1.0
 
-    return bk.log(integ) # a + 
+    b_q = b ** q          # scalar
+    ut_q = ut ** q        # vector
 
+    I2 = (ut_q - b_q) / q
 
+    # Total CDF-like normalization
+    C = I1 + I2
 
+    # Guard log arg because bk.where may evaluate both branches
+    C_safe = bk.where(u > a, C, 1.0)
+    return bk.where(u > a, bk.log(C_safe), 0.0)
 
 
 def logC_DPLDP_fast(

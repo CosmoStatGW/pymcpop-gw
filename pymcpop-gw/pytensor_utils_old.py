@@ -146,7 +146,91 @@ def robust_stat(x, trim=0.05):
     return onp.median(x)
 
 
+
 def evo_triplet(
+    name,
+    theta0_rv,      # PyMC RV for theta_0 (e.g. alpha1_0)
+    ivals,
+    priors,
+    dtype="float64",
+    positive=False,          # NEW: if True, enforce theta_inf > 0
+    eps_pos=1e-6,            # NEW: small floor for positivity
+):
+    """
+    Create (theta_inf, z_t, dz) using Δθ parametrisation:
+        theta_inf = theta0_rv + Δθ
+
+    Priors taken from `priors` dict:
+      - sigma(Δθ)  : priors[f"delta_{name}_sigma"], if present
+      - z_t bounds : priors["z_t"]  (global)
+      - dz bounds  : priors["dz"]   (global)
+
+    If positive=True, we enforce theta_inf > eps_pos by truncating Δθ:
+        Δθ > -theta0_rv + eps_pos
+    This is a "prior-only" change (same model mapping theta_inf = theta0 + Δθ).
+    """
+
+    # ----- Δθ prior: difference between high-z and low-z -----
+    sigma_key = f"delta_{name}_sigma"
+    delta_sigma = priors.get(sigma_key, 1.0)   # fallback if missing
+
+    delta_init = ivals.get(f"delta_{name}", 0.0)
+
+    if positive:
+        # lower bound depends on theta0_rv; ensures theta_inf = theta0_rv + Δθ > eps_pos
+        lower = -theta0_rv + eps_pos
+
+        delta_theta = pm.TruncatedNormal(
+            f"delta_{name}",
+            mu=0.0,
+            sigma=delta_sigma,
+            lower=lower,
+            upper=np.inf,
+            initval=delta_init,
+        )
+    else:
+        delta_theta = pm.Normal(
+            f"delta_{name}",
+            mu=0.0,
+            sigma=delta_sigma,
+            initval=delta_init,
+        )
+
+    theta_inf = pm.Deterministic(f"{name}_inf", theta0_rv + delta_theta)
+
+    # ----- z_t prior -----
+    z_low, z_high = priors.get("z_t", (0.05, 2.5))
+    z_init = ivals.get(f"z_{name}", 0.5 * (z_low + z_high))
+
+    z_t = pm.Uniform(
+        f"z_{name}",
+        lower=z_low,
+        upper=z_high,
+        initval=z_init,
+    )
+
+    # ----- Δz prior -----
+    dz_low, dz_high = priors.get("dz", (0.05, 3.0))
+    dz_mid = 0.5 * (dz_low + dz_high)
+
+    log_dz_init = onp.log(ivals.get(f"dz_{name}", dz_mid))
+
+    log_dz = pm.Normal(
+        f"log_dz_{name}",
+        mu=onp.log(dz_mid),
+        sigma=0.5,
+        initval=log_dz_init,
+    )
+
+    dz = pm.Deterministic(
+        f"dz_{name}",
+        at.clip(at.exp(log_dz), dz_low, dz_high),
+    )
+
+    return theta_inf, z_t, dz
+
+
+def evo_triplet_nolow(
     name,
     theta0_rv,      # PyMC RV for theta_0 (e.g. alpha1_0)
     ivals,

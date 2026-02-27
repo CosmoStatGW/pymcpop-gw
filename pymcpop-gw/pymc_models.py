@@ -1524,6 +1524,8 @@ def make_model(  priors,
                 theta0_rv=mu1_0,
                 ivals=ivals,
                 priors=priors,
+                 positive=True,          # NEW: if True, enforce theta_inf > 0
+                eps_pos=3., 
             )
         
             sigma1_inf_,  z_sigma1_,  dz_sigma1_ = putils.evo_triplet(
@@ -1531,6 +1533,8 @@ def make_model(  priors,
                 theta0_rv=sigma1_0,
                 ivals=ivals,
                 priors=priors,
+                positive=True,          # NEW: if True, enforce theta_inf > 0
+                eps_pos=0.1, 
             )
         
             mu2_inf_,     z_mu2_,     dz_mu2_    = putils.evo_triplet(
@@ -1538,6 +1542,8 @@ def make_model(  priors,
                 theta0_rv=mu2_0,
                 ivals=ivals,
                 priors=priors,
+                positive=True,          # NEW: if True, enforce theta_inf > 0
+                eps_pos=3., 
             )
         
             sigma2_inf_,  z_sigma2_,  dz_sigma2_ = putils.evo_triplet(
@@ -1545,6 +1551,8 @@ def make_model(  priors,
                 theta0_rv=sigma2_0,
                 ivals=ivals,
                 priors=priors,
+                positive=True,          # NEW: if True, enforce theta_inf > 0
+                eps_pos=0.1, 
             )
 
 
