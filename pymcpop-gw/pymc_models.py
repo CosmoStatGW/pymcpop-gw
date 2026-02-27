@@ -267,13 +267,13 @@ def make_model(  priors,
     ## GW data
     if not pop_only:
         # gw data are interpolants of single-event posteriors
-        if sampling_GW=='gauss':
+        if sampling_GW=='gauss' or sampling_GW=='gmm_marg':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
             mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs, Nevs, allnames = GWData
             import numpy as np
             wts_l = np.exp(log_wts_l)
             
-        elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
+        elif sampling_GW=='gmm_cat':
             # we sample single-event parameters from the actual single-event posteriors
             wts_l, mus_l, cho_covs_l, Tobs, Nevs, allnames = GWData
         else:
@@ -844,7 +844,7 @@ def make_model(  priors,
     ################################################
 
             
-    if 'gmm' in sampling_GW and not pop_only:
+    if sampling_GW=='gmm_cat' and not pop_only:
         # we sample single-event parameters from the actual single-event posteriors
         # need tensor variables to correctly slice inside model
         wts_l, mus_l, cho_covs_l = at.constant(wts_l), at.constant(mus_l), at.constant(cho_covs_l)
@@ -1949,34 +1949,74 @@ def make_model(  priors,
             # Individual event mass and distance
             ###############################################
     
-            x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
+            
     
                 
             if 'gmm' in sampling_GW:
         
                 print('Sampling m1d, m2d, dL from GMM')
     
-                    
-                ###################################
-                # categorical way
-    
-                ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) 
-    
-       
-                # Select means and Cholesky factors per batch
-                mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
-                L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
-                 
-                # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
-                Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
+                if sampling_GW=='gmm_cat':
+                    ###################################
+                    # categorical way
 
-                #Lx = at.matmul(L_selected, x[..., None])[..., 0]   # (N,D,D) @ (N,D,1) -> (N,D)
-                # or: Lx = at.batched_dot(L_selected, x)
+                    x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
+        
+                    ig = pm.Categorical('idx', p=wts_l, dims= "event_index",  initval=at.argmax(wts_l, axis=1)) 
+        
+           
+                    # Select means and Cholesky factors per batch
+                    mu_selected = mus_l[ np.arange(N), ig, :]         # shape (N, D)
+                    L_selected = cho_covs_l[ np.arange(N), ig, :, :]  # shape (N, D, D)
+                     
+                    # Batched matrix multiplication: (N, D, D) @ (N, D, 1) → (N, D, 1)
+                    Lx = at.sum(L_selected * x[:, None, :], axis=2)  # → shape (N, D)
     
-                          
-                # Final transformed sample
-                samples = mu_selected + Lx                # shape (N, D)
-    
+                    #Lx = at.matmul(L_selected, x[..., None])[..., 0]   # (N,D,D) @ (N,D,1) -> (N,D)
+                    # or: Lx = at.batched_dot(L_selected, x)
+        
+                              
+                    # Final transformed sample
+                    samples = mu_selected + Lx                # shape (N, D)
+                
+                elif sampling_GW=='gmm_marg':
+                    print('Sampling m1d, m2d, dL from GMM (idx marginalized, continuous)')
+
+                    # choose intrinsic dimension like in the gauss branch
+                    if spin_model == 'none':
+                        d_int = 3
+                    elif spin_model in ('default', 'default_gauss'):
+                        d_int = 7
+                    elif spin_model in ('chieffchip', 'chieffchip_uc'):
+                        d_int = 5
+                    else:
+                        raise ValueError("Unsupported spin_model for gmm")
+                
+                    # 1) Sample the latent point X directly (one per event), with an improper flat base.
+                    #    This keeps the target EXACT: only the mixture term defines the GW-side density.
+                    X = pm.Flat("x", dims=("event_index", "GWdimension"), initval=mus_l[np.arange(N), np.argmax(wts_l, axis=1), :d_int])
+
+                    print("X shape")
+                    print(X.shape)
+                  
+                    # 2) Score X under the event-specific mixture (exact marginal over idx)
+                    diff = X[:, None, :] - mus_l[:, :, :d_int]   # (N, K, d_int)
+                
+                    tmp = at.sum(icovs_l[:, :, :d_int, :d_int] * diff[..., None, :], axis=-1)  # (N, K, d_int)
+                    quad = at.sum(diff * tmp, axis=-1)  # (N, K)
+                
+                    log_norm = -0.5 * d_int * at.log(2*np.pi)
+                    logp_components = -0.5 * quad + log_norm - 0.5 * log_dets_l + log_wts_l  # (N, K)
+                
+                    gwl = at.logsumexp(logp_components, axis=1)  # (N,)
+                
+                    # Add the GW mixture log-density to the model
+                    _ = pm.Potential("gw_mixture_logp", at.sum(gwl))
+                
+                    samples = X
+
+                else:
+                    raise ValueError()
                 
                 log_Mc_det = samples[:,0]/dil_factor
                 logit_q = samples[:,1]
@@ -2005,12 +2045,13 @@ def make_model(  priors,
                 else:
                     print("No spins computed")
             
-    
+                
             
             elif sampling_GW=='gauss' : # to be tested with spins
                 
                 print('Sampling log(Mc), logit(q), log(dL) from Gaussian approximant')
-    
+
+                x = pm.Normal( 'x', mu=0, sigma=1, dims= ("event_index" , "GWdimension" ), initval = (np.random.randn(N, nd) * eps_init)) #.astype(X) )    
     
                 samples = mus_s + at.sum(cho_s * x[:, None, :], axis=-1)
 

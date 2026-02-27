@@ -171,7 +171,7 @@ def main():
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='none', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
@@ -751,7 +751,7 @@ def main():
             
     if not FLAGS.pop_only:  
     
-        if 'gmm' in FLAGS.sampling_gw or 'gumbel' in FLAGS.sampling_gw:
+        if FLAGS.sampling_gw=='gmm_cat':
             GWData =  [
                        onp.exp(gmm_log_wts), #.astype(X), 
                        gmm_means, #.astype(X), 
@@ -760,7 +760,7 @@ def main():
                         Nevents,
                         allnames
                       ]
-        elif FLAGS.sampling_gw=='gauss':
+        elif FLAGS.sampling_gw=='gauss' or FLAGS.sampling_gw=='gmm_marg':
             GWData =  [samples_means_at, #.astype(X), 
                        samples_cho_covs_at, #astype(X), 
                        gmm_log_wts, #.astype(X), 
