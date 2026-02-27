@@ -1525,7 +1525,7 @@ def make_model(  priors,
                 ivals=ivals,
                 priors=priors,
                  positive=True,          # NEW: if True, enforce theta_inf > 0
-                eps_pos=3., 
+                eps_pos=5., 
             )
         
             sigma1_inf_,  z_sigma1_,  dz_sigma1_ = putils.evo_triplet(
@@ -1543,7 +1543,7 @@ def make_model(  priors,
                 ivals=ivals,
                 priors=priors,
                 positive=True,          # NEW: if True, enforce theta_inf > 0
-                eps_pos=3., 
+                eps_pos=5., 
             )
         
             sigma2_inf_,  z_sigma2_,  dz_sigma2_ = putils.evo_triplet(
