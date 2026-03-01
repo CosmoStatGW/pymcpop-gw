@@ -5,6 +5,7 @@
 #    license that can be found in the LICENSE file.
 
 import json
+import copy
 
 import pytensor_tools as atools
 import pytensor_utils_old as putils
@@ -254,7 +255,7 @@ def make_model(  priors,
                  DP_truncate_low=False,
                  DP_m1_env = False,
                  detach_var = False,
-                 remove_spin_prior=False
+                 remove_spin_prior=False,
                 ):
 
 
@@ -429,6 +430,11 @@ def make_model(  priors,
         NsamplesTot = N*Nsamples
 
         print("Reshaping samples to %s"%NsamplesTot)
+
+        if pop_only:
+            m1det_matrix = copy.deepcopy(m1det)
+            m2det_matrix = copy.deepcopy(m2det)
+            d_matrix = copy.deepcopy(d)
         
         m1det = m1det.reshape(NsamplesTot)
         m2det = m2det.reshape(NsamplesTot)
@@ -591,20 +597,40 @@ def make_model(  priors,
         if (mass_model in ('DPUC', 'DP') and find_m_bounds):
 
             print("\nFinding prior range for DP-GMM.")
-       
-            scales = putils.find_mass_redshift_bounds(wts_l, mus_l, cho_covs_l,
-                                          priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
-                                          int(N), int(nd),
-                                        dLinj,
+
+            if not pop_only:
+                
+                scales = putils.find_mass_redshift_bounds(wts_l, mus_l, cho_covs_l,
+                            priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                            int(N), int(nd),
+                            dLinj,
                             m1inj,
                             m2inj,
-                              z_from_dL_fn,
-                              sampling_GW,
-                              trials=1000, 
+                            z_from_dL_fn,
+                            sampling_GW,
+                            trials=1000, 
                             is_observed = False, #is_observed
                           #rng=onp.random.default_rng(123)
                             q_mbound=q_mbound
                              )
+                
+            else:
+                
+                scales = putils.find_mass_redshift_bounds_samples(
+                        m1det_matrix, m2det_matrix, d_matrix,
+                        priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'],
+                        int(N), #int(nd),
+                        dLinj, m1inj, m2inj,
+                        z_from_dL_fn,
+                        trials=1000,
+                        s0=0.10,
+                        is_observed=False,
+                        rng=np.random.default_rng(),
+                        q_mbound=q_mbound,
+                    )
+                                    
+                
+                                
     
             lowmu1 = scales['lMc_min_data']#.astype(X)
             upmu1 = scales['lMc_max_data']#.astype(X)
@@ -1897,23 +1923,6 @@ def make_model(  priors,
             if DP_truncate_low:
 
                 print("DP mixture will be truncated at lower edge.")
-                #mmin_ = normal_from_bounds_95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5))
-                #pm.Uniform("mmin_DP",  lower=priors["mmin_DP"][0],  upper=priors["mmin_DP"][1],  initval=ivals.get("mmin_DP", 3.5))
-
-                # HalfNormal with "typical max" = priors['mmin_'][1] at ~95% quantile
-                # HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
-                # mmin_DP_floor = priors["mmin_DP"][0]
-                # mmin_DP_typmax = priors["mmin_DP"][1]
-                # raw_typ_mmin_DP = max(1e-12, mmin_DP_typmax - mmin_DP_floor)  # interpret typmax as final 95% point
-                # mmin_DP_sigma = raw_typ_mmin_DP / HN_Q95_TO_SIGMA
-                
-                # sigmat_raw_init = None
-                # ival = ivals.get("mmin_DP", 3.5)
-                # mmin_DP_raw_init = max(0.0, ival - mmin_DP_floor)
-                
-                # mmin_DP_raw = pm.HalfNormal("mmin_DP_raw", sigma=mmin_DP_sigma, initval=mmin_DP_raw_init)
-                # mmin_ = pm.Deterministic("mmin_DP", mmin_DP_floor + mmin_DP_raw)
-
 
                 mmin_ = floored_lognormal_q95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5))
 
@@ -1924,23 +1933,34 @@ def make_model(  priors,
             if DP_truncate_up:
 
                 print("DP mixture will be truncated at upper edge.")
-                # mmax_ = floored_lognormal_q95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 100))]
+                
 
                 
                 # --- delta = mmax - mmin ---
-                delta_median = 100                # typical BH max mass 
-                delta_q95    = priors["mmax_DP"][1]                # 95% below old uniform upper bound
+                # delta_median = 100                # typical BH max mass 
+                # delta_q95    = priors["mmax_DP"][1]                # 95% below old uniform upper bound
 
-                # lognormal parameterization: Q95 = exp(mu + sigma*NORM_Q95), median = exp(mu)
-                sigma_delta = (np.log(delta_q95) - np.log(delta_median)) / NORM_Q95
-                mu_delta    = np.log(delta_median)
+                # # lognormal parameterization: Q95 = exp(mu + sigma*NORM_Q95), median = exp(mu)
+                # sigma_delta = (np.log(delta_q95) - np.log(delta_median)) / NORM_Q95
+                # mu_delta    = np.log(delta_median)
 
 
-                delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
-                mmax_ = pm.Deterministic("mmax_DP", mmin_ + delta_mmax)
+                # delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+                # mmax_ = pm.Deterministic("mmax_DP", mmin_ + delta_mmax)
+
+                mhigh_floor = priors["mmax_DP"][0]
+                mmax_median = 0.5 * (priors["mmax_DP"][0] + priors["mmax_DP"][1])
+                mmax_q95    = priors["mmax_DP"][1]
                 
-                # mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 100.))
-                #pm.Uniform("mmax_DP",  lower=priors["mmax_DP"][0],  upper=priors["mmax_DP"][1],  initval=ivals.get("mmax_DP", 100.))
+                delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
+                delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                
+                mu_delta    = at.log(delta_med)
+                sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+                
+                delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+                mmax_     = pm.Deterministic("mmax_DP", mhigh_floor + delta_mmax)
+
             else:
                 mmax_ = 10000.
 

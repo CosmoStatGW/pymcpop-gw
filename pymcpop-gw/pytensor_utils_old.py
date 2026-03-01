@@ -394,6 +394,319 @@ def build_zmax_envelope_from_corners(
     return dL_grid, zmax_grid
 
 
+
+def find_mass_redshift_bounds_samples(
+    m1det_mat, m2det_mat, dLdet_mat,
+    H0_range, Om_range, w0_range, Xi0_range, nXi0_range,
+    N, #nd,
+    dLinj, m1inj, m2inj,
+    z_from_dL_fn,
+    trials=1000,
+    s0=0.10,
+    is_observed=False,
+    rng=onp.random.default_rng(),
+    q_mbound=0.05,
+):
+    """
+    Same outputs/prints/return format as find_mass_redshift_bounds,
+    but uses provided per-event posterior samples (det-frame m1, m2, dL in Gpc)
+    instead of per-event GMM parameters.
+
+    Inputs
+    ------
+    m1det_mat, m2det_mat, dLdet_mat : arrays (N_events, N_samples)
+        Posterior samples per event, stacked in a rectangular matrix.
+    """
+
+    if q_mbound == 0:
+        print("Search for min and max mass scale with min and max posterior samples values")
+    else:
+        print("Search for min and max mass scale with quantile q=%s" % q_mbound)
+
+    H0_max, H0_min = H0_range[1], H0_range[0]
+    Om_max, Om_min = Om_range[1], Om_range[0]
+    w0_max, w0_min = w0_range[1], w0_range[0]
+    Xi0_max, Xi0_min = Xi0_range[1], Xi0_range[0]
+    nXi0_max, nXi0_min = nXi0_range[1], nXi0_range[0]
+
+    # ---- injection-side extrema across cosmology corners ----
+    max_dL = onp.max(dLinj)
+    min_dL = onp.min(dLinj)
+
+    Mc_det_inj, q_inj = atools.Mcq_from_m1m2_at(m1inj, m2inj)
+    logit_q_inj = atools.logit(q_inj)
+    lq_min_inj = onp.min(logit_q_inj)
+    lq_max_inj = onp.max(logit_q_inj)
+
+    logz_max_inj = 0.0
+    logz_min_inj = 1e10
+
+    lMc_max_inj = 0.0
+    lMc_min_inj = 1e10
+
+    m1_max_inj = 0.0
+    m1_min_inj = 1e10
+    m2_max_inj = 0.0
+    m2_min_inj = 1e10
+
+    for H0_ in (H0_max, H0_min):
+        for Om_ in (Om_min, Om_max):
+            for w0_ in (w0_min, w0_max):
+                for Xi0_ in (Xi0_min, Xi0_max):
+                    for nXi0_ in (nXi0_min, nXi0_max):
+
+                        if not is_observed:
+                            zinj = z_from_dL_fn(
+                                onp.squeeze(dLinj),
+                                float(H0_), float(Om_), float(w0_), float(Xi0_), float(nXi0_)
+                            )
+                        else:
+                            zinj = onp.squeeze(dLinj)
+
+                        log_zinj = onp.log1p(zinj)
+                        logz_max_inj_ = onp.max(log_zinj)
+                        logz_min_inj_ = onp.min(log_zinj)
+
+                        if logz_max_inj_ > logz_max_inj:
+                            logz_max_inj = logz_max_inj_
+                        if logz_min_inj_ < logz_min_inj:
+                            logz_min_inj = logz_min_inj_
+
+                        if not is_observed:
+                            log_Mc_src = onp.log(Mc_det_inj) - onp.log1p(zinj)
+                            m1inj_src = m1inj / (1.0 + zinj)
+                            m2inj_src = m2inj / (1.0 + zinj)
+                        else:
+                            log_Mc_src = onp.log(Mc_det_inj)
+                            m1inj_src = m1inj
+                            m2inj_src = m2inj
+
+                        log_Mc_src_min_ = onp.min(log_Mc_src)
+                        log_Mc_src_max_ = onp.max(log_Mc_src)
+
+                        if log_Mc_src_max_ > lMc_max_inj:
+                            lMc_max_inj = log_Mc_src_max_
+                        if log_Mc_src_min_ < lMc_min_inj:
+                            lMc_min_inj = log_Mc_src_min_
+
+                        m1_src_min_ = onp.min(m1inj_src)
+                        m1_src_max_ = onp.max(m1inj_src)
+                        m2_src_min_ = onp.min(m2inj_src)
+                        m2_src_max_ = onp.max(m2inj_src)
+
+                        if m1_src_max_ > m1_max_inj:
+                            m1_max_inj = m1_src_max_
+                        if m1_src_min_ < m1_min_inj:
+                            m1_min_inj = m1_src_min_
+
+                        if m2_src_max_ > m2_max_inj:
+                            m2_max_inj = m2_src_max_
+                        if m2_src_min_ < m2_min_inj:
+                            m2_min_inj = m2_src_min_
+
+    print("min, max injection distance: %s, %s Gpc" % (min_dL, max_dL))
+    if not is_observed:
+        print("min, max injection log(1+redshift): %s, %s " % (logz_min_inj, logz_max_inj))
+        print("min, max injection log(Mc_src): %s, %s " % (lMc_min_inj, lMc_max_inj))
+        print("min, max injection m1: %s, %s " % (m1_min_inj, m1_max_inj))
+        print("min, max injection m2: %s, %s " % (m2_min_inj, m2_max_inj))
+    else:
+        print("min, max injection log(1+distance): %s, %s " % (logz_min_inj, logz_max_inj))
+        print("min, max injection log(Mc_det): %s, %s " % (lMc_min_inj, lMc_max_inj))
+    print("min, max injection logit(q): %s, %s " % (lq_min_inj, lq_max_inj))
+
+    print("Finding data redshift and mass range...")
+
+    logz_maxs, logz_mins = [], []
+    lMc_maxs, lMc_mins = [], []
+    lqs_maxs, lqs_mins = [], []
+    m1_maxs, m1_mins = [], []
+    m2_maxs, m2_mins = [], []
+
+    logz_diffs, lqs_diffs, lMc_diffs = [], [], []
+    m1_diffs, m2_diffs = [], []
+
+    print("H0_range used in prior search will  be %s" % str(H0_range))
+    print("Om_range used in prior search will  be %s" % str(Om_range))
+
+    # ---- sanity: shapes ----
+    m1det_mat = onp.asarray(m1det_mat)
+    m2det_mat = onp.asarray(m2det_mat)
+    dLdet_mat = onp.asarray(dLdet_mat)
+    if m1det_mat.ndim != 2 or m2det_mat.ndim != 2 or dLdet_mat.ndim != 2:
+        raise ValueError("m1det_mat, m2det_mat, dLdet_mat must be 2D arrays (N_events, N_samples)")
+    if m1det_mat.shape != m2det_mat.shape or m1det_mat.shape != dLdet_mat.shape:
+        raise ValueError("m1det_mat, m2det_mat, dLdet_mat must have the same shape (N_events, N_samples)")
+
+    N_events, N_samp = m1det_mat.shape
+    if int(N) != int(N_events):
+        raise ValueError(f"N={N} but m1det_mat has {N_events} events")
+
+    for _ in tqdm(range(trials)):
+        # Draw one sample per event (uniform over provided posterior samples)
+        jj = rng.integers(low=0, high=N_samp, size=N_events)
+        idx = onp.arange(N_events)
+
+        m1det = m1det_mat[idx, jj]
+        m2det = m2det_mat[idx, jj]
+        d_nodes = dLdet_mat[idx, jj]  # (N,)
+
+        # Draw cosmology within prior ranges (same logic as original)
+        H0 = rng.uniform(*H0_range) if H0_range[0] != H0_range[1] else H0_range[0]
+        Om = rng.uniform(*Om_range) if Om_range[0] != Om_range[1] else Om_range[0]
+        w0 = rng.uniform(*w0_range) if w0_range[0] != w0_range[1] else w0_range[0]
+        Xi0 = rng.uniform(*Xi0_range) if Xi0_range[0] != Xi0_range[1] else Xi0_range[0]
+        nXi0 = rng.uniform(*nXi0_range) if nXi0_range[0] != nXi0_range[1] else nXi0_range[0]
+
+        # data redshifts
+        if not is_observed:
+            z_nodes = z_from_dL_fn(d_nodes, float(H0), float(Om), float(w0), float(Xi0), float(nXi0))
+        else:
+            z_nodes = d_nodes
+
+        z_data = onp.asarray(z_nodes, dtype=onp.float64)
+        logz_data = onp.log1p(z_data)
+
+        # det -> src conversion
+        Mc_det, q = atools.Mcq_from_m1m2_at(m1det, m2det)
+        log_Mc_det = onp.log(Mc_det)
+
+        if not is_observed:
+            log_Mc_src = log_Mc_det - logz_data
+            m1_src = m1det / (1.0 + z_data)
+            m2_src = m2det / (1.0 + z_data)
+        else:
+            log_Mc_src = log_Mc_det
+            m1_src = m1det
+            m2_src = m2det
+
+        logit_q = atools.logit(q)
+
+        if q_mbound == 0:
+            logz_data_max = onp.max(logz_data)
+            logz_data_min = onp.min(logz_data)
+
+            lMc_data_max = onp.max(log_Mc_src)
+            lMc_data_min = onp.min(log_Mc_src)
+
+            lq_data_max = onp.max(logit_q)
+            lq_data_min = onp.min(logit_q)
+
+            m1_data_min = onp.min(m1_src)
+            m2_data_min = onp.min(m2_src)
+            m1_data_max = onp.max(m1_src)
+            m2_data_max = onp.max(m2_src)
+        else:
+            qup = 1 - q_mbound
+
+            # NOTE: replicate original behavior exactly (quantiles on z_data, not logz_data)
+            logz_data_max = onp.quantile(z_data, qup)
+            logz_data_min = onp.quantile(z_data, q_mbound)
+
+            lMc_data_max = onp.quantile(log_Mc_src, qup)
+            lMc_data_min = onp.quantile(log_Mc_src, q_mbound)
+
+            lq_data_max = onp.quantile(logit_q, qup)
+            lq_data_min = onp.quantile(logit_q, q_mbound)
+
+            m1_data_min = onp.quantile(m1_src, q_mbound)
+            m2_data_min = onp.quantile(m2_src, q_mbound)
+            m1_data_max = onp.quantile(m1_src, qup)
+            m2_data_max = onp.quantile(m2_src, qup)
+
+        lMc_maxs.append(lMc_data_max); lMc_mins.append(lMc_data_min)
+        lqs_maxs.append(lq_data_max);  lqs_mins.append(lq_data_min)
+        logz_maxs.append(logz_data_max); logz_mins.append(logz_data_min)
+        m1_mins.append(m1_data_min); m1_maxs.append(m1_data_max)
+        m2_mins.append(m2_data_min); m2_maxs.append(m2_data_max)
+
+        # --- spacing diagnostics (same as original) ---
+        logz_data_sorted = onp.sort(logz_data)
+        log_Mc_src_sorted = onp.sort(log_Mc_src)
+        logit_q_sorted = onp.sort(logit_q)
+        m1_src_sorted = onp.sort(m1_src)
+        m2_src_sorted = onp.sort(m2_src)
+
+        tol = 1e-12
+        logz_data_sorted = logz_data_sorted[onp.insert(onp.diff(logz_data_sorted) > tol, 0, True)]
+        log_Mc_src_sorted = log_Mc_src_sorted[onp.insert(onp.diff(log_Mc_src_sorted) > tol, 0, True)]
+        logit_q_sorted = logit_q_sorted[onp.insert(onp.diff(logit_q_sorted) > tol, 0, True)]
+        m1_src_sorted = m1_src_sorted[onp.insert(onp.diff(m1_src_sorted) > tol, 0, True)]
+        m2_src_sorted = m2_src_sorted[onp.insert(onp.diff(m2_src_sorted) > tol, 0, True)]
+
+        dz = onp.diff(logz_data_sorted); dz_pos = dz[dz > tol]
+        dMc = onp.diff(log_Mc_src_sorted); dMc_pos = dMc[dMc > tol]
+        dq = onp.diff(logit_q_sorted); dq_pos = dq[dq > tol]
+        dm1 = onp.diff(m1_src_sorted); dm1_pos = dm1[dm1 > tol]
+        dm2 = onp.diff(m2_src_sorted); dm2_pos = dm2[dm2 > tol]
+
+        # replicate original summary choices
+        if dz_pos.size > 0:
+            logz_diffs.append(onp.mean(dz_pos))
+        if dMc_pos.size > 0:
+            lMc_diffs.append(onp.min(dMc_pos))
+        if dq_pos.size > 0:
+            lqs_diffs.append(onp.min(dq_pos))
+        if dm1_pos.size > 0:
+            m1_diffs.append(onp.min(dm1_pos))
+        if dm2_pos.size > 0:
+            m2_diffs.append(onp.min(dm2_pos))
+
+    logz_max_data = max(logz_maxs); logz_min_data = min(logz_mins)
+    lMc_max_data = max(lMc_maxs);   lMc_min_data = min(lMc_mins)
+    lq_max_data = max(lqs_maxs);    lq_min_data = min(lqs_mins)
+    m1_max_data = max(m1_maxs);     m1_min_data = min(m1_mins)
+    m2_max_data = max(m2_maxs);     m2_min_data = min(m2_mins)
+
+    logz_diff = max(logz_diffs) if len(logz_diffs) else onp.nan
+    lMc_diff = onp.mean(lMc_diffs) if len(lMc_diffs) else onp.nan
+    lq_diff = onp.mean(lqs_diffs) if len(lqs_diffs) else onp.nan
+    m1_diff = onp.mean(m1_diffs) if len(m1_diffs) else onp.nan
+    m2_diff = onp.mean(m2_diffs) if len(m2_diffs) else onp.nan
+
+    if not is_observed:
+        print("min, max data log(1+redshift): %s, %s " % (logz_min_data, logz_max_data))
+        print("min, max data log(Mc)_src: %s, %s " % (lMc_min_data, lMc_max_data))
+        print("min, max data logit(q): %s, %s " % (lq_min_data, lq_max_data))
+        print("min, max data m1: %s, %s " % (m1_min_data, m1_max_data))
+        print("min, max data m2: %s, %s " % (m2_min_data, m2_max_data))
+
+        print("min log(1+redshift) scale: %s " % (logz_diff))
+        print("min log(Mc)_src scale: %s " % (lMc_diff))
+        print("min logit(q) scale: %s " % (lq_diff))
+
+        print("min m1 src scale: %s " % (m1_diff))
+        print("min m2 src scale: %s " % (m2_diff))
+    else:
+        print("min, max data log(1+dL): %s, %s " % (logz_min_data, logz_max_data))
+        print("min, max data log(Mc_D): %s, %s " % (lMc_min_data, lMc_max_data))
+        print("min, max data logit(q): %s, %s " % (lq_min_data, lq_max_data))
+        print("min, max data m1_D: %s, %s " % (m1_min_data, m1_max_data))
+        print("min, max data m2_D: %s, %s " % (m2_min_data, m2_max_data))
+
+        print("min log(1+dL) scale: %s " % (logz_diff))
+        print("min log(Mc_D) scale: %s " % (lMc_diff))
+        print("min logit(q) scale: %s " % (lq_diff))
+
+        print("min m1_D scale: %s " % (m1_diff))
+        print("min m2_D scale: %s " % (m2_diff))
+
+    return dict(
+        logz_min_data=logz_min_data, logz_max_data=logz_max_data,
+        lMc_min_data=lMc_min_data, lMc_max_data=lMc_max_data,
+        lq_min_data=lq_min_data, lq_max_data=lq_max_data,
+        logz_diff=logz_diff, lMc_diff=lMc_diff, lq_diff=lq_diff,
+        logz_min_inj=logz_min_inj, logz_max_inj=logz_max_inj,
+        m1_diff=m1_diff, m2_diff=m2_diff,
+        lMc_min_inj=lMc_min_inj, lMc_max_inj=lMc_max_inj,
+        lq_max_inj=lq_max_inj, lq_min_inj=lq_min_inj,
+        m1_min_inj=m1_min_inj, m2_min_inj=m2_min_inj,
+        m1_max_inj=m1_max_inj, m2_max_inj=m2_max_inj,
+        m1_min_data=m1_min_data, m1_max_data=m1_max_data,
+        m2_min_data=m2_min_data, m2_max_data=m2_max_data
+    )
+
+
 def find_mass_redshift_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
                           H0_range, Om_range, w0_range, Xi0_range, nXi0_range,
                           N, nd, 
