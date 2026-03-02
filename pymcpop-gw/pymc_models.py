@@ -163,6 +163,27 @@ def log_bounded_sigmoid_95(name, low, high, initval=None):
     return pm.Deterministic(name, pm.math.exp(logx))
 
 
+def bounded_sigmoid_logpositive(name, low, high, initval=None, raw_sigma=1.5):
+    """
+    Parameterize x in [low, high] via log-space:
+      logx = lowlog + (highlog-lowlog)*sigmoid(raw)
+      raw ~ Normal(0, raw_sigma)
+      x = exp(logx)
+    This is symmetric around 1 when [low, high] is symmetric in log space (i.e., high=1/low).
+    """
+    lowlog, highlog = np.log(low), np.log(high)
+
+    raw_init = None
+    if initval is not None:
+        t = float((np.log(initval) - lowlog) / (highlog - lowlog))
+        t = np.clip(t, 1e-6, 1.0 - 1e-6)
+        raw_init = np.log(t / (1.0 - t))
+
+    raw = pm.Normal(f"{name}_raw", mu=0.0, sigma=raw_sigma, initval=raw_init)
+    logx = pm.Deterministic(f"{name}_log", lowlog + (highlog - lowlog) * pm.math.sigmoid(raw))
+    return pm.Deterministic(name, pm.math.exp(logx))
+
+
 #####################################################
 #####################################################
 
@@ -899,8 +920,11 @@ def make_model(  priors,
         else:
             if pade or integrate_dc=='pade':
                 raise NotImplementedError("Pade appproximation with varying w0 not implemented yet. Use pade=False or integrate_dc=trapz or gauss_legendre")
-            w0_ =  pm.Uniform('w0', lower=priors['w0'][0], upper=priors['w0'][1], initval=ivals.get('w0'))
-
+            if not reparam_cosmo:
+                w0_ =  pm.Uniform('w0', lower=priors['w0'][0], upper=priors['w0'][1], initval=ivals.get('w0'))
+            else:
+                print("Reparametrized prior for w0")
+                w0_ = bounded_sigmoid("w0", priors["w0"][0], priors["w0"][1], raw_sigma=1, initval=ivals.get("w0"))
             
         
         if fix_H0:
@@ -946,10 +970,17 @@ def make_model(  priors,
             Xi0_ =  at.as_tensor_variable(1.) #, dtype=work_dtype)
             nXi0_ = at.as_tensor_variable(0.) #, dtype=work_dtype)
         else:
-            Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
-            nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
-
             print("For Xi0-n, we use the %s parameterization"%param)
+            
+            if not reparam_cosmo:
+                Xi0_ =  pm.Uniform('Xi0', lower=priors['Xi0'][0], upper=priors['Xi0'][1], initval=ivals.get('Xi0'))
+                nXi0_ = pm.Uniform('nXi0', lower=priors['nXi0'][0], upper=priors['nXi0'][1], initval=ivals.get('nXi0')) 
+            else:
+                print("Reparametrized prior for Xi0-n")
+
+                nXi0_ = bounded_sigmoid("nXi0", priors["nXi0"][0], priors["nXi0"][1], raw_sigma=1, initval=ivals.get("nXi0"))
+                Xi0_ =  bounded_sigmoid_logpositive('Xi0', priors['Xi0'][0], priors['Xi0'][1], initval=ivals.get('Xi0', 1.), raw_sigma=1.5)
+            
 
 
         Lambda_ = [H0_, Om_, w0_, Xi0_, nXi0_]
