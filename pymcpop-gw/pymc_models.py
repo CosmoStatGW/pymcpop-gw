@@ -1221,6 +1221,10 @@ def make_model(  priors,
           
                 print("Using reparametrized mass priors")
 
+                # --- Triangle constraint for m1_low, m2_low preserved ---
+                u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=1)
+                m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * u**1.5 )
+
                 
                 # delta_m1 + taper end
                 d1_floor = priors["delta_m1"][0]
@@ -1229,9 +1233,7 @@ def make_model(  priors,
                 m1_taper_end_ = pm.Deterministic("m1_taper_end", m1_low_ + delta_m1_)
 
                 
-                # --- Triangle constraint for m1_low, m2_low preserved ---
-                u = unit_interval_sigmoid("u", initval=ivals.get("u"), raw_sigma=1)
-                m1_low_ = pm.Deterministic("m1_low", 3 + (10 - 3) * u**1.5 )
+                
                 
 
                 if mass_model=='DPLDP':
