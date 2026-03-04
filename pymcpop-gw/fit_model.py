@@ -45,6 +45,8 @@ def main():
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
     
     parser.add_argument("--pop_only", default=0, type=int, required=False)
+    parser.add_argument("--recompile", default=0, type=int, required=False)
+    
     
     
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
@@ -196,6 +198,35 @@ def main():
     print("Available devices:", jax.devices())
     print("Local device count:", jax.local_device_count())
     print("Backend:", jax.default_backend())
+
+
+    if FLAGS.recompile:
+        import tempfile
+    
+        # Unique-ish per-process / per-run compiledir
+        scratch = os.path.join(
+            tempfile.gettempdir(), f"pytensor_{os.getuid()}_{os.getpid()}"
+        )
+        
+        flags = [
+            f"compiledir={scratch}",
+            #"optimizer=fast_run",
+            "compile__timeout=600",  # wait up to 10 min
+            "compile__wait=10",      # retry every ~10s
+            #"jax__enable_x64=True", 
+        ]
+        
+
+        for f in flags:
+            if "=" in f:
+                k, v = f.split("=", 1)
+                set_pytensor_flag(k.strip(), v.strip())
+            else:
+                set_pytensor_flag(f.strip(), "True")
+        
+
+        print("\nPYTENSOR_FLAGS for recompile =", os.environ.get("PYTENSOR_FLAGS"))
+
     
     # ----------------------------------------------------
     # 3️⃣ Now safe to import PyMC and others
