@@ -1460,14 +1460,18 @@ def make_model(  priors,
                     
                     b_full       = atools.d_log_dLEM_dz(zgrid_fine_, H0_, Om_, w0_, dc=dc_grid, safe=False)
                     
-                    # GP log-ratio & its derivative on the grid
-                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid, log_distance_ratio_grid_fine, grad_log_distance_ratio_grid_fine = atools.z_from_dL_at(
-                        None, H0_, Om_, w0_, Lambda_MG_,
-                        is_GP_dL=True,
-                        z_grid = zgrid_,
-                        z_grid_fine = zgrid_fine_,
-                        out_type='fine'
-                    )
+                    # # GP log-ratio & its derivative on the grid
+
+                    dLGrid_at, log_distance_ratio_grid, grad_log_distance_ratio_grid, \
+                        log_distance_ratio_grid_fine, grad_log_distance_ratio_grid_fine = atools.z_from_dL_at(
+                            None, H0_, Om_, w0_, Lambda_MG_,
+                            is_GP_dL=True,
+                            z_grid=zgrid_,
+                            z_grid_fine=zgrid_fine_,
+                            out_type='fine',
+                            gp_mode=("mono_reparam" if monotonicity=="mono_reparam" else "direct"),
+                            taper_z0=0.02,  # or None
+                        )
 
                     # after building dLGrid_at and before inversion
                     oob = at.any((dval < dLGrid_at[0]) | (dval > dLGrid_at[-1]))
@@ -1487,9 +1491,15 @@ def make_model(  priors,
                     
 
 
-                    s_grid = dLem_grid * grad_log_distance_ratio_grid_fine + ddLem_dz_grid
-                    ddL_dz_grid = s_grid * distance_ratio_grid
-                    log_ddL_dz_grid = at.log( at.abs( ddL_dz_grid)+ 1e-30 )
+                    if monotonicity == "mono_reparam":
+                        q_grid = b_full + grad_log_distance_ratio_grid_fine
+                        ddL_dz_grid = (dLem_grid * distance_ratio_grid) * q_grid
+                        log_ddL_dz_grid = at.log(at.abs(ddL_dz_grid) + 1e-30)
+                    else:
+                        s_grid = dLem_grid * grad_log_distance_ratio_grid_fine + ddLem_dz_grid
+                        ddL_dz_grid = s_grid * distance_ratio_grid
+                        log_ddL_dz_grid = at.log( at.abs( ddL_dz_grid)+ 1e-30 )
+                        
                     
 
                     
@@ -1507,7 +1517,7 @@ def make_model(  priors,
                     d_ratio_d_z    = pm.Deterministic("d_ratio_d_z", distance_ratio * grad_log_dr_at_z, dims="event_index")
                     log_ddL_dz     = pm.Deterministic("log_ddL_dz", log_ddL_dz_at_z, dims="event_index")
                     
-                    # Monotonicity soft barrier
+                    # Monotonicity barrier
                     print("monotonicity is %s"%monotonicity)
                     if monotonicity is not None:
                         
@@ -1578,7 +1588,8 @@ def make_model(  priors,
                                             )
 
 
-
+                        elif monotonicity == "mono_reparam":
+                            print("Monotonicity enforced by construction (no Potential).")
                         else:
                             print('No monotonicity constraint.')
                             
@@ -1607,10 +1618,13 @@ def make_model(  priors,
 
                         sigma_tail = pm.HalfNormal("sigma_tail", sigma=0.1)
 
-                        _ = pm.Potential(
-                            "highz_turnoff",
-                            -0.5 * at.sum((w * g_grid / sigma_tail) ** 2)
-                        )
+                        alphaM_grid = (1.0 + zgrid_fine_) * g_grid
+                        _ pm.Potential("highz_turnoff", -0.5 * at.sum((w * alphaM_grid / sigma_tail) ** 2))
+
+                        # _ = pm.Potential(
+                        #     "highz_turnoff",
+                        #     -0.5 * at.sum((w * g_grid / sigma_tail) ** 2)
+                        # )
 
  
                 
@@ -1721,7 +1735,7 @@ def make_model(  priors,
             
                 
         else:
-            # we are sampling the usual marginalise likelihood, with "only" pop parameters
+            # we are sampling the usual marginalised likelihood, with "only" pop parameters
             print('We are running inference only on population parameters.')
 
 

@@ -802,58 +802,138 @@ def Efun_at(z, Om, w0):
 
 
 
-def z_from_dL_at_softplus(r, H0, Om, w0, Lambda_MG, is_GP_dL, **kwargs):
+def z_from_dL_at(
+    r,
+    H0,
+    Om,
+    w0,
+    Lambda_MG,
+    is_GP_dL,
+    z_grid,
+    z_grid_fine=None,
+    out_type="fine",
+    gp_mode="direct",     # "direct" (old) or "mono_reparam" (new)
+    taper_z0=None,        # e.g. 0.02; None disables taper
+):
+    """
+    If is_GP_dL:
+      Returns dL grid plus (logXi, g=dlogXi/dz) on both coarse and fine grids.
 
+    gp_mode:
+      - "direct": GP draw is g(z)=d/dz log Xi (old behavior)
+      - "mono_reparam": GP draw is latent u(z); enforce monotonicity by construction:
+            g(z) = b(z) * (exp(u(z)) - 1)   (optionally tapered at low z)
+        where b(z)=d/dz log dL_EM(z).
+
+    out_type:
+      - "fine": use fine grid to build dLGrid_at
+      - else:  use coarse grid
+    """
     if not is_GP_dL:
         Xi0, n = Lambda_MG
-        dLGrid_at = at.concatenate(
-            [at.constant([0.0]), dLfun_at(zGridGlobals_at, H0, Om, w0, Xi0, n)]
-        )
-        return atinterp(r, dLGrid_at,
-                        at.concatenate([at.constant([0.0]), zGridGlobals_at]))
+        dLGrid_at = dLfun_at(z_grid, H0, Om, w0, Xi0, n)
+        return atinterp(r, dLGrid_at, z_grid)
 
-    # -------------------------------
-    # 1. GP model in modified gravity case
-    # -------------------------------
     gp = Lambda_MG[0]
+    Z_nodes = z_grid
 
-    # EM distances on coarse grid
-    dCGrid_at = dcfun_at(zGridGlobals_at, H0, Om, w0)
-    dLGrid_EM_at = dCGrid_at * (1 + zGridGlobals_at)
+    if z_grid_fine is None:
+        z_grid_fine = zGrid500_at
 
-    Z_nodes = zGridGlobals_at        # coarse GP grid
-    z_fine = zGrid500_at             # fine integration grid
+    # --- get logXi and g on grids ---
+    if gp_mode == "direct":
+        logXi_nodes, g_nodes, logXi_fine, g_fine = compute_gp_interp_dist_ratio(
+            Z_nodes, gp, name="f", z_fine=z_grid_fine, reparameterize=True
+        )
 
-    # -------------------------------
-    # 2. Compute EM slope b_fine = d/dz log dL_em
-    # -------------------------------
-    dCGrid_fine = dcfun_at(z_fine, H0, Om, w0)
-    dLem_fine = dCGrid_fine * (1 + z_fine)
-    bb_fine = d_log_dLEM_dz(z_fine, H0, Om, w0, dc=dCGrid_fine)
+    elif gp_mode == "mono_reparam":
+        # b(z)=d/dz log dL_EM on nodes + fine
+        b_nodes = d_log_dLEM_dz(Z_nodes, H0, Om, w0)
+        b_fine  = d_log_dLEM_dz(z_grid_fine, H0, Om, w0)
 
-    # -------------------------------
-    # 3. Compute log Xi and g(z)
-    # -------------------------------
-    logXi_nodes, g_nodes = compute_gp_interp_dist_ratio(
+        logXi_nodes, g_nodes, logXi_fine, g_fine = compute_gp_interp_dist_ratio_monotone(
+            Z_nodes,
+            gp,
+            b_nodes=b_nodes,
+            name="f",                  # keep compatibility
+            z_fine=z_grid_fine,
+            b_fine=b_fine,
+            reparameterize=True,
+            taper_z0=taper_z0,         # e.g. 0.02
+        )
+
+    else:
+        raise ValueError("gp_mode must be 'direct' or 'mono_reparam'")
+
+    # --- choose which grid to output ---
+    if out_type == "fine":
+        z_out = z_grid_fine
+        Xi_out = at.exp(logXi_fine)
+        logXi_out = logXi_fine
+        g_out = g_fine
+    else:
+        z_out = Z_nodes
+        Xi_out = at.exp(logXi_nodes)
+        logXi_out = logXi_nodes
+        g_out = g_nodes
+
+    # --- build dL grid (GW) ---
+    dCGrid_at = dcfun_at(z_out, H0, Om, w0)
+    dLGrid_EM_at = dCGrid_at * (1.0 + z_out)
+    dLGrid_at = Xi_out * dLGrid_EM_at
+
+    # Return with the same structure you already expect downstream
+    return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
+
+
+
+def z_from_dL_at_monotone(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'):
+    if not is_GP_dL:
+        Xi0, n = Lambda_MG
+        dLGrid_at = dLfun_at(z_grid, H0, Om, w0, Xi0, n)
+        return atinterp(r, dLGrid_at, z_grid)
+
+    gp = Lambda_MG[0]
+    Z_nodes = z_grid
+
+    if z_grid_fine is None:
+        z_grid_fine = zGrid500_at
+
+    # b on nodes + fine
+    b_nodes = d_log_dLEM_dz(Z_nodes, H0, Om, w0)
+    b_fine  = d_log_dLEM_dz(z_grid_fine, H0, Om, w0)
+
+    logXi_nodes, g_nodes, logXi_fine, g_fine = compute_gp_interp_dist_ratio_monotone(
         Z_nodes,
         gp,
+        b_nodes=b_nodes,
         name="f",
-        z_fine=z_fine,
+        z_fine=z_grid_fine,
+        b_fine=b_fine,
         reparameterize=True,
-        b_fine=bb_fine,        # ensure q_fine > 0
-        eps_q=1e-3,
-        dLem_fine=dLem_fine
+        taper_z0=0.02,   # match what you decided
     )
 
-    # -------------------------------
-    # 4. Construct full GW distance
-    # -------------------------------
-    dLGrid_at = at.exp(logXi_nodes) * dLGrid_EM_at
+    if out_type == 'fine':
+        z_grid_out = z_grid_fine
+        dr_grid_out = at.exp(logXi_fine)   # Xi
+        g_out = g_fine
+        logXi_out = logXi_fine
+    else:
+        z_grid_out = Z_nodes
+        dr_grid_out = at.exp(logXi_nodes)
+        g_out = g_nodes
+        logXi_out = logXi_nodes
 
-    return dLGrid_at, logXi_nodes, g_nodes
+    dCGrid_at = dcfun_at(z_grid_out, H0, Om, w0)
+    dLGrid_EM_at = dCGrid_at * (1.0 + z_grid_out)
+    dLGrid_at = dr_grid_out * dLGrid_EM_at
+
+    return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
 
 
-def z_from_dL_at(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'): 
+
+def z_from_dL_at_nomonotone(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'): 
     
     if not is_GP_dL:
         Xi0, n = Lambda_MG
@@ -1180,116 +1260,84 @@ def find_al(L, beta, p0=0.01):
 #####################################################
 
 
-def compute_gp_interp_dist_ratio_softplus(
-    z_nodes,      # coarse GP grid (N_nodes)
+def compute_gp_interp_dist_ratio_monotone(
+    z_nodes,
     gp,
-    name="h",
-    z_fine=None,  # fine grid for integration (N_fine)
+    b_nodes,                 # b(z)=d/dz log dL_EM on nodes (tensor)
+    name="f",
+    z_fine=None,
+    b_fine=None,             # b(z) on fine grid (tensor). If None, interpolated from nodes.
     reparameterize=True,
-    b_fine=None,  # EM slope: d/dz log dL_EM on fine grid
-    eps_q=1e-3,
-    dLem_fine=None
+    nugget=1e-4,             # must match WhiteNoise(1e-4)
+    taper_z0=None,           # e.g. 0.02; None disables taper
+    eps=0.0,                 # optional tiny buffer in exp argument (usually 0)
 ):
     """
-    Computes:
-      - log Xi(z_nodes)           (log distance ratio)
-      - g(z_nodes) = d/dz log Xi  (GP derivative)
+    Samples u(z) ~ GP on nodes, builds monotone GW slope:
+        q = b * exp(u)  > 0
+        g = d/dz log Xi = q - b = b*(exp(u)-1)
+    Integrates g to get logXi with logXi(0)=0 (=> Xi(0)=1).
 
-    If b_fine is supplied, monotonicity is enforced by
-    ensuring q(z_fine) = softplus(h_fine) + eps_q > 0,
-    and integrating q to obtain log dL_GW, then log Xi.
+    Returns (same structure as your original):
+      logXi_nodes, g_nodes, logXi_fine, g_fine
     """
-
     z_nodes = at.as_tensor_variable(z_nodes)
+    b_nodes = at.as_tensor_variable(b_nodes)
 
-    # -------------------------------
-    # 1. GP draw on coarse nodes
-    # -------------------------------
+    # GP draw: u_raw on nodes
     X_nodes = z_nodes[:, None]
-    h_nodes = gp.prior(name, X=X_nodes, reparameterize=reparameterize)
+    u_nodes = gp.prior(name, X=X_nodes, reparameterize=reparameterize)  # (N_nodes,)
 
-    # -------------------------------
-    # 2. Fallback: no fine grid
-    # -------------------------------
+    # helper to compute g given (u, b, z)
+    def _g_from_u(u, b, z):
+        # GR-centered in median if u has median 0
+        g = b * (at.exp(u + eps) - 1.0)
+
+        if taper_z0 is not None:
+            z0 = at.as_tensor_variable(float(taper_z0))
+            w = 1.0 - at.exp(- (z / z0) ** 2)   # w(0)=0, w->1
+            g = g * w
+        return g
+
+    # If no fine grid: integrate on nodes
     if z_fine is None:
+        g_nodes = _g_from_u(u_nodes, b_nodes, z_nodes)
+
         dz_raw = z_nodes[1:] - z_nodes[:-1]
-        dz = at.clip(dz_raw, 1e-18, np.inf)
-        g_mid = 0.5 * (h_nodes[:-1] + h_nodes[1:])
-        inc = g_mid * dz
-        h0 = at.as_tensor_variable(0.0)
-        log_dr_nodes = at.concatenate([h0[None], h0 + at.cumsum(inc)])
-        return log_dr_nodes, h_nodes
+        dz     = at.clip(dz_raw, 1e-18, np.inf)
+        g_mid  = 0.5 * (g_nodes[:-1] + g_nodes[1:])
+        inc    = g_mid * dz
+        h0     = at.as_tensor_variable(0.0)
+        logXi_nodes = at.concatenate([h0[None], h0 + at.cumsum(inc)])
+        return logXi_nodes, g_nodes
 
-    # -------------------------------
-    # 3. Fine grid interpolation
-    # -------------------------------
+    # Fine grid path
     z_fine = at.as_tensor_variable(z_fine)
-    h_fine = atinterp(z_fine, z_nodes, h_nodes)
 
-    # -------------------------------
-    # 4. If no EM slope: behave as before
-    # -------------------------------
+    # interpolate u to fine
+    u_fine = atinterp(z_fine, z_nodes, u_nodes)
+
+    # b on fine
     if b_fine is None:
-        g_fine = h_fine
+        b_fine = atinterp(z_fine, z_nodes, b_nodes)
+    else:
+        b_fine = at.as_tensor_variable(b_fine)
 
-        # integrate g_fine -> log Xi, OLD behaviour
-        dz_raw_f = z_fine[1:] - z_fine[:-1]
-        dz_f = at.clip(dz_raw_f, 1e-18, np.inf)
-        g_mid_f = 0.5 * (g_fine[:-1] + g_fine[1:])
-        inc_f = g_mid_f * dz_f
-        h0 = at.as_tensor_variable(0.0)
-        log_dr_f = at.concatenate([h0[None], h0 + at.cumsum(inc_f)])
-        log_dr_nodes = atinterp(z_nodes, z_fine, log_dr_f)
-        g_nodes = atinterp(z_nodes, z_fine, g_fine)
-        return log_dr_nodes, g_nodes
+    g_fine = _g_from_u(u_fine, b_fine, z_fine)
 
-    # -------------------------------
-    # 5. ENFORCE MONOTONICITY
-    # -------------------------------
-    b_fine = at.as_tensor_variable(b_fine)
-
-    # Positive derivative of log dL_GW
-    q_fine = softplus(h_fine) + eps_q       # q(z_fine) > 0
-
-    # Derivative of log Xi
-    g_fine = q_fine - b_fine
-
-    # -------------------------------
-    # 6. Integrate q_fine to obtain log dL_GW
-    # -------------------------------
     dz_raw_f = z_fine[1:] - z_fine[:-1]
-    dz_f = at.clip(dz_raw_f, 1e-18, np.inf)
-    q_mid_f = 0.5 * (q_fine[:-1] + q_fine[1:])
-    inc_f = q_mid_f * dz_f
-    h0 = at.as_tensor_variable(0.0)
+    dz_f     = at.clip(dz_raw_f, 1e-18, np.inf)
+    g_mid_f  = 0.5 * (g_fine[:-1] + g_fine[1:])
+    inc_f    = g_mid_f * dz_f
+    h0       = at.as_tensor_variable(0.0)
+    logXi_f  = at.concatenate([h0[None], h0 + at.cumsum(inc_f)])
 
-    # log dL_GW(z_fine)
-    log_dLgw_f = at.concatenate([h0[None], h0 + at.cumsum(inc_f)])
-
-    # -------------------------------
-    # 7. Recover log Xi = log dL_GW − log dL_EM
-    # -------------------------------
-    # Need EM distance on fine grid:
-    # (We assume the caller will provide dL_em_fine or compute externally)
-    # => but since you always multiply log_distance_ratio by dL_em,
-    #    we compute log Xi directly here using the caller’s b_fine.
-    #
-    # NOTE: caller must compute log(dL_em(z_fine)) separately.
-    #
-    # For "compute only ratio", we return log dL_GW and g_fine;
-    # caller computes full GW distance.
-    #
-    logXi_f = log_dLgw_f - at.log(dLem_fine)   # <-- dLem_fine must be given
-
-    # -------------------------------
-    # 8. Back to coarse nodes
-    # -------------------------------
+    # map back to nodes
     logXi_nodes = atinterp(z_nodes, z_fine, logXi_f)
-    g_nodes = atinterp(z_nodes, z_fine, g_fine)
+    g_nodes     = _g_from_u(u_nodes, b_nodes, z_nodes)
 
-    return logXi_nodes, g_nodes
-
-
+    return logXi_nodes, g_nodes, logXi_f, g_fine
+    
 
 def compute_gp_interp_dist_ratio(
     z_nodes,                 # (N_nodes,)  coarse GP grid (e.g., 150) — outputs will be here
