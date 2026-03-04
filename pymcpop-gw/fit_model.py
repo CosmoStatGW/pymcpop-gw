@@ -30,7 +30,24 @@ import corner
 
 from pytensor.tensor.sharedvar import SharedVariable, TensorSharedVariable
 
-
+def set_pytensor_flag(key: str, value: str):
+    """Add/override one key in PYTENSOR_FLAGS without nuking the rest."""
+    cur = os.environ.get("PYTENSOR_FLAGS", "").strip()
+    items = {}
+    if cur:
+        for part in cur.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "=" in part:
+                k, v = part.split("=", 1)
+                items[k.strip()] = v.strip()
+            else:
+                # handle bare flags (rare)
+                items[part] = "True"
+    items[key] = str(value)
+    os.environ["PYTENSOR_FLAGS"] = ",".join(f"{k}={v}" for k, v in items.items())
+    
 
 
 def main():

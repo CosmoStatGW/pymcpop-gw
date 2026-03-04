@@ -679,18 +679,32 @@ def make_model(  priors,
 
         if invert_dL_GP:
             print()
-            zgrid_ = stop_grad( at.as_tensor_variable(  np.unique( np.sort( np.concatenate( [np.arange(zmin_a, zmid_b, res_lowz ), np.arange(zmid_b, zmax_c, res_highz ) ]))) ) )
+
+
+            z_nodes_np, z_fine_np = atools.make_z_grids_GP(
+                zmin=zmin_a, zmid=zmid_b, zmax=zmax_c,
+                dz_low_nodes=0.05, n_high_nodes=60,
+                dz_low_fine=0.01, n_high_fine=300,
+            )
             
-            #stop_grad(at.as_tensor_variable( atools.make_z_grid(total=zres, zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, hi_boost=hi_boost) ))
+            zgrid_      = stop_grad(at.as_tensor_variable(z_nodes_np))
+            zgrid_fine_ = stop_grad(at.as_tensor_variable(z_fine_np))
+
+            
+            #zgrid_ = stop_grad( at.as_tensor_variable(  np.unique( np.sort( np.concatenate( [np.arange(zmin_a, zmid_b, res_lowz ), np.arange(zmid_b, zmax_c, res_highz ) ]))) ) )
+            
+
             print("z grid for interpolation built. ")
-            print("Resolution up to %s: %s"%(zmid_b, res_lowz))
-            print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, res_highz))
+            #print("Resolution up to %s: %s"%(zmid_b, res_lowz))
+            #print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, res_highz))
             print("Total len: %s"%(zgrid_.shape.eval()))
             
 
-            zgrid_fine_ = stop_grad( at.as_tensor_variable(  np.arange(zmin_a, zmax_c, fine_res ) ))
+            #zgrid_fine_ = stop_grad( at.as_tensor_variable(  np.arange(zmin_a, zmax_c, fine_res ) ))
+            
+            
             print("z fine for integration/monotonicity built")
-            print("Resolution: %s"%(fine_res))
+            #print("Resolution: %s"%(fine_res))
             #print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, 0.5))
             print("Total len: %s"%(zgrid_fine_.shape.eval()))
             

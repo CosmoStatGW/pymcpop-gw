@@ -77,6 +77,8 @@ def log_cheb(a, b, N):
     logz = 0.5 * (la + lb) + 0.5 * (lb - la) * onp.cos(theta)
     return 10 ** logz
 
+
+
 def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.15, low_boost=0.15):
     """
     Generic grid builder:
@@ -106,6 +108,23 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
     return z
 
 
+def make_z_grids_GP(zmin=1e-6, zmid=5.0, zmax=80.0,
+                 dz_low_nodes=0.05, n_high_nodes=60,
+                 dz_low_fine=0.01, n_high_fine=300):
+    # --- GP nodes: uniform low-z, log(1+z) high-z ---
+    z_low_nodes = onp.arange(zmin, zmid + 1e-12, dz_low_nodes)
+    # logspace in (1+z)
+    t_nodes = onp.linspace(onp.log1p(zmid), onp.log1p(zmax), n_high_nodes)
+    z_high_nodes = onp.expm1(t_nodes)
+    z_nodes = onp.unique(onp.concatenate([z_low_nodes, z_high_nodes]))
+
+    # --- integration grid: finer uniform low-z, moderate log high-z ---
+    z_low_fine = onp.arange(zmin, zmid + 1e-12, dz_low_fine)
+    t_fine = onp.linspace(onp.log1p(zmid), onp.log1p(zmax), n_high_fine)
+    z_high_fine = onp.expm1(t_fine)
+    z_fine = onp.unique(onp.concatenate([z_low_fine, z_high_fine]))
+
+    return z_nodes, z_fine
 
 zGrid500_at = make_z_grid(total=1000)
 
