@@ -1601,30 +1601,27 @@ def make_model(  priors,
 
                         print("Imposing large-z constraint on alphaM...")
 
+ 
                         Ode0 = 1.0 - Om_
-
                         ratio = (eps_DE / (1.0 - eps_DE)) * (Om_ / Ode0)
                         ratio = at.clip(ratio, 1e-12, 1e12)
+                
+                        z_eps = pm.Deterministic("z_eps_DE", at.power(ratio, 1.0 / (3.0 * w0_ )) - 1.0)
+                
+                        delta_z = 0.2
+                        w_tail = pm.math.sigmoid((zgrid_fine_ - z_eps) / delta_z)
+                        w_tail = w_tail - at.min(w_tail)
+                
+                        sigma_tail = pm.HalfNormal("sigma_tail", sigma=0.3)  # was 0.1
+                
+                        w2 = w_tail**2
+                        Neff = at.sum(w2) + 1e-12
                         
-                        z_eps = pm.Deterministic(
-                            "z_eps_DE",
-                            at.power(ratio, 1.0 / (3.0 * w0_)) - 1.0
+                        alphaM_grid = (1.0 + zgrid_fine_) * grad_log_distance_ratio_grid_fine
+                        pm.Potential(
+                            "highz_turnoff",
+                            -0.5 * at.sum((w_tail * alphaM_grid / sigma_tail) ** 2) / Neff
                         )
-
-                        print("... with Om=%s, w0=%s, the transition redshift is z_eps_DE = %s"%(Om_.eval(), w0_.eval(), z_eps.eval()))
-
-                        delta_z = 0.2   # smoothness of transition
-                        w = pm.math.sigmoid((zgrid_fine_ - z_eps) / delta_z)
-
-                        sigma_tail = pm.HalfNormal("sigma_tail", sigma=0.1)
-
-                        alphaM_grid = (1.0 + zgrid_fine_) * g_grid
-                        _ pm.Potential("highz_turnoff", -0.5 * at.sum((w * alphaM_grid / sigma_tail) ** 2))
-
-                        # _ = pm.Potential(
-                        #     "highz_turnoff",
-                        #     -0.5 * at.sum((w * g_grid / sigma_tail) ** 2)
-                        # )
 
  
                 
