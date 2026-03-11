@@ -108,7 +108,42 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
     return z
 
 
-def make_z_grids_GP(zmin=1e-6, zmid=5.0, zmax=80.0,
+
+def make_z_grids_GP(
+    zmin=1e-6, zmid=5.0, zmax=80.0,
+    dz_low_nodes=0.05, n_high_nodes=60,
+    dz_low_fine=0.01, n_high_fine=300,
+    n_ramp_nodes=8,            # NEW: # extra points in (zmin, dz_low_nodes)
+    n_ramp_fine=12,            # NEW: # extra points in (zmin, dz_low_fine)
+):
+    # ---- helper: geometric ramp from zmin up to z_target ----
+    def ramp(zmin, z_target, n):
+        if n <= 0 or z_target <= zmin:
+            return onp.array([zmin])
+        # include zmin, exclude z_target (it will appear in the uniform grid)
+        r = onp.geomspace(zmin, z_target, n + 1)[:-1]
+        return r
+
+    # --- GP nodes: add ramp then uniform low-z, log(1+z) high-z ---
+    z_ramp_nodes = ramp(zmin, dz_low_nodes, n_ramp_nodes)
+    z_low_nodes  = onp.arange(dz_low_nodes, zmid + 1e-12, dz_low_nodes)  # start at dz_low_nodes
+    t_nodes      = onp.linspace(onp.log1p(zmid), onp.log1p(zmax), n_high_nodes)
+    z_high_nodes = onp.expm1(t_nodes)
+
+    z_nodes = onp.unique(onp.concatenate([z_ramp_nodes, z_low_nodes, z_high_nodes]))
+
+    # --- integration grid: add ramp then finer uniform low-z, log(1+z) high-z ---
+    z_ramp_fine = ramp(zmin, dz_low_fine, n_ramp_fine)
+    z_low_fine  = onp.arange(dz_low_fine, zmid + 1e-12, dz_low_fine)     # start at dz_low_fine
+    t_fine      = onp.linspace(onp.log1p(zmid), onp.log1p(zmax), n_high_fine)
+    z_high_fine = onp.expm1(t_fine)
+
+    z_fine = onp.unique(onp.concatenate([z_ramp_fine, z_low_fine, z_high_fine]))
+
+    return z_nodes, z_fine
+
+
+def make_z_grids_GP_noramp(zmin=1e-6, zmid=5.0, zmax=80.0,
                  dz_low_nodes=0.05, n_high_nodes=60,
                  dz_low_fine=0.01, n_high_fine=300):
     # --- GP nodes: uniform low-z, log(1+z) high-z ---
@@ -831,6 +866,89 @@ def z_from_dL_at(
     z_grid,
     z_grid_fine=None,
     out_type="fine",
+    gp_mode="mono_reparam",     # "direct" (old) or "mono_reparam" (new)
+    taper_z0=None,        # kept for API compatibility (unused in new mono_reparam)
+):
+    """
+    If is_GP_dL:
+      Returns dL grid plus (logXi, g=dlogXi/dz) on both coarse and fine grids.
+
+    gp_mode:
+      - "direct": GP draw is g(z)=d/dz log Xi (old behavior; compute_gp_interp_dist_ratio)
+      - "mono_reparam": NEW stable monotone construction:
+            GP is a latent perturbation f(x) with x=log1p(z),
+            q(z)=d/dz log dL_GW(z)=eps + softplus(inv_softplus(b(z)-eps) + f)
+            g(z)=d/dz log Xi = q - b
+        where b(z)=d/dz log dL_EM(z).
+        This enforces monotonicity by construction and is GR-centered.
+
+    out_type:
+      - "fine": build dLGrid_at on fine grid
+      - else:  build dLGrid_at on coarse grid
+    """
+    if not is_GP_dL:
+        Xi0, n = Lambda_MG
+        dLGrid_at = dLfun_at(z_grid, H0, Om, w0, Xi0, n)
+        return atinterp(r, dLGrid_at, z_grid)
+
+    gp = Lambda_MG[0]
+    Z_nodes = z_grid
+
+    if z_grid_fine is None:
+        z_grid_fine = zGrid500_at
+
+    # --- get logXi and g on grids ---
+    if gp_mode == "direct":
+        logXi_nodes, g_nodes, logXi_fine, g_fine = compute_gp_interp_dist_ratio(
+            Z_nodes, gp, name="f", z_fine=z_grid_fine, reparameterize=True
+        )
+
+        # build dLGrid_at on requested grid (same as your old code)
+        if out_type == "fine":
+            z_out = z_grid_fine
+            Xi_out = at.exp(logXi_fine)
+        else:
+            z_out = Z_nodes
+            Xi_out = at.exp(logXi_nodes)
+
+        dCGrid_at = dcfun_at(z_out, H0, Om, w0)
+        dLGrid_EM_at = dCGrid_at * (1.0 + z_out)
+        dLGrid_at = Xi_out * dLGrid_EM_at
+
+        return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
+
+    elif gp_mode == "mono_reparam":
+        # NEW: delegate to the stable monotone constructor (already returns dLGrid_at)
+        # NOTE: taper_z0 is intentionally ignored here (no low-z taper trick).
+        dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine = z_from_dL_at_monotone(
+            r=None,
+            H0=H0,
+            Om=Om,
+            w0=w0,
+            Lambda_MG=Lambda_MG,
+            is_GP_dL=True,
+            z_grid=Z_nodes,
+            z_grid_fine=z_grid_fine,
+            out_type=out_type,          # <-- compatible with your call
+            eps_q=1e-6,
+            use_log1p_input=True,
+        )
+        return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
+
+    else:
+        raise ValueError("gp_mode must be 'direct' or 'mono_reparam'")
+
+
+def z_from_dL_at_0(
+    r,
+    H0,
+    Om,
+    w0,
+    Lambda_MG,
+    is_GP_dL,
+    z_grid,
+    z_grid_fine=None,
+    out_type="fine",
     gp_mode="direct",     # "direct" (old) or "mono_reparam" (new)
     taper_z0=None,        # e.g. 0.02; None disables taper
 ):
@@ -906,7 +1024,116 @@ def z_from_dL_at(
 
 
 
-def z_from_dL_at_monotone(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'):
+def _inv_softplus_stable(y):
+    """
+    Stable inverse of softplus for y>0:
+      softplus(x)=log(1+exp(x))
+      inv_softplus(y)= y + log(-expm1(-y))
+    Works well for very small and very large y.
+    """
+    return y + at.log(-at.expm1(-y))
+
+
+def z_from_dL_at_monotone(
+    r,
+    H0,
+    Om,
+    w0,
+    Lambda_MG,
+    is_GP_dL,
+    z_grid,
+    z_grid_fine=None,
+    out_type="fine",
+    eps_q=1e-6,
+    use_log1p_input=True,
+):
+    """
+    Monotone-by-construction GP model using:
+        q(z) = d/dz log dL_GW(z) = eps_q + softplus( mu_u(z) + f(z) )   > 0
+        g(z) = d/dz log Xi(z) = q(z) - b(z)
+    where b(z)=d/dz log dL_EM(z), and mu_u(z)=inv_softplus(b(z)-eps_q)
+    centers the prior near GR (q≈b => g≈0).
+
+    Returns same tuple as your existing functions:
+      dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
+
+    Notes:
+    - The sampled latent variable name is still "f" (compat).
+    - If use_log1p_input=True, the GP lives on x=log(1+z) (recommended).
+    """
+    if not is_GP_dL:
+        Xi0, n = Lambda_MG
+        dLGrid_at = dLfun_at(z_grid, H0, Om, w0, Xi0, n)
+        return atinterp(r, dLGrid_at, z_grid)
+
+    gp = Lambda_MG[0]
+    Z_nodes = at.as_tensor_variable(z_grid)
+
+    if z_grid_fine is None:
+        z_grid_fine = zGrid500_at
+    Z_fine = at.as_tensor_variable(z_grid_fine)
+
+    # --- GP latent f on nodes (optionally in x=log1p(z)) ---
+    if use_log1p_input:
+        X_nodes = at.log1p(Z_nodes)[:, None]
+        x_fine = at.log1p(Z_fine)
+        x_nodes_1d = at.log1p(Z_nodes)
+    else:
+        X_nodes = Z_nodes[:, None]
+        x_fine = Z_fine
+        x_nodes_1d = Z_nodes
+
+    f_nodes = gp.prior("f", X=X_nodes, reparameterize=True)  # (N_nodes,)
+    f_fine = atinterp(x_fine, x_nodes_1d, f_nodes)           # (N_fine,)
+
+    # --- b(z)=d/dz log dL_EM on nodes + fine ---
+    b_nodes = d_log_dLEM_dz(Z_nodes, H0, Om, w0)
+    b_fine  = d_log_dLEM_dz(Z_fine,  H0, Om, w0)
+
+    # --- GR-centered mean function mu_u = inv_softplus(b-eps) ---
+    y_nodes = at.maximum(b_nodes - eps_q, 1e-12)
+    y_fine  = at.maximum(b_fine  - eps_q, 1e-12)
+    mu_u_nodes = _inv_softplus_stable(y_nodes)
+    mu_u_fine  = _inv_softplus_stable(y_fine)
+
+    # --- monotone slope q and implied g ---
+    u_nodes = mu_u_nodes + f_nodes
+    u_fine  = mu_u_fine  + f_fine
+
+    q_nodes = eps_q + at.softplus(u_nodes)
+    q_fine  = eps_q + at.softplus(u_fine)
+
+    g_nodes = q_nodes - b_nodes
+    g_fine  = q_fine  - b_fine
+
+    # --- integrate g to get logXi, with logXi(0)=0 on the chosen grid ---
+    def _integrate_midpoint(z, g):
+        dz_raw = z[1:] - z[:-1]
+        dz = at.clip(dz_raw, 1e-18, np.inf)
+        g_mid = 0.5 * (g[:-1] + g[1:])
+        inc = g_mid * dz
+        h0 = at.as_tensor_variable(0.0)
+        return at.concatenate([h0[None], h0 + at.cumsum(inc)])
+
+    logXi_fine = _integrate_midpoint(Z_fine, g_fine)
+    logXi_nodes = atinterp(Z_nodes, Z_fine, logXi_fine)
+
+    # --- choose output grid for dLGrid_at ---
+    if out_type == "fine":
+        z_out = Z_fine
+        Xi_out = at.exp(logXi_fine)
+    else:
+        z_out = Z_nodes
+        Xi_out = at.exp(logXi_nodes)
+
+    dCGrid_at = dcfun_at(z_out, H0, Om, w0)
+    dLGrid_EM_at = dCGrid_at * (1.0 + z_out)
+    dLGrid_at = Xi_out * dLGrid_EM_at
+
+    return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
+
+
+def z_from_dL_at_monotone_v0(r, H0, Om, w0, Lambda_MG, is_GP_dL, z_grid, z_grid_fine=None, out_type='fine'):
     if not is_GP_dL:
         Xi0, n = Lambda_MG
         dLGrid_at = dLfun_at(z_grid, H0, Om, w0, Xi0, n)
