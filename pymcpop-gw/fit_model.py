@@ -121,6 +121,7 @@ def main():
     parser.add_argument("--monotonicity", default='poly', type=str, required=False)
     parser.add_argument("--eps_DE", default=-1, type=float, required=False)
     parser.add_argument("--ell_min", default=0.1, type=float, required=False)
+    parser.add_argument("--ell_max", default=3, type=float, required=False)
     parser.add_argument("--fine_res", default=0.05, type=float, required=False)
     parser.add_argument("--res_highz", default=0.1, type=float, required=False)
     parser.add_argument("--res_lowz", default=0.05, type=float, required=False)
@@ -721,6 +722,7 @@ def main():
                                       allTobs=FLAGS.allTobs,
                                     U = Uprior,
                                 ell_min=FLAGS.ell_min,
+                                        ell_max=FLAGS.ell_max,
                                         res_lowz=FLAGS.res_lowz,
                                         res_highz=FLAGS.res_highz,
                                     fine_res=FLAGS.fine_res,

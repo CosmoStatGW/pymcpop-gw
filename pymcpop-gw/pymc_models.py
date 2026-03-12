@@ -437,6 +437,7 @@ def make_model(  priors,
                allTobs=None,
                  U = 10.,
                 ell_min=0.05,
+                 ell_max=3,
                  res_lowz = 0.1,
                  res_highz = 0.1,
                  fine_res = 0.01,
@@ -670,7 +671,15 @@ def make_model(  priors,
             ell_min = max( z_diff, ell_min )   
         else:
             ell_min = z_diff
-        ell_max = z_span
+
+        if ell_max>0:
+            print("z_span found to be %s"%z_span)
+            print("Max length scale passed by hand, = %s. Using min(ell_max, z_span) "%ell_max)
+            ell_max = min( z_span, ell_min )   
+        else:
+            ell_max = z_span
+            
+        
     
         print(f"ell_min:                  {ell_min:.6g}")
         print(f"ell_max:                  {ell_max:.6g}")
