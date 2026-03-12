@@ -108,8 +108,44 @@ def make_z_grid(total=150, zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, 
     return z
 
 
-
 def make_z_grids_GP(
+    zmin=1e-6,
+    z0=1e-2,          # ramp up to 0.01
+    zmax=80.0,
+    n_nodes=160,
+    n_fine=900,
+    n_ramp_nodes=12,  # extra points in [zmin, z0)
+    n_ramp_fine=20,
+):
+    # ---- log-uniform base grids in x=log(1+z) ----
+    x_min = onp.log1p(zmin)
+    x_max = onp.log1p(zmax)
+
+    z_nodes = onp.expm1(onp.linspace(x_min, x_max, n_nodes))
+    z_fine  = onp.expm1(onp.linspace(x_min, x_max, n_fine))
+
+    # ---- add low-z ramp (geometric in z) to densify [zmin, z0) ----
+    def ramp(zmin, z_target, n):
+        if n <= 0 or z_target <= zmin:
+            return onp.array([zmin])
+        # include zmin, exclude z_target (z_target will already exist in base grid if close)
+        return onp.geomspace(zmin, z_target, n + 1)[:-1]
+
+    z_nodes = onp.concatenate([ramp(zmin, z0, n_ramp_nodes), z_nodes])
+    z_fine  = onp.concatenate([ramp(zmin, z0, n_ramp_fine),  z_fine])
+
+    # ---- clean up ----
+    z_nodes = onp.unique(z_nodes)
+    z_fine  = onp.unique(z_fine)
+
+    # ensure coverage includes z0 exactly (helpful for plotting/anchors)
+    z_nodes = onp.unique(onp.concatenate([z_nodes, onp.array([z0])]))
+    z_fine  = onp.unique(onp.concatenate([z_fine,  onp.array([z0])]))
+
+    return z_nodes, z_fine
+
+
+def make_z_grids_GP_uniform(
     zmin=1e-6, zmid=5.0, zmax=80.0,
     dz_low_nodes=0.05, n_high_nodes=60,
     dz_low_fine=0.01, n_high_fine=300,

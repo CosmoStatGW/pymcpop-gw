@@ -651,7 +651,7 @@ def make_model(  priors,
 
         
         
-        zmin_b = max(min_z, z_min_data)
+        zmin_b = min(min_z, z_min_data)
 
         zmin_a = min( zmin_a, min(min_z, z_min_data))
         
@@ -673,6 +673,7 @@ def make_model(  priors,
         ell_max = z_span
     
         print(f"ell_min:                  {ell_min:.6g}")
+        print(f"ell_max:                  {ell_max:.6g}")
         print(f"z_max_mono:                  {z_max_mono:.6g}")
 
 
@@ -681,11 +682,18 @@ def make_model(  priors,
             print()
 
 
-            z_nodes_np, z_fine_np = atools.make_z_grids_GP(
-                zmin=zmin_a, zmid=zmid_b, zmax=zmax_c,
-                dz_low_nodes=0.05, n_high_nodes=60,
-                dz_low_fine=0.01, n_high_fine=300,
-            )
+            # z_nodes_np, z_fine_np = atools.make_z_grids_GP(
+            #     zmin=zmin_a, zmid=zmid_b, zmax=zmax_c,
+            #     dz_low_nodes=0.05, n_high_nodes=60,
+            #     dz_low_fine=0.01, n_high_fine=300,
+            # )
+            z_nodes_np, z_fine_np = atools.make_z_grids_GP(zmin=zmin_a, zmax=zmax_c,
+                                n_nodes=160,
+                                n_fine=900,
+                                n_ramp_nodes=12,  # extra points in [zmin, z0)
+                                n_ramp_fine=20,)
+
+            
             
             zgrid_      = stop_grad(at.as_tensor_variable(z_nodes_np))
             zgrid_fine_ = stop_grad(at.as_tensor_variable(z_fine_np))
@@ -708,7 +716,7 @@ def make_model(  priors,
             #print("Resolution between %s and %s: %s"%(zmid_b, zmax_c, 0.5))
             print("Total len: %s"%(zgrid_fine_.shape.eval()))
             
-            print("z min: %s , z max: %s"%(zmin_a, zmax_c))
+            print("z min: %s , z max: %s"%(z_fine_np.min(), z_fine_np.max()))
         
         beta = 0.1 #atools.find_beta(ell_min, 2., p0=0.01)
         al = 0.05 #atools.find_al(ell_min, 10., p0=0.01)
