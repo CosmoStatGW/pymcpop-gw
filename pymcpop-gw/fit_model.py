@@ -69,6 +69,12 @@ def main():
     parser.add_argument("--rate_model", default='MD', type=str, required=False)
     parser.add_argument("--mass_model", default='PLPreg', type=str, required=False)
     parser.add_argument("--spin_model", default='none', type=str, required=False)
+    parser.add_argument("--reparam_mass", default=1, type=int, required=False)
+    parser.add_argument("--reparam_z", default=1, type=int, required=False)
+    parser.add_argument("--reparam_cosmo", default=1, type=int, required=False)
+
+    
+    
     parser.add_argument("--N_DP_comp_max", default=50, type=int, required=False)
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
     parser.add_argument("--smoothing", default='LVK', type=str, required=False)
@@ -670,6 +676,9 @@ def main():
                                     sampling_GW = FLAGS.sampling_gw,
                                     rate_model = FLAGS.rate_model,
                                     mass_model = FLAGS.mass_model,
+                                    reparam_mass = FLAGS.reparam_mass,
+                                    reparam_z = FLAGS.reparam_z,
+                                    reparam_cosmo = FLAGS.reparam_cosmo,
                                     smoothing=FLAGS.smoothing,
                                     spin_model = FLAGS.spin_model,
                                     spin_inj = FLAGS.spin_inj,
