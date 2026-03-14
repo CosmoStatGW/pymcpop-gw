@@ -823,7 +823,8 @@ def make_model(  priors,
         edges = [0]
         for n in Nevs_np:
             edges.append(edges[-1] + int(n))
-    
+
+        truncate_dL = False
     
         if vol_in_prior_from_bilby:
             
@@ -852,6 +853,7 @@ def make_model(  priors,
                 
                 if  penorm_lims[i]=='none':
                     print("No normalization of PE prior on distance included for chunk %s"%i)
+                    print("Be careful: distance prior will be truncated outside 0.0001 and 50 Gpc. This is ok for LVK GWTC4, but check.")
                     for key in allnames[i]:
                         all_PE_log_norms[j] = 0.
                         all_PE_lims.append( (1e-04, 50.) )
@@ -883,12 +885,16 @@ def make_model(  priors,
             mins_PE = at.constant(np.array([x[0] for x in all_PE_lims], dtype="float64"))
             maxs_PE = at.constant(np.array([x[1] for x in all_PE_lims], dtype="float64"))
 
+            truncate_dL = True
+
             print("All PE log norms is ")
             print("Shape: %s"%all_PE_log_norms.shape)
 
         else:
             print("No normalization of PE volume prior on distance required.")
             all_PE_log_norms = np.zeros(Nevs_np.sum())
+            truncate_dL = False
+            
     
         
         tab_in_prior = any('interp' in s for s in dLprior)
@@ -1556,8 +1562,18 @@ def make_model(  priors,
             
             mu_delta    = at.log(delta_med)
             sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+
+            # pick a high starting point
+            delta_med_val = max(mmax_median - mhigh_floor, 1e-6)
+            delta_q95_val = max(mmax_q95    - mhigh_floor, 1e-6)
+            mu_delta_val    = np.log(delta_med_val)
+            sigma_delta_val = (np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
             
-            delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta)
+            zhigh = 2.
+            delta_init = np.exp(mu_delta_val + zhigh * sigma_delta_val)
+
+            
+            delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta, initval=delta_init)
             m_high_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
             
 
@@ -2401,8 +2417,10 @@ def make_model(  priors,
 
             print("subtracting normalization once and setting to zero outside distance prior range")
             log_PE_prior -= all_PE_log_norms
-            ok = at.all((d >= mins_PE) & (d <= maxs_PE))
-            _ = pm.Potential("PE_prior_bound", at.switch(ok, 0.0, -np.inf))
+        
+            if truncate_dL:
+                ok = at.all((d >= mins_PE) & (d <= maxs_PE))
+                _ = pm.Potential("PE_prior_bound", at.switch(ok, 0.0, -np.inf))
 
         else:
             print("Using dL PE prior loaded from file.")
