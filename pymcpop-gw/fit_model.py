@@ -121,6 +121,8 @@ def main():
     parser.add_argument("--ncores", default=1, type=int, required=False)
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
+    parser.add_argument("--dense_mass", default=0, type=int, required=False)
+
      
     parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
     parser.add_argument("--find_GP_L", default=1, type=int, required=False)
@@ -738,7 +740,7 @@ def main():
                                         res_lowz=FLAGS.res_lowz,
                                         res_highz=FLAGS.res_highz,
                                     fine_res=FLAGS.fine_res,
-                                        fix_mass=FLAGS.fix_mass
+                                        fix_mass=FLAGS.fix_mass,
                                 )
 
     print('Done.')
@@ -1168,7 +1170,7 @@ def main():
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
-                                        "dense_mass": False,   # set True if dim ≤ ~50 and strong correlations
+                                        "dense_mass":  FLAGS.dense_mass, 
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3 , #5e-4,
@@ -1189,8 +1191,13 @@ def main():
                     },
                 })
             else:
-                ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
-                sampler_kwargs["step"] = pm.NUTS(target_accept=ta)
+
+                if FLAGS.dense_mass:
+                    sampler_kwargs["init"] = "adapt_full"
+                else:
+                    ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
+                    sampler_kwargs["step"] = pm.NUTS(target_accept=ta, max_treedepth=FLAGS.max_tree_depth)
+
 
 
             print("\nModel variables:")

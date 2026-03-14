@@ -603,7 +603,7 @@ def make_model(  priors,
 
        
         if (spin_model=='default') or (spin_model=='default_gauss'):
-           chi1, chi2, cost1, cost2 = spin_samples
+           chi1, chi2, cost1, cost2 = spins
         elif spin_model=='none':
             pass
         else:
