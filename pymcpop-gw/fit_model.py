@@ -349,7 +349,7 @@ def main():
     
     if not FLAGS.pop_only:
 
-        data = dt.load_data_interp(FLAGS.fin_data)
+        data = dt.load_data_interp(FLAGS.fin_data,)
 
         # samples_means_at = at.as_tensor_variable(data['samples_means'])
         # samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
@@ -441,29 +441,31 @@ def main():
         m1d_samples = data['m1d_samples']
         m2d_samples =  data['m2d_samples']
         dL_samples =  data['dL_samples']
+        dL_prior =  data['dL_PE_prior']
         print("dL_samples shape is %s"%(str(dL_samples.shape)))
 
         allNsamples =  data['allNsamples']
         where_compute = data['where_compute']
 
+        allnames =  data['allnames']
+
+        Nevents =  m1d_samples.shape[0]
+
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
-            # chi1_samples = at.as_tensor_variable(data['chi1_samples'])
-            # chi2_samples = at.as_tensor_variable(data['chi2_samples'])
-            # cost1_samples = at.as_tensor_variable(data['cost1_samples'])
-            # cost2_samples = at.as_tensor_variable(data['cost2_samples'])
             chi1_samples =  data['chi1_samples']
             chi2_samples =  data['chi2_samples']
             cost1_samples =  data['cost1_samples']
             cost2_samples =  data['cost2_samples']
 
-            spin_samples = [ chi1_samples, chi2_samples, cost1_samples, cost2_samples ]
+            spin_samples = onp.asarray([ chi1_samples, chi2_samples, cost1_samples, cost2_samples ])
 
         elif FLAGS.spin_model=='none':
-            spin_samples = [  ]
+            spin_samples = onp.asarray([  ])
         else:
             raise NotImplementedError()
 
+    
     
     
             
@@ -638,7 +640,8 @@ def main():
 
     else:
         GWData = [ m1d_samples, m2d_samples, dL_samples, spin_samples, #Nevents, 
-                     injections['Tobs'], allNsamples, where_compute ]
+                       dL_prior, 
+                     injections['Tobs'], allNsamples, where_compute, Nevents, allnames ]
         
         
     print("Done.")
@@ -656,7 +659,7 @@ def main():
 
     if FLAGS.pop_only:
         N = m1d_samples.shape[0]
-        N_successes_l = np.ones(N.eval())
+        N_successes_l = np.ones(N)
     else:   
         N_successes_l = None
 
@@ -812,40 +815,41 @@ def main():
                 ip = model.initial_point()
                 
 
-                N = gmm_means.shape[0]
-                nd = gmm_means.shape[2]
-    
-                ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
-    
-    
-                wts = onp.exp(gmm_log_wts)
-                idx = onp.argmax(wts, axis=1)
-                
-                if FLAGS.sampling_gw=='gmm_cat':
-                    ip['idx'] = idx.astype(int)
-    
-                elif FLAGS.sampling_gw=='gmm':
-                    cdf = onp.cumsum(wts, axis=1)
+                if not FLAGS.pop_only:
+                    N = gmm_means.shape[0]
+                    nd = gmm_means.shape[2]
+        
+                    ip['x'] = onp.random.randn(N, nd) * FLAGS.eps_init
+        
+        
+                    wts = onp.exp(gmm_log_wts)
+                    idx = onp.argmax(wts, axis=1)
                     
-                    # pick v in the open interval [CDF_{i-1}, CDF_i)
-                    lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
-                    hi = cdf[onp.arange(len(idx)), idx]
-                    v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
-                    
-                    # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
-                    u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
-                    ip['u_gmm'] =  u_init
-    
-                    # print("init gaussian pdf so that idx is argmax(w)")
-                    # print("True argmax:")
-                    # print(idx)
-                    # print("init argmax:")
-                    # from scipy.special import ndtr  # standard normal CDF Φ
-                    # v = np.clip(ndtr(u_init), 1e-9, 1 - 1e-9)
-    
-                    # # same logic as (v[:, None] < cdf).argmax(axis=1)
-                    # idx_from_u = (v[:, None] < cdf).argmax(axis=1)
-                    # print(idx_from_u)
+                    if FLAGS.sampling_gw=='gmm_cat':
+                        ip['idx'] = idx.astype(int)
+        
+                    elif FLAGS.sampling_gw=='gmm':
+                        cdf = onp.cumsum(wts, axis=1)
+                        
+                        # pick v in the open interval [CDF_{i-1}, CDF_i)
+                        lo = onp.where(idx == 0, 0.0, cdf[onp.arange(len(idx)), idx - 1])
+                        hi = cdf[onp.arange(len(idx)), idx]
+                        v  = onp.clip(0.5 * (lo + hi), 1e-9, 1 - 1e-9)
+                        
+                        # invert Phi: u = Phi^{-1}(v) = sqrt(2) * erfinv(2v-1)
+                        u_init = onp.sqrt(2.0) * erfinv(2.0 * v - 1.0)
+                        ip['u_gmm'] =  u_init
+        
+                        # print("init gaussian pdf so that idx is argmax(w)")
+                        # print("True argmax:")
+                        # print(idx)
+                        # print("init argmax:")
+                        # from scipy.special import ndtr  # standard normal CDF Φ
+                        # v = np.clip(ndtr(u_init), 1e-9, 1 - 1e-9)
+        
+                        # # same logic as (v[:, None] < cdf).argmax(axis=1)
+                        # idx_from_u = (v[:, None] < cdf).argmax(axis=1)
+                        # print(idx_from_u)
     
                 if FLAGS.is_GP_dL:
     

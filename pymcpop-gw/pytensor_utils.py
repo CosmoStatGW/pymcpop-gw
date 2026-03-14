@@ -449,6 +449,147 @@ def find_zgrid_bounds(wts_l_np, mus_l_np, cho_covs_l_np,
 
 
 
+def find_zgrid_bounds_from_dL_samples(
+    H0_range, Om_range, w0_range, Xi0_range, nXi0_range,
+    dLinj,
+    dL_samples,   # shape (n_events, n_samples)
+    z_from_dL_fn,
+    trials=1000,
+    s0=0.10,
+    rng=onp.random.default_rng(123),
+    return_diff=False,
+):
+    H0_max = H0_range[1]
+    H0_min = H0_range[0]
+
+    Om_max = Om_range[1]
+    Om_min = Om_range[0]
+
+    w0_max = w0_range[1]
+    w0_min = w0_range[0]
+
+    Xi0_max = Xi0_range[1]
+    Xi0_min = Xi0_range[0]
+
+    nXi0_max = nXi0_range[1]
+    nXi0_min = nXi0_range[0]
+
+    # max/min injection distance
+    max_dL = onp.max(dLinj)
+    min_dL = onp.min(dLinj)
+
+    z_max_inj = 0
+    z_min_inj = 1e10
+    for H0_ in (H0_max, H0_min):
+        for Om_ in (Om_min, Om_max):
+            for w0_ in (w0_min, w0_max):
+                for Xi0_ in (Xi0_min, Xi0_max):
+                    for nXi0_ in (nXi0_min, nXi0_max):
+
+                        z_vals_inj = z_from_dL_fn(
+                            onp.squeeze(dLinj),
+                            float(H0_), float(Om_), float(w0_),
+                            float(Xi0_), float(nXi0_)
+                        )
+
+                        z_max_inj_ = onp.max(z_vals_inj)
+                        z_min_inj_ = onp.min(z_vals_inj)
+
+                        if z_max_inj_ > z_max_inj:
+                            z_max_inj = z_max_inj_
+
+                        if z_min_inj_ < z_min_inj:
+                            z_min_inj = z_min_inj_
+
+    print("min, max injection distance: %s, %s Gpc" % (min_dL, max_dL))
+    print("min, max injection redshift: %s, %s " % (z_min_inj, z_max_inj))
+
+    print("Finding data redshift range...")
+    z_maxs = []
+    z_mins = []
+    if return_diff:
+        z_diffs = []
+        max_diffs = []
+
+    n_events, n_samples = dL_samples.shape
+
+    for _ in tqdm(range(trials)):
+
+        # draw one dL sample per event
+        sample_idx = rng.integers(0, n_samples, size=n_events)
+        d_nodes = dL_samples[onp.arange(n_events), sample_idx]
+
+        if H0_range[0] != H0_range[1]:
+            H0 = rng.uniform(*H0_range)
+        else:
+            H0 = H0_range[0]
+
+        if Om_range[0] != Om_range[1]:
+            Om = rng.uniform(*Om_range)
+        else:
+            Om = Om_range[0]
+
+        if w0_range[0] != w0_range[1]:
+            w0 = rng.uniform(*w0_range)
+        else:
+            w0 = w0_range[0]
+
+        if Xi0_range[0] != Xi0_range[1]:
+            Xi0 = rng.uniform(*Xi0_range)
+        else:
+            Xi0 = Xi0_range[0]
+
+        if nXi0_range[0] != nXi0_range[1]:
+            nXi0 = rng.uniform(*nXi0_range)
+        else:
+            nXi0 = nXi0_range[0]
+
+        z_nodes = z_from_dL_fn(
+            d_nodes,
+            float(H0), float(Om), float(w0), float(Xi0), float(nXi0)
+        )
+        z_data = onp.asarray(z_nodes, dtype=onp.float64)
+
+        z_data_max = onp.quantile(z_data, 0.99)
+        z_data_min = onp.quantile(z_data, 0.01)
+
+        z_maxs.append(z_data_max)
+        z_mins.append(z_data_min)
+
+        if return_diff:
+            z_span_trial = onp.quantile(z_data, 0.95) - onp.quantile(z_data, 0.05)
+            max_diffs.append(z_span_trial)
+
+            z_data = onp.sort(z_data)
+            tol = 1e-12
+            z_data = z_data[onp.insert(onp.diff(z_data) > tol, 0, True)]
+
+            dz = onp.diff(z_data)
+            dz_pos = dz[dz > tol]
+
+            if dz_pos.size > 0:
+                z_diffs.append(onp.mean(dz_pos))
+
+    z_max_data = max(z_maxs)
+    z_min_data = min(z_mins)
+    print("min, max data redshift: %s, %s " % (z_min_data, z_max_data))
+
+    if return_diff:
+        if len(z_diffs) > 0:
+            z_diff = 2 * onp.quantile(z_diffs, 0.05)
+        else:
+            z_diff = None
+
+        z_span = onp.quantile(max_diffs, 0.95)
+        print("data min redshift separation: %s " % (z_diff,))
+        print("data max redshift separation: %s " % (z_span,))
+    else:
+        z_diff = None
+        z_span = None
+
+    return z_min_inj, z_max_inj, z_min_data, z_max_data, z_diff, z_span
+
+
 def _group_keys_list(g):
     # zarr>=2.18 returns generator; normalize to list
     return list(g.group_keys()) if hasattr(g, "group_keys") else []

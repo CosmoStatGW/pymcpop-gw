@@ -20,7 +20,7 @@ from pytensor.gradient import disconnected_grad as stop_grad
 PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 
 from tqdm import tqdm
-
+import copy
 
 
 #####################################################
@@ -599,17 +599,13 @@ def make_model(  priors,
     else:
         # gw data are single-event posterior samples
         # shape of each has to be n_events, n_samples
-        m1det, m2det, d, spin_samples, Tobs, allNsamples, where_compute = GWData            
+        m1det, m2det, d, spins, dL_prior, Tobs, allNsamples, where_compute, Nevs, allnames = GWData           
 
-        if Nsamplesuse !=-1 :
-            if Nsamplesuse>allNsamples:
-                raise ValueError("Must use less samples than those available.")
-            print("allNsamples availabe is %s, but %s will be used"%(allNsamples, Nsamplesuse))
-            allNsamples =  Nsamplesuse   
-            allNsamples_np = allNsamples #allNsamples.eval()
-        
+       
         if (spin_model=='default') or (spin_model=='default_gauss'):
            chi1, chi2, cost1, cost2 = spin_samples
+        elif spin_model=='none':
+            pass
         else:
             raise NotImplementedError()
 
@@ -647,13 +643,79 @@ def make_model(  priors,
         N_np = N #N.eval()
         Nsamples = m1det.shape[1]
         Nsamples_np = Nsamples #Nsamples.eval()
-        print("N samples max will be ")
+        #print("N samples max will be ")
+        #print(Nsamples_np)
+        #print('N:%s, n samples: %s '%(N_np, allNsamples_np))
+
+        if Nsamplesuse !=-1 :
+            if Nsamplesuse>Nsamples_np:
+                raise ValueError("Must use less samples than those available.")
+            print("Nsamples_np available is %s, but %s will be used"%(Nsamples_np, Nsamplesuse))
+
+            m1det, m2det, d = m1det[:, :Nsamplesuse], m2det[:, :Nsamplesuse], d[:, :Nsamplesuse]
+            dL_prior = dL_prior[:, :Nsamplesuse]
+
+            spins = np.asarray([s[:, :Nsamplesuse] for s in spins ])
+            if (spin_model=='default') or (spin_model=='default_gauss'):
+               chi1, chi2, cost1, cost2 = chi1[:, :Nsamplesuse], chi2[:, :Nsamplesuse], cost1[:, :Nsamplesuse], cost2[:, :Nsamplesuse]
+
+            allNsamples = Nsamplesuse
+
+            Nsamples = m1det.shape[1]
+            Nsamples_np = Nsamples #Nsamples.eval()
+            allNsamples_np = np.full( N, Nsamplesuse )
+
+        else:
+            allNsamples_np = allNsamples 
+
+
+        assert np.all( allNsamples_np == Nsamples_np )
+        print("N samples will be ")
         print(Nsamples_np)
-        print('N:%s, n samples: %s '%(N_np, allNsamples_np))
+        print('N:%s, n samples: %s '%(N_np, Nsamples_np))
+
+
+        ### reshape
+
+        if spin_model in ("default", "default_gauss"):
+            spins = np.transpose( np.stack([chi1, chi2, cost1, cost2], axis=1) , (0,2,1) ) # (N,4)
+            print("spins shape is %s"%str(spins.shape))
+
+             
+        logd = np.log(d)
+        
+        NsamplesTot = N*Nsamples
+
+        print("Reshaping samples to %s"%NsamplesTot)
+
+        if pop_only:
+            m1det_matrix = copy.deepcopy(m1det)
+            m2det_matrix = copy.deepcopy(m2det)
+            d_matrix = copy.deepcopy(d)
+        
+        m1det = m1det.reshape(NsamplesTot)
+        m2det = m2det.reshape(NsamplesTot)
+        d = d.reshape(NsamplesTot)
+        logd = logd.reshape(NsamplesTot)
+        dL_prior = dL_prior.reshape(NsamplesTot)
+
+        dL_log_prior = np.log(dL_prior)
+
+        # print("dL prior start ")
+        # print(dL_prior[:5])
+
+        # print("dL^2 start ")
+        # print(d[:5]**2)
+
+        # print("log(dL_prior) start ")
+        # print( (dL_log_prior[:5]) )
+        
+        # spins: if you store (Ne, S, nspin) -> flatten first two axes
+        spins = spins.reshape((NsamplesTot, spins.shape[-1]))
 
 
 
-
+    logN = np.log(N)
     
     event_index = np.arange(N_np, dtype=int)
     
@@ -713,9 +775,9 @@ def make_model(  priors,
 
         print("\nFinding optimal points for redshift interpolation and min prior lengthscale for GP...")
         
-        print("min, max redshift search grid: %s, %s"%(atools.zGridGlobals_at_long.eval().min(), atools.zGridGlobals_at_long.eval().max()))
+        print("min, max redshift search grid: %s, %s"%(1e-100, 1e05))
         
-    
+        print("Compiling functions...")
         # --- Compile once: z_from_dL and midpoint derivative ---
         z_sym      = at.dvector('z_nodes')    # if you need it
         d_sym      = at.dvector('dL_nodes')
@@ -734,8 +796,9 @@ def make_model(  priors,
         #lb_mid_fn = pytensor.function([z_sym, H0_sym, Om_sym, ], d_log_dLEM_dz_sym)
         z_from_dL_fn = pytensor.function([d_sym, H0_sym, Om_sym, w0_sym, Xi0_sym, n_sym], z_from_dL_sym)
 
+        print("Done.")
 
-        print("Priors grid for search")
+        print("Priors grid for search:")
         if fix_H0:
             priors['H0'] = ( params_fix['H0'], params_fix['H0'])
         if fix_Om:
@@ -761,17 +824,29 @@ def make_model(  priors,
 
 
             
-        
+        if not pop_only:
     
-        min_z, max_z, z_min_data, z_max_data, z_diff, z_span = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
-                                      priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
-                                      int(N), int(nd),
-                                    dLinj,
-                                    z_from_dL_fn,
-                                      sampling_GW,
-                                      trials=1000, 
-                                        return_diff=True                                     
-                                     )
+            min_z, max_z, z_min_data, z_max_data, z_diff, z_span = putils.find_zgrid_bounds(wts_l, mus_l, cho_covs_l,
+                                          priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'], 
+                                          int(N), int(nd),
+                                        dLinj,
+                                        z_from_dL_fn,
+                                          sampling_GW,
+                                          trials=1000, 
+                                            return_diff=True                                     
+                                         )
+        else:
+
+            min_z, max_z, z_min_data, z_max_data, z_diff, z_span = putils.find_zgrid_bounds_from_dL_samples(
+                    priors['H0'], priors['Om'], priors['w0'], priors['Xi0'], priors['nXi0'],
+                    dLinj,
+                    d_matrix,   # shape (n_events, n_samples)
+                    z_from_dL_fn,
+                    trials=1000,
+                    s0=0.10,
+                    rng=np.random.default_rng(123),
+                    return_diff=True,
+            )
 
         
         
@@ -889,7 +964,14 @@ def make_model(  priors,
         # plt.savefig( os.path.join(fout, 'ell_prior.pdf'), bbox_inches='tight')
         # plt.close()
 
-        
+    if sampling_GW=='gmm_cat' and not pop_only:
+        # we sample single-event parameters from the actual single-event posteriors
+        # need tensor variables to correctly slice inside model
+        wts_l, mus_l, cho_covs_l = at.constant(wts_l), at.constant(mus_l), at.constant(cho_covs_l)
+
+
+
+    
     ################################################
     # Build model
     ################################################
@@ -897,12 +979,18 @@ def make_model(  priors,
     with pm.Model(coords=coords) as model:
 
 
-        if sampling_GW=='gauss' :
-            # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
-        elif 'gmm' in sampling_GW:
+        # if sampling_GW=='gauss'  and not pop_only:
+        #     # we sample single-event parameters from broad gaussian approximations of the posteriors
+        #     mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l = at.as_tensor_variable(mus_s), at.as_tensor_variable(cho_s), at.as_tensor_variable(log_wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(icovs_l), at.as_tensor_variable(log_dets_l)
+        # elif 'gmm' in sampling_GW  and not pop_only:
+        #     # we sample single-event parameters from the actual single-event posteriors
+        #     wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
+
+        if sampling_GW=='gmm_cat' and not pop_only:
             # we sample single-event parameters from the actual single-event posteriors
-            wts_l, mus_l, cho_covs_l = at.as_tensor_variable(wts_l), at.as_tensor_variable(mus_l), at.as_tensor_variable(cho_covs_l)
+            # need tensor variables to correctly slice inside model
+            wts_l, mus_l, cho_covs_l = at.constant(wts_l), at.constant(mus_l), at.constant(cho_covs_l)
+
 
         ################################################
         # Cosmological parameters
@@ -1788,9 +1876,21 @@ def make_model(  priors,
             dval = at.exp(logd)
     
             
-            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+        else:
+            # we are sampling the usual marginalised likelihood, with "only" pop parameters
+            print('We are running inference only on population parameters.')
 
-            if not is_GP_dL:
+            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
+            # AND for each sample! 
+            
+            # d, logd, m1det, m2det are already reshaped.
+
+            dval = d 
+        
+        
+        # Compute source-frame quantities. 
+
+        if not is_GP_dL:
                 
                 zs = pm.Deterministic('z', atools.z_from_dL_at(dval, H0_, Om_, w0_, Lambda_MG_ , is_GP_dL ), dims= "event_index" )
 
@@ -1799,7 +1899,7 @@ def make_model(  priors,
                 #distance_ratio , d_distance_ratio_d_z = None, None
                 log_ddL_dz = atools.log_ddL_dz( zs, H0_, Om_, w0_, Xi0_, nXi0_, dc=dc )
             
-            else:
+        else:
 
                 if rescale_GP:
                     data_range=(atools.zGridGlobals_at.min(), atools.zGridGlobals_at.max())
@@ -1982,150 +2082,47 @@ def make_model(  priors,
 
  
                 
-                
-                else:
+                 
 
-                    # we sample z from the pop prior. no need to invert the dL-z relation
-                    print('Sampling redshift from population prior')
-
-                    # sample redshift from p(z) ~ ψ(z)/(1+z)*dV/dz
-                    if rate_model=='MD':
-                        zs = pm.CustomDist( 'z', 
-											 gamma_, kappa_, zp_, [H0_, Om_, w0_],
-											 logp = atools.log_p_z_MD_unnorm,
-											 #random = , 
-											 size=(N,))
-                    else:
-                        raise NotImplementedError()
-
-                    # obtain luminosity distance and the derivative, including the GP
-
-                    # this is log(distance ratio) and its derivative computed on the grid
-                    # zGridGlobals_at
-                    log_distance_ratio, grad_log_distance_ratio = atools.compute_gp_interp_dist_ratio( zgrid_, gp, data_range=data_range, name="f", GP_zero_point=GP_zero_point, dense_grad = dense_grad )
-                    
-                    # now compute distance ratio at the actual events redshifts
-                    distance_ratio = pm.Deterministic( "d_ratio", at.exp(atools.atinterp( zs, zgrid_, log_distance_ratio )))
-
-                    # ... and its derivative
-                    d_log_distance_ratio_d_z = atools.atinterp( zs, zgrid_, grad_log_distance_ratio ) 
-                    d_distance_ratio_d_z = pm.Deterministic( "d_ratio_d_z", d_log_distance_ratio_d_z*distance_ratio)
-
-                    dc = atools.dcfun_at(zs, H0_, Om_, w0_)
-                    d_EM = (zs+1.0)*dc
-
-                    raise NotImplementedError('Here, need to compute log_ddL_dz')
-
-                    # finally, the GW luminosity distance is distance_ratio * dEM
-                    dval = d_EM*distance_ratio
-
-                    
-
-            
-                    ### correct for the GW likelihood ratio
-
-                    if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
-                        spins = [chieff, chip]
-                        vals = at.stack([log_Mc_det, logit_q, at.log(dval), chieff, chip, 
-                                         ])
-                                        
-                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                        spins = [chieff, chip, cost1, cost2]
-                        vals = at.stack([log_Mc_det, logit_q, at.log(dval), chi1, chi2, cost1, cost2, 
-                                         ])
-                                        
-                    elif spin_model == 'none':
-                        spins = []
-                        vals = at.stack([log_Mc_det, logit_q, at.log(dval),  
-                                         ])
-
-                    ## full GW likelihood 
-                    logps, _ = pytensor.scan(fn=lambda iobs, X, M, F, logD, logW: # iobs = event index
-				
-												pytensor.scan(fn=lambda ig, X, M, F, logD, logW: 
-
-												-0.5*at.sum((X[: , iobs] - M[iobs, ig])*(F[iobs, ig] @ (X[: , iobs] - M[iobs, ig])[:, None])[:, 0])
-            									-0.5*nd*at.log(2*atools.PI)
-												-0.5 * logD[iobs, ig]
-												+ logW[iobs, ig],
-									
-												sequences=[at.arange(ngmm)], non_sequences=[vals, mus_l, icovs_l, log_dets_l, wts_l]),
-						
-									sequences=[at.arange(N)], non_sequences=[vals, mus_l, icovs_l, log_dets_l, wts_l])
-
-					# sum of the gmm interpolants over all the gmm components
-                    gwl = at.logsumexp(logps, axis=1) # shape (nev,)
-
-
-                    ## subspace likelihood of the variables sampled from the gmm (all except distance)
-                    
-                    # consider just the masses (and later spins. but for now spins are not supported )
-                    vals_sub = vals[:nsub]  # shape (2, N)
-                
-                    logps_sub, _ = pytensor.scan(fn=lambda iobs, X_sub, M_sub, F_sub, logD_sub, logW: 
-            
-                                            pytensor.scan(fn=lambda ig, X_sub, M_sub, F_sub, logD_sub, logW: 
-
-                                            -0.5*at.sum((X_sub[: , iobs] - M_sub[iobs, ig])*(F_sub[iobs, ig] @ (X_sub[: , iobs] - M_sub[iobs, ig])[:, None])[:, 0])
-                                            -0.5*2.*at.log(2*atools.PI)
-                                            -0.5 * logD_sub[iobs, ig]
-                                            + logW[iobs, ig],
-                                
-                                            sequences=[at.arange(ngmm)], non_sequences=[vals_sub, mus_l_sub, icovs_l_sub, log_dets_l_sub, wts_l]),
-                    
-                                    sequences=[at.arange(N)], non_sequences=[vals_sub, mus_l_sub, icovs_l_sub, log_dets_l_sub, wts_l])
-
-                    gwl_sub = at.logsumexp(logps_sub, axis=1)
-
-                    # add this to the toal likelihood
-                    logR = gwl - gwl_sub
-                
-            
+        if not pop_only:
             # save values of GW distance and source-frame masses
             d = pm.Deterministic('dL', dval , dims="event_index")      
 
             m1src = pm.Deterministic('m1src', m1det/(1+zs) , dims="event_index")
             m2src = pm.Deterministic('m2src', m2det/(1+zs) , dims="event_index") 
-            
-                
+        
         else:
-            # we are sampling the usual marginalised likelihood, with "only" pop parameters
-            print('We are running inference only on population parameters.')
 
-
-            # Compute source-frame quantities. One redsfhit, mass1, mass2 for each event
-            # AND for each sample! 
-            
-            d_stacked  = at.flatten(d)
-            if not is_GP_dL:
-                zs_stacked = atools.z_from_dL_at(d_stacked, H0_, Om_, w0_, Lambda_MG_ )
-            else:
-                raise NotImplementedError()
-
-            
-            zs = at.reshape( zs_stacked, (N, Nsamples) )
             m1src = m1det/(1+zs)
             m2src = m2det/(1+zs)
-            
-            logd = at.log(d)
+        
+                
+        
         
         
         ################################################
         # Population prior
         ################################################
 
-        
-        if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
 
-            spins = [ chieff, chip  ]
+        if not pop_only:
+            if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc' :
+    
+                spins = [ chieff, chip  ]
+    
+            elif (spin_model == 'default') or (spin_model == 'default_gauss'):
+    
+                spins = [chi1, chi2, cost1, cost2]
+    
+            elif spin_model == 'none':
+                
+                spins = []
 
-        elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-
-            spins = [chi1, chi2, cost1, cost2]
-
-        elif spin_model == 'none':
-            
-            spins = []
+        # else: spins is give by spins = spins.reshape((NsamplesTot, spins.shape[-1])) so has shape NsamplesTot x 4
+        else:
+            spins = spins.T
+            # now 4 x NsamplesTot
+            # p_pop will read it as chi1, chi2, cost1, cost2 = spins so this should be ok.
 
 
         
@@ -2167,27 +2164,21 @@ def make_model(  priors,
                                     )
              
 
-
+        if not pop_only:
         
-        if dLprior=='dLsq':
-            # Remove \pi(d)~dL^2 prior on distance 
-            log_p_pop -= 2*logd
-            print('Removing dL^2 prior')
-        elif dLprior == 'dVdz':
-            print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
-            lpi_ = atools.log_dV_dz_at(zs, 67.90, 0.3065, dc=dc )-at.log1p(zs)
+            if dLprior=='dLsq':
+                # Remove \pi(d)~dL^2 prior on distance 
+                log_p_pop -= 2*logd
+                print('Removing dL^2 prior')
+            elif dLprior == 'dVdz':
+                print('Removing prior proportional to 1/(1+z)*dV/dz with H0=67.90, Om=0.3065')
+                raise NotImplementedError()
+                
+                log_p_pop -= lpi
 
-            # The following is a hack.
-            # When using GWTC data, O1-O2 do not have posteriors with dVdz prior, only dL^2
-            # So I remove the dL^2 prior by hand on those
-            if not pop_only:
-                # 1D case: shape (N,)
-                lpi = at.concatenate([2 * logd[:10], lpi_[10:]], axis=0)
-            else:
-                # 2D case: shape (N, Nsamples)
-                lpi = at.concatenate([2 * logd[:10, :], lpi_[10:, :]], axis=0)
-            
-            log_p_pop -= lpi
+        else:
+            print("Using dL PE prior loaded from file.")
+            log_PE_prior =  dL_log_prior
 
 
         if not pop_only:
@@ -2207,36 +2198,39 @@ def make_model(  priors,
             # just sum log likelihoods
             likelihood_val = at.sum( log_p_pop ) #pm.Deterministic("lik", at.sum( log_p_pop ) ) 
         else:
+            
+        
+            log_p_pop = (log_p_pop - log_PE_prior).reshape((N, Nsamples))
+
             # marginalise over single events parameters first
-            # shape of p_pop is (hopefully) n_evs x n_samples
-            # so average over second dimension
+            log_p_pop_marg = at.logsumexp( log_p_pop, axis=1, ) - at.log(allNsamples)
             
-            # Compute only where there are samples
-            log_p_pop_to_marg = log_p_pop[:, :allNsamples[0]]
-            
-            log_p_pop_marg = at.logsumexp( log_p_pop_to_marg, axis=1 ) - at.log(allNsamples)
-            
-
             # then sum log likelihoods
-            likelihood_val = at.sum( log_p_pop_marg ) #pm.Deterministic("lik", at.sum( log_p_pop_marg ) ) 
+            likelihood_val = at.sum( log_p_pop_marg )  
 
-            # Check number of effective samples for computing MC integral 
-            logs2 = at.logsumexp(2*log_p_pop_masked, axis=1) -2*at.log(allNsamples)
+
+           # Check number of effective samples for computing MC integral 
+            logs2 = at.logsumexp(2*log_p_pop, axis=1) -2*at.log(allNsamples)
+
             
-            Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) # this has len = n. of observations
+            Neff_lik =  pm.Deterministic('Neff_l', at.exp( 2.0*log_p_pop_marg - logs2) ) 
+            # this has len = n. of observations
+
+        
+            log_var_log_lik_evs_all = atools.logdiffexp( logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
+
+            var_log_lik_evs = at.sum( at.exp(log_var_log_lik_evs_all) )
             
             if Neff_min_lik>0:
-                
-                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik*N, -np.inf, 0. ) ) )
-                
-                # see https://discourse.pymc.io/t/conditionally-reject-samples/3107
-                # ind_sw_l = pm.Deterministic('ind_l', 1. * (Neff_lik<Neff_min_lik) )
-                # ind_l = pm.Bernoulli('Neff_l_bound', ind_sw_l, observed=np.zeros(N_np), testval=np.zeros(N_np) )
 
-            
+                print("Bound on effective number of samples for individual event MC integrals. Min requested: %s"%Neff_min_lik)
+                _ = pm.Potential("Neff_l_bound", at.sum( at.where( Neff_lik<Neff_min_lik, -np.inf, 0. ) ) )
+              
             else:
-                print("No bound on effective number of samples for individual event MC integrals")
+                
+                print("No bound on effective number of samples for individual event MC integrals. Uncertainty will be propagated to total log lik. variance")
 
+        
         
         # add R0*Tobs if needed. 
         if not marginal_R0:
@@ -2254,17 +2248,7 @@ def make_model(  priors,
         likelihood = pm.Deterministic("lik", likelihood_val ) 
         likelihood_term = pm.Potential("likelihood", likelihood ) 
         
-        #value = at.as_tensor_variable(1.0)  # this is a plain tensor
-        #lval = pm.Deterministic("lik", value)     # optional: to log the potential
-        #_ = pm.Potential("likelihood", value)  # use the tensor directly here
-
-        #try:
-        #    grads = grad(at.sum(likelihood), model.free_RVs)
-        #    print("Gradients computed. No disconnected inputs.")
-        #except DisconnectedInputError as e:
-        #    print("DisconnectedInputError:", e)
-
-
+ 
 
         ################################################
         # Selection effect
@@ -2339,146 +2323,87 @@ def make_model(  priors,
                     sel_effect = -N*log_mu_
     
             else:
-                # we passed multiple injections set corresponding to multiple observing runs
-                # they need to be properly combined
-                # This is useful only if using older LVK injection sets,
-                # Deprecated after GWTC-3 
-                if is_GP_dL:
-                    raise NotImplementedError()
-                
-                print("Combining selection effects from different injections campaigns")
-
-                spin_model_name = spin_model
-                if use_sel_spin:
-
-                    if spin_model == 'chieffchip' or spin_model == 'chieffchip_uc':
-                        # shapes: chi1Inj, chi2Inj -> (ndata, ninj)
-                        # result: spinsInj -> (ndata, 2, ninj)
-                        spinsInj = at.stack([chi1Inj, chi2Inj], axis=1)
-                    
-                    elif (spin_model == 'default') or (spin_model == 'default_gauss'):
-                        # shapes: chi1Inj, chi2Inj, cost1Inj, cost2Inj -> (ndata, ninj)
-                        # result: spinsInj -> (ndata, 4, ninj)
-                        spinsInj = at.stack([chi1Inj, chi2Inj, cost1Inj, cost2Inj], axis=1)
-
-                else:
-                    spinsInj = at.ones( (ndata, 2, ninj) )
-                    print("Spin distribution will not be used in the sel effect")
-                    spin_model_name = 'none'
-                    
-                    
-                
-                if not fix_inj_len:
-                    print("Loop over injections sets, dynamical slicing")
-                    # This should improve efficiency. But it can give problems with pytensor.scan (?)
-
-
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_, Ndet_ : sel_bias_with_uncertainty_at( m1inj_[idata, : Ndet_[idata]], m2inj_[idata, : Ndet_[idata]], dLinj_[idata, :Ndet_[idata]], spinsInj_[idata, :, :Ndet_[idata]], lpdinj_[idata, :Ndet_[idata]], L, Ndraw_[idata],                                                                                                                                   rate_model, mass_model, spin_model_name, is_GP_dL, smoothing, has_m2_break ), 
-
-                                          sequences = [ at.arange( ndata) ], 
-
-                                          non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj, Lambda_,  Ndraw, Ndet] )
-                    log_mu_vec = res_i[0]
-                    Neff_ = at.sum(res_i[1])
-
-                    
-                else:
-                    print("Loop over injections sets, no slicing")
-                    # makes it jax-compatible (jax does not support dynamical slicing at the moment)
-                    # Not true anymore after pymc v5.10 ? Check
-
-
-                    res_i, _ = pytensor.scan( lambda idata, m1inj_, m2inj_, dLinj_, spinsInj_, lpdinj_, L,  Ndraw_ : sel_bias_with_uncertainty_at( m1inj_[idata ], m2inj_[idata ], dLinj_[idata], spinsInj_[idata],  lpdinj_[idata], L, Ndraw_[idata], rate_model, mass_model, spin_model, is_GP_dL, smoothing, has_m2_break, zinj=zinj ), 
-                                      sequences = [ at.arange( ndata) ], 
-
-                                      non_sequences = [m1inj, m2inj, dLinj, spinsInj, lpdinj,  Lambda_,  Ndraw] )
-
-            
-                    log_mu_ = res_i[0]
-                    Neff_ = at.sum(res_i[1])
-    
-
-                
-    
-                if not marginal_R0:
-                    # Sum number of expected events in the two observing runs
-                    # p_pop does not contain R_0*Tobs . Add it here
-                    sel_effect = -at.sum(at.exp(log_mu_+lR0+at.log(Tobs)))
-                else:
-                    if sel_method=='Tobs':
-                        sel_effect = -N*at.logsumexp( at.log(Tobs/Ttot)+log_mu_ )
-                        print('Using sel function with weighted obs time average. Obs times: %s'%str(Tobs))
-                    elif sel_method=='Nevs':
-                        # This is technically wrong, but I leave it here
-                        # to check how large the error is when using the wrong expression
-                        print('Using sel function with number of events')
-                        sel_effect = -at.sum(Nevs*log_mu_)
+               raise NotImplementedError()
 
             
             ################################################
             # Sel effect computed. Now exclude high-variance regions in the integral
 
             
-            Neff = pm.Deterministic('Neff', Neff_ )
+            #Neff = pm.Deterministic('Neff', Neff_ )
 
             if marginal_R0:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(var_ll_u_+2*at.log(N)) )
+                log_lik_var_selb_ =  at.exp(var_ll_u_+2*at.log(N)) 
             else:
-                log_lik_var = pm.Deterministic('log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) )
+                log_lik_var_selb_ = 'log_lik_var', at.exp(  var_ll_u_+2*at.log( R0*Ttot ) + 2*log_mu_ ) 
+
+
+            if pop_only:
+                log_lik_var_ = log_lik_var_selb_ + var_log_lik_evs
+                print("Log lik. variance will include contribution from individual event integrals")
+            else:
+                log_lik_var_ = log_lik_var_selb_ 
+                print("Log lik. variance will be just from selection effect.")
+
+
+            log_lik_var_sg = log_lik_var_
+            log_lik_var_selb_sg = log_lik_var_selb_
             
+            # Track log lik. variance 
+            log_lik_var_save = pm.Deterministic('log_lik_var', log_lik_var_sg )
+            log_lik_var_selb_save = pm.Deterministic('log_lik_var_selb', log_lik_var_selb_sg )
      
 
             if ((Neff_min==0) and (log_lik_var_min==0)):
                 print("No condition on number of effective points in MC integral for sel. effect")
-                selection_bias =  pm.Deterministic("sel_bias", sel_effect )
+                selection_bias =  sel_effect #pm.Deterministic("sel_bias", sel_effect )
             else:
                 if log_lik_var_min==0:
+
+                    selection_bias =  sel_effect
 
                     # Thresholding on N_eff
                     print("MC integral for sel. effect thresholded on N_eff")
                     
-                    if sel_smoothing=='sigmoid':
-                        # smooth with sigmoid between Neff_min and Neff_min+1 x Nobs
-                        # over a scale = Neff_min
-                        # i.e. at Neff_min * Nobs the likelihood becomes smoothly -inf
-                        selection_bias = pm.Deterministic("sel_bias", atools.log_sigmoid(Neff, Neff_min*(N+1),  Neff_min)+sel_effect )
-                    elif sel_smoothing=='poly':
-                        # Polynomial smoothing
-                        selection_bias = pm.Deterministic("sel_bias", atools.log_f_smooth_poly(Neff, N/2,  Neff_min*N-N/4)+sel_effect ) 
-                    else:
-                        # Hard cut
-                        
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)                   
-                        #ind_sw_sel = pm.Deterministic('ind_sel', 1. * (Neff<Neff_min*N ) )
-                        #ind_sel = pm.Bernoulli('bound_Neff', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_Neff", at.switch(Neff >= Neff_min * N, 0.0, -np.inf))
+                    Neff = N**2 / ( log_lik_var_selb_sg + (N**2)/Ndraw )
+
+                    #raise NotImplementedError()
+                    _ = pm.Potential("bound_selb_Neff", at.switch(Neff >= Neff_min*N, 0.0, -np.inf ))
+
+                    print("Bound on effective number of samples for selection effect. Min requested: %s x Nobs"%Neff_min)
 
                 
                 elif Neff_min==0:
 
                     # Thresholding on likelihood variance
-                    print("MC integral for sel. effect thresholded on log lik. variance")
+                    print("MC integral for sel. effect thresholded on log lik. variance. Max requested: %s"%log_lik_var_min)
+
                     
                     if sel_smoothing=='sigmoid':
                         # smooth with sigmoid 
                         print("Tapering sel effect with sigmoid smoothing")
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var, log_lik_var_min*(1+0.002), 0.001 ))
-                                                          )
+                        
+                        selection_bias = sel_effect + atools.logdiffexp( at.log(1), atools.log_sigmoid(log_lik_var_sg, log_lik_var_min*(1+0.002), 0.001 )) 
+
+                    
                     elif sel_smoothing=='poly':
                         print("Tapering sel effect with polynomial smoothing")
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect+atools.logdiffexp( at.log(1), atools.log_f_smooth_poly(log_lik_var, 0.01,  log_lik_var_min*(1-0.005) ))   
-                                                         )      
+
+                        selection_bias = sel_effect
+                        _ = pm.Potential("bound_log_lik_var", atools.logS_PLP(log_lik_var_min - log_lik_var_sg, deltam=0.01, ml=-0.01))
+
+                    
                     else:
                         print("Tapering sel effect with hard cut")
 
-                        selection_bias = pm.Deterministic("sel_bias", sel_effect)
-                        # ind_sw_sel = pm.Deterministic('ind_sel', 1. * (log_lik_var>log_lik_var_min ) )
-                        # ind_sel = pm.Bernoulli('bound_log_lik_var', ind_sw_sel, observed=np.zeros(1)  )
-                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var <= log_lik_var_min, 0.0, -np.inf))
+                        selection_bias = sel_effect
+                                                
+                        _ = pm.Potential("bound_log_lik_var", at.switch(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30 ))
+
+
+            _ = pm.Potential('selection_bias', selection_bias)
 
             
-            selection_bias_term = pm.Potential('selection_bias', selection_bias)
-
             if marginal_R0:
                 if include_sel_uncertainty:
                     print("Including selection function uncertainty as in Farr 2019s")

@@ -557,7 +557,7 @@ def atinterp(x, xs, ys, eps=1e-30):
     #xs = at.as_tensor_variable(xs)
     #ys = at.as_tensor_variable(ys)
 
-    print("\nTHis is the new atinterp")
+    #print("\nTHis is the new atinterp")
 
     # Get safe interval indices and weights
     j, r = _interp_indices_nonuniform_safe(x, xs)

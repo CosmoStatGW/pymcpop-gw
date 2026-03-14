@@ -10,22 +10,120 @@ from scipy import linalg
 
 
 
-def load_data_samples(fin, nmax=None):
+def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
 
+    allnames_return = []
     for i,fid in enumerate(fin):
 
         print("\nLoading data from %s"%fid)
 
+        is_h5 = str(fid).lower().endswith((".h5", ".hdf5"))
+
+        if is_h5:
+
+            with h5py.File(fid, "r") as f:
+                gwnames = props["gwnames"][:]        # may be bytes -> decode if needed
+                allnames_ = [x.decode() if isinstance(x, bytes) else x for x in gwnames]
+        else:
+            allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
+
+        
+        if events_use!=[]: 
+    
+            evs_use_ = onp.loadtxt( events_use[i], dtype=str )
+            print("For %s, requested explicitly to use the following events, total %s:"%(fid, len(evs_use_)))
+            print(evs_use_)
+
+            missing = onp.setdiff1d(evs_use_, allnames_)
+
+            if missing.size > 0:
+                raise ValueError(
+                    f"The following events are not in allnames_: {missing.tolist()}"
+                )
+
+            mask_ = onp.isin(allnames_, evs_use_)
+            allnames_return.append(evs_use_)
+            
+
+        else:
+            mask_ = onp.full(len(allnames_), True )
+            allnames_return.append(allnames_)
+
+
         print('Loading posterior samples...')
 
-        m1d_samples_ = onp.load( fid+'m1d_samples.npy' ) 
-        m2d_samples_ = onp.load( fid+'m2d_samples.npy' )
-        dL_samples_ = onp.load( fid+'dL_samples.npy' )
+        if is_h5:
+            
+            with h5py.File(fid, "r") as f:
+                
+                
+                if not use_rw:
+                    pe = f["posteriors"]                 # group
+                else:
+                    print("Using re-werighted samples.")
+                    pe = f["posteriors_reweight"]     # group
+                
+                
+                
+                prior = f["prior"]                   # group
+                props = f["properties"]              # group
+            
+                # examples: load datasets into memory
+                dL_samples_ = pe["dL"][mask_]                     # original posterior draws
+                #dL_samples_rw_ = pe_rw["dL"][mask_]               # reweighted draws
+                dL_PE_prior_ = prior["dL"][mask_]               # prior values
 
-        chi1_samples_ = onp.load( fid+'chi1_samples.npy' )
-        chi2_samples_ = onp.load( fid+'chi2_samples.npy' )
-        cost1_samples_ = onp.load( fid+'cost1_samples.npy' )
-        cost2_samples_ = onp.load( fid+'cost2_samples.npy' )
+                m1d_samples_raw_ = pe['m1det']
+                print("samples shape:")
+                print(m1d_samples_raw_.shape)
+                
+                m1d_samples_ = m1d_samples_raw_[mask_]
+                m2d_samples_ = pe["m2det"][mask_]
+
+                print("samples shape after mask:")
+                print(m1d_samples_.shape)
+
+                try:
+                    chi1_samples_ = pe['chi_1'][mask_]
+                    chi2_samples_ = pe['chi_2'][mask_]
+                    cost1_samples_ = pe['cos_t_1'][mask_]
+                    cost2_samples_ = pe['cos_t_2'][mask_]
+                except Exception as e:
+                    print(e)
+                    chi1_samples_ = onp.zeros_like(m1d_samples_)
+                    chi2_samples_ = onp.zeros_like(m1d_samples_)
+                    cost1_samples_ = onp.zeros_like(m1d_samples_)
+                    cost2_samples_ = onp.zeros_like(m1d_samples_)
+                    
+                
+
+        else:
+            m1d_samples_raw_ = onp.load( fid+'m1d_samples.npy' )
+            print("samples shape:")
+            print(m1d_samples_raw_.shape)
+    
+            m1d_samples_ = m1d_samples_raw_[mask_]
+            print("samples shape after mask:")
+            print(m1d_samples_.shape)
+            
+            m2d_samples_ = onp.load( fid+'m2d_samples.npy' )[mask_]
+            dL_samples_ = onp.load( fid+'dL_samples.npy' )[mask_]
+    
+            dL_PE_prior_ = onp.load( fid+'dL_PE_prior.npy' )[mask_]
+    
+            try:
+                chi1_samples_ = onp.load( fid+'chi1_samples.npy' )[mask_]
+                chi2_samples_ = onp.load( fid+'chi2_samples.npy' )[mask_]
+                cost1_samples_ = onp.load( fid+'cost1_samples.npy' )[mask_]
+                cost2_samples_ = onp.load( fid+'cost2_samples.npy' )[mask_]
+            except Exception as e:
+                print(e)
+                chi1_samples_ = onp.zeros_like(m1d_samples_)
+                chi2_samples_ = onp.zeros_like(m1d_samples_)
+                cost1_samples_ = onp.zeros_like(m1d_samples_)
+                cost2_samples_ = onp.zeros_like(m1d_samples_)
+
+        
         
         where_compute_=~onp.isnan(m1d_samples_)
         allNsamples_ = where_compute_.sum(axis=-1) #onp.load( fid+'allnsamples.npy' )
@@ -41,6 +139,7 @@ def load_data_samples(fin, nmax=None):
             cost2_samples = cost2_samples_
             allNsamples = allNsamples_
             where_compute = where_compute_
+            dL_PE_prior = dL_PE_prior_
             
 
         else:
@@ -48,6 +147,7 @@ def load_data_samples(fin, nmax=None):
             m1d_samples = onp.concatenate([m1d_samples, m1d_samples_])
             m2d_samples = onp.concatenate([m2d_samples, m2d_samples_])
             dL_samples = onp.concatenate([dL_samples, dL_samples_])
+            dL_PE_prior = onp.concatenate([dL_PE_prior, dL_PE_prior_])
 
             chi1_samples = onp.concatenate([chi1_samples, chi1_samples_])
             chi2_samples = onp.concatenate([chi2_samples, chi2_samples_])
@@ -58,8 +158,8 @@ def load_data_samples(fin, nmax=None):
             where_compute = onp.concatenate([where_compute, where_compute_])
     
     print('Done.')
-    print('allNsamples is')
-    print(allNsamples)
+    #print('allNsamples is')
+    #print(allNsamples)
 
     if nmax==-1:
         nmax=None
@@ -74,10 +174,12 @@ def load_data_samples(fin, nmax=None):
             'cost1_samples': cost1_samples[:, :nmax],
             'cost2_samples': cost2_samples[:, :nmax],
             'allNsamples': allNsamples,
-            'where_compute': where_compute[:, :nmax]
+            'where_compute': where_compute[:, :nmax],
+            'allnames' : allnames_return,
+               'dL_PE_prior' : dL_PE_prior
            }
-    print('allNsamples after cut is')
-    print(res['allNsamples'])
+    #print('allNsamples after cut is')
+    #print(res['allNsamples'])
     return res
         
 
