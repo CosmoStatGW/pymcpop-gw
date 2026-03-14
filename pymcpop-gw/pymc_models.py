@@ -10,7 +10,7 @@ import copy
 import pytensor_tools as atools
 import pytensor_utils_old as putils
 
-from pytensor_utils import atinterp, pack1d, pack1d_with_layout, logdiffexp
+from pytensor_utils import atinterp, atinterp_rowwise, pack1d, pack1d_with_layout, logdiffexp
 
 from pytensor_ops import PopAndSelJAXOp
 import cosmology as cosmo
@@ -845,12 +845,16 @@ def make_model(  priors,
             assert len(allnames) == Nchunks
             j = 0
             all_PE_log_norms = np.zeros(N)
+            all_PE_lims = []
+
+            
             for i in range(Nchunks):
                 
                 if  penorm_lims[i]=='none':
                     print("No normalization of PE prior on distance included for chunk %s"%i)
                     for key in allnames[i]:
                         all_PE_log_norms[j] = 0.
+                        all_PE_lims.append( (1e-04, 50.) )
                         j+=1
                 else:
                     with open( penorm_lims[i] , 'r') as fp:
@@ -864,26 +868,47 @@ def make_model(  priors,
                         except:
                             raise ValueError("limits for %s not present"%key)    
                          
-                        log_norm_PE_prior_, zmin_, zmax_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0]/1000, lims_[1]/1000, 67.9, 0.3065, -1)
+                        log_norm_PE_prior_, zmin_, zmax_ = cosmo.compute_log_norm_UniformSourceFrame(bkNP, lims_[0], lims_[1], 67.9, 0.3065, -1)
                         
-                        print(key, lims_[0]/1000, lims_[1]/1000, zmin_, zmax_, log_norm_PE_prior_)
+                        print(key, lims_[0], lims_[1], zmin_, zmax_, log_norm_PE_prior_)
                 
                         all_PE_log_norms[j] = log_norm_PE_prior_
+                        all_PE_lims.append( (lims_[0], lims_[1]) )
+                        
                         j+=1
                 
                 print("at the end of chunk %s, index j is %s"%(i,j))
     
             all_PE_log_norms = np.asarray(all_PE_log_norms)
+            mins_PE = at.constant(np.array([x[0] for x in all_PE_lims], dtype="float64"))
+            maxs_PE = at.constant(np.array([x[1] for x in all_PE_lims], dtype="float64"))
+
+            print("All PE log norms is ")
+            print("Shape: %s"%all_PE_log_norms.shape)
+
         else:
             print("No normalization of PE volume prior on distance required.")
             all_PE_log_norms = np.zeros(Nevs_np.sum())
     
         
-        print("All PE log norms is ")
-        print("Shape: %s"%all_PE_log_norms.shape)
-        #print("Val: %s"%all_PE_log_norms.eval())
+        tab_in_prior = any('interp' in s for s in dLprior)
 
- 
+        if tab_in_prior:
+  
+            Nchunks = len(Nevs_np)
+            assert len(allnames) == Nchunks
+
+            dL_grid_PE_prior = np.load(dL_grid_PE_prior_path)
+            all_grids_PE_prior = [ np.zeros( ( Nevs_np[i], len(dL_grid_PE_prior) ) ) for i in range(len(Nevs_np)) ]
+            
+            
+            for i in range( Nchunks):
+    
+                all_grids_PE_prior[i] = np.load(dLprior[i])
+                
+                
+            
+     
         
     
     ################################################
@@ -2319,39 +2344,51 @@ def make_model(  priors,
                     print("Removing no PE prior for events %s-%s "%(mn.eval(), mx.eval()))
             
                 else:
-                    use_J = lab.endswith('-J')
-                    base = lab[:-2] if use_J else lab
-            
-                    if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
+
+                    if lab.endswith('.npy'):
+
+                        print("Using PE prior from pre-computed grid for events %s-%s "%(mn.eval(), mx.eval()))
+
+                        grid_chunk = all_grids_PE_prior[i]                 # shape (n_i, 10000)
                         
-                        chunk = cosmo.log_dV_dz(bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1, dc=dc_Planck15, E=None )
-            
-                        if base == 'UniformSourceFrame':
-                            chunk +=  - at.log1p(zs_Planck15)
-                            print("Using custom UniformSourceFrame prior for events %s-%s "%(mn.eval(), mx.eval()))
-                        else:
-                            print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
+                        vals = atinterp_rowwise(ATBackend(), d[idx], dL_grid_PE_prior, grid_chunk)   # shape (n_i,)
                         
-                        if use_J:
-                            chunk -= atools.log_ddL_dz(zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
-                            print("..also removing jacobian with Planck15 cosmology")
-                
-                        # if normalize_PE_prior:
-                        #     chunk -= log_norm_PE_prior
-                        #     print("..also normalizing")
-    
-                    elif base == 'UniformSourceFrame-bilby':
-    
-                        print("Using interpolated bilby prior for events %s-%s "%(mn.eval(), mx.eval()))
-                        # interpolated prior density in 1/Gpc
-                        chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
-            
-                        # optional: enforce support -> 0 outside [min, max]
-                        # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -np.inf )
-                    
+                        chunk = at.zeros_like(log_p_pop)                   # shape (153,)
+                        chunk = at.set_subtensor(chunk[idx], vals)         # shape (153,)
+
                     else:
-                        raise ValueError(f"Unknown PE prior name base: {base}")
+                    
+                        use_J = lab.endswith('-J')
+                        base = lab[:-2] if use_J else lab
+                
+                        if base == 'UniformComovingVolume' or  base == 'UniformSourceFrame':
+                            
+                            chunk = cosmo.log_dV_dz(bk, zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1, dc=dc_Planck15, E=None )
+                
+                            if base == 'UniformSourceFrame':
+                                chunk +=  - at.log1p(zs_Planck15)
+                                print("Using custom UniformSourceFrame prior for events %s-%s "%(mn.eval(), mx.eval()))
+                            else:
+                                print("Using custom UniformComovingVolume prior for events %s-%s "%(mn.eval(), mx.eval()))
+                            
+                            if use_J:
+                                chunk -= atools.log_ddL_dz(zs_Planck15, PLANCK15_H0, PLANCK15_OM, -1., 1., 0., dc=dc_Planck15, interp=False, param='vanilla')
+                                print("..also removing jacobian with Planck15 cosmology")
+                    
     
+                        elif base == 'UniformSourceFrame-bilby':
+        
+                            print("Using interpolated bilby prior for events %s-%s "%(mn.eval(), mx.eval()))
+                            # interpolated prior density in 1/Gpc
+                            chunk = at.log( atinterp( ATBackend(), d, dLgrid_bilby_gpc, PE_prior_bilby_grid) )
+                
+                            # optional: enforce support -> 0 outside [min, max]
+                            # chunk = at.where((d >= dLgrid_gpc[0]) & (d <= dLgrid_gpc[-1]), chunk, -np.inf )
+                    
+                        else:
+                            raise ValueError(f"Unknown PE prior name base: {base}")
+
+                
                 if remove_spin_prior:
                     print("Removing PE spin prior")
                     amax = 0.99
@@ -2360,9 +2397,12 @@ def make_model(  priors,
                     
                 print("mask shape is %s"%mask.shape.eval())
                 print("chunk shape is %s"%chunk.shape.eval())
-                #print("log_PE_prior shape is %s"%log_PE_prior.shape.eval())
-                #print("all_PE_log_norms shape is %s"%all_PE_log_norms.shape.eval())
-                log_PE_prior = at.where(mask, chunk, log_PE_prior) - all_PE_log_norms
+                log_PE_prior = at.where(mask, chunk, log_PE_prior)
+
+            print("subtracting normalization once and setting to zero outside distance prior range")
+            log_PE_prior -= all_PE_log_norms
+            ok = at.all((d >= mins_PE) & (d <= maxs_PE))
+            _ = pm.Potential("PE_prior_bound", at.switch(ok, 0.0, -np.inf))
 
         else:
             print("Using dL PE prior loaded from file.")

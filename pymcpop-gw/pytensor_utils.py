@@ -208,7 +208,45 @@ def atinterp(bk, x, xs, ys):
   return r*yh + (1.0-r)*yl
 
 
+def atinterp_rowwise(bk, x, xs, ys):
+    # x:  (N,)
+    # xs: (M,)
+    # ys: (N, M)
 
+    idxs = bk.searchsorted(xs, x, side="left")
+    idxs = bk.clip(idxs, 1, xs.shape[0] - 1)
+
+    xl = xs[idxs - 1]           # (N,)
+    xh = xs[idxs]               # (N,)
+
+    row_idx = bk.arange(x.shape[0])
+
+    yl = ys[row_idx, idxs - 1]  # (N,)
+    yh = ys[row_idx, idxs]      # (N,)
+
+    r = (x - xl) / (xh - xl)
+    return (1.0 - r) * yl + r * yh
+
+
+
+def atinterp_allpoints(bk, x, xs, ys):
+    # x:  (Nd,)
+    # xs: (M,)
+    # ys: (Nf, M)
+    # returns: (Nf, Nd)
+
+    idx = bk.searchsorted(xs, x, side="left")
+    idx = bk.clip(idx, 1, xs.shape[0] - 1)
+
+    xl = xs[idx - 1]        # (Nd,)
+    xh = xs[idx]            # (Nd,)
+
+    yl = ys[:, idx - 1]     # (Nf, Nd)
+    yh = ys[:, idx]         # (Nf, Nd)
+
+    r = (x - xl) / (xh - xl)    # (Nd,)
+    return (1.0 - r)[None, :] * yl + r[None, :] * yh
+    
 
 def _interp_indices_nonuniform_safe(bk, x, x_grid):
     """
