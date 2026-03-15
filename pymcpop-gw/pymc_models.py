@@ -227,6 +227,7 @@ def make_model(  priors,
                  find_m_bounds = False,
                  q_mbound = 0.05,
                  alpha_inv_params = (1, 1),
+                 M_active = 5, 
                  fix_H0 = True,
                 fix_Om = True,
                fix_w0 = True,
@@ -1773,15 +1774,52 @@ def make_model(  priors,
 
                 print("Prior for the process is stick-breaking")
                 #### Stick Breaking Prior
-                alpha_inv_init = 10. #alpha_inv_params[0] / alpha_inv_params[1]
+
+                M_active = min(M_active, N_DP_comp_max_np)
+                
+                alpha_inv_init = 1.0 #alpha_inv_params[0] / alpha_inv_params[1]
                 alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
     
-                #beta_init = np.full(N_DP_comp_max_np, 1e-02)#.astype(X)
-                #beta_init[0] = 0.99
-                beta_init = np.full(N_DP_comp_max_np, 0.02)
-                beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
+                
+                # beta_init = np.full(N_DP_comp_max_np, 0.02)
+                # beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
+
+                # ---- build target initial weights w_init first, then convert to beta_init ----
+                # almost-flat active weights, with a tiny decreasing trend
+                tail_mass_frac = 0.02          # 2% total mass left for inactive tail
+                active_mass = 1.0 - tail_mass_frac
+                tail_mass = tail_mass_frac
+                
+                n_tail = N_DP_comp_max_np - M_active
+                
+                # active weights: almost flat, mildly decreasing
+                # example profile: 1.0, 0.98, 0.96, ...
+                active_profile = np.linspace(1.0, 0.9, M_active)
+                active_profile = active_profile / active_profile.sum()
+                w_active = active_mass * active_profile
+                
+                # tail weights: tiny but nonzero
+                if n_tail > 0:
+                    w_tail = np.full(n_tail, tail_mass / n_tail)
+                    w_init = np.concatenate([w_active, w_tail])
+                else:
+                    w_init = w_active.copy()
+                
+                # convert target stick weights to beta init
+                beta_init = np.zeros(N_DP_comp_max_np)
+                remaining = 1.0
+                eps_beta = 1e-6
+                for k in range(N_DP_comp_max_np):
+                    if k == N_DP_comp_max_np - 1:
+                        # last beta is irrelevant for truncated stick-breaking, but keep in bounds
+                        beta_init[k] = 0.5
+                    else:
+                        frac = w_init[k] / max(remaining, 1e-12)
+                        beta_init[k] = np.clip(frac, eps_beta, 1.0 - eps_beta)
+                        remaining -= w_init[k]
+
     
                 beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
 
@@ -1796,11 +1834,12 @@ def make_model(  priors,
                 w = pm.Deterministic("w", w_raw / at.sum(w_raw), dims="component")
 
                 # ---- quick init diagnostics (runs once at model build) ----
-                w0 =  atools.stick_breaking(beta_init) #pm.draw(w, draws=1)
-                w0 = (w0/at.sum(w0)).eval()
+                w0 = atools.stick_breaking(beta_init)
+                w0 = (w0 / at.sum(w0)).eval()
                 print("w init: sum=", w0.sum(), " max=", w0.max(), " min=", w0.min())
                 print("w init top10:", np.sort(w0)[::-1][:10])
                 print("# comps for 90% mass:", np.searchsorted(np.cumsum(np.sort(w0)[::-1]), 0.90) + 1)
+
 
             elif DP_prior=='dirichelet':
                 print("Prior for the process is dirichelet")
@@ -1832,25 +1871,41 @@ def make_model(  priors,
             #### Mean prior 
 
 
-            U1, U2 = (upmu1-lowmu1) , (upmu2-lowmu2)    # "too-wide" typical std per dim 
-
-            mu1_center = (lowmu1 + upmu1) / 2.0  # 3.55
+            U1, U2 = (upmu1 - lowmu1), (upmu2 - lowmu2)
+            
+            mu1_center = (lowmu1 + upmu1) / 2.0
             mu2_center = (lowmu2 + upmu2) / 2.0
-
-            M_active = 5
-
+            
             mu1_init = np.full(N_DP_comp_max_np, mu1_center)
             mu2_init = np.full(N_DP_comp_max_np, mu2_center)
             
-            mu1_init[:M_active] = np.linspace(lowmu1 + 0.1*(upmu1-lowmu1),
-                                              upmu1  - 0.1*(upmu1-lowmu1),
-                                              M_active)
+            mu1_init[:M_active] = np.linspace(
+                lowmu1 + 0.1 * (upmu1 - lowmu1),
+                upmu1  - 0.1 * (upmu1 - lowmu1),
+                M_active
+            )
             
-            mu2_init[:M_active] = np.linspace(lowmu2 + 0.1*(upmu2-lowmu2),
-                                              upmu2  - 0.1*(upmu2-lowmu2),
-                                              M_active)     
-            mu1 = pm.Uniform('mulMc', lower=lowmu1, upper=upmu1, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu1_center)) #.astype(X) )
-            mu2 = pm.Uniform('mulq', lower=lowmu2, upper=upmu2, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu2_center)) #.astype(X))
+            mu2_init[:M_active] = np.linspace(
+                lowmu2 + 0.1 * (upmu2 - lowmu2),
+                upmu2  - 0.1 * (upmu2 - lowmu2),
+                M_active
+            )
+     
+            mu1 = pm.Uniform(
+                'mulMc',
+                lower=lowmu1,
+                upper=upmu1,
+                dims=("component",),
+                initval=mu1_init,
+            )
+            
+            mu2 = pm.Uniform(
+                'mulq',
+                lower=lowmu2,
+                upper=upmu2,
+                dims=("component",),
+                initval=mu2_init,
+            )
 
 
         
@@ -1859,41 +1914,21 @@ def make_model(  priors,
 
             if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD' ):
 
-                mu3_center = ( lowmu3+ upmu3) / 2.0
+                mu3_center = (lowmu3 + upmu3) / 2.0
                 mu3_init = np.full(N_DP_comp_max_np, mu3_center)
-                mu3_init[:M_active] = np.linspace(lowmu3 + 0.1*(upmu3-lowmu3),
-                                              upmu3  - 0.1*(upmu3-lowmu3),
-                                              M_active)
-                
-                
-                mu3 = pm.Uniform('mulz', lower=lowmu3, upper=upmu3, dims= ("component" ), initval=np.full(N_DP_comp_max_np, mu3_center)) #.astype(X))
-
-                # --- ordered mu3 for first M_active components ---
-
-                
-                # mu3_raw_active = pm.Uniform(
-                #     "mulz_raw_active",
-                #     lower=lowmu3, upper=upmu3,
-                #     shape=(M_active,),
-                #     initval=mu3_init[:M_active],
-                # )
-                
-                # mu3_active = pm.Deterministic("mulz_active", at.sort(mu3_raw_active))
-                
-                # mu3_tail = pm.Uniform(
-                #     "mulz_tail",
-                #     lower=lowmu3, upper=upmu3,
-                #     shape=(N_DP_comp_max_np - M_active,),
-                #     initval=mu3_init[M_active:],   # your centered tail init
-                # )
-                
-                # mu3 = pm.Deterministic(
-                #     "mulz",
-                #     at.concatenate([mu3_active, mu3_tail]),
-                #     dims=("component",),
-                # )
-
-
+                mu3_init[:M_active] = np.linspace(
+                    lowmu3 + 0.1 * (upmu3 - lowmu3),
+                    upmu3  - 0.1 * (upmu3 - lowmu3),
+                    M_active
+                )
+            
+                mu3 = pm.Uniform(
+                    'mulz',
+                    lower=lowmu3,
+                    upper=upmu3,
+                    dims=("component",),
+                    initval=mu3_init,
+                )
 
 
                 mus = at.stack([mu1, mu2, mu3], axis=0)
@@ -1935,11 +1970,17 @@ def make_model(  priors,
             # tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
             # tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
 
-            eta1 = pm.Normal("eta1", 0.0, 1.0)
-            tau1 = pm.Deterministic("tau1", L_small_1 + (U1 - L_small_1) * pm.math.sigmoid(eta1))
+            # eta1 = pm.Normal("eta1", 0.0, 1.0)
+            # tau1 = pm.Deterministic("tau1", L_small_1 + (U1 - L_small_1) * pm.math.sigmoid(eta1))
             
-            eta2 = pm.Normal("eta2", 0.0, 1.0)
-            tau2 = pm.Deterministic("tau2", L_small_2 + (U2 - L_small_2) * pm.math.sigmoid(eta2))
+            # eta2 = pm.Normal("eta2", 0.0, 1.0)
+            # tau2 = pm.Deterministic("tau2", L_small_2 + (U2 - L_small_2) * pm.math.sigmoid(eta2))
+
+            tau1 = bounded_sigmoid("tau1", L_small_1, U1, raw_sigma=1.5, )
+            tau2 = bounded_sigmoid("tau2", L_small_2, U2, raw_sigma=1.5, )
+
+            print("tau with bouded sigmoid")
+
 
             print("s_local = %s "%s_local)
 
@@ -1966,9 +2007,12 @@ def make_model(  priors,
                 print("U3 = %s "%U3)
 
                 #tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
-                eta3 = pm.Normal("eta3", 0.0, 1.0)
-                tau3 = pm.Deterministic("tau3", L_small_3 + (U3 - L_small_3) * pm.math.sigmoid(eta3))
                 
+                # eta3 = pm.Normal("eta3", 0.0, 1.0)
+                # tau3 = pm.Deterministic("tau3", L_small_3 + (U3 - L_small_3) * pm.math.sigmoid(eta3))
+
+                tau3 = bounded_sigmoid("tau3", L_small_3, U3, raw_sigma=1.5, )
+        
                 
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
                 eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))

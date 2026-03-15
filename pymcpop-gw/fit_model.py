@@ -114,6 +114,8 @@ def main():
     parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
     parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
     parser.add_argument("--DP_m1_env", default=0, type=int, required=False)
+    parser.add_argument("--M_active", default=5, type=int, required=False)
+    
     
     
 
@@ -851,6 +853,7 @@ def main():
                                     L_small_2 = FLAGS.L_small_2,
                                     L_small_3 = FLAGS.L_small_3,
                                     alpha_inv_params = FLAGS.alpha_inv_params,
+                                    M_active = FLAGS.M_active,
                                     s_local = FLAGS.s_local,
                                     find_m_bounds = FLAGS.find_m_bounds,
                                     q_mbound = FLAGS.q_mbound,
