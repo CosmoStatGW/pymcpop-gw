@@ -1167,6 +1167,7 @@ def main():
                                 "cores": FLAGS.ncores,                         # JAX: single OS process
                                "target_accept": FLAGS.target_accept,  
                                 "nuts_sampler_kwargs": {
+                                    "jitter": False, 
                                     "chain_method": FLAGS.chain_method,   # fast on single device
                                     "nuts_kwargs": {
                                         # Choose one:
@@ -1174,10 +1175,10 @@ def main():
                                         "adapt_step_size": True,
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3 , #5e-4,
-                                        "find_heuristic_step_size": True,  # let NumPyro pick a good initial step
+                                        "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
                                         "max_tree_depth": 10,
                                         "forward_mode_differentiation": False,
-                                        #"step_size":1e-2,
+                                        "step_size":1e-2,
                                     },
                                 },
                             })
