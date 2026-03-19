@@ -224,6 +224,7 @@ def make_model(  priors,
                  L_small_2 = 0.5,
                  L_small_3 = 0.1,
                  s_local = 0.5,
+                 tau_prior='flat',
                  find_m_bounds = False,
                  q_mbound = 0.05,
                  alpha_inv_params = (1, 1),
@@ -1967,19 +1968,24 @@ def make_model(  priors,
             #               transform=tr.log, initval=0.2,
             #               random=atools.frechet_random, )
 
-            # tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
-            # tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
+            if tau_prior=='flat':
+                tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )
+                tau2 = pm.Uniform("tau2", lower=L_small_2, upper=U2, initval= (U2 / 2.0 )  )
+                print("Uniform prior in tau")
 
-            # eta1 = pm.Normal("eta1", 0.0, 1.0)
-            # tau1 = pm.Deterministic("tau1", L_small_1 + (U1 - L_small_1) * pm.math.sigmoid(eta1))
-            
-            # eta2 = pm.Normal("eta2", 0.0, 1.0)
-            # tau2 = pm.Deterministic("tau2", L_small_2 + (U2 - L_small_2) * pm.math.sigmoid(eta2))
-
-            tau1 = bounded_sigmoid("tau1", L_small_1, U1, raw_sigma=1.5, )
-            tau2 = bounded_sigmoid("tau2", L_small_2, U2, raw_sigma=1.5, )
-
-            print("tau with bouded sigmoid")
+            elif tau_prior=='bounded_sigmoid':
+                # eta1 = pm.Normal("eta1", 0.0, 1.0)
+                # tau1 = pm.Deterministic("tau1", L_small_1 + (U1 - L_small_1) * pm.math.sigmoid(eta1))
+                
+                # eta2 = pm.Normal("eta2", 0.0, 1.0)
+                # tau2 = pm.Deterministic("tau2", L_small_2 + (U2 - L_small_2) * pm.math.sigmoid(eta2))
+    
+                tau1 = bounded_sigmoid("tau1", L_small_1, U1, raw_sigma=1.5, )
+                tau2 = bounded_sigmoid("tau2", L_small_2, U2, raw_sigma=1.5, )
+    
+                print("tau with bouded sigmoid")
+            else:
+                raise ValueError("unknown tau prior: %s"%tau_prior)
 
 
             print("s_local = %s "%s_local)
@@ -2006,12 +2012,13 @@ def make_model(  priors,
                 print("L_small_3 = %s "%L_small_3)
                 print("U3 = %s "%U3)
 
-                #tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
-                
-                # eta3 = pm.Normal("eta3", 0.0, 1.0)
-                # tau3 = pm.Deterministic("tau3", L_small_3 + (U3 - L_small_3) * pm.math.sigmoid(eta3))
-
-                tau3 = bounded_sigmoid("tau3", L_small_3, U3, raw_sigma=1.5, )
+                if tau_prior=='flat':
+                    tau3 = pm.Uniform("tau3", lower=L_small_3, upper=U3,initval= (U3 / 2.0 )  )
+                elif tau_prior=='bounded_sigmoid':
+                    # eta3 = pm.Normal("eta3", 0.0, 1.0)
+                    # tau3 = pm.Deterministic("tau3", L_small_3 + (U3 - L_small_3) * pm.math.sigmoid(eta3))
+    
+                    tau3 = bounded_sigmoid("tau3", L_small_3, U3, raw_sigma=1.5, )
         
                 
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))

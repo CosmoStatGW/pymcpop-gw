@@ -115,6 +115,8 @@ def main():
     parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
     parser.add_argument("--DP_m1_env", default=0, type=int, required=False)
     parser.add_argument("--M_active", default=5, type=int, required=False)
+    parser.add_argument("--tau_prior", default='flat', type=str, required=False)
+    
     
     
     
@@ -852,6 +854,7 @@ def main():
                                     L_small_1 = FLAGS.L_small_1,
                                     L_small_2 = FLAGS.L_small_2,
                                     L_small_3 = FLAGS.L_small_3,
+                                    tau_prior = FLAGS.tau_prior,
                                     alpha_inv_params = FLAGS.alpha_inv_params,
                                     M_active = FLAGS.M_active,
                                     s_local = FLAGS.s_local,
