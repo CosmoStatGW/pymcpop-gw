@@ -1782,44 +1782,47 @@ def make_model(  priors,
                 alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
-    
-                
-                # beta_init = np.full(N_DP_comp_max_np, 0.02)
-                # beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
 
-                # ---- build target initial weights w_init first, then convert to beta_init ----
-                # almost-flat active weights, with a tiny decreasing trend
-                tail_mass_frac = 0.02          # 2% total mass left for inactive tail
-                active_mass = 1.0 - tail_mass_frac
-                tail_mass = tail_mass_frac
-                
-                n_tail = N_DP_comp_max_np - M_active
-                
-                # active weights: almost flat, mildly decreasing
-                # example profile: 1.0, 0.98, 0.96, ...
-                active_profile = np.linspace(1.0, 0.9, M_active)
-                active_profile = active_profile / active_profile.sum()
-                w_active = active_mass * active_profile
-                
-                # tail weights: tiny but nonzero
-                if n_tail > 0:
-                    w_tail = np.full(n_tail, tail_mass / n_tail)
-                    w_init = np.concatenate([w_active, w_tail])
+                if M_active==0:
+                    beta_init = np.full(N_DP_comp_max_np, 0.02)
+                    beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
+                    print("Initializing beta with manual values")
+
                 else:
-                    w_init = w_active.copy()
-                
-                # convert target stick weights to beta init
-                beta_init = np.zeros(N_DP_comp_max_np)
-                remaining = 1.0
-                eps_beta = 1e-6
-                for k in range(N_DP_comp_max_np):
-                    if k == N_DP_comp_max_np - 1:
-                        # last beta is irrelevant for truncated stick-breaking, but keep in bounds
-                        beta_init[k] = 0.5
+                    print("Initializing beta with %s active components"%M_active)
+                    # ---- build target initial weights w_init first, then convert to beta_init ----
+                    # almost-flat active weights, with a tiny decreasing trend
+                    tail_mass_frac = 0.02          # 2% total mass left for inactive tail
+                    active_mass = 1.0 - tail_mass_frac
+                    tail_mass = tail_mass_frac
+                    
+                    n_tail = N_DP_comp_max_np - M_active
+                    
+                    # active weights: almost flat, mildly decreasing
+                    # example profile: 1.0, 0.98, 0.96, ...
+                    active_profile = np.linspace(1.0, 0.9, M_active)
+                    active_profile = active_profile / active_profile.sum()
+                    w_active = active_mass * active_profile
+                    
+                    # tail weights: tiny but nonzero
+                    if n_tail > 0:
+                        w_tail = np.full(n_tail, tail_mass / n_tail)
+                        w_init = np.concatenate([w_active, w_tail])
                     else:
-                        frac = w_init[k] / max(remaining, 1e-12)
-                        beta_init[k] = np.clip(frac, eps_beta, 1.0 - eps_beta)
-                        remaining -= w_init[k]
+                        w_init = w_active.copy()
+                    
+                    # convert target stick weights to beta init
+                    beta_init = np.zeros(N_DP_comp_max_np)
+                    remaining = 1.0
+                    eps_beta = 1e-6
+                    for k in range(N_DP_comp_max_np):
+                        if k == N_DP_comp_max_np - 1:
+                            # last beta is irrelevant for truncated stick-breaking, but keep in bounds
+                            beta_init[k] = 0.5
+                        else:
+                            frac = w_init[k] / max(remaining, 1e-12)
+                            beta_init[k] = np.clip(frac, eps_beta, 1.0 - eps_beta)
+                            remaining -= w_init[k]
 
     
                 beta = pm.Beta("beta", 1.0, alpha, dims="component" , initval=beta_init)
@@ -1879,18 +1882,11 @@ def make_model(  priors,
             
             mu1_init = np.full(N_DP_comp_max_np, mu1_center)
             mu2_init = np.full(N_DP_comp_max_np, mu2_center)
-            
-            mu1_init[:M_active] = np.linspace(
-                lowmu1 + 0.1 * (upmu1 - lowmu1),
-                upmu1  - 0.1 * (upmu1 - lowmu1),
-                M_active
-            )
-            
-            mu2_init[:M_active] = np.linspace(
-                lowmu2 + 0.1 * (upmu2 - lowmu2),
-                upmu2  - 0.1 * (upmu2 - lowmu2),
-                M_active
-            )
+
+            if M_active>0:
+                mu1_init[:M_active] = np.linspace( lowmu1 + 0.1 * (upmu1 - lowmu1),upmu1  - 0.1 * (upmu1 - lowmu1), M_active)
+                mu2_init[:M_active] = np.linspace( lowmu2 + 0.1 * (upmu2 - lowmu2), upmu2  - 0.1 * (upmu2 - lowmu2), M_active )
+                
      
             mu1 = pm.Uniform(
                 'mulMc',
@@ -1917,11 +1913,8 @@ def make_model(  priors,
 
                 mu3_center = (lowmu3 + upmu3) / 2.0
                 mu3_init = np.full(N_DP_comp_max_np, mu3_center)
-                mu3_init[:M_active] = np.linspace(
-                    lowmu3 + 0.1 * (upmu3 - lowmu3),
-                    upmu3  - 0.1 * (upmu3 - lowmu3),
-                    M_active
-                )
+                if M_active>0:
+                    mu3_init[:M_active] = np.linspace( lowmu3 + 0.1 * (upmu3 - lowmu3), upmu3  - 0.1 * (upmu3 - lowmu3), M_active )
             
                 mu3 = pm.Uniform(
                     'mulz',
@@ -1950,23 +1943,6 @@ def make_model(  priors,
             print("U1 = %s "%U1)
             print("U2 = %s "%U2)
 
-
-            # # Fréchet shape for 1D marginal: alpha = d/2 with d=1 -> 0.5
-            # print("P( sigma < L_small ) = %s "%alpha_small)
-
-            # alpha_shape = 0.5
-            #lambda_ell_1 = -at.log(alpha_small) * L_small_1**(alpha_shape) # small scale
-            #lambda_ell_2 = -at.log(alpha_small) * L_small_2**(alpha_shape) # small scale
-            
-            # tau1 = pm.CustomDist("tau1", lambda_ell_1, 1,
-            #               logp=atools.frechet_logp_full,
-            #               transform=tr.log, initval=0.2,
-            #               random=atools.frechet_random, )
-
-            # tau2 = pm.CustomDist("tau2", lambda_ell_2, 1,
-            #               logp=atools.frechet_logp_full,
-            #               transform=tr.log, initval=0.2,
-            #               random=atools.frechet_random, )
 
             if tau_prior=='flat':
                 tau1 = pm.Uniform("tau1", lower=L_small_1, upper=U1, initval= (U1 / 2.0 )  )

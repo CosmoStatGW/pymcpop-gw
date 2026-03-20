@@ -114,7 +114,7 @@ def main():
     parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
     parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
     parser.add_argument("--DP_m1_env", default=0, type=int, required=False)
-    parser.add_argument("--M_active", default=5, type=int, required=False)
+    parser.add_argument("--M_active", default=0, type=int, required=False)
     parser.add_argument("--tau_prior", default='flat', type=str, required=False)
     
     
