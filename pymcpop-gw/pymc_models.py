@@ -1936,12 +1936,17 @@ def make_model(  priors,
 
                     print("oob constraint is %s "%oob.eval())
 
-                    
+                    if not pop_only:
                     # Event-level z
-                    zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_fine_), dims="event_index")
-                    
-                    # Event-level dc
-                    dc = pm.Deterministic("dc", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims="event_index")
+                        zs = pm.Deterministic("z", atools.atinterp(dval, dLGrid_at, zgrid_fine_), dims="event_index")
+                        
+                        # Event-level dc
+                        dc = pm.Deterministic("dc", atools.dcfun_at(zs, H0_, Om_, w0_, interp=False), dims="event_index")
+
+                    else:
+
+                        zs =  atools.atinterp(dval, dLGrid_at, zgrid_fine_)
+                        dc = atools.dcfun_at(zs, H0_, Om_, w0_, interp=False)
                     
                     # Distance ratio on grid (compute once)
                     distance_ratio_grid = at.exp(log_distance_ratio_grid_fine)
@@ -1969,10 +1974,16 @@ def make_model(  priors,
 
 
                     log_ddL_dz_at_z  = atools.atinterp(zs, zgrid_fine_, log_ddL_dz_grid)
-                    
-                    distance_ratio = pm.Deterministic("d_ratio", at.exp(log_dratio_at_z), dims="event_index")
-                    d_ratio_d_z    = pm.Deterministic("d_ratio_d_z", distance_ratio * grad_log_dr_at_z, dims="event_index")
-                    log_ddL_dz     = pm.Deterministic("log_ddL_dz", log_ddL_dz_at_z, dims="event_index")
+
+                    if not pop_only:
+                        distance_ratio = pm.Deterministic("d_ratio", at.exp(log_dratio_at_z), dims="event_index")
+                        d_ratio_d_z    = pm.Deterministic("d_ratio_d_z", distance_ratio * grad_log_dr_at_z, dims="event_index")
+                        log_ddL_dz     = pm.Deterministic("log_ddL_dz", log_ddL_dz_at_z, dims="event_index")
+
+                    else:
+                        distance_ratio = at.exp(log_dratio_at_z)
+                        d_ratio_d_z = distance_ratio * grad_log_dr_at_z
+                        log_ddL_dz = log_ddL_dz_at_z
                     
                     # Monotonicity barrier
                     print("monotonicity is %s"%monotonicity)
@@ -2196,7 +2207,7 @@ def make_model(  priors,
         # Put it all together
         if not pop_only:
             # just sum log likelihoods
-            likelihood_val = at.sum( log_p_pop ) #pm.Deterministic("lik", at.sum( log_p_pop ) ) 
+            likelihood_val = at.sum( log_p_pop ) 
         else:
             
         
