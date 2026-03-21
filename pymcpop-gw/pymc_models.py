@@ -279,6 +279,7 @@ def make_model(  priors,
                  DP_m1_env = False,
                  detach_var = False,
                  remove_spin_prior=False,
+                 m_high_spread = 1.
                 ):
 
 
@@ -1393,7 +1394,7 @@ def make_model(  priors,
                 delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
                 
                 mu_delta    = at.log(delta_med)
-                sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+                sigma_delta = m_high_spread*(at.log(delta_q95) - mu_delta) / NORM_Q95
                 
                 delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta)
                 m_high_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
@@ -1563,13 +1564,13 @@ def make_model(  priors,
             delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
             
             mu_delta    = at.log(delta_med)
-            sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+            sigma_delta = m_high_spread*(at.log(delta_q95) - mu_delta) / NORM_Q95
 
             # pick a high starting point
             delta_med_val = max(mmax_median - mhigh_floor, 1e-6)
             delta_q95_val = max(mmax_q95    - mhigh_floor, 1e-6)
             mu_delta_val    = np.log(delta_med_val)
-            sigma_delta_val = (np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
+            sigma_delta_val = m_high_spread*(np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
             
             zhigh = 2.
             delta_init = np.exp(mu_delta_val + zhigh * sigma_delta_val)

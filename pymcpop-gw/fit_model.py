@@ -226,6 +226,8 @@ def main():
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
     parser.add_argument("--reparam_z", default=0, type=int, required=False)
     parser.add_argument("--reparam_cosmo", default=0, type=int, required=False)
+    parser.add_argument("--m_high_spread", default=1, type=float, required=False)
+    
 
     parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
 
@@ -908,6 +910,7 @@ def main():
                                 priors_for_mmin=priors_for_mmin,
                                 detach_var = FLAGS.detach_var,
                                 remove_spin_prior = FLAGS.remove_spin_prior
+                                m_high_spread = FLAGS.m_high_spread
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
