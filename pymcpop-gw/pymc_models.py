@@ -1778,7 +1778,7 @@ def make_model(  priors,
 
                 M_active = min(M_active, N_DP_comp_max_np)
                 
-                alpha_inv_init = 1.0 #alpha_inv_params[0] / alpha_inv_params[1]
+                alpha_inv_init = 10.0 #alpha_inv_params[0] / alpha_inv_params[1]
                 alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
                 print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
                 alpha = 1/alpha_inv
@@ -1886,6 +1886,9 @@ def make_model(  priors,
             if M_active>0:
                 mu1_init[:M_active] = np.linspace( lowmu1 + 0.1 * (upmu1 - lowmu1),upmu1  - 0.1 * (upmu1 - lowmu1), M_active)
                 mu2_init[:M_active] = np.linspace( lowmu2 + 0.1 * (upmu2 - lowmu2), upmu2  - 0.1 * (upmu2 - lowmu2), M_active )
+
+            else:
+                print("mu1, 2 initialized at mu_center")
                 
      
             mu1 = pm.Uniform(
@@ -2025,7 +2028,7 @@ def make_model(  priors,
 
                 print("DP mixture will be truncated at lower edge.")
 
-                mmin_ = floored_lognormal_q95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5))
+                mmin_ = floored_lognormal_q95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5) )
 
             
             else:
@@ -2035,6 +2038,7 @@ def make_model(  priors,
 
                 print("DP mixture will be truncated at upper edge.")
                 
+                # mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 100.))
 
                 
                 # --- delta = mmax - mmin ---
@@ -2049,6 +2053,19 @@ def make_model(  priors,
                 # delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
                 # mmax_ = pm.Deterministic("mmax_DP", mmin_ + delta_mmax)
 
+                # mhigh_floor = priors["mmax_DP"][0]
+                # mmax_median = 0.5 * (priors["mmax_DP"][0] + priors["mmax_DP"][1])
+                # mmax_q95    = priors["mmax_DP"][1]
+                
+                # delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
+                # delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                
+                # mu_delta    = at.log(delta_med)
+                # sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+                
+                # delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
+                # mmax_     = pm.Deterministic("mmax_DP", mhigh_floor + delta_mmax)
+
                 mhigh_floor = priors["mmax_DP"][0]
                 mmax_median = 0.5 * (priors["mmax_DP"][0] + priors["mmax_DP"][1])
                 mmax_q95    = priors["mmax_DP"][1]
@@ -2058,9 +2075,22 @@ def make_model(  priors,
                 
                 mu_delta    = at.log(delta_med)
                 sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+    
+                # pick a high starting point
+                delta_med_val = max(mmax_median - mhigh_floor, 1e-6)
+                delta_q95_val = max(mmax_q95    - mhigh_floor, 1e-6)
+                mu_delta_val    = np.log(delta_med_val)
+                sigma_delta_val = (np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
                 
-                delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
-                mmax_     = pm.Deterministic("mmax_DP", mhigh_floor + delta_mmax)
+                zhigh = 2.
+                delta_init = np.exp(mu_delta_val + zhigh * sigma_delta_val)
+    
+                
+                delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta, initval=delta_init)
+                mmax_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
+
+                print("Init m_max DP: %s"%mmax_.eval())
+
 
             else:
                 mmax_ = 10000.

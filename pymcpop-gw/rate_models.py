@@ -24,7 +24,7 @@ def log_psi_z_MD(bk, z, gamma, kappa, zp):
     return log_psiz
 
 
-def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, E=None, x01=None, w01=None):
+def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, E=None, integrate_dc='quick'):
     """
     log p(z) up to a normalization constant:
       log_psi_MD(z) + log(dV/dz)
@@ -32,9 +32,7 @@ def log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, *, dc=None, E=None, x
     If dc is not provided, it will be computed from (x01, w01).
     """
     if dc is None:
-        if x01 is None or w01 is None:
-            raise ValueError("log_p_z_MD_unnorm: dc is None, so you must pass x01 and w01.")
-        dc = dcfun_quad(bk, z, H0, Om, w0, x01, w01)
+        dc = dcfun_quad(bk, z, H0, Om, w0, integrate_dc=integrate_dc) 
     if E is None:
         E = Efun(bk, z, Om, w0)
 
