@@ -1386,7 +1386,14 @@ def make_model(  priors,
                 
                 
                 if force_uniform_mhigh:
-                    m_high_   = pm.Uniform("m_high",      lower=priors["m_high"][0],      upper=priors["m_high"][1],      initval=ivals.get("m_high", 150)) 
+
+                    init_mhigh = ivals.get("m_high", 150)
+                    
+                    if init_mhigh>priors["m_high"][1]:
+
+                        init_mhigh = 0.5*(priors["m_high"][1]+priors["m_high"][0])             
+                    
+                    m_high_   = pm.Uniform("m_high", lower=priors["m_high"][0], upper=priors["m_high"][1], initval=init_mhigh) 
 
                     print("Forcing uniform prior on m_high")
 
