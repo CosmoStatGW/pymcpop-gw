@@ -1790,14 +1790,22 @@ def make_model(  priors,
                 print("Prior for the process is stick-breaking")
                 #### Stick Breaking Prior
                  
-                if DP_prior=='SB_gamma':
+                if DP_prior=='SB_gamma_alpha_inv':
 
                 
                     alpha_inv_init = 10.0 #alpha_inv_params[0] / alpha_inv_params[1]
                     alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
                     print("alpha_inv prior is Gamma with parameters %s"%str(alpha_inv_params))
                     alpha = 1/alpha_inv
+                
+                
+                elif DP_prior=='SB_gamma_alpha':
 
+                    alpha = pm.Gamma("alpha_SB", alpha_inv_params[0], alpha_inv_params[1], initval=1. )
+                    print("alpha prior is Gamma with parameters %s"%str(alpha_inv_params))
+
+                    alpha_inv = pm.Deterministic("alpha_inv", 1 / alpha)
+                    
                 elif DP_prior=='SB_ln':
 
             
