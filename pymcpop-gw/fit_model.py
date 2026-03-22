@@ -108,7 +108,7 @@ def main():
     parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
     parser.add_argument("--q_mbound", default=0.05, type=float, required=False)
     parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
-    parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
+    parser.add_argument("--DP_prior", default='SB_ln', type=str, required=False) # SB, dirichelet, softmax
     parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
     parser.add_argument("--gamma_DP_params", nargs='+', type=float, default=[1., 1.], required=False)
     parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
@@ -909,7 +909,7 @@ def main():
                                 reparam_cosmo = FLAGS.reparam_cosmo,
                                 priors_for_mmin=priors_for_mmin,
                                 detach_var = FLAGS.detach_var,
-                                remove_spin_prior = FLAGS.remove_spin_prior
+                                remove_spin_prior = FLAGS.remove_spin_prior,
                                 m_high_spread = FLAGS.m_high_spread
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")

@@ -260,7 +260,7 @@ def make_model(  priors,
                  save_thetas=False,
                  interp_inj=True,
                  param='vanilla',
-                 DP_prior='SB',
+                 DP_prior='SB_ln',
                  sigma_softmax=0.75,
                  gamma_DP_params = (4, 0.8),
                  is_observed = False,
@@ -1772,17 +1772,50 @@ def make_model(  priors,
 
             print("Modeling mass distribution as Dirichelet Process. Max number of components: %s"%N_DP_comp_max)
 
-            if DP_prior=='SB':
+            if 'SB' in DP_prior:
 
                 print("Prior for the process is stick-breaking")
                 #### Stick Breaking Prior
+                 
+                if DP_prior=='SB_gamma':
 
-                M_active = min(M_active, N_DP_comp_max_np)
                 
-                alpha_inv_init = 10.0 #alpha_inv_params[0] / alpha_inv_params[1]
-                alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
-                print("alpha_inv prior has parameters %s"%str(alpha_inv_params))
-                alpha = 1/alpha_inv
+                    alpha_inv_init = 10.0 #alpha_inv_params[0] / alpha_inv_params[1]
+                    alpha_inv = pm.Gamma("alpha_inv", alpha_inv_params[0], alpha_inv_params[1], initval=alpha_inv_init )
+                    print("alpha_inv prior is Gamma with parameters %s"%str(alpha_inv_params))
+                    alpha = 1/alpha_inv
+
+                elif DP_prior=='SB_ln':
+
+            
+                    # ---- prior on log(alpha_inv) ----
+                    # median(alpha_inv) = exp(mu_log_alpha_inv)
+                    mu_log_alpha_inv = np.log(1.0)
+                    sigma_log_alpha_inv = 0.5
+                    
+                    # initialize alpha_inv at 1
+                    log_alpha_inv_init = np.log(1.0)
+                    
+                    log_alpha_inv = pm.Normal(
+                        "log_alpha_inv",
+                        mu=mu_log_alpha_inv,
+                        sigma=sigma_log_alpha_inv,
+                        initval=log_alpha_inv_init,
+                    )
+
+                
+                    
+                    alpha_inv = pm.Deterministic("alpha_inv", at.exp(log_alpha_inv))
+                    #alpha = pm.Deterministic("alpha", at.exp(-log_alpha_inv))
+                    alpha = at.exp(-log_alpha_inv)
+
+                    print(f"log(alpha_inv) prior: Normal(mu={mu_log_alpha_inv}, sigma={sigma_log_alpha_inv})")
+                    print("alpha_inv init =", np.exp(log_alpha_inv_init))
+                    print("alpha init =", np.exp(-log_alpha_inv_init))
+
+           
+                
+                M_active = min(M_active, N_DP_comp_max_np)
 
                 if M_active==0:
                     beta_init = np.full(N_DP_comp_max_np, 0.02)
@@ -1846,6 +1879,8 @@ def make_model(  priors,
                 print("# comps for 90% mass:", np.searchsorted(np.cumsum(np.sort(w0)[::-1]), 0.90) + 1)
 
 
+   
+                
             elif DP_prior=='dirichelet':
                 print("Prior for the process is dirichelet")
 
