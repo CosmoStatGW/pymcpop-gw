@@ -279,7 +279,8 @@ def make_model(  priors,
                  DP_m1_env = False,
                  detach_var = False,
                  remove_spin_prior=False,
-                 m_high_spread = 1.
+                 m_high_spread = 1. ,
+                force_uniform_mhigh=False
                 ):
 
 
@@ -1384,20 +1385,25 @@ def make_model(  priors,
 
                 
                 
+                if force_uniform_mhigh:
+                    m_high_   = pm.Uniform("m_high",      lower=priors["m_high"][0],      upper=priors["m_high"][1],      initval=ivals.get("m_high", 150)) 
 
-   
-                mhigh_floor = priors["m_high"][0]
-                mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
-                mmax_q95    = priors["m_high"][1]
-                
-                delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
-                delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
-                
-                mu_delta    = at.log(delta_med)
-                sigma_delta = m_high_spread*(at.log(delta_q95) - mu_delta) / NORM_Q95
-                
-                delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta)
-                m_high_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
+                    print("Forcing uniform prior on m_high")
+
+                else:
+                    
+                    mhigh_floor = priors["m_high"][0]
+                    mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
+                    mmax_q95    = priors["m_high"][1]
+                    
+                    delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
+                    delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                    
+                    mu_delta    = at.log(delta_med)
+                    sigma_delta = m_high_spread*(at.log(delta_q95) - mu_delta) / NORM_Q95
+                    
+                    delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta)
+                    m_high_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
                 
     
                 
