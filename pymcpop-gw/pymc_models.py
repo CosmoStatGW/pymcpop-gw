@@ -2058,7 +2058,8 @@ def make_model(  priors,
         
                 
                 # eps3 = pm.SkewNormal("eps3", mu=0, sigma=s_local, alpha=+2, dims=("component",), initval=np.zeros(N_DP_comp_max_np).astype(X))
-                eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=np.zeros(N_DP_comp_max_np)) #.astype(X))
+                eps3 = pm.Normal("eps3", 0.0, s_local, dims=("component",), initval=0.01
+                             *np.random.randn(N_DP_comp_max_np) ) #.astype(X))
                 sig3 = pm.Deterministic("sig3", tau3 * at.exp(eps3), dims="component")  
 
                 sigs = at.stack([sig1, sig2, sig3], axis=0)
@@ -2085,7 +2086,22 @@ def make_model(  priors,
 
                 print("DP mixture will be truncated at lower edge.")
 
-                mmin_ = floored_lognormal_q95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5) )
+                #mmin_ = floored_lognormal_q95("mmin_DP", priors["mmin_DP"][0], priors["mmin_DP"][1], initval=ivals.get("mmin_DP", 3.5) )
+
+                
+                # HalfNormal with "typical max" = priors['mmin_'][1] at ~95% quantile
+                HN_Q95_TO_SIGMA = 1.959963984540054  # Phi^{-1}(0.975)
+                mmin_DP_floor = priors["mmin_DP"][0]
+                mmin_DP_typmax = priors["mmin_DP"][1]
+                raw_typ_mmin_DP = max(1e-12, mmin_DP_typmax - mmin_DP_floor)  # interpret typmax as final 95% point
+                mmin_DP_sigma = raw_typ_mmin_DP / HN_Q95_TO_SIGMA
+                
+                sigmat_raw_init = None
+                ival = ivals.get("mmin_DP", 3.5)
+                mmin_DP_raw_init = max(0.0, ival - mmin_DP_floor)
+                
+                mmin_DP_raw = pm.HalfNormal("mmin_DP_raw", sigma=mmin_DP_sigma, initval=mmin_DP_raw_init)
+                mmin_ = pm.Deterministic("mmin_DP", mmin_DP_floor + mmin_DP_raw)
 
             
             else:
@@ -2123,30 +2139,35 @@ def make_model(  priors,
                 # delta_mmax = pm.LogNormal("delta_mmax", mu=mu_delta, sigma=sigma_delta)
                 # mmax_     = pm.Deterministic("mmax_DP", mhigh_floor + delta_mmax)
 
-                mhigh_floor = priors["mmax_DP"][0]
-                mmax_median = 0.5 * (priors["mmax_DP"][0] + priors["mmax_DP"][1])
-                mmax_q95    = priors["mmax_DP"][1]
+                ##########
+                # close to what is done in DPLDP
                 
-                delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
-                delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                # mhigh_floor = priors["mmax_DP"][0]
+                # mmax_median = 0.5 * (priors["mmax_DP"][0] + priors["mmax_DP"][1])
+                # mmax_q95    = priors["mmax_DP"][1]
                 
-                mu_delta    = at.log(delta_med)
-                sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
+                # delta_med = at.maximum(mmax_median - mhigh_floor, 1e-6)
+                # delta_q95 = at.maximum(mmax_q95    - mhigh_floor, 1e-6)
+                
+                # mu_delta    = at.log(delta_med)
+                # sigma_delta = (at.log(delta_q95) - mu_delta) / NORM_Q95
     
-                # pick a high starting point
-                delta_med_val = max(mmax_median - mhigh_floor, 1e-6)
-                delta_q95_val = max(mmax_q95    - mhigh_floor, 1e-6)
-                mu_delta_val    = np.log(delta_med_val)
-                sigma_delta_val = (np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
+                # # pick a high starting point
+                # delta_med_val = max(mmax_median - mhigh_floor, 1e-6)
+                # delta_q95_val = max(mmax_q95    - mhigh_floor, 1e-6)
+                # mu_delta_val    = np.log(delta_med_val)
+                # sigma_delta_val = (np.log(delta_q95_val) - mu_delta_val) / NORM_Q95
                 
-                zhigh = 2.
-                delta_init = np.exp(mu_delta_val + zhigh * sigma_delta_val)
+                # zhigh = 2.
+                # delta_init = np.exp(mu_delta_val + zhigh * sigma_delta_val)
     
                 
-                delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta, initval=delta_init)
-                mmax_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
+                # delta_mhigh = pm.LogNormal("delta_mhigh", mu=mu_delta, sigma=sigma_delta, initval=delta_init)
+                # mmax_     = pm.Deterministic("m_high", mhigh_floor + delta_mhigh)
 
-                print("Init m_max DP: %s"%mmax_.eval())
+                # print("Init m_max DP: %s"%mmax_.eval())
+
+                mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 150 ))
 
 
             else:
