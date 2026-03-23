@@ -65,10 +65,10 @@ NORM_Q99 = 2.5758293035489004
 # For bounded-sigmoid params, choose raw sd so that 95% maps to ~[0.05, 0.95]
 RAW_SD_95 = 1.502  # since sigmoid(±1.96*RAW_SD_95) ≈ 0.05 / 0.95
 
-def normal_from_bounds_95(name, low, high, initval=None):
+def normal_from_bounds_95(name, low, high, initval=None, qnorm=NORM_Q95):
     """Interpret [low, high] as central 95% of a Normal."""
     mu = 0.5 * (low + high)
-    sigma = (high - low) / (2.0 * NORM_Q95)
+    sigma = (high - low) / (2.0 * qnorm)
     return pm.Normal(name, mu=mu, sigma=sigma, initval=initval)
 
 
@@ -777,6 +777,7 @@ def make_model(  priors,
     
     if build:
 
+        print("Building unique z grid.")
         zgrid = atools.make_z_grid(
             total=zres,
             zmin_a=zmin_a, zmin_b=zmin_b, zmid_b=zmid_b, zmax_c=zmax_c, mode=z_grid_mode
@@ -2167,7 +2168,7 @@ def make_model(  priors,
 
                 # print("Init m_max DP: %s"%mmax_.eval())
 
-                mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 150 ))
+                mmax_ = normal_from_bounds_95("mmax_DP", priors["mmax_DP"][0], priors["mmax_DP"][1], initval=ivals.get("mmax_DP", 150 ), qnorm=NORM_Q99 )
 
 
             else:
