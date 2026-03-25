@@ -1064,6 +1064,10 @@ def _softplus_stable(x):
     return at.maximum(x, 0.0) + at.log1p(at.exp(-at.abs(x)))
 
 
+def _isfinite_pt(x):
+    return (~at.isnan(x)) & (~at.isinf(x))
+
+
 def _inv_softplus_stable(y, eps=1e-8):
     y_safe = at.switch(_isfinite_pt(y), y, eps)
     y_safe = at.maximum(y_safe, eps)
@@ -1130,7 +1134,7 @@ def z_from_dL_at_monotone(
         x_nodes_1d = Z_nodes
 
     f_nodes = gp.prior("f", X=X_nodes, reparameterize=True)  # (N_nodes,)
-_fine = atinterp(x_fine, x_nodes_1d, f_nodes)           # (N_fine,)
+    f_fine = atinterp(x_fine, x_nodes_1d, f_nodes)           # (N_fine,)
 
     # --- b(z)=d/dz log dL_EM on nodes + fine ---
     b_nodes = d_log_dLEM_dz(Z_nodes, H0, Om, w0)
