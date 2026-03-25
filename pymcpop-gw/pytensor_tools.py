@@ -1059,8 +1059,24 @@ def z_from_dL_at_0(
     return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
 
 
+def _softplus_stable(x):
+    # numerically stable softplus
+    return at.maximum(x, 0.0) + at.log1p(at.exp(-at.abs(x)))
 
-def _inv_softplus_stable(y):
+def _inv_softplus_stable(y, eps=1e-12):
+    """
+    Stable inverse of softplus for y > 0:
+        inv_softplus(y) = y + log(1 - exp(-y))
+                        = y + log(-expm1(-y))
+    """
+    # Maximum does NOT cure NaNs: maximum(NaN, eps) -> NaN
+    y_safe = at.switch(at.isfinite(y), at.maximum(y, eps), eps)
+
+    # stable inverse-softplus
+    return y_safe + at.log(-at.expm1(-y_safe))
+
+
+def _inv_softplus_stable_base(y):
     """
     Stable inverse of softplus for y>0:
       softplus(x)=log(1+exp(x))
@@ -1129,6 +1145,12 @@ def z_from_dL_at_monotone(
     # --- GR-centered mean function mu_u = inv_softplus(b-eps) ---
     y_nodes = at.maximum(b_nodes - eps_q, 1e-12)
     y_fine  = at.maximum(b_fine  - eps_q, 1e-12)
+
+    y_nodes = at.switch(at.isfinite(y_nodes), at.maximum(y_nodes, 1e-12), 1e-12)
+    y_fine  = at.switch(at.isfinite(y_fine),  at.maximum(y_fine,  1e-12), 1e-12)
+
+    
+    
     mu_u_nodes = _inv_softplus_stable(y_nodes)
     mu_u_fine  = _inv_softplus_stable(y_fine)
 
@@ -1136,8 +1158,14 @@ def z_from_dL_at_monotone(
     u_nodes = mu_u_nodes + f_nodes
     u_fine  = mu_u_fine  + f_fine
 
-    q_nodes = eps_q + at.softplus(u_nodes)
-    q_fine  = eps_q + at.softplus(u_fine)
+    u_nodes = at.switch(at.isfinite(u_nodes), u_nodes, 0.0)
+    u_fine  = at.switch(at.isfinite(u_fine),  u_fine,  0.0)
+
+
+    #q_nodes = eps_q + at.softplus(u_nodes)
+    #q_fine  = eps_q + at.softplus(u_fine)
+    q_nodes = eps_q + _softplus_stable(u_nodes)
+    q_fine  = eps_q + _softplus_stable(u_fine)
 
     g_nodes = q_nodes - b_nodes
     g_fine  = q_fine  - b_fine
