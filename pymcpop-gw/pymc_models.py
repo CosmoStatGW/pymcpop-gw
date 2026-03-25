@@ -1026,8 +1026,7 @@ def make_model(  priors,
         # Redshift evolution of merger rate
         ################################################
         
-        if rate_mode
-        l=='MD' or rate_model=='DPUC-vol-MD':
+        if rate_model=='MD' or rate_model=='DPUC-vol-MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
 
