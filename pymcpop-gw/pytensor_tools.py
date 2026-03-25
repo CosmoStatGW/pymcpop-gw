@@ -2058,13 +2058,25 @@ def truncGausslowerupper_at_lpdf(x, loc, scale, xmin=0, xmax=1):
                     -at.log(scale)-0.5*at.log(2*PI)-at.log(Phibeta-Phialpha) + 0.5*(-(x-loc)**2/(scale**2)) , MIN)
 
 
-def _log_ndtr(z):
+def _log_ndtr_unsafe(z):
     """
     log Phi(z) computed as log(0.5*erfc(-z/sqrt(2))).
     This is reasonably stable and returns -inf in extreme left tail (OK).
     """
     sqrt2 = at.sqrt(2.0)
     return at.log(0.5) + at.log(at.erfc(-z / sqrt2))
+
+
+def _log_ndtr(bk, z):
+    """
+    log Phi(z) using erf. Good enough for most parameter ranges.
+    (If you need extreme-tail stability, can swap in a better approximation.)
+    """
+    sqrt2 = bk.sqrt(2.0)
+    Phi = 0.5 * (1.0 + bk.erf(z / sqrt2))
+    # guard against log(0)
+    Phi = bk.clip(Phi, 1e-300, jnp.inf)
+    return bk.log(Phi)
 
 
 def truncGausslowerupper_at_lpdf_safe(x, loc, scale, xmin=0.0, xmax=1.0,
