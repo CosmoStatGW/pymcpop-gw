@@ -233,6 +233,7 @@ def make_model(  priors,
                 fix_Om = True,
                fix_w0 = True,
                  fix_Xi0n = True,
+                 fix_rate = False,
                  integrate_dc = 'trapz',
                  z_pivot=0.5,
                pade=False,
@@ -1025,26 +1026,33 @@ def make_model(  priors,
         # Redshift evolution of merger rate
         ################################################
         
-        if rate_model=='MD' or rate_model=='DPUC-vol-MD':
+        if rate_mode
+        l=='MD' or rate_model=='DPUC-vol-MD':
             
             print('Modeling evolution of merger rate with redshift with Madau-Dickinson profile')
 
-            if not reparam_z:
-                gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
-                kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
-                zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+            if fix_rate:
+                gamma_ = pm.Deterministic('gamma', at.as_tensor_variable(3.2))    
+                kappa_ = pm.Deterministic('kappa', at.as_tensor_variable(3))
+                zp_ = pm.Deterministic('zp', at.as_tensor_variable(2))
 
-            else:
-                print("Reparametrized prior for z")
-
-                gamma_a, gamma_b = priors["gamma"]
-                kappa_a, kappa_b = priors["kappa"]
-                zp_a, zp_b       = priors["zp"]
-                
-                gamma_ = bounded_sigmoid("gamma", gamma_a, gamma_b, raw_sigma = 1.5, initval=ivals.get('gamma') )
-                kappa_ = bounded_sigmoid("kappa", kappa_a, kappa_b, raw_sigma=1, initval=ivals.get('kappa') )
-                zp_    = bounded_sigmoid("zp",    zp_a,    zp_b,    raw_sigma=1, initval=ivals.get('zp') )
-
+            else:            
+                if not reparam_z:
+                    gamma_ = pm.Uniform('gamma', lower=priors['gamma'][0], upper=priors['gamma'][1], initval=ivals.get('gamma'))    
+                    kappa_ = pm.Uniform('kappa', lower=priors['kappa'][0], upper=priors['kappa'][1], initval=ivals.get('kappa'))
+                    zp_ = pm.Uniform('zp', lower=priors['zp'][0], upper=priors['zp'][1], initval=ivals.get('zp'))
+    
+                else:
+                    print("Reparametrized prior for z")
+    
+                    gamma_a, gamma_b = priors["gamma"]
+                    kappa_a, kappa_b = priors["kappa"]
+                    zp_a, zp_b       = priors["zp"]
+                    
+                    gamma_ = bounded_sigmoid("gamma", gamma_a, gamma_b, raw_sigma = 1.5, initval=ivals.get('gamma') )
+                    kappa_ = bounded_sigmoid("kappa", kappa_a, kappa_b, raw_sigma=1, initval=ivals.get('kappa') )
+                    zp_    = bounded_sigmoid("zp",    zp_a,    zp_b,    raw_sigma=1, initval=ivals.get('zp') )
+    
             
        
             Lambda_ += [gamma_, kappa_, zp_]

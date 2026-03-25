@@ -198,6 +198,7 @@ def main():
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
     parser.add_argument("--fix_Om", default=1, type=int, required=False)
     parser.add_argument("--fix_w0", default=1, type=int, required=False)
+    parser.add_argument("--fix_rate", default=0, type=int, required=False)
     parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
     parser.add_argument("--z_pivot", default=0, type=float, required=False)
     parser.add_argument("--integrate_dc", default='trapz', type=str, required=False)
@@ -870,6 +871,7 @@ def main():
                                     fix_H0 = FLAGS.fix_H0,
                                     fix_Om = FLAGS.fix_Om,
                                     fix_w0 = FLAGS.fix_w0,
+                                    fix_rate = FLAGS.fix_rate,
                                     fix_Xi0n = FLAGS.fix_Xi0n,
                                     z_pivot=FLAGS.z_pivot,
                                     integrate_dc = FLAGS.integrate_dc,
