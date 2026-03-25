@@ -1063,16 +1063,10 @@ def _softplus_stable(x):
     # numerically stable softplus
     return at.maximum(x, 0.0) + at.log1p(at.exp(-at.abs(x)))
 
-def _inv_softplus_stable(y, eps=1e-12):
-    """
-    Stable inverse of softplus for y > 0:
-        inv_softplus(y) = y + log(1 - exp(-y))
-                        = y + log(-expm1(-y))
-    """
-    # Maximum does NOT cure NaNs: maximum(NaN, eps) -> NaN
-    y_safe = at.switch(at.isfinite(y), at.maximum(y, eps), eps)
 
-    # stable inverse-softplus
+def _inv_softplus_stable(y, eps=1e-8):
+    y_safe = at.switch(_isfinite_pt(y), y, eps)
+    y_safe = at.maximum(y_safe, eps)
     return y_safe + at.log(-at.expm1(-y_safe))
 
 
@@ -1136,7 +1130,7 @@ def z_from_dL_at_monotone(
         x_nodes_1d = Z_nodes
 
     f_nodes = gp.prior("f", X=X_nodes, reparameterize=True)  # (N_nodes,)
-    f_fine = atinterp(x_fine, x_nodes_1d, f_nodes)           # (N_fine,)
+_fine = atinterp(x_fine, x_nodes_1d, f_nodes)           # (N_fine,)
 
     # --- b(z)=d/dz log dL_EM on nodes + fine ---
     b_nodes = d_log_dLEM_dz(Z_nodes, H0, Om, w0)
@@ -1146,10 +1140,9 @@ def z_from_dL_at_monotone(
     y_nodes = at.maximum(b_nodes - eps_q, 1e-12)
     y_fine  = at.maximum(b_fine  - eps_q, 1e-12)
 
-    y_nodes = at.switch(at.isfinite(y_nodes), at.maximum(y_nodes, 1e-12), 1e-12)
-    y_fine  = at.switch(at.isfinite(y_fine),  at.maximum(y_fine,  1e-12), 1e-12)
+    #y_nodes = at.switch(at.isfinite(y_nodes), at.maximum(y_nodes, 1e-12), 1e-12)
+    #y_fine  = at.switch(at.isfinite(y_fine),  at.maximum(y_fine,  1e-12), 1e-12)
 
-    
     
     mu_u_nodes = _inv_softplus_stable(y_nodes)
     mu_u_fine  = _inv_softplus_stable(y_fine)
@@ -1158,10 +1151,9 @@ def z_from_dL_at_monotone(
     u_nodes = mu_u_nodes + f_nodes
     u_fine  = mu_u_fine  + f_fine
 
-    u_nodes = at.switch(at.isfinite(u_nodes), u_nodes, 0.0)
-    u_fine  = at.switch(at.isfinite(u_fine),  u_fine,  0.0)
-
-
+    #u_nodes = at.switch(at.isfinite(u_nodes), u_nodes, 0.0)
+    #u_fine  = at.switch(at.isfinite(u_fine),  u_fine,  0.0)
+    
     #q_nodes = eps_q + at.softplus(u_nodes)
     #q_fine  = eps_q + at.softplus(u_fine)
     q_nodes = eps_q + _softplus_stable(u_nodes)
