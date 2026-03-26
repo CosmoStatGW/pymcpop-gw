@@ -874,9 +874,11 @@ def make_model(  priors,
 
         if ell_max>0:
             print("z_span found to be %s"%z_span)
-            print("Max length scale passed by hand, = %s. Using min(ell_max, z_span) "%ell_max)
-            ell_max = min( z_span, ell_max )   
+            print("Max length scale passed by hand, = %s. Using max(ell_max, z_span) "%ell_max)
+            ell_max = max( z_span, ell_max )   
         else:
+            print("z_span found to be %s"%z_span)
+            print("Using this z_span as ell_max.")
             ell_max = z_span
             
         
