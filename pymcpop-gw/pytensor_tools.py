@@ -20,6 +20,7 @@ from jax.numpy import array
 from jax.numpy import concatenate
 from jax.numpy import ones
 from jax.numpy import zeros
+from pytensor.raise_op import Assert
 
 
 import pade_cosmo as pc
@@ -529,7 +530,7 @@ def _interp_indices_nonuniform_safe(x, x_grid):
     x_clip = at.clip(x, x_grid[0], x_grid[-1])
 
     # insertion index in [0..N]
-    j = at.searchsorted(x_grid, x_clip, side="right")
+    j = at.searchsorted(x_grid, x_clip, side="left")
 
     # clamp to valid interpolation interval [1..N-1]
     j = at.clip(j, 1, N - 1)
@@ -1059,19 +1060,17 @@ def z_from_dL_at_0(
     return dLGrid_at, logXi_nodes, g_nodes, logXi_fine, g_fine
 
 
-def _softplus_stable(x):
+def _softplus_stable_noreg(x):
     # numerically stable softplus
     return at.maximum(x, 0.0) + at.log1p(at.exp(-at.abs(x)))
 
+def _softplus_stable(x):
+    return at.maximum(x, 0.0) + at.log1p(at.exp(-at.abs(x)))
 
-def _isfinite_pt(x):
-    return (~at.isnan(x)) & (~at.isinf(x))
 
-
-def _inv_softplus_stable(y, eps=1e-8):
-    y_safe = at.switch(_isfinite_pt(y), y, eps)
-    y_safe = at.maximum(y_safe, eps)
-    return y_safe + at.log(-at.expm1(-y_safe))
+def _inv_softplus_stable(y, eps=1e-12):
+    y = at.maximum(y, eps)
+    return y + at.log(-at.expm1(-y))
 
 
 def _inv_softplus_stable_base(y):
@@ -1082,6 +1081,14 @@ def _inv_softplus_stable_base(y):
     Works well for very small and very large y.
     """
     return y + at.log(-at.expm1(-y))
+
+def _isfinite_pt(x):
+    return (~at.isnan(x)) & (~at.isinf(x))
+
+
+def _assert_all_finite(x, name):
+    return Assert(name)(x, at.all(_isfinite_pt(x)))
+
 
 
 def z_from_dL_at_monotone(
@@ -1121,6 +1128,7 @@ def z_from_dL_at_monotone(
 
     if z_grid_fine is None:
         z_grid_fine = zGrid500_at
+        print("z grid fine was None. setting to 500")
     Z_fine = at.as_tensor_variable(z_grid_fine)
 
     # --- GP latent f on nodes (optionally in x=log1p(z)) ---
@@ -1144,28 +1152,33 @@ def z_from_dL_at_monotone(
     y_nodes = at.maximum(b_nodes - eps_q, 1e-12)
     y_fine  = at.maximum(b_fine  - eps_q, 1e-12)
 
-    #y_nodes = at.switch(at.isfinite(y_nodes), at.maximum(y_nodes, 1e-12), 1e-12)
-    #y_fine  = at.switch(at.isfinite(y_fine),  at.maximum(y_fine,  1e-12), 1e-12)
-
-    
-    mu_u_nodes = _inv_softplus_stable(y_nodes)
-    mu_u_fine  = _inv_softplus_stable(y_fine)
+    #mu_u_nodes = _inv_softplus_stable(y_nodes)
+    #mu_u_fine  = _inv_softplus_stable(y_fine)
 
     # --- monotone slope q and implied g ---
-    u_nodes = mu_u_nodes + f_nodes
-    u_fine  = mu_u_fine  + f_fine
+    #u_nodes = mu_u_nodes + f_nodes
+    #u_fine  = mu_u_fine  + f_fine
 
-    #u_nodes = at.switch(at.isfinite(u_nodes), u_nodes, 0.0)
-    #u_fine  = at.switch(at.isfinite(u_fine),  u_fine,  0.0)
-    
-    #q_nodes = eps_q + at.softplus(u_nodes)
-    #q_fine  = eps_q + at.softplus(u_fine)
-    q_nodes = eps_q + _softplus_stable(u_nodes)
-    q_fine  = eps_q + _softplus_stable(u_fine)
+    #q_nodes = eps_q + _softplus_stable(u_nodes)
+    #q_fine  = eps_q + _softplus_stable(u_fine)
+
+
+    em_nodes = at.exp(-y_nodes)
+    em_fine  = at.exp(-y_fine)
+
+    one_minus_em_nodes = -at.expm1(-y_nodes)   # = 1 - exp(-y), stable
+    one_minus_em_fine  = -at.expm1(-y_fine)
+
+    ef_nodes = at.exp(f_nodes) #safe_exp(f_nodes)   # or at.exp(f_nodes) if you want exact exact
+    ef_fine  = at.exp(f_fine) #safe_exp(f_fine)
+
+    q_nodes = eps_q + y_nodes + at.log(em_nodes + ef_nodes * one_minus_em_nodes)
+    q_fine  = eps_q + y_fine  + at.log(em_fine  + ef_fine  * one_minus_em_fine)
+
 
     g_nodes = q_nodes - b_nodes
     g_fine  = q_fine  - b_fine
-
+    
     # --- integrate g to get logXi, with logXi(0)=0 on the chosen grid ---
     def _integrate_midpoint(z, g):
         dz_raw = z[1:] - z[:-1]
