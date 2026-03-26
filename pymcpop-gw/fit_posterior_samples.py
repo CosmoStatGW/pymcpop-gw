@@ -73,7 +73,7 @@ def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=F
     samples_cho_covs = []
 
     nevs = len(allsamples)
-    print('There are %s events')
+    print('There are %s events'%nevs)
     
     
     for i in tqdm(range(nevs), ):
@@ -153,6 +153,83 @@ def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=F
     return samples_means, samples_cho_covs
 
 
+
+
+def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300):
+    """
+    Build per-event interpolation tables for log(1 / pi_PE(dL)).
+
+    Parameters
+    ----------
+    dL_samples : array-like, shape (N_events, N_samples)
+        dL sample locations for each event.
+    prior_vals : array-like, shape (N_events, N_samples)
+        PE prior values evaluated at the corresponding dL sample locations.
+    prior_floor : float, optional
+        Minimum allowed prior value for numerical stability.
+
+    Returns
+    -------
+    dL_grid : ndarray, shape (N_events, N_samples)
+        Sorted dL values for each event.
+    loginvprior_grid : ndarray, shape (N_events, N_samples)
+        log(1 / prior_vals) evaluated on the sorted dL grid.
+    dL_min : ndarray, shape (N_events,)
+        Minimum supported dL per event.
+    dL_max : ndarray, shape (N_events,)
+        Maximum supported dL per event.
+    """
+
+    dL_samples = np.asarray(dL_samples)
+    prior_vals = np.asarray(prior_vals)
+
+    if dL_samples.shape != prior_vals.shape:
+        raise ValueError(
+            "dL_samples and prior_vals must have the same shape. "
+            "Got %s and %s" % (dL_samples.shape, prior_vals.shape)
+        )
+
+    if prior_floor <= 0:
+        raise ValueError("prior_floor must be > 0")
+
+    if not np.isfinite(dL_samples).all():
+        raise ValueError("dL_samples contains non-finite values")
+
+    if not np.isfinite(prior_vals).all():
+        raise ValueError("prior_vals contains non-finite values")
+
+    if (dL_samples <= 0).any():
+        raise ValueError("dL_samples must be strictly positive")
+
+    nevs, nsamps = dL_samples.shape
+
+    dL_grid = np.empty_like(dL_samples, dtype=float)
+    loginvprior_grid = np.empty_like(prior_vals, dtype=float)
+    dL_min = np.empty(nevs, dtype=float)
+    dL_max = np.empty(nevs, dtype=float)
+
+    for i in range(nevs):
+        order = np.argsort(dL_samples[i])
+
+        dL_sorted = dL_samples[i, order]
+        prior_sorted = prior_vals[i, order]
+
+        if np.any(np.diff(dL_sorted) <= 0):
+            raise ValueError(
+                "dL values for event %s are not strictly increasing after sorting. "
+                "Interpolation requires unique dL points." % i
+            )
+
+        prior_sorted = np.maximum(prior_sorted, prior_floor)
+
+        dL_grid[i] = dL_sorted
+        loginvprior_grid[i] = -np.log(prior_sorted)
+        dL_min[i] = dL_sorted[0]
+        dL_max[i] = dL_sorted[-1]
+
+    return dL_grid, loginvprior_grid, dL_min, dL_max
+
+    
 def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1):
 
     gmm_log_wts_l = []
@@ -810,6 +887,102 @@ def plot_samples(allsamples,
             plt.close()
 
 
+
+def plot_dL_prior_interpolants(
+    dL_grid,
+    loginvprior_grid,
+    dL_min,
+    dL_max,
+    names,
+    fout,
+    dL_samples=None,
+    prior_vals=None,
+    prior_floor=1e-300,
+    max_nevs=None,
+    show=False,
+):
+    """
+    Plot per-event log(1 / pi_PE(dL)) interpolation tables and, if provided,
+    overlay the raw tabulated values as scatter points.
+    """
+
+    dL_grid = np.asarray(dL_grid)
+    loginvprior_grid = np.asarray(loginvprior_grid)
+    dL_min = np.asarray(dL_min)
+    dL_max = np.asarray(dL_max)
+
+    if dL_grid.shape != loginvprior_grid.shape:
+        raise ValueError(
+            "dL_grid and loginvprior_grid must have the same shape. "
+            "Got %s and %s" % (dL_grid.shape, loginvprior_grid.shape)
+        )
+
+    nevs = dL_grid.shape[0]
+
+    if len(names) != nevs:
+        raise ValueError("names must have length %s, got %s" % (nevs, len(names)))
+
+    if (dL_samples is None) ^ (prior_vals is None):
+        raise ValueError("Provide both dL_samples and prior_vals, or neither.")
+
+    if dL_samples is not None:
+        dL_samples = np.asarray(dL_samples)
+        prior_vals = np.asarray(prior_vals)
+
+        if dL_samples.shape != dL_grid.shape:
+            raise ValueError(
+                "dL_samples must have shape %s, got %s" % (dL_grid.shape, dL_samples.shape)
+            )
+        if prior_vals.shape != dL_grid.shape:
+            raise ValueError(
+                "prior_vals must have shape %s, got %s" % (dL_grid.shape, prior_vals.shape)
+            )
+
+    if max_nevs is None:
+        idx_plot = range(nevs)
+    else:
+        idx_plot = range(min(nevs, max_nevs))
+
+    for i in idx_plot:
+        name = names[i]
+
+        plt.figure()
+
+        plt.plot(
+            dL_grid[i],
+            loginvprior_grid[i],
+            lw=1.5,
+            label=r'$\log(1/\pi_{\rm PE}(d_L))$'
+        )
+
+       # plt.plot(dL_grid[i], -2*np.log(dL_grid[i]), label=r'$-2 \log(d_L)$')
+
+        if dL_samples is not None:
+            yscat = -np.log(np.maximum(prior_vals[i], prior_floor))
+            plt.scatter(
+                dL_samples[i],
+                yscat,
+                s=8,
+                alpha=0.5,
+                label='tabulated values'
+            )
+
+        plt.axvline(dL_min[i], ls='--', lw=1.0)
+        plt.axvline(dL_max[i], ls='--', lw=1.0)
+
+        plt.xlabel(r'$d_L$')
+        plt.ylabel(r'$\log(1/\pi_{\rm PE}(d_L))$')
+        plt.title(f'Event {name}')
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(fout, f'dL_prior_interp_ev_{i}_{name}.pdf'))
+
+        if show:
+            plt.show()
+
+        plt.close()
+
 #######################################################################################
 #######################################################################################
 
@@ -823,6 +996,10 @@ parser.add_argument("--dil_factor", default=1, type=float, required=False)
 parser.add_argument("--n_gmm_min", default=1, type=int, required=False)
 parser.add_argument("--n_gmm_max", default=10, type=int, required=False)
 parser.add_argument("--fin_data", default='', type=str, required=True)
+parser.add_argument("--fin_prior_dL", default='', type=str, required=False)
+parser.add_argument("--prior_only", default=0, type=int, required=False)
+parser.add_argument("--prior_floor", default=1e-30, type=float, required=False)
+
 parser.add_argument("--fnames", nargs='+', type=str, required=True) # this is like O1, O2 , ... leave empty string for sim. data
 parser.add_argument("--metadata", nargs='+', type=str, required=False)
 parser.add_argument("--fout", default='GWTC-fits', type=str, required=False)
@@ -1002,73 +1179,114 @@ if __name__=='__main__':
         
         allsamples_ = [ data.m1z, data.m2z, data.dL, ]
         print('data m1z shape: %s'%str(data.m1z.shape))
-        
-        
-        if FLAGS.spins!='none':
-            for i in range(len(data.spins)):
-                allsamples_.append(data.spins[i])
 
-        if FLAGS.skymap:
-            print('data ra shape: %s'%str(data.ra.shape))
-            print('data dec shape: %s'%str(data.dec.shape))
-            allsamples_.append(data.ra)
-            allsamples_.append(data.dec)
-        if FLAGS.inclination:
-            allsamples_.append(data.iota,)
-        
-        for k in range(len(allsamples_)):
-            print('allsamples_ %s comp shape: %s'%(k,allsamples_[k].shape ))
-        allsamples_ = np.stack(allsamples_).transpose(1,2,0)
-    
-        gmm_means_, gmm_icovs_, gmm_covs_, gmm_cho_covs_, gmm_log_dets_, gmm_log_wts_, all_gmm_, allNgm_ = fit_gmm( allsamples_, 
-                                                                                                                                             data.Nsamples, 
-                                                                                                                                             allNames = data.events, 
-                                                                                                                                             fout_plot = base_fname, 
-                                                                                                                                             spins = FLAGS.spins, 
-                                                                                                                                             n_components = n_comp_all, 
-                                                                                                                                             dil_factor = FLAGS.dil_factor, 
-                                                                                                                                             refit = refit, 
-                                                                                                                                             fname_base = run_name ,
-                                                                                                                                            skymap=FLAGS.skymap,
-                                inclination=FLAGS.inclination,
-                                                                                                                   imin=FLAGS.imin,
-                                                                                                                   imax=FLAGS.imax
-                                                                                                                                            )
-    
-        means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins, skymap=FLAGS.skymap, inclination=FLAGS.inclination, )
-    
-        np.savetxt( fngmm, allNgm_ ) 
-    
-        np.savetxt( os.path.join(base_fname, '%s_allNames.txt'%run_name), data.events, delimiter=" ", fmt="%s" ) 
-        np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name), means_, )
-        np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name), cho_covs_, )
-        
-        
-        
-        np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name), gmm_means_, )
-        np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name), gmm_icovs_, )
-        np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name), gmm_covs_, )
-        np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name), gmm_cho_covs_, )
-        np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name), gmm_log_dets_, )
-        np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name), gmm_log_wts_, )
-    
-        if FLAGS.plot:
-            plot_samples(allsamples_, 
-                 all_gmm_,   
-                 data.Nsamples,
-                 #means_O1O2, 
-                 #cho_covs_O1O2,
-                 imax=len(data.events), 
-                 names_plot=None, 
-                 allNames=data.events,
-                 dil_factor=FLAGS.dil_factor,
-                     fout=base_fname,
-                     fout_suff=fout_suff_plot,
-                spins=FLAGS.spins, 
-                         skymap=FLAGS.skymap,
-                 inclination=FLAGS.inclination,
+        if FLAGS.fin_prior_dL!='':
+            print("Also interpolating prior. loading from %s"%FLAGS.fin_prior_dL)
+            prior_vals = np.load(FLAGS.fin_prior_dL)
+
+            assert prior_vals.shape == data.dL.shape
+
+            dL_grid_, loginvprior_grid_, dL_min_, dL_max_ = build_dL_prior_interpolants(
+                data.dL,
+                prior_vals,
+                prior_floor=FLAGS.prior_floor,
+            )
+
+            np.savez(
+                    os.path.join(base_fname, f"{run_name}_dL_prior_interp.npz"),
+                    dL_grid=dL_grid_,
+                    loginvprior_grid=loginvprior_grid_,
+                    dL_min=dL_min_,
+                    dL_max=dL_max_,
                 )
 
+            print("Prior interpolated.\n")
+
+
+            plot_dL_prior_interpolants(
+                    dL_grid_,
+                    loginvprior_grid_,
+                    dL_min_,
+                    dL_max_,
+                    data.events,
+                    base_fname,
+                    dL_samples=data.dL,
+                    prior_vals=prior_vals,
+                    prior_floor=FLAGS.prior_floor,
+                )
+            
+
+
+        if FLAGS.prior_only:
+            print("Done.")
+
+        else:
+        
+            if FLAGS.spins!='none':
+                for i in range(len(data.spins)):
+                    allsamples_.append(data.spins[i])
+    
+            if FLAGS.skymap:
+                print('data ra shape: %s'%str(data.ra.shape))
+                print('data dec shape: %s'%str(data.dec.shape))
+                allsamples_.append(data.ra)
+                allsamples_.append(data.dec)
+            if FLAGS.inclination:
+                allsamples_.append(data.iota,)
+            
+            for k in range(len(allsamples_)):
+                print('allsamples_ %s comp shape: %s'%(k,allsamples_[k].shape ))
+            allsamples_ = np.stack(allsamples_).transpose(1,2,0)
+        
+            gmm_means_, gmm_icovs_, gmm_covs_, gmm_cho_covs_, gmm_log_dets_, gmm_log_wts_, all_gmm_, allNgm_ = fit_gmm( allsamples_, 
+                                                                                                                                                 data.Nsamples, 
+                                                                                                                                                 allNames = data.events, 
+                                                                                                                                                 fout_plot = base_fname, 
+                                                                                                                                                 spins = FLAGS.spins, 
+                                                                                                                                                 n_components = n_comp_all, 
+                                                                                                                                                 dil_factor = FLAGS.dil_factor, 
+                                                                                                                                                 refit = refit, 
+                                                                                                                                                 fname_base = run_name ,
+                                                                                                                                                skymap=FLAGS.skymap,
+                                    inclination=FLAGS.inclination,
+                                                                                                                       imin=FLAGS.imin,
+                                                                                                                       imax=FLAGS.imax
+                                                                                                                                                )
+        
+            means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins, skymap=FLAGS.skymap, inclination=FLAGS.inclination, )
+        
+            np.savetxt( fngmm, allNgm_ ) 
+        
+            np.savetxt( os.path.join(base_fname, '%s_allNames.txt'%run_name), data.events, delimiter=" ", fmt="%s" ) 
+            np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name), means_, )
+            np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name), cho_covs_, )
+            
+            
+            
+            np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name), gmm_means_, )
+            np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name), gmm_icovs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name), gmm_covs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name), gmm_cho_covs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name), gmm_log_dets_, )
+            np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name), gmm_log_wts_, )
+        
+            if FLAGS.plot:
+                plot_samples(allsamples_, 
+                     all_gmm_,   
+                     data.Nsamples,
+                     #means_O1O2, 
+                     #cho_covs_O1O2,
+                     imax=len(data.events), 
+                     names_plot=None, 
+                     allNames=data.events,
+                     dil_factor=FLAGS.dil_factor,
+                         fout=base_fname,
+                         fout_suff=fout_suff_plot,
+                    spins=FLAGS.spins, 
+                             skymap=FLAGS.skymap,
+                     inclination=FLAGS.inclination,
+                    )
+    
 
 
 
