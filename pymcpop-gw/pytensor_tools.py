@@ -39,7 +39,7 @@ INF = at.as_tensor_variable(np.inf)
 # EPS32 = at.as_tensor_variable(1e-30)  #  use 1e-30 for float32
 # BIG32 = at.as_tensor_variable(1e20) 
 
-MIN = -np.inf #NINF # your "effectively -inf" : NINF or EPS
+MIN = -np.inf #NINF # youmonotoner "effectively -inf" : NINF or EPS
 MAX = np.inf #INF
 
 LOG_10_ZMIN = -5
