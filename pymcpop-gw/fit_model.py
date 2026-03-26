@@ -1200,7 +1200,7 @@ def main():
                     sampler_kwargs["init"] = "adapt_full"
                 else:
                     ta = sampler_kwargs.pop("target_accept", FLAGS.target_accept)
-                    sampler_kwargs["step"] = pm.NUTS(target_accept=ta, max_treedepth=FLAGS.max_tree_depth)
+                    sampler_kwargs["step"] = pm.NUTS(target_accept=ta, ) #max_treedepth=FLAGS.max_tree_depth)
 
 
 
