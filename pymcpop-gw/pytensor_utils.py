@@ -208,7 +208,68 @@ def atinterp(bk, x, xs, ys):
   return r*yh + (1.0-r)*yl
 
 
-def atinterp_rowwise(bk, x, xs, ys):
+def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, fill_value=-np.inf):
+    """
+    Row-wise linear interpolation, vectorized.
+
+    Parameters
+    ----------
+    xq : (N,)
+        Query points, one per row.
+    xgrid : (N, M)
+        Monotonic x-grid for each row.
+    ygrid : (N, M)
+        Values on the grid for each row.
+    x_min : (N,), optional
+        Lower support bound for each row. Defaults to xgrid[:, 0].
+    x_max : (N,), optional
+        Upper support bound for each row. Defaults to xgrid[:, -1].
+    fill_value : scalar
+        Value returned outside support.
+
+    Returns
+    -------
+    vals : (N,)
+        Interpolated values, or fill_value outside support.
+    """
+
+    xq = at.as_tensor_variable(xq)
+    xgrid = at.as_tensor_variable(xgrid)
+    ygrid = at.as_tensor_variable(ygrid)
+
+    if x_min is None:
+        x_min = xgrid[:, 0]
+    else:
+        x_min = at.as_tensor_variable(x_min)
+
+    if x_max is None:
+        x_max = xgrid[:, -1]
+    else:
+        x_max = at.as_tensor_variable(x_max)
+
+    fill_value = at.as_tensor_variable(fill_value)
+
+    inside = at.ge(xq, x_min) & at.le(xq, x_max)
+
+    # For each row, count how many grid points are <= query point
+    # Then subtract 1 to get the left-bin index
+    k = at.sum(at.le(xgrid, xq[:, None]), axis=1) - 1
+    k = at.clip(k, 0, xgrid.shape[1] - 2)
+
+    rows = at.arange(xgrid.shape[0])
+
+    x0 = xgrid[rows, k]
+    x1 = xgrid[rows, k + 1]
+    y0 = ygrid[rows, k]
+    y1 = ygrid[rows, k + 1]
+
+    t = (xq - x0) / (x1 - x0)
+    vals = y0 + t * (y1 - y0)
+
+    return at.where(inside, vals, fill_value)
+
+
+def atinterp_rowwise_v0(bk, x, xs, ys):
     # x:  (N,)
     # xs: (M,)
     # ys: (N, M)

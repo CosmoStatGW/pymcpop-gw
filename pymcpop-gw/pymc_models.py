@@ -895,6 +895,7 @@ def make_model(  priors,
 
             print("All PE log norms is ")
             print("Shape: %s"%all_PE_log_norms.shape)
+            
 
         else:
             print("No normalization of PE volume prior on distance required.")
@@ -903,22 +904,61 @@ def make_model(  priors,
             
     
         
-        tab_in_prior = any('interp' in s for s in dLprior)
+        #tab_in_prior = any('interp' in s for s in dLprior)
+
+        tab_in_prior = any(s.endswith('.npz') or s.endswith('.npy') for s in dLprior)
+
+        # if tab_in_prior:
+
+        #     print("Loading pre-tabulated PE prior grids for interpolattion")
+  
+        #     Nchunks = len(Nevs_np)
+        #     assert len(allnames) == Nchunks
+
+        #     dL_grid_PE_prior = np.load(dL_grid_PE_prior_path)
+        #     all_grids_PE_prior = [ np.zeros( ( Nevs_np[i], len(dL_grid_PE_prior) ) ) for i in range(len(Nevs_np)) ]
+            
+            
+        #     for i in range( Nchunks):
+    
+        #         all_grids_PE_prior[i] = np.load(dLprior[i])
 
         if tab_in_prior:
-  
+
+            print("Loading pre-tabulated PE prior grids for interpolation")
+
             Nchunks = len(Nevs_np)
             assert len(allnames) == Nchunks
-
-            dL_grid_PE_prior = np.load(dL_grid_PE_prior_path)
-            all_grids_PE_prior = [ np.zeros( ( Nevs_np[i], len(dL_grid_PE_prior) ) ) for i in range(len(Nevs_np)) ]
-            
-            
-            for i in range( Nchunks):
-    
-                all_grids_PE_prior[i] = np.load(dLprior[i])
-                
-                
+        
+            all_dL_grids_PE_prior = [None] * Nchunks
+            all_loginvprior_grids_PE_prior = [None] * Nchunks
+            all_dL_min_PE_prior = [None] * Nchunks
+            all_dL_max_PE_prior = [None] * Nchunks
+        
+            for i in range(Nchunks):
+                lab = dLprior[i]
+        
+                if lab.endswith('.npz'):
+                    print(f"Loading PE prior interpolants from {lab}")
+                    dat = np.load(lab)
+        
+                    all_dL_grids_PE_prior[i] = at.as_tensor_variable(dat["dL_grid"])
+                    all_loginvprior_grids_PE_prior[i] = at.as_tensor_variable(dat["loginvprior_grid"])
+                    all_dL_min_PE_prior[i] = at.as_tensor_variable(dat["dL_min"])
+                    all_dL_max_PE_prior[i] = at.as_tensor_variable(dat["dL_max"])
+        
+                elif lab.endswith('.npy'):
+                    # backward compatibility with the old format
+                    print(f"Loading old PE prior grid from {lab}")
+                    grid_chunk = np.load(lab)
+                    all_dL_grids_PE_prior[i] = at.as_tensor_variable(dL_grid_PE_prior)
+                    all_loginvprior_grids_PE_prior[i] = at.as_tensor_variable(grid_chunk)
+                    all_dL_min_PE_prior[i] = at.as_tensor_variable(np.full(grid_chunk.shape[0], dL_grid_PE_prior[0]))
+                    all_dL_max_PE_prior[i] = at.as_tensor_variable(np.full(grid_chunk.shape[0], dL_grid_PE_prior[-1]))
+        
+                else:
+                    continue
+                        
             
      
         
@@ -2504,16 +2544,60 @@ def make_model(  priors,
             
                 else:
 
-                    if lab.endswith('.npy'):
+                    # if lab.endswith('.npy'):
 
-                        print("Using PE prior from pre-computed grid for events %s-%s "%(mn.eval(), mx.eval()))
+                    #     print("Using PE prior from pre-computed grid for events %s-%s "%(mn.eval(), mx.eval()))
 
-                        grid_chunk = all_grids_PE_prior[i]                 # shape (n_i, 10000)
+                    #     grid_chunk = all_grids_PE_prior[i]                 # shape (n_i, 10000)
                         
-                        vals = atinterp_rowwise(ATBackend(), d[idx], dL_grid_PE_prior, grid_chunk)   # shape (n_i,)
+                    #     vals = atinterp_rowwise(ATBackend(), d[idx], dL_grid_PE_prior, grid_chunk)   # shape (n_i,)
                         
-                        chunk = at.zeros_like(log_p_pop)                   # shape (153,)
-                        chunk = at.set_subtensor(chunk[idx], vals)         # shape (153,)
+                    #     chunk = at.zeros_like(log_p_pop)                   # shape (153,)
+                    #     chunk = at.set_subtensor(chunk[idx], vals)         # shape (153,)
+
+                    if lab.endswith('.npz'):
+
+                        print("Using PE prior from pre-computed per-event interpolants for events %s-%s " % (mn.eval(), mx.eval()))
+                    
+                        dL_grid_chunk = all_dL_grids_PE_prior[i]                 # shape (n_i, n_grid)
+                        loginvprior_grid_chunk = all_loginvprior_grids_PE_prior[i]   # shape (n_i, n_grid)
+                        dL_min_chunk = all_dL_min_PE_prior[i]                    # shape (n_i,)
+                        dL_max_chunk = all_dL_max_PE_prior[i]                    # shape (n_i,)
+                    
+                        vals = atinterp_rowwise(
+                            ATBackend(),
+                            d[idx],
+                            dL_grid_chunk,
+                            loginvprior_grid_chunk,
+                            x_min=dL_min_chunk,
+                            x_max=dL_max_chunk,
+                            fill_value = - np.inf,
+                        )   # shape (n_i,)
+                    
+                        chunk = at.zeros_like(log_p_pop)
+                        chunk = at.set_subtensor(chunk[idx], - vals)
+                    
+                    elif lab.endswith('.npy'):
+                    
+                        print("Using PE prior from pre-computed grid for events %s-%s " % (mn.eval(), mx.eval()))
+                    
+                        dL_grid_chunk = all_dL_grids_PE_prior[i]
+                        grid_chunk = all_loginvprior_grids_PE_prior[i]
+                        dL_min_chunk = all_dL_min_PE_prior[i]
+                        dL_max_chunk = all_dL_max_PE_prior[i]
+                    
+                        vals = atinterp_rowwise(
+                            ATBackend(),
+                            d[idx],
+                            dL_grid_chunk,
+                            grid_chunk,
+                            x_min=dL_min_chunk,
+                            x_max=dL_max_chunk,
+                            fill_value = - np.inf,
+                        )
+                    
+                        chunk = at.zeros_like(log_p_pop)
+                        chunk = at.set_subtensor(chunk[idx], -vals)
 
                     else:
                     
@@ -2553,15 +2637,39 @@ def make_model(  priors,
                     amax = 0.99
                     spinp= (1./amax)*(1./amax)*0.5*0.5  
                     chunk += at.log(spinp)
+                else:
+                    print("No PE spin prior removed")
                     
                 print("mask shape is %s"%mask.shape.eval())
                 print("chunk shape is %s"%chunk.shape.eval())
                 log_PE_prior = at.where(mask, chunk, log_PE_prior)
 
-            print("subtracting normalization once and setting to zero outside distance prior range")
+                print("Check accumulation for chunk %s" % i)
+                print("events %s-%s" % (mn.eval(), mx.eval()))
+                
+                idx5 = idx[:5]
+                
+                print("first 5 indices =", idx5.eval())
+                
+                print("chunk at first 5 indices =")
+                print(chunk[idx5].eval())
+                
+                print("log_PE_prior at first 5 indices after update =")
+                print(log_PE_prior[idx5].eval())
+                
+                print("difference =")
+                print((log_PE_prior[idx5] - chunk[idx5]).eval())
+                print()
+
+                print("dL^2 prior (plus spin)")
+                print( (2*logd[idx5]+at.log((1./0.99)*(1./0.99)*0.5*0.5 ) ).eval())
+
+            print("subtracting normalization once")
+            print("Normalization is %s"%(all_PE_log_norms))
             log_PE_prior -= all_PE_log_norms
         
             if truncate_dL:
+                print("Setting to zero outside distance prior range")
                 ok = at.all((d >= mins_PE) & (d <= maxs_PE))
                 _ = pm.Potential("PE_prior_bound", at.switch(ok, 0.0, -np.inf))
 
