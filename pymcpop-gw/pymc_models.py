@@ -1863,6 +1863,8 @@ def make_model(  priors,
                     print("alpha prior is Gamma with parameters %s"%str(alpha_inv_params))
 
                     alpha_inv = pm.Deterministic("alpha_inv", 1 / alpha)
+
+                    alpha = 1/alpha_inv
                     
                 elif DP_prior=='SB_ln':
 
@@ -2478,9 +2480,7 @@ def make_model(  priors,
         
         fused = PopAndSelJAXOp(
             
-            
-                
-            rate_model=rate_model,
+             rate_model=rate_model,
             mass_model=mass_model,
             spin_model=spin_model_name,
 

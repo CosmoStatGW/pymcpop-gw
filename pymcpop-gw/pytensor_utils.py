@@ -110,21 +110,21 @@ def safe_sigmoid(bk, x, x0, eps):
 #     out = a + bk.log1p(-bk.minimum(ed, 1.0 - eps))
 #     return bk.where(b < a, out, -np.inf)
 
-def logdiffexp(bk, a, b):
+def logdiffexp_nosafe(bk, a, b):
     # returns log(exp(a) - exp(b)); -inf if b >= a
     return bk.where(
         a > b,
         a + bk.log1p(-bk.exp(b - a)),
-        -jnp.inf,
+        -np.inf,
     )
 
 
-def logdiffexp_safe(a, b, eps=1e-16):
+def logdiffexp(bk, a, b, eps=1e-16):
     delta = bk.minimum(b - a, 0.0)           # <= 0
     ed = bk.exp(delta)                        # in (0,1]
     ed = bk.minimum(ed, 1.0 - eps)
     out = a + bk.log1p(-ed)
-    return bk.where(b < a, out, -jnp.inf)
+    return bk.where(b < a, out, -np.inf)
 
 
 # ---------------------------------------------------------------------
