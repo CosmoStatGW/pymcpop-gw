@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-#from pytensor_utils import attrapzvec, atinterp
+from pytensor_utils import attrapzvec, atinterp
 from constants import _PI, c_light
 from pytensor_tools import zGridGlobals
 
@@ -100,16 +100,16 @@ def dcfun_quad(bk, z, H0, Om, w0, integrate_dc='trapz' ):
         
     elif integrate_dc=='trapz':
 
-        zz = bk.linspace( 0., z, num=500)
+        zz = bk.linspace( 0., z, num=1000).T
         E = Efun(bk, zz, Om, w0 )
-        dc_ = c_light / H0 * bk.trapezoid( 1./E, x=zz, axis=0 )*1e-03
+        dc_ = c_light / H0 * attrapzvec(bk, 1./E, zz)*1e-03
 
     elif integrate_dc=='pade':
         
         dc_ = pc.comoving_distance_pade(z, H0, Om, w0=-1.0, p=p, q=q, xp=bk) 
 
     elif integrate_dc=='quick':
-        #print("quick pade approx")
+
         dc_ = comoving_distance_flatLCDM_approx(bk, z, H0, Om, )
         
     else:
@@ -159,7 +159,8 @@ def z_from_dL(bk, dL, H0=None, Om=None, w0=None, Xi0=None, nXi0=None, *, z_nodes
         d_nodes = dLfun(bk, z_nodes, H0, Om, w0, Xi0, nXi0, dc=None, Xi=None, param=param, integrate_dc=integrate_dc)
 
 
-    return bk.interp(dL, d_nodes, z_nodes, left = "extrapolate", right = "extrapolate" )
+    return atinterp(bk, dL, d_nodes, z_nodes)
+    #bk.interp(dL, d_nodes, z_nodes, left = "extrapolate", right = "extrapolate" )
         
 
 
@@ -280,5 +281,6 @@ def compute_log_norm_UniformSourceFrame(bk, d_min, d_max, H0, Om0, w0, ):
     log_dVdz = log_dV_dz(bk, z, H0, Om0, w0, dc=dc)
 
     integrand = bk.exp(log_dVdz) / (1.0 + z)
-    norm = bk.trapezoid(integrand, z)
+    #norm = bk.trapezoid(integrand, z)
+    norm = attrapzvec(bk, integrand, z)
     return bk.log(norm), z_min, z_max

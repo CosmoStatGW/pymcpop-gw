@@ -2502,7 +2502,9 @@ def make_model(  priors,
             DP_truncate = DP_truncate,
             DP_m1_env = DP_m1_env,
             interp_mass = interp_mass,
-            integrate_dc = integrate_dc
+            integrate_dc = integrate_dc,
+            
+            stop_grad_var_u = detach_var
             )
         
         if lp_incl_inj[0] is None:

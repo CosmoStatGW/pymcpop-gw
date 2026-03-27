@@ -172,7 +172,8 @@ class _PopAndSelJAXVJPOp(Op):
             g_logp_pop = jnp.reshape(g_logp_pop, m1det.shape)
             g_log_mu = jnp.reshape(g_log_mu, ())
             g_var_u = jnp.reshape(g_var_u, ())
-            g_var_u = jnp.asarray(0.0, dtype=jnp.float64)
+            if self.stop_grad_var_u:
+                g_var_u = jnp.asarray(0.0, dtype=jnp.float64)
 
 
             if self.skip_sel:

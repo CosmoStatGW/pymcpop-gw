@@ -286,8 +286,9 @@ def _make_pop_and_sel_core(
                 # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
-                # NON-UNIFORM interpolation (must match your test)
-                lC_of_m1 = bk.interp(  mcap, m2_cdf_grid, logcdf_m2 )
+                # NON-UNIFORM interpolation 
+                #lC_of_m1 = bk.interp(  mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
                 
                 # Normalization for m1
 
@@ -388,7 +389,8 @@ def _make_pop_and_sel_core(
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
                 # NON-UNIFORM interpolation
-                lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
+                #lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
                 
 
                 # ---------

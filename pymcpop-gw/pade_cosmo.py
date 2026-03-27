@@ -56,7 +56,6 @@ def pade(c: onp.ndarray, m: int, n: int, *, xp=onp):
     A = xp.empty((n, n), dtype=float)
     for i in range(n):
         for j in range(n):
-            #A[i, j] = c[m + i - j]
             A = _set(A, (i, j), c[m + i - j])
     q_tail = xp.linalg.solve(A, rhs)
     q = xp.concatenate([xp.array([1.0]), q_tail])  # q0=1
