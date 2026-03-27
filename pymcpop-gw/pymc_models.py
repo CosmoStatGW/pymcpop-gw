@@ -281,7 +281,8 @@ def make_model(  priors,
                  detach_var = False,
                  remove_spin_prior=False,
                  m_high_spread = 1. ,
-                force_uniform_mhigh=False
+                force_uniform_mhigh=False, 
+                 truncate_dL_prior = False
                 ):
 
 
@@ -825,12 +826,16 @@ def make_model(  priors,
         
         all_dLsq_prior = all(s == 'dLsq' for s in dLprior)
         all_no_dL_prior = all(s == 'none' for s in dLprior)
+
+        tab_in_prior = any(s.endswith('.npz') or s.endswith('.npy') for s in dLprior)
+
     
         edges = [0]
         for n in Nevs_np:
             edges.append(edges[-1] + int(n))
 
-        truncate_dL = False
+        
+        truncate_dL_from_bounds = False
     
         if vol_in_prior_from_bilby:
             
@@ -891,7 +896,8 @@ def make_model(  priors,
             mins_PE = at.constant(np.array([x[0] for x in all_PE_lims], dtype="float64"))
             maxs_PE = at.constant(np.array([x[1] for x in all_PE_lims], dtype="float64"))
 
-            truncate_dL = True
+            if truncate_dL_prior:
+                truncate_dL_from_bounds = True
 
             print("All PE log norms is ")
             print("Shape: %s"%all_PE_log_norms.shape)
@@ -900,13 +906,16 @@ def make_model(  priors,
         else:
             print("No normalization of PE volume prior on distance required.")
             all_PE_log_norms = np.zeros(Nevs_np.sum())
-            truncate_dL = False
-            
-    
-        
-        #tab_in_prior = any('interp' in s for s in dLprior)
 
-        tab_in_prior = any(s.endswith('.npz') or s.endswith('.npy') for s in dLprior)
+            if truncate_dL_prior :
+                print("truncate_dL_prior was True, but no data are present for truncation. Setting to False.")
+            
+            truncate_dL_from_bounds = False
+
+          
+
+            
+      
 
         # if tab_in_prior:
 
@@ -958,6 +967,7 @@ def make_model(  priors,
         
                 else:
                     continue
+
                         
             
      
@@ -2558,6 +2568,11 @@ def make_model(  priors,
                     if lab.endswith('.npz'):
 
                         print("Using PE prior from pre-computed per-event interpolants for events %s-%s " % (mn.eval(), mx.eval()))
+
+                        if truncate_dL_prior:
+                            print("Truncating outside dL prior bounds with soft gate")
+                        else:
+                            print("No truncation outside dL prior bounds")
                     
                         dL_grid_chunk = all_dL_grids_PE_prior[i]                 # shape (n_i, n_grid)
                         loginvprior_grid_chunk = all_loginvprior_grids_PE_prior[i]   # shape (n_i, n_grid)
@@ -2571,7 +2586,8 @@ def make_model(  priors,
                             loginvprior_grid_chunk,
                             x_min=dL_min_chunk,
                             x_max=dL_max_chunk,
-                            fill_value = - np.inf,
+                            truncate = truncate_dL_prior
+                            #fill_value = - np.inf,
                         )   # shape (n_i,)
                     
                         chunk = at.zeros_like(log_p_pop)
@@ -2593,7 +2609,8 @@ def make_model(  priors,
                             grid_chunk,
                             x_min=dL_min_chunk,
                             x_max=dL_max_chunk,
-                            fill_value = - np.inf,
+                            truncate = truncate_dL_prior
+                            #fill_value = - np.inf,
                         )
                     
                         chunk = at.zeros_like(log_p_pop)
@@ -2668,7 +2685,7 @@ def make_model(  priors,
             print("Normalization is %s"%(all_PE_log_norms))
             log_PE_prior -= all_PE_log_norms
         
-            if truncate_dL:
+            if truncate_dL_from_bounds:
                 print("Setting to zero outside distance prior range")
                 ok = at.all((d >= mins_PE) & (d <= maxs_PE))
                 _ = pm.Potential("PE_prior_bound", at.switch(ok, 0.0, -np.inf))

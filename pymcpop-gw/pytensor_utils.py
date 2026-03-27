@@ -10,7 +10,6 @@ import jax
 
 
 
-
 def pack1d(L):
     """Flatten each entry (scalar -> length-1) and concatenate into one 1D tensor."""
     flats = []
@@ -208,31 +207,7 @@ def atinterp(bk, x, xs, ys):
   return r*yh + (1.0-r)*yl
 
 
-def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, fill_value=-np.inf):
-    """
-    Row-wise linear interpolation, vectorized.
-
-    Parameters
-    ----------
-    xq : (N,)
-        Query points, one per row.
-    xgrid : (N, M)
-        Monotonic x-grid for each row.
-    ygrid : (N, M)
-        Values on the grid for each row.
-    x_min : (N,), optional
-        Lower support bound for each row. Defaults to xgrid[:, 0].
-    x_max : (N,), optional
-        Upper support bound for each row. Defaults to xgrid[:, -1].
-    fill_value : scalar
-        Value returned outside support.
-
-    Returns
-    -------
-    vals : (N,)
-        Interpolated values, or fill_value outside support.
-    """
-
+def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, edge_width=0.05, truncate=False):
     xq = at.as_tensor_variable(xq)
     xgrid = at.as_tensor_variable(xgrid)
     ygrid = at.as_tensor_variable(ygrid)
@@ -247,16 +222,10 @@ def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, fill_value=-n
     else:
         x_max = at.as_tensor_variable(x_max)
 
-    fill_value = at.as_tensor_variable(fill_value)
+    rows = at.arange(xgrid.shape[0])
 
-    inside = at.ge(xq, x_min) & at.le(xq, x_max)
-
-    # For each row, count how many grid points are <= query point
-    # Then subtract 1 to get the left-bin index
     k = at.sum(at.le(xgrid, xq[:, None]), axis=1) - 1
     k = at.clip(k, 0, xgrid.shape[1] - 2)
-
-    rows = at.arange(xgrid.shape[0])
 
     x0 = xgrid[rows, k]
     x1 = xgrid[rows, k + 1]
@@ -265,8 +234,17 @@ def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, fill_value=-n
 
     t = (xq - x0) / (x1 - x0)
     vals = y0 + t * (y1 - y0)
+    
 
-    return at.where(inside, vals, fill_value)
+    if truncate:
+        width = edge_width * (x_max - x_min)
+        width = bk.maximum(width, 1e-6)
+        print("Truncation width:")
+        print(width.eval())
+        log_gate = log_sigmoid(bk, xq, x_min, width) + log_sigmoid(bk, x_max, xq, width)
+        return vals + log_gate
+    else:
+        return vals
 
 
 def atinterp_rowwise_v0(bk, x, xs, ys):

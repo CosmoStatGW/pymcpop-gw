@@ -11,6 +11,7 @@ import os
 import argparse
 import json
 import sys
+import h5py
 
 import numpy as np
 
@@ -155,7 +156,7 @@ def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=F
 
 
 
-def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300):
+def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_bounds_full=None):
     """
     Build per-event interpolation tables for log(1 / pi_PE(dL)).
 
@@ -167,6 +168,9 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300):
         PE prior values evaluated at the corresponding dL sample locations.
     prior_floor : float, optional
         Minimum allowed prior value for numerical stability.
+    dL_bounds_full : array-like, shape (N_events, 2), optional
+        Full posterior-sample support bounds [dL_min_full, dL_max_full] for each event.
+        If None, bounds are taken from the tabulated dL_samples.
 
     Returns
     -------
@@ -203,6 +207,20 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300):
 
     nevs, nsamps = dL_samples.shape
 
+    if dL_bounds_full is not None:
+        dL_bounds_full = np.asarray(dL_bounds_full)
+        if dL_bounds_full.shape != (nevs, 2):
+            raise ValueError(
+                "dL_bounds_full must have shape (%s, 2), got %s"
+                % (nevs, dL_bounds_full.shape)
+            )
+        if not np.isfinite(dL_bounds_full).all():
+            raise ValueError("dL_bounds_full contains non-finite values")
+        if (dL_bounds_full[:, 0] <= 0).any():
+            raise ValueError("dL_bounds_full lower bounds must be > 0")
+        if (dL_bounds_full[:, 1] <= dL_bounds_full[:, 0]).any():
+            raise ValueError("Each full dL bound must satisfy max > min")
+
     dL_grid = np.empty_like(dL_samples, dtype=float)
     loginvprior_grid = np.empty_like(prior_vals, dtype=float)
     dL_min = np.empty(nevs, dtype=float)
@@ -224,13 +242,17 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300):
 
         dL_grid[i] = dL_sorted
         loginvprior_grid[i] = -np.log(prior_sorted)
-        dL_min[i] = dL_sorted[0]
-        dL_max[i] = dL_sorted[-1]
+
+        if dL_bounds_full is None:
+            dL_min[i] = dL_sorted[0]
+            dL_max[i] = dL_sorted[-1]
+        else:
+            dL_min[i] = dL_bounds_full[i, 0]
+            dL_max[i] = dL_bounds_full[i, 1]
 
     return dL_grid, loginvprior_grid, dL_min, dL_max
-
     
-def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1):
+def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1, fsummaries='summaries', fplots='plots'):
 
     gmm_log_wts_l = []
     gmm_means_l = []
@@ -324,8 +346,8 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
         print('\nEvent %s is fit between %s and %s components'%(allNames[i], n_components[i][0], n_components[i][1]))
         min_found_already =False
         if refit:
-            bics_prev = np.loadtxt( os.path.join(fout_plot, 'BICs_ev_%s_%s.txt'%(i,allNames[i])))
-            n_c_prev = np.loadtxt( os.path.join(fout_plot, 'n_comp_BICs_ev_%s_%s.txt'%(i,allNames[i])))
+            bics_prev = np.loadtxt( os.path.join(fout_plot, fsummaries, 'BICs_ev_%s_%s.txt'%(i,allNames[i])))
+            n_c_prev = np.loadtxt( os.path.join(fout_plot, fsummaries, 'n_comp_BICs_ev_%s_%s.txt'%(i,allNames[i])))
             prev_max=max(n_c_prev)
             min_bic_idx_ = np.argmin(bics_prev)
             nc_best_ = n_c_prev[min_bic_idx_]
@@ -408,8 +430,8 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
                     bics = np.concatenate([bics_prev, bics])
                     n_components_ = np.concatenate([n_c_prev, n_components_])
 
-                np.savetxt( os.path.join(fout_plot, 'BICs_ev_%s_%s.txt'%(i,name)), bics ) 
-                np.savetxt( os.path.join(fout_plot, 'n_comp_BICs_ev_%s_%s.txt'%(i,name)), n_components_ ) 
+                np.savetxt( os.path.join(fout_plot, fsummaries, 'BICs_ev_%s_%s.txt'%(i,name)), bics ) 
+                np.savetxt( os.path.join(fout_plot, fsummaries, 'n_comp_BICs_ev_%s_%s.txt'%(i,name)), n_components_ ) 
 
                 #print(n_components_)
                 #print(bics)
@@ -421,7 +443,7 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
                 fout='BIC_ev_%s_%s'%(i,name)
                 if refit:
                     fout+='_refit_imax-%s'%n_components[i][1]
-                plt.savefig(os.path.join(fout_plot, fout+'.pdf'))
+                plt.savefig(os.path.join(fout_plot, fplots, fout+'.pdf'))
                 
                 #plt.show()
                 plt.close()
@@ -504,7 +526,8 @@ def plot_samples(allsamples,
                  show=False, 
                  nbins=50, 
                  ngm=None, 
-                 cl=[0.5, 0.90]
+                 cl=[0.5, 0.90],
+                 fplots='plots/'
                 ):
 
 
@@ -732,7 +755,7 @@ def plot_samples(allsamples,
       
             
             if fout is not None:
-                plt.savefig(os.path.join(fout, 'corner_ev_%s_%s_theta%s.pdf'%(i, name, fout_suff)))
+                plt.savefig(os.path.join(fout, fplots, 'corner_ev_%s_%s_theta%s.pdf'%(i, name, fout_suff)))
             
             if show:
                 plt.show()
@@ -881,7 +904,7 @@ def plot_samples(allsamples,
     
       
             if fout is not None:
-                plt.savefig(os.path.join(fout, 'corner_ev_%s_%s_thetatil%s.pdf'%(i, name,fout_suff)))
+                plt.savefig(os.path.join(fout, fplots, 'corner_ev_%s_%s_thetatil%s.pdf'%(i, name,fout_suff)))
             if show:
                 plt.show()
             plt.close()
@@ -900,6 +923,7 @@ def plot_dL_prior_interpolants(
     prior_floor=1e-300,
     max_nevs=None,
     show=False,
+    fplots='plots/'
 ):
     """
     Plot per-event log(1 / pi_PE(dL)) interpolation tables and, if provided,
@@ -976,7 +1000,7 @@ def plot_dL_prior_interpolants(
         plt.legend()
 
         plt.tight_layout()
-        plt.savefig(os.path.join(fout, f'dL_prior_interp_ev_{i}_{name}.pdf'))
+        plt.savefig(os.path.join(fout, fplots, f'dL_prior_interp_ev_{i}_{name}.pdf'))
 
         if show:
             plt.show()
@@ -1012,6 +1036,9 @@ parser.add_argument("--imin", default=0, type=int, required=False)
 parser.add_argument("--imax", default=-1, type=int, required=False)
 parser.add_argument("--reweight", default=0, type=int, required=False)
 
+parser.add_argument("--fsummaries", default='summaries', type=str, required=False)
+parser.add_argument("--fplots", default='plots', type=str, required=False)
+
 
 if __name__=='__main__':
     
@@ -1040,7 +1067,7 @@ if __name__=='__main__':
         fname_ = os.path.join(FLAGS.fin_data, run_name)
         print()
         print('#################################################')
-        print('Fitting %s. Input folder: %s'%(run_name, fname_ ))
+        print('Fitting %s. Input file: %s'%(run_name, fname_ ))
         print('#################################################')
         print()
 
@@ -1107,11 +1134,11 @@ if __name__=='__main__':
             FLAGS.ps_prior = 'cosmo'
         
         flist = ['%s'%(FLAGS.fout), 
-                  '%s/%s/'%(FLAGS.fout, run_name),
-                  '%s/%s/snrth-%s_farth-%s/'%(FLAGS.fout,  run_name, int(FLAGS.snr_th), int(FLAGS.far_th), ),
-                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)]
+                  '%s/%s/'%(FLAGS.fout, run_name.split('.')[0] ),
+                  '%s/%s/snrth-%s_farth-%s/'%(FLAGS.fout,  run_name.split('.')[0], int(FLAGS.snr_th), int(FLAGS.far_th), ),
+                  '%s/%s/snrth-%s_farth-%s/dil_factor-%s'%(FLAGS.fout, run_name.split('.')[0], int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)]
 
-        base_str = '%s/%s/snrth-%s_farth-%s/dil_factor-%s/'%(FLAGS.fout, run_name, int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)
+        base_str = '%s/%s/snrth-%s_farth-%s/dil_factor-%s/'%(FLAGS.fout, run_name.split('.')[0], int(FLAGS.snr_th), int(FLAGS.far_th), FLAGS.dil_factor)
         
         if run_name in ('O3a', 'O3b', 'O4a',  'pe_files'):
 
@@ -1133,26 +1160,36 @@ if __name__=='__main__':
                 print('Created %s'%p)
             else:
                 print('Using %s'%p)
-    
+
+        psum = flist[-1]+'/'+FLAGS.fsummaries
+        if not os.path.exists(psum):
+                os.makedirs(psum)
+                print('Created %s'%psum)
+
+        pplot = flist[-1]+'/'+FLAGS.fplots
+        if not os.path.exists(pplot):
+                os.makedirs(pplot)
+                print('Created %s'%pplot)
+            
         print()
     
         base_fname = flist[-1]
         print('Output foder is %s'%base_fname)
         
         
-        fsam = os.path.join(base_fname, '%s_allnsamples.npy'%run_name)
+        fsam = os.path.join(base_fname, '%s_allnsamples.npy'%run_name.split('.')[0] )
         if not os.path.exists(fsam):
             np.save( fsam, data.Nsamples )
             print('Saved nsamples in %s'%fsam)
         else:
             print('nsamples already saved in %s'%fsam)
 
-        fngmm = os.path.join(base_fname, '%s_allNgm.txt'%run_name)
+        fngmm = os.path.join(base_fname, '%s_allNgm.txt'%run_name.split('.')[0] )
         if os.path.exists(fngmm):
             ngmm_prev = np.loadtxt(fngmm)
             print()
             allnames_prev = [] 
-            with open(os.path.join(base_fname, '%s_allNames.txt'%run_name)) as f:
+            with open(os.path.join(base_fname, '%s_allNames.txt'%run_name.split('.')[0] )) as f:
                 for line in f:
                     # Remove the newline character at the end of the line
                     line = line.strip()
@@ -1180,42 +1217,52 @@ if __name__=='__main__':
         allsamples_ = [ data.m1z, data.m2z, data.dL, ]
         print('data m1z shape: %s'%str(data.m1z.shape))
 
-        if FLAGS.fin_prior_dL!='':
-            print("Also interpolating prior. loading from %s"%FLAGS.fin_prior_dL)
+        if FLAGS.fin_prior_dL != '':
+            print("Also interpolating prior. loading from %s" % FLAGS.fin_prior_dL)
             prior_vals = np.load(FLAGS.fin_prior_dL)
-
+        
             assert prior_vals.shape == data.dL.shape
-
+        
+            dL_bounds_full = None
+            try:
+                with h5py.File(fname_, "r") as f_in:
+                    dL_bounds_full = np.asarray(f_in["properties"]["dL_bounds"])
+                print("Loaded full dL bounds from input file.")
+                print("dL_bounds_full shape: %s" % (dL_bounds_full.shape,))
+                assert dL_bounds_full.shape == (data.dL.shape[0], 2)
+            except Exception as e:
+                print("Could not load full dL bounds from input file.")
+                print(e)
+                print("Falling back to bounds from the tabulated subsample.")
+        
             dL_grid_, loginvprior_grid_, dL_min_, dL_max_ = build_dL_prior_interpolants(
                 data.dL,
                 prior_vals,
                 prior_floor=FLAGS.prior_floor,
+                dL_bounds_full=dL_bounds_full,
             )
-
+        
             np.savez(
-                    os.path.join(base_fname, f"{run_name}_dL_prior_interp.npz"),
-                    dL_grid=dL_grid_,
-                    loginvprior_grid=loginvprior_grid_,
-                    dL_min=dL_min_,
-                    dL_max=dL_max_,
-                )
-
+                os.path.join(base_fname, f"{run_name}_dL_prior_interp.npz"),
+                dL_grid=dL_grid_,
+                loginvprior_grid=loginvprior_grid_,
+                dL_min=dL_min_,
+                dL_max=dL_max_,
+            )
+        
             print("Prior interpolated.\n")
-
-
+        
             plot_dL_prior_interpolants(
-                    dL_grid_,
-                    loginvprior_grid_,
-                    dL_min_,
-                    dL_max_,
-                    data.events,
-                    base_fname,
-                    dL_samples=data.dL,
-                    prior_vals=prior_vals,
-                    prior_floor=FLAGS.prior_floor,
-                )
-            
-
+                dL_grid_,
+                loginvprior_grid_,
+                dL_min_,
+                dL_max_,
+                data.events,
+                base_fname,
+                dL_samples=data.dL,
+                prior_vals=prior_vals,
+                prior_floor=FLAGS.prior_floor,
+            )
 
         if FLAGS.prior_only:
             print("Done.")
@@ -1246,29 +1293,32 @@ if __name__=='__main__':
                                                                                                                                                  n_components = n_comp_all, 
                                                                                                                                                  dil_factor = FLAGS.dil_factor, 
                                                                                                                                                  refit = refit, 
-                                                                                                                                                 fname_base = run_name ,
+                                                                                                                                                 fname_base = run_name.split('.')[0] ,
                                                                                                                                                 skymap=FLAGS.skymap,
                                     inclination=FLAGS.inclination,
                                                                                                                        imin=FLAGS.imin,
-                                                                                                                       imax=FLAGS.imax
+                                                                                                                       imax=FLAGS.imax,
+                                                                                                                                        fplots=FLAGS.fplots,
+                                                                                                                                        fsummaries=FLAGS.fsummaries
+
+
                                                                                                                                                 )
         
             means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins, skymap=FLAGS.skymap, inclination=FLAGS.inclination, )
         
             np.savetxt( fngmm, allNgm_ ) 
         
-            np.savetxt( os.path.join(base_fname, '%s_allNames.txt'%run_name), data.events, delimiter=" ", fmt="%s" ) 
-            np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name), means_, )
-            np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name), cho_covs_, )
+            np.savetxt( os.path.join(base_fname, '%s_allNames.txt'%run_name.split('.')[0]), data.events, delimiter=" ", fmt="%s" ) 
+            np.save( os.path.join(base_fname, '%s_cho-means.npy'%run_name.split('.')[0]), means_, )
+            np.save( os.path.join(base_fname, '%s_cho-covs.npy'%run_name.split('.')[0]), cho_covs_, )
             
             
-            
-            np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name), gmm_means_, )
-            np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name), gmm_icovs_, )
-            np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name), gmm_covs_, )
-            np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name), gmm_cho_covs_, )
-            np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name), gmm_log_dets_, )
-            np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name), gmm_log_wts_, )
+            np.save( os.path.join(base_fname, '%s_gmm_means.npy'%run_name.split('.')[0]), gmm_means_, )
+            np.save( os.path.join(base_fname, '%s_gmm_icovs.npy'%run_name.split('.')[0]), gmm_icovs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_covs.npy'%run_name.split('.')[0]), gmm_covs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name.split('.')[0]), gmm_cho_covs_, )
+            np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name.split('.')[0]), gmm_log_dets_, )
+            np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name.split('.')[0]), gmm_log_wts_, )
         
             if FLAGS.plot:
                 plot_samples(allsamples_, 
@@ -1285,6 +1335,7 @@ if __name__=='__main__':
                     spins=FLAGS.spins, 
                              skymap=FLAGS.skymap,
                      inclination=FLAGS.inclination,
+                             fplots=FLAGS.fplots,
                     )
     
 

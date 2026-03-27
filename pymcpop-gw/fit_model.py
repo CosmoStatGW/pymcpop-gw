@@ -138,6 +138,9 @@ def main():
     parser.add_argument("--penorm_lims",  nargs='+', default=[], type=str, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     parser.add_argument("--remove_spin_prior", default=0, type=int, required=False)
+
+    parser.add_argument("--truncate_dL_prior", default=0, type=int, required=False)
+    
     
     
     
@@ -918,7 +921,8 @@ def main():
                                 detach_var = FLAGS.detach_var,
                                 remove_spin_prior = FLAGS.remove_spin_prior,
                                 m_high_spread = FLAGS.m_high_spread,
-                                force_uniform_mhigh = FLAGS.force_uniform_mhigh
+                                force_uniform_mhigh = FLAGS.force_uniform_mhigh,
+                                truncate_dL_prior = FLAGS.truncate_dL_prior
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
