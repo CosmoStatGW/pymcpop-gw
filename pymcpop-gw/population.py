@@ -24,6 +24,16 @@ except Exception as e:
     raise ValueError()
 
 
+def safe_logsumexp(a, axis=0):
+    finite = jnp.isfinite(a)
+    all_bad = jnp.all(~finite, axis=axis, keepdims=True)
+    a_safe = jnp.where(finite, a, -jnp.inf)
+    m = jnp.max(jnp.where(all_bad, 0.0, a_safe), axis=axis, keepdims=True)
+    s = jnp.sum(jnp.exp(a_safe - m), axis=axis, keepdims=True)
+    out = m + jnp.log(s)
+    out = jnp.where(all_bad, -jnp.inf, out)
+    return jnp.squeeze(out, axis=axis)
+
 
 # ---------------------------------------------------------------------
 #  utils
@@ -688,7 +698,7 @@ def log_p_pop(
             
         else:
             # ------------------------------------------------------------
-            # UNPACK low-z mass hyperparameters (same 20 as non-evolving)
+            # UNPACK low-z mass hyperparameters (same 21 as non-evolving)
             # ------------------------------------------------------------
             x1  = Lambda[istart_spin +  0]; x2  = Lambda[istart_spin +  1]
             x3  = Lambda[istart_spin +  2]; x4  = Lambda[istart_spin +  3]
@@ -777,9 +787,18 @@ def log_p_pop(
             
         logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, logMc_src, logit_q, mu, sd, z=log_one_p_z )
 
+
+        if rate_model in ('PL', 'MD'):
+            logp_components = logp1 + logp2                    
+        else:
+            logp_components = logp1 + logp2 + logp3  
         
         # Mixture over components → (n_obs,)
-        lpmass = bk.logsumexp(logp1 + logp2 + logp3 + logw[:, None], axis=0, )
+        #lpmass = bk.logsumexp( logp_components + logw[:, None], axis=0, )
+
+        # debugging version
+        tmp = logp_components + logw[:, None]
+        lpmass = safe_logsumexp(tmp, axis=0)
 
 
         # remove jacobian m1, m2 --> log(Mc), logit(q)
