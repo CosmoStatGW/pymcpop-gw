@@ -1245,8 +1245,14 @@ def main():
                                      )
 
             else:
+
+                print("postprocessing_backend is cpu")
                 
-                trace = pm.sample(nuts_sampler=FLAGS.sampler, **sampler_kwargs)
+                trace = pm.sample(nuts_sampler=FLAGS.sampler, 
+                                  postprocessing_backend="cpu",
+                                    postprocessing_vectorize="scan",
+                                  
+                                  **sampler_kwargs)
 
             print('\nDone.')
         
