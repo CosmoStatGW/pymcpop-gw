@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import warnings
+import socket
 
 
 from tqdm import tqdm 
@@ -134,10 +135,13 @@ def main():
     parser.add_argument("--res_highz", default=0.1, type=float, required=False)
     parser.add_argument("--res_lowz", default=0.05, type=float, required=False)
 
-    parser.add_argument("--init_GP", default='zeros', type=str, required=False)
-
     
 
+    parser.add_argument("--init_GP", default='zeros', type=str, required=False)
+
+    parser.add_argument("--inj_loop", default='none', type=str, required=False)
+    
+    parser.add_argument("--chunk_inj", default=100000, type=int, required=False)
     
     
     parser.add_argument("--monotonicity_scale", default=0., type=float, required=False)
@@ -298,6 +302,15 @@ def main():
     myLog = autils.Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
+
+
+    print("=== Process info ===")
+    print(f"PID        : {os.getpid()}")
+    print(f"Parent PID : {os.getppid()}")
+    print(f"Host       : {socket.gethostname()}")
+    print(f"Python exe : {sys.executable}")
+    print(f"Args       : {sys.argv}")
+    print("====================")
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
@@ -744,6 +757,8 @@ def main():
                                         res_highz=FLAGS.res_highz,
                                     fine_res=FLAGS.fine_res,
                                         fix_mass=FLAGS.fix_mass,
+                                        inj_loop=FLAGS.inj_loop,
+                                chunk_inj=FLAGS.chunk_inj,
                                 )
 
     print('Done.')

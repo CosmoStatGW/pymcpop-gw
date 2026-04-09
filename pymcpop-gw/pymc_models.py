@@ -22,6 +22,9 @@ PLPeakO3params = {'H0': 67.66, 'Om':0.31, 'w0':-1, 'Xi0': 1, 'nXi0':0}
 from tqdm import tqdm
 import copy
 
+eps   = 1e-30
+tinyL = 1e-300
+NEG_BIG = -np.inf
 
 #####################################################
 #####################################################
@@ -252,7 +255,7 @@ def log_p_pop_at(m1s, m2s, z, dL, spins, Lambda, rate_model, mass_model, spin_mo
             print('In the selection bias, normalizing p(z) to its integral to match numerator')
             zgrid_ = at.sort(at.unique(at.concatenate( [at.linspace(0, 1e-05, 10 ), at.linspace(1e-05, 20, 500), at.linspace(20, 100, 20) ] )))
             
-            zint_ = at.exp(log_p_z_MD_unnorm(zgrid_, gamma, kappa, zp, Lambda_c, dc=dc))
+            zint_ = at.exp(atools.log_p_z_MD_unnorm(zgrid_, gamma, kappa, zp, Lambda_c, dc=dc))
             znorm = atools.attrapzvec(zint_, zgrid_)
 
             lp -= at.log(znorm)
@@ -333,7 +336,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     
     log_mu = at.logsumexp(log_sel_b) - at.log(Ndraw)
     
-    logs2 = at.logsumexp(2.0*log_sel_b) - at.log(Ndraw)
+    logs2 = at.logsumexp(2.0*log_sel_b) - at.log(Ndraw )
 
 
     #####################################
@@ -364,7 +367,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw - 1)
 
     Neff = at.exp(logNeff)
     
@@ -373,6 +376,370 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     
 
 #####################################################
+
+def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
+    m1inj, m2inj, dLinj, spinsInj, log_p_draw,
+    Lambda, Ndraw,
+    rate_model, mass_model, spin_model,
+    is_GP_dL,
+    smoothing='LVK',
+    has_m2_break=False,
+    log_ddL_dz_inj=None,
+    zinj=None,
+    dcinj=None,
+    dL_grid=None,
+    z_grid=None,
+    dc_grid=None,
+    log_ddL_dz_grid=None,
+    invert_dL_GP=True,
+    chunk_size=4096,
+    verbose=False,
+    **kwargs
+):
+    import pytensor
+    import pytensor.tensor as at
+
+    def _maybe_tensor(x):
+        try:
+            return at.as_tensor_variable(x)
+        except Exception:
+            return x
+
+    def _pad_to_multiple_1d(x, k, pad_value):
+        x = _maybe_tensor(x)
+        if x.ndim != 1:
+            x = at.flatten(x, 1)
+        N = x.shape[0]
+        C = (N + k - 1) // k
+        Npad = C * k - N
+        pad = at.full((Npad,), pad_value)
+        xpad = at.concatenate([x, pad], axis=0)
+        return xpad.reshape((C, k)), C, N
+
+    def _combine_logsumexp(m_s, s_s, m_c, s_c):
+        m_new = at.maximum(m_s, m_c)
+        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        return m_new, s_new
+
+    spin_is_default = (spin_model in ("default", "default_gauss"))
+    spin_is_chieffchip = (spin_model in ("chieffchip", "chieffchip_uc"))
+    use_dp = (mass_model in ("DP", "DPUC"))
+
+    have_precomputed_z = zinj is not None
+    have_precomputed_dc = dcinj is not None
+    have_precomputed_logdd = log_ddL_dz_inj is not None
+
+    have_dLz = (dL_grid is not None) and (z_grid is not None)
+    have_dc_grid = dc_grid is not None
+    have_logdd_grid = log_ddL_dz_grid is not None
+
+    if is_GP_dL and (not invert_dL_GP):
+        raise NotImplementedError(
+            "scan-GPU currently supports GP distances only with invert_dL_GP=True"
+        )
+
+    # For the case of interest, require interpolation support unless explicit per-injection arrays were passed
+    if is_GP_dL and invert_dL_GP:
+        if not (have_dLz or (have_precomputed_z and have_precomputed_logdd)):
+            raise ValueError(
+                "For is_GP_dL=True and invert_dL_GP=True, pass either "
+                "(dL_grid, z_grid, log_ddL_dz_grid) or (zinj, log_ddL_dz_inj)."
+            )
+
+    K = int(chunk_size)
+    m1_all = _maybe_tensor(m1inj)
+    m2_all = _maybe_tensor(m2inj)
+    dL_all = _maybe_tensor(dLinj)
+    lpd_all = _maybe_tensor(log_p_draw)
+
+    m1K, C, N = _pad_to_multiple_1d(m1_all, K, 2.0)
+    m2K, _, _ = _pad_to_multiple_1d(m2_all, K, 1.0)
+    dLK, _, _ = _pad_to_multiple_1d(dL_all, K, 1.0)
+    lpdK, _, _ = _pad_to_multiple_1d(lpd_all, K, 0.0)
+
+    if spin_is_default:
+        s1K, _, _ = _pad_to_multiple_1d(spinsInj[0], K, 0.0)
+        s2K, _, _ = _pad_to_multiple_1d(spinsInj[1], K, 0.0)
+        ct1K, _, _ = _pad_to_multiple_1d(spinsInj[2], K, 1.0)
+        ct2K, _, _ = _pad_to_multiple_1d(spinsInj[3], K, 1.0)
+    elif spin_is_chieffchip:
+        chieffK, _, _ = _pad_to_multiple_1d(spinsInj[0], K, 0.0)
+        chipK, _, _ = _pad_to_multiple_1d(spinsInj[1], K, 0.0)
+
+    if have_precomputed_z:
+        zK, _, _ = _pad_to_multiple_1d(zinj, K, 0.0)
+    else:
+        zK = None
+
+    if have_precomputed_dc:
+        dcK, _, _ = _pad_to_multiple_1d(dcinj, K, 0.0)
+    else:
+        dcK = None
+
+    if have_precomputed_logdd:
+        logddK, _, _ = _pad_to_multiple_1d(log_ddL_dz_inj, K, 0.0)
+    else:
+        logddK = None
+
+    valid_mask = (at.arange(C * K) < N).reshape((C, K))
+
+    if is_GP_dL:
+        # Keep the Lambda indexing expected by log_p_pop_at:
+        # [H0, Om, w0, gp_placeholder, astro..., spin..., mass...]
+        # The actual GP object cannot go through scan non_sequences.
+        Lambda_seq = [
+            Lambda[0],  # H0
+            Lambda[1],  # Om
+            Lambda[2],  # w0
+            at.as_tensor_variable(0.0),  # dummy placeholder for gp slot
+        ] + list(Lambda[4:])
+    else:
+        Lambda_seq = list(Lambda)
+
+    n_Lambda = len(Lambda_seq)
+
+    if have_dLz:
+        dL_grid_t = dL_grid
+        z_grid_t = z_grid
+        dc_grid_t = dc_grid if have_dc_grid else None
+        logdd_grid_t = log_ddL_dz_grid if have_logdd_grid else None
+
+        dL_flat = dLK.reshape((-1,))
+        idx_flat, r_flat = atools._interp_indices_nonuniform(dL_flat, dL_grid_t)
+        idxK = at.clip(idx_flat.reshape((C, K)), 1, dL_grid_t.shape[0] - 1)
+        rK = r_flat.reshape((C, K))
+    else:
+        dL_grid_t = None
+        z_grid_t = None
+        dc_grid_t = None
+        logdd_grid_t = None
+        idxK = None
+        rK = None
+
+    seqs = [m1K, m2K, dLK, lpdK, valid_mask]
+
+    if spin_is_default:
+        seqs += [s1K, s2K, ct1K, ct2K]
+    elif spin_is_chieffchip:
+        seqs += [chieffK, chipK]
+
+    if have_precomputed_z:
+        seqs += [zK]
+    if have_precomputed_dc:
+        seqs += [dcK]
+    if have_precomputed_logdd:
+        seqs += [logddK]
+
+    if have_dLz:
+        seqs += [idxK, rK]
+
+    nonseq = []
+    if have_dLz:
+        nonseq += [dL_grid_t, z_grid_t]
+        if have_dc_grid:
+            nonseq += [dc_grid_t]
+        if have_logdd_grid:
+            nonseq += [logdd_grid_t]
+
+    nonseq += Lambda_seq
+
+    def step(*args):
+        pos = 0
+
+        m1 = args[pos]; pos += 1
+        m2 = args[pos]; pos += 1
+        dL = args[pos]; pos += 1
+        lpd = args[pos]; pos += 1
+        mask = args[pos]; pos += 1
+
+        if spin_is_default:
+            chi1 = args[pos]; pos += 1
+            chi2 = args[pos]; pos += 1
+            cost1 = args[pos]; pos += 1
+            cost2 = args[pos]; pos += 1
+            spins_use = [chi1, chi2, cost1, cost2]
+        elif spin_is_chieffchip:
+            chieff = args[pos]; pos += 1
+            chip = args[pos]; pos += 1
+            spins_use = [chieff, chip]
+        else:
+            spins_use = []
+
+        zinj_c = None
+        dcinj_c = None
+        logdd_c = None
+
+        if have_precomputed_z:
+            zinj_c = args[pos]; pos += 1
+        if have_precomputed_dc:
+            dcinj_c = args[pos]; pos += 1
+        if have_precomputed_logdd:
+            logdd_c = args[pos]; pos += 1
+
+        if have_dLz:
+            idxs_loc = args[pos]; pos += 1
+            r = args[pos]; pos += 1
+        else:
+            idxs_loc = None
+            r = None
+
+        m_state = args[pos]; pos += 1
+        m2_state = args[pos]; pos += 1
+        s1_state = args[pos]; pos += 1
+        s2_state = args[pos]; pos += 1
+
+        if have_dLz:
+            dL_grid_local = args[pos]; pos += 1
+            z_grid_local = args[pos]; pos += 1
+            dc_grid_local = args[pos] if have_dc_grid else None
+            if have_dc_grid:
+                pos += 1
+            logdd_grid_local = args[pos] if have_logdd_grid else None
+            if have_logdd_grid:
+                pos += 1
+        else:
+            dL_grid_local = None
+            z_grid_local = None
+            dc_grid_local = None
+            logdd_grid_local = None
+
+        Lambda_local = list(args[pos:pos + n_Lambda])
+
+        H0 = Lambda_local[0]
+        Om = Lambda_local[1]
+        w0 = Lambda_local[2]
+
+        # --- z / dc / log(ddL/dz)
+        if zinj_c is None:
+            if have_dLz:
+                il = idxs_loc - 1
+                ih = idxs_loc
+                zl = z_grid_local[il]
+                zh = z_grid_local[ih]
+                zinj_c = (1.0 - r) * zl + r * zh
+            else:
+                if is_GP_dL:
+                    raise ValueError(
+                        "GP scan-GPU path needs either zinj or (dL_grid, z_grid)."
+                    )
+                Xi0 = Lambda_local[3]
+                n = Lambda_local[4]
+                zinj_c = atools.z_from_dL_at(dL, H0, Om, w0, [Xi0, n], is_GP_dL)
+
+        if dcinj_c is None:
+            if have_dLz and have_dc_grid:
+                il = idxs_loc - 1
+                ih = idxs_loc
+                dcl = dc_grid_local[il]
+                dch = dc_grid_local[ih]
+                dcinj_c = (1.0 - r) * dcl + r * dch
+            else:
+                dcinj_c = atools.dcfun_at(zinj_c, H0, Om, w0, interp=False)
+
+        if logdd_c is None:
+            if have_dLz and have_logdd_grid:
+                # IMPORTANT: log_ddL_dz_grid lives on z_grid, not on dL_grid.
+                # First interpolate dL -> z, then interpolate z -> log_ddL_dz.
+                logdd_c = atools.atinterp(zinj_c, z_grid_local, logdd_grid_local)
+            else:
+                if is_GP_dL:
+                    raise ValueError(
+                        "GP scan-GPU path needs either log_ddL_dz_inj or log_ddL_dz_grid."
+                    )
+                Xi0 = Lambda_local[3]
+                n = Lambda_local[4]
+                logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dcinj_c)
+
+        one_p_z = 1.0 + zinj_c
+        m1Src = m1 / one_p_z
+        m2Src = m2 / one_p_z
+
+        if use_dp:
+            Mc_src_inj, q_inj = atools.Mcq_from_m1m2_at(m1Src, m2Src)
+            mass_1_use = at.log(at.maximum(Mc_src_inj, eps))
+            mass_2_use = atools.logitat(q_inj)
+        else:
+            mass_1_use = m1Src
+            mass_2_use = m2Src
+
+        lp = log_p_pop_at(
+            mass_1_use,
+            mass_2_use,
+            zinj_c,
+            dL,
+            spins_use,
+            Lambda_local,
+            rate_model,
+            mass_model,
+            spin_model,
+            is_GP_dL,
+            smoothing=smoothing,
+            has_m2_break=has_m2_break,
+            log_ddL_dz=logdd_c,
+            dc=dcinj_c,
+            is_inj=True,
+            invert_dL_GP=invert_dL_GP,
+        )
+
+        if use_dp:
+            lp += (
+                -at.log(at.maximum(m2Src, eps))
+                -at.log(at.maximum(m1Src - m2Src, eps))
+                -at.log1p(zinj_c)
+            )
+
+        x = at.where(mask, lp - lpd, NEG_BIG)
+        m = at.max(x)
+        y = at.exp(x - m)
+
+        s1c = at.sum(y)
+        s2c = at.sum(y * y)
+
+        m_new, s1_new = _combine_logsumexp(m_state, s1_state, m, s1c)
+        m2c = 2.0 * m
+        m2_new, s2_new = _combine_logsumexp(m2_state, s2_state, m2c, s2c)
+
+        return m_new, m2_new, s1_new, s2_new
+
+    m_init = at.as_tensor_variable(-np.inf, dtype="float64")
+    s_init = at.as_tensor_variable(0.0, dtype="float64")
+
+    scan_kwargs = dict(
+        fn=step,
+        sequences=seqs,
+        outputs_info=[m_init, m_init, s_init, s_init],
+        non_sequences=nonseq,
+        strict=True,
+        profile=True,
+    )
+
+    try:
+        (m_out, m2_out, s1_out, s2_out), _ = pytensor.scan(**scan_kwargs, return_steps=1)
+        m_last = m_out[-1]
+        m2_last = m2_out[-1]
+        s1_last = s1_out[-1]
+        s2_last = s2_out[-1]
+    except TypeError:
+        (m_out, m2_out, s1_out, s2_out), _ = pytensor.scan(**scan_kwargs)
+        m_last = m_out[-1]
+        m2_last = m2_out[-1]
+        s1_last = s1_out[-1]
+        s2_last = s2_out[-1]
+
+    logsumexp1 = m_last + at.log(at.maximum(s1_last, tinyL))
+    logsumexp2 = m2_last + at.log(at.maximum(s2_last, tinyL))
+
+    Ndraw_t = Ndraw
+    log_mu = logsumexp1 - at.log(Ndraw_t)
+    logs2 = logsumexp2 - at.log(Ndraw_t)
+
+    logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
+    Neff = at.exp(logNeff)
+
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+
+    return log_mu, Neff, var_log_lik_u
+
 
 
 
@@ -566,7 +933,9 @@ def make_model(  priors,
                  res_lowz = 0.1,
                  res_highz = 0.1,
                  fine_res = 0.01,
-                 fix_mass=0
+                 fix_mass=0,
+                 inj_loop = 'scan-GPU',
+                 chunk_inj=4096,
                 ):
 
     ################################################
@@ -2304,39 +2673,132 @@ def make_model(  priors,
 
 
                 if is_GP_dL:
-                    
-                    zinj = atools.atinterp( dLinj[0], dLGrid_at, zgrid_fine_ )
-                   
-                    dc_inj = atools.dcfun_at(zinj, H0_, Om_,  w0_, interp=False)
-                    
-
-                    log_ddL_dz_inj   = atools.atinterp(zinj, zgrid_fine_, log_ddL_dz_grid)
-          
+                    if (inj_loop == 'scan-GPU') and (not invert_dL_GP):
+                        raise NotImplementedError(
+                            "inj_loop='scan-GPU' is only implemented for is_GP_dL=True with invert_dL_GP=True"
+                        )
+                
+                    if inj_loop == 'scan-GPU':
+                        # Prefer interpolation-grid inputs for scan-GPU
+                        zinj = None
+                        dc_inj = None
+                        log_ddL_dz_inj = None
+                
+                        dL_grid_inj = dLGrid_at
+                        z_grid_inj = zgrid_fine_
+                        dc_grid_inj = None
+                        log_ddL_dz_grid_inj = log_ddL_dz_grid
+                    else:
+                        # non-scan path still needs explicit per-injection quantities
+                        zinj = atools.atinterp(dLinj[0], dLGrid_at, zgrid_fine_)
+                        dc_inj = atools.dcfun_at(zinj, H0_, Om_, w0_, interp=False)
+                        log_ddL_dz_inj = atools.atinterp(zinj, zgrid_fine_, log_ddL_dz_grid)
+                
+                        dL_grid_inj = None
+                        z_grid_inj = None
+                        dc_grid_inj = None
+                        log_ddL_dz_grid_inj = None
                 else:
-                    zinj, log_ddL_dz_inj, dc_inj = None, None, None
-                    
-                    
-                    
-                log_mu_, Neff_, var_ll_u_ = sel_bias_with_uncertainty_at( m1inj[0], 
-                                                                         m2inj[0], 
-                                                                         dLinj[0], 
-                                                                         spinsInj, 
-                                                                         lpdinj[0], 
-                                                                         Lambda_, 
-                                                                         Ndraw, 
-                                                                         rate_model, 
-                                                                         mass_model, 
-                                                                         spin_model_name, 
-                                                                         is_GP_dL, 
-                                                                         smoothing, has_m2_break,
-                                                                         #distance_ratio=distance_ratio_inj,
-                                                                         #d_distance_ratio_d_z=d_distance_ratio_d_z_inj,
-                                                                         log_ddL_dz_inj = log_ddL_dz_inj,
-                                                                         zinj = zinj ,
-                                                                         dcinj = dc_inj,
-                                                                        
-                                                                        )
+                    zinj = None
+                    dc_inj = None
+                    log_ddL_dz_inj = None
+                    dL_grid_inj = None
+                    z_grid_inj = None
+                    dc_grid_inj = None
+                    log_ddL_dz_grid_inj = None
 
+                if inj_loop == 'scan-GPU':
+                    print("Computing sel bias with GPU scan")
+                    sel_bias_fun = sel_bias_with_uncertainty_at_0_batched_scan_GPU
+                else:
+                    print("Computing sel bias in one chunk")
+                    sel_bias_fun = sel_bias_with_uncertainty_at
+
+                log_mu_, Neff_, var_ll_u_ = sel_bias_fun(
+                    m1inj[0],
+                    m2inj[0],
+                    dLinj[0],
+                    spinsInj,
+                    lpdinj[0],
+                    Lambda_,
+                    Ndraw,
+                    rate_model,
+                    mass_model,
+                    spin_model_name,
+                    is_GP_dL,
+                    smoothing=smoothing,
+                    has_m2_break=has_m2_break,
+                    log_ddL_dz_inj=log_ddL_dz_inj,
+                    zinj=zinj,
+                    dcinj=dc_inj,
+                    dL_grid=dL_grid_inj,
+                    z_grid=z_grid_inj,
+                    dc_grid=dc_grid_inj,
+                    log_ddL_dz_grid=log_ddL_dz_grid_inj,
+                    invert_dL_GP=invert_dL_GP,
+                    chunk_size=chunk_inj,
+                )
+
+
+
+                if False:
+    
+                        if not (is_GP_dL and invert_dL_GP):
+                            raise NotImplementedError(
+                                "debug_sel_batch is only set up here for is_GP_dL=True and invert_dL_GP=True"
+                            )
+    
+                        # Reference per-injection quantities using the same interpolation objects
+                        zinj_tmp_ = atools.atinterp(dLinj[0], dLGrid_at, zgrid_fine_)
+                        dcinj_tmp_ = atools.dcfun_at(zinj_tmp_, H0_, Om_, w0_, interp=False)
+                        log_ddL_dz_inj_tmp_ = atools.atinterp(zinj_tmp_, zgrid_fine_, log_ddL_dz_grid)
+    
+                        log_mu_1, Neff_1, var_ll_u_1 = sel_bias_with_uncertainty_at(
+                            m1inj[0],
+                            m2inj[0],
+                            dLinj[0],
+                            spinsInj,
+                            lpdinj[0],
+                            Lambda_,
+                            Ndraw,
+                            rate_model,
+                            mass_model,
+                            spin_model_name,
+                            is_GP_dL,
+                            smoothing=smoothing,
+                            has_m2_break=has_m2_break,
+                            log_ddL_dz_inj=log_ddL_dz_inj_tmp_,
+                            zinj=zinj_tmp_,
+                            dcinj=dcinj_tmp_,
+                        )
+    
+                        # print("Difference in log_mu_1 :")
+                        # print((log_mu_1 - log_mu_).eval())
+    
+                        # print("Difference in Neff_1 :")
+                        # print((Neff_1 - Neff_).eval())
+    
+                        # print("Difference in var_ll_u_1 :")
+                        # print((var_ll_u_1 - var_ll_u_).eval())
+
+                        debug_fn = pytensor.function(
+                            [],
+                            [log_mu_1 - log_mu_, Neff_1 - Neff_, var_ll_u_1 - var_ll_u_],
+                            on_unused_input="ignore",
+                        )
+                        dlogmu, dNeff, dvar = debug_fn()
+    
+                        print("Difference in log_mu_1 :")
+                        print(dlogmu)
+    
+                        print("Difference in Neff_1 :")
+                        print(dNeff)
+    
+                        print("Difference in var_ll_u_1 :")
+                        print(dvar)
+
+
+                
                 
                 if not marginal_R0:
                     # This is really the number of expected events 
