@@ -277,7 +277,8 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
                                  log_ddL_dz_inj = None,
                                  zinj = None,
                                  dcinj = None,
-                                ):
+                                 **kwargs
+				):
 
 
     if (spin_model=='default') or (spin_model=='default_gauss'):
@@ -2671,33 +2672,22 @@ def make_model(  priors,
                     spinsInj = []
                     spin_model_name = 'none'
 
-
                 if is_GP_dL:
                     if (inj_loop == 'scan-GPU') and (not invert_dL_GP):
                         raise NotImplementedError(
                             "inj_loop='scan-GPU' is only implemented for is_GP_dL=True with invert_dL_GP=True"
                         )
-                
-                    if inj_loop == 'scan-GPU':
-                        # Prefer interpolation-grid inputs for scan-GPU
-                        zinj = None
-                        dc_inj = None
-                        log_ddL_dz_inj = None
-                
-                        dL_grid_inj = dLGrid_at
-                        z_grid_inj = zgrid_fine_
-                        dc_grid_inj = None
-                        log_ddL_dz_grid_inj = log_ddL_dz_grid
-                    else:
-                        # non-scan path still needs explicit per-injection quantities
-                        zinj = atools.atinterp(dLinj[0], dLGrid_at, zgrid_fine_)
-                        dc_inj = atools.dcfun_at(zinj, H0_, Om_, w0_, interp=False)
-                        log_ddL_dz_inj = atools.atinterp(zinj, zgrid_fine_, log_ddL_dz_grid)
-                
-                        dL_grid_inj = None
-                        z_grid_inj = None
-                        dc_grid_inj = None
-                        log_ddL_dz_grid_inj = None
+
+                    # For both vec and scan-GPU, precompute symbolic per-injection quantities.
+                    # This avoids fragile searchsorted calls inside the scan body under JAX.
+                    zinj = atools.atinterp(dLinj[0], dLGrid_at, zgrid_fine_)
+                    dc_inj = atools.dcfun_at(zinj, H0_, Om_, w0_, interp=False)
+                    log_ddL_dz_inj = atools.atinterp(zinj, zgrid_fine_, log_ddL_dz_grid)
+
+                    dL_grid_inj = None
+                    z_grid_inj = None
+                    dc_grid_inj = None
+                    log_ddL_dz_grid_inj = None
                 else:
                     zinj = None
                     dc_inj = None
@@ -2705,7 +2695,9 @@ def make_model(  priors,
                     dL_grid_inj = None
                     z_grid_inj = None
                     dc_grid_inj = None
-                    log_ddL_dz_grid_inj = None
+                    log_ddL_dz_grid_inj = None                
+
+
 
                 if inj_loop == 'scan-GPU':
                     print("Computing sel bias with GPU scan")
@@ -2713,6 +2705,32 @@ def make_model(  priors,
                 else:
                     print("Computing sel bias in one chunk")
                     sel_bias_fun = sel_bias_with_uncertainty_at
+
+
+                if is_GP_dL and invert_dL_GP:
+                    dbg_fn = pytensor.function(
+                        [],
+                        [
+                            at.min(dLGrid_at), at.max(dLGrid_at),
+                            at.min(dLinj[0]), at.max(dLinj[0]),
+                            at.any(at.isnan(dLGrid_at)),
+                            at.any(at.isnan(log_ddL_dz_grid)),
+                            at.any(at.isnan(zgrid_fine_)),
+                            at.any(dLinj[0] < dLGrid_at[0]),
+                            at.any(dLinj[0] > dLGrid_at[-1]),
+                        ],
+                        on_unused_input="ignore",
+                    )
+
+                    dbg_vals = dbg_fn()
+                    print("min(dLGrid_at), max(dLGrid_at) =", dbg_vals[0], dbg_vals[1])
+                    print("min(dLinj), max(dLinj)       =", dbg_vals[2], dbg_vals[3])
+                    print("any NaN dLGrid_at            =", dbg_vals[4])
+                    print("any NaN log_ddL_dz_grid      =", dbg_vals[5])
+                    print("any NaN zgrid_fine_          =", dbg_vals[6])
+                    print("any inj below dLGrid_at[0]   =", dbg_vals[7])
+                    print("any inj above dLGrid_at[-1]  =", dbg_vals[8])
+
 
                 log_mu_, Neff_, var_ll_u_ = sel_bias_fun(
                     m1inj[0],
@@ -2741,7 +2759,7 @@ def make_model(  priors,
 
 
 
-                if False:
+                if True:
     
                         if not (is_GP_dL and invert_dL_GP):
                             raise NotImplementedError(

@@ -511,8 +511,31 @@ def meshgrid_at(x, y):
 
 from pytensor.gradient import disconnected_grad  # <- correct import
 
-
 def _interp_indices_nonuniform(x, x_grid):
+    x_lo = x_grid[0]
+    x_hi = x_grid[-1]
+
+    bad_x = ~at.isfinite(x)
+    bad_lo = ~at.isfinite(x_lo)
+    bad_hi = ~at.isfinite(x_hi)
+
+    # optional debug potentials / prints upstream if needed
+
+    x_safe = at.where(bad_x, x_lo, x)
+    x_safe = at.clip(x_safe, x_lo, x_hi)
+
+    j = at.searchsorted(x_grid, x_safe, side="right")
+    j = at.clip(j, 1, x_grid.shape[0] - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = at.maximum(xR - xL, 1e-12)
+    r = at.clip((x_safe - xL) / denom, 0.0, 1.0)
+
+    return j, r
+
+
+def _interp_indices_nonuniform_0(x, x_grid):
     """
     Robust non-uniform 1D interpolation indices.
 
