@@ -282,7 +282,8 @@ def make_model(  priors,
                  remove_spin_prior=False,
                  m_high_spread = 1. ,
                 force_uniform_mhigh=False, 
-                 truncate_dL_prior = False
+                 truncate_dL_prior = False,
+                 save_diagnostics = False
                 ):
 
 
@@ -2720,6 +2721,10 @@ def make_model(  priors,
 
             log_p_pop = (log_p_pop - log_PE_prior).reshape((N, Nsamples))
             log_p_pop_marg = at.logsumexp( log_p_pop, axis=1, ) - at.log(allNsamples)
+
+            if save_diagnostics:
+                pm.Deterministic("log_ell_events", log_p_pop_marg, dims="event_index")
+                pm.Deterministic("log_p_pop_rw", log_p_pop, )
             
             # then sum log likelihoods
             likelihood_val = at.sum( log_p_pop_marg )  
@@ -2868,6 +2873,14 @@ def make_model(  priors,
             
             
             _ = pm.Potential('selection_bias', selection_bias)
+
+            if save_diagnostics:
+                pm.Deterministic("sel_effect", sel_effect)
+                pm.Deterministic("selection_bias_term", selection_bias)
+                pm.Deterministic("log_mu", log_mu_)
+            
+                        
+            
 
             if marginal_R0:
                 if include_sel_uncertainty:
