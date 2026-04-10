@@ -368,7 +368,7 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     # This is variance of log l per unit obs as in Talbot Golomb 2023
     #####################################
 
-    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 1.) - at.log(Ndraw - 1)
+    var_log_lik_u = atools.logdiffexp( logs2-2*log_mu, 0.) - at.log(Ndraw - 1)
 
     Neff = at.exp(logNeff)
     
@@ -378,6 +378,10 @@ def sel_bias_with_uncertainty_at(m1inj, m2inj, dLinj, spinsInj, log_p_draw,
 
 #####################################################
 
+def _isfinite(x):
+    return ~(at.isnan(x) | at.isinf(x))
+
+        
 def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     m1inj, m2inj, dLinj, spinsInj, log_p_draw,
     Lambda, Ndraw,
@@ -413,13 +417,20 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         N = x.shape[0]
         C = (N + k - 1) // k
         Npad = C * k - N
-        pad = at.full((Npad,), pad_value)
+        pad = at.full((Npad,), pad_value, dtype=x.dtype)
         xpad = at.concatenate([x, pad], axis=0)
         return xpad.reshape((C, k)), C, N
 
     def _combine_logsumexp(m_s, s_s, m_c, s_c):
-        m_new = at.maximum(m_s, m_c)
-        s_new = s_s * at.exp(m_s - m_new) + s_c * at.exp(m_c - m_new)
+        only_s = at.eq(s_c, 0.0)
+        only_c = at.eq(s_s, 0.0)
+
+        m_new_raw = at.maximum(m_s, m_c)
+        s_new_raw = s_s * at.exp(m_s - m_new_raw) + s_c * at.exp(m_c - m_new_raw)
+
+        m_new = at.switch(only_s, m_s, at.switch(only_c, m_c, m_new_raw))
+        s_new = at.switch(only_s, s_s, at.switch(only_c, s_c, s_new_raw))
+
         return m_new, s_new
 
     spin_is_default = (spin_model in ("default", "default_gauss"))
@@ -439,7 +450,6 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             "scan-GPU currently supports GP distances only with invert_dL_GP=True"
         )
 
-    # For the case of interest, require interpolation support unless explicit per-injection arrays were passed
     if is_GP_dL and invert_dL_GP:
         if not (have_dLz or (have_precomputed_z and have_precomputed_logdd)):
             raise ValueError(
@@ -448,51 +458,57 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             )
 
     K = int(chunk_size)
+
     m1_all = _maybe_tensor(m1inj)
     m2_all = _maybe_tensor(m2inj)
     dL_all = _maybe_tensor(dLinj)
     lpd_all = _maybe_tensor(log_p_draw)
 
-    m1K, C, N = _pad_to_multiple_1d(m1_all, K, 2.0)
-    m2K, _, _ = _pad_to_multiple_1d(m2_all, K, 1.0)
-    dLK, _, _ = _pad_to_multiple_1d(dL_all, K, 1.0)
-    lpdK, _, _ = _pad_to_multiple_1d(lpd_all, K, 0.0)
+    m1K, C, N = _pad_to_multiple_1d(m1_all, K, m1_all[0])
+    m2K, _, _ = _pad_to_multiple_1d(m2_all, K, m2_all[0])
+    dLK, _, _ = _pad_to_multiple_1d(dL_all, K, dL_all[0])
+    lpdK, _, _ = _pad_to_multiple_1d(lpd_all, K, lpd_all[0])
 
     if spin_is_default:
-        s1K, _, _ = _pad_to_multiple_1d(spinsInj[0], K, 0.0)
-        s2K, _, _ = _pad_to_multiple_1d(spinsInj[1], K, 0.0)
-        ct1K, _, _ = _pad_to_multiple_1d(spinsInj[2], K, 1.0)
-        ct2K, _, _ = _pad_to_multiple_1d(spinsInj[3], K, 1.0)
+        s1K, _, _ = _pad_to_multiple_1d(_maybe_tensor(spinsInj[0]), K, _maybe_tensor(spinsInj[0])[0])
+        s2K, _, _ = _pad_to_multiple_1d(_maybe_tensor(spinsInj[1]), K, _maybe_tensor(spinsInj[1])[0])
+        ct1K, _, _ = _pad_to_multiple_1d(_maybe_tensor(spinsInj[2]), K, _maybe_tensor(spinsInj[2])[0])
+        ct2K, _, _ = _pad_to_multiple_1d(_maybe_tensor(spinsInj[3]), K, _maybe_tensor(spinsInj[3])[0])
     elif spin_is_chieffchip:
-        chieffK, _, _ = _pad_to_multiple_1d(spinsInj[0], K, 0.0)
-        chipK, _, _ = _pad_to_multiple_1d(spinsInj[1], K, 0.0)
+        chieff_arr = _maybe_tensor(spinsInj[0])
+        chip_arr = _maybe_tensor(spinsInj[1])
+        chieffK, _, _ = _pad_to_multiple_1d(chieff_arr, K, chieff_arr[0])
+        chipK, _, _ = _pad_to_multiple_1d(chip_arr, K, chip_arr[0])
 
     if have_precomputed_z:
-        zK, _, _ = _pad_to_multiple_1d(zinj, K, 0.0)
+        zinj_t = stop_grad(_maybe_tensor(zinj))
+        zK, _, _ = _pad_to_multiple_1d(zinj_t, K, zinj_t[0])
     else:
+        zinj_t = None
         zK = None
 
     if have_precomputed_dc:
-        dcK, _, _ = _pad_to_multiple_1d(dcinj, K, 0.0)
+        dcinj_t = stop_grad(_maybe_tensor(dcinj))
+        dcK, _, _ = _pad_to_multiple_1d(dcinj_t, K, dcinj_t[0])
     else:
+        dcinj_t = None
         dcK = None
 
     if have_precomputed_logdd:
-        logddK, _, _ = _pad_to_multiple_1d(log_ddL_dz_inj, K, 0.0)
+        logdd_t = stop_grad(_maybe_tensor(log_ddL_dz_inj))
+        logddK, _, _ = _pad_to_multiple_1d(logdd_t, K, logdd_t[0])
     else:
+        logdd_t = None
         logddK = None
 
     valid_mask = (at.arange(C * K) < N).reshape((C, K))
 
     if is_GP_dL:
-        # Keep the Lambda indexing expected by log_p_pop_at:
-        # [H0, Om, w0, gp_placeholder, astro..., spin..., mass...]
-        # The actual GP object cannot go through scan non_sequences.
         Lambda_seq = [
-            Lambda[0],  # H0
-            Lambda[1],  # Om
-            Lambda[2],  # w0
-            at.as_tensor_variable(0.0),  # dummy placeholder for gp slot
+            Lambda[0],
+            Lambda[1],
+            Lambda[2],
+            at.as_tensor_variable(0.0),  # placeholder to preserve indexing
         ] + list(Lambda[4:])
     else:
         Lambda_seq = list(Lambda)
@@ -500,10 +516,10 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     n_Lambda = len(Lambda_seq)
 
     if have_dLz:
-        dL_grid_t = dL_grid
-        z_grid_t = z_grid
-        dc_grid_t = dc_grid if have_dc_grid else None
-        logdd_grid_t = log_ddL_dz_grid if have_logdd_grid else None
+        dL_grid_t = stop_grad(_maybe_tensor(dL_grid))
+        z_grid_t = stop_grad(_maybe_tensor(z_grid))
+        dc_grid_t = stop_grad(_maybe_tensor(dc_grid)) if have_dc_grid else None
+        logdd_grid_t = stop_grad(_maybe_tensor(log_ddL_dz_grid)) if have_logdd_grid else None
 
         dL_flat = dLK.reshape((-1,))
         idx_flat, r_flat = atools._interp_indices_nonuniform(dL_flat, dL_grid_t)
@@ -610,7 +626,6 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
         Om = Lambda_local[1]
         w0 = Lambda_local[2]
 
-        # --- z / dc / log(ddL/dz)
         if zinj_c is None:
             if have_dLz:
                 il = idxs_loc - 1
@@ -639,8 +654,6 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
 
         if logdd_c is None:
             if have_dLz and have_logdd_grid:
-                # IMPORTANT: log_ddL_dz_grid lives on z_grid, not on dL_grid.
-                # First interpolate dL -> z, then interpolate z -> log_ddL_dz.
                 logdd_c = atools.atinterp(zinj_c, z_grid_local, logdd_grid_local)
             else:
                 if is_GP_dL:
@@ -650,6 +663,11 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
                 Xi0 = Lambda_local[3]
                 n = Lambda_local[4]
                 logdd_c = atools.log_ddL_dz(zinj_c, H0, Om, w0, Xi0, n, dc=dcinj_c)
+
+        # Geometry is deterministic lookup structure here; stop gradients through it
+        zinj_c = stop_grad(zinj_c)
+        dcinj_c = stop_grad(dcinj_c)
+        logdd_c = stop_grad(logdd_c)
 
         one_p_z = 1.0 + zinj_c
         m1Src = m1 / one_p_z
@@ -690,8 +708,13 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
             )
 
         x = at.where(mask, lp - lpd, NEG_BIG)
-        m = at.max(x)
-        y = at.exp(x - m)
+
+        finite_x = _isfinite(x)
+        any_finite = at.any(finite_x)
+        x_safe = at.where(finite_x, x, NEG_BIG)
+
+        m = at.switch(any_finite, at.max(x_safe), 0.0)
+        y = at.switch(any_finite, at.exp(x_safe - m), at.zeros_like(x_safe))
 
         s1c = at.sum(y)
         s2c = at.sum(y * y)
@@ -737,7 +760,7 @@ def sel_bias_with_uncertainty_at_0_batched_scan_GPU(
     logNeff = 2.0 * log_mu - logs2 + at.log(Ndraw_t)
     Neff = at.exp(logNeff)
 
-    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 1.0) - at.log(Ndraw_t - 1.0)
+    var_log_lik_u = atools.logdiffexp(logs2 - 2.0 * log_mu, 0.0) - at.log(Ndraw_t - 1.0)
 
     return log_mu, Neff, var_log_lik_u
 
