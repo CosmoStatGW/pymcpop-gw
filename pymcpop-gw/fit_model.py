@@ -232,6 +232,8 @@ def main():
     parser.add_argument("--reparam_cosmo", default=0, type=int, required=False)
     parser.add_argument("--m_high_spread", default=1, type=float, required=False)
     parser.add_argument("--force_uniform_mhigh", default=0, type=int, required=False)
+    parser.add_argument("--vary_mb", default=0, type=int, required=False)
+    
     
     
 
@@ -922,7 +924,8 @@ def main():
                                 remove_spin_prior = FLAGS.remove_spin_prior,
                                 m_high_spread = FLAGS.m_high_spread,
                                 force_uniform_mhigh = FLAGS.force_uniform_mhigh,
-                                truncate_dL_prior = FLAGS.truncate_dL_prior
+                                truncate_dL_prior = FLAGS.truncate_dL_prior,
+                                vary_mb = FLAGS.vary_mb
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")

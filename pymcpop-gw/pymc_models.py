@@ -283,7 +283,8 @@ def make_model(  priors,
                  m_high_spread = 1. ,
                 force_uniform_mhigh=False, 
                  truncate_dL_prior = False,
-                 save_diagnostics = False
+                 save_diagnostics = False,
+                 vary_mb = False
                 ):
 
 
@@ -1725,11 +1726,21 @@ def make_model(  priors,
                 priors=priors,
             )
         
-            
-            mb_inf_ = pm.Deterministic("mb_inf", mb_0) 
-            z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0) ) #.astype(X)) 
-            dz_mb_  = pm.Deterministic("dz_mb", at.as_tensor_variable(1.0)) #.astype(X))  
-            
+            if not vary_mb:
+                mb_inf_ = pm.Deterministic("mb_inf", mb_0) 
+                z_mb_   = pm.Deterministic("z_mb", at.as_tensor_variable(0.0) ) #.astype(X)) 
+                dz_mb_  = pm.Deterministic("dz_mb", at.as_tensor_variable(1.0)) #.astype(X))  
+            else:
+                print("varying breaking point")
+                mb_inf_,     z_mb_,     dz_mb_    = putils.evo_triplet(
+                    "mb",
+                    theta0_rv=mb_0,
+                    ivals=ivals,
+                    priors=priors,
+                     positive=True,          # NEW: if True, enforce theta_inf > 0
+                    eps_pos=5., 
+                )
+                
         
             mu1_inf_,     z_mu1_,     dz_mu1_    = putils.evo_triplet(
                 "mu1",
