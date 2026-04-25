@@ -105,6 +105,8 @@ class LikDataGauss:
     # number of events
     Nobs: int = 0
     logNobs: Optional[jnp.float64] = 0
+    # Regularizer for selction term
+    logr : Optional[jnp.float64] = 0
 
     # model meta
     spin_model: str = "none"
@@ -361,7 +363,17 @@ def make_loglik_gauss(
         ll_evt = jnp.sum(logp_pop_evt + log_jac_evt - log_PE_prior_evt)
 
         # selection normalization
-        ll = ll_evt - (Nobs * log_mu)
+        sel_term = lax.cond(
+                data.logr == -1,
+                lambda _: log_mu,
+                lambda _: jnp.logaddexp(log_mu, -data.logr ),
+                operand=None
+            )
+
+        # jax.debug.print("logmu = {}", log_mu)
+        # jax.debug.print("sel_term = {}", sel_term)
+        
+        ll = ll_evt - (Nobs * sel_term)
 
         # optional R0*Tobs term (only if not marginal_R0)
         if not data.marginal_R0:

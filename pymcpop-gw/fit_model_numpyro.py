@@ -228,7 +228,7 @@ def main():
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='none', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
@@ -273,6 +273,7 @@ def main():
     parser.add_argument("--mmin_inj", default=-1, type=float, required=False)
     parser.add_argument("--is_compressed_inj", default=0, type=int, required=False)
     
+    parser.add_argument("--r",  default=0, type=float, required=False)
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
     parser.add_argument("--reparam_mass", default=0, type=int, required=False)
@@ -768,6 +769,7 @@ def main():
         use_float32=bool(FLAGS.use_float32),
         use_float32_bias=bool(FLAGS.use_float32_bias),
         sel_method=FLAGS.sel,
+        sel_smoothing = FLAGS.sel_smoothing,
         N_DP_comp_max=FLAGS.N_DP_comp_max,
         DP_m1_env=bool(FLAGS.DP_m1_env),
         integrate_dc=FLAGS.integrate_dc,
@@ -787,7 +789,8 @@ def main():
         fix_w0=bool(FLAGS.fix_w0),
         fix_Xi0n=bool(FLAGS.fix_Xi0n),
         reparam_mass = bool(FLAGS.reparam_mass),
-        remove_spin_prior =  bool(FLAGS.remove_spin_prior)
+        remove_spin_prior =  bool(FLAGS.remove_spin_prior),
+        r = FLAGS.r
     )
 
 

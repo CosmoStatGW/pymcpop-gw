@@ -89,7 +89,8 @@ def pack_data_gauss_popnot(
     subtract_log_p_incl=False,
     sample_from_pop=False,
     marginal_R0=True,
-    allTobs = None
+    allTobs = None,
+    r = 0
 ):
     """
     Build LikDataGauss for pop_only=False, sampling_GW='gauss'.
@@ -166,6 +167,12 @@ def pack_data_gauss_popnot(
 
 
     # ---- Build LikDataGauss (device arrays) ----
+
+    if jnp.log(r)==-1:
+        raise ValueError()
+    
+    logr = jnp.log(r) if r!=0 else -1
+    
     data = LikDataGauss(
         # GW surrogate
         mus_s=jnp.asarray(mus_s, dtype=jnp.float64),
@@ -218,6 +225,7 @@ def pack_data_gauss_popnot(
         subtract_log_p_incl=bool(subtract_log_p_incl),
         sample_from_pop=bool(sample_from_pop),
         marginal_R0=bool(marginal_R0),
+        logr = logr
     )
     return data
 
@@ -489,7 +497,7 @@ def make_model_jax(  priors,
                N_successes_l=None,
                Nsamplesuse = -1,
                include_sel_uncertainty=False,
-               sel_smoothing='poly',
+               sel_smoothing='sigmoid',
                alpha_beta_prior='poly',
                dil_factor=1,
                use_log_alpha_beta=False ,
@@ -517,7 +525,8 @@ def make_model_jax(  priors,
                  DP_truncate_low=False,
                  DP_m1_env = False,
                  detach_var = False,
-                    remove_spin_prior = False
+                remove_spin_prior = False,
+                     r = 0
                 ):
 
 
@@ -832,7 +841,8 @@ def make_model_jax(  priors,
         subtract_log_p_incl=False,     # or your flag
         sample_from_pop=sample_from_pop,
         marginal_R0=marginal_R0,
-        allTobs = allTobs
+        allTobs = allTobs,
+        r = r
     )
 
 
@@ -1172,15 +1182,19 @@ def make_model_jax(  priors,
 
         
         ## likelihood variance bound:
-        #gate_llv = jax.nn.log_sigmoid((log_lik_var_min - log_lik_var_sg) / 0.01)
-        ## hard version 
-        gate_llv = jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30)
+        if sel_smoothing=='sigmoid':
+            gate_llv = jax.nn.log_sigmoid( (log_lik_var_min - log_lik_var_sg) / 0.1 )
+        elif sel_smoothing=='none':
+            ## hard version 
+            gate_llv = jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30)
+        else:
+            raise ValueError("sel_smoothing takes values sigmoid or none, got %s"%sel_smoothing)
 
         ## Uncomment for debugging
-        # jax.debug.print("log_lik_var_sg = {}", log_lik_var_sg)
-        # jax.debug.print("gate_llv = {}", gate_llv)
-        # jax.debug.print("log_lik_var_sg finite? {}", jnp.isfinite(log_lik_var_sg))
-
+        #jax.debug.print("log_lik_var_sg = {}", log_lik_var_sg)
+        #jax.debug.print("gate_llv = {}", gate_llv)
+        #jax.debug.print("log_lik_var_sg finite? {}", jnp.isfinite(log_lik_var_sg))
+        
         #gate_llv_safe = jnp.where(jnp.isfinite(gate_llv), gate_llv, -1e30)
         numpyro.factor("bound_log_lik_var", gate_llv)
 
