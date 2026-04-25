@@ -123,6 +123,9 @@ def main():
     parser.add_argument("--target_accept", default=0.8, type=float, required=False)
     parser.add_argument("--chain_method", default='parallel', type=str, required=False)
     parser.add_argument("--dense_mass", default=0, type=int, required=False)
+    parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
+
+    
 
      
     parser.add_argument("--is_GP_dL", default=1, type=int, required=False)
@@ -1194,7 +1197,7 @@ def main():
                                         "adapt_mass_matrix": True,
                                         "regularize_mass_matrix": 1e-3 , #5e-4,
                                         "find_heuristic_step_size": False,  # let NumPyro pick a good initial step
-                                        "max_tree_depth": 10,
+                                        "max_tree_depth": FLAGS.max_tree_depth,
                                         "forward_mode_differentiation": False,
                                         "step_size":1e-2,
                                     },
