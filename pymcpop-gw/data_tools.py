@@ -9,7 +9,16 @@ import sys
 
 
 
-def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
+def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_rw=False):
+
+    if events_use is None:
+        events_use = []
+
+    if events_exclude is None:
+        events_exclude = []
+
+    if events_use and events_exclude:
+        raise ValueError("Cannot pass events_use and events_exclude at the same time.")
 
     allnames_return = []
     for i,fid in enumerate(fin):
@@ -19,33 +28,52 @@ def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
         is_h5 = str(fid).lower().endswith((".h5", ".hdf5"))
 
         if is_h5:
-
             with h5py.File(fid, "r") as f:
+                props = f["properties"]  
                 gwnames = props["gwnames"][:]        # may be bytes -> decode if needed
-                allnames_ = [x.decode() if isinstance(x, bytes) else x for x in gwnames]
+                #allnames_ = [x.decode() if isinstance(x, bytes) else x for x in gwnames]
+                allnames_ = [x.decode() if isinstance(x, bytes) else str(x) for x in gwnames]
         else:
             allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
 
         
-        if events_use!=[]: 
-    
-            evs_use_ = onp.loadtxt( events_use[i], dtype=str )
-            print("For %s, requested explicitly to use the following events, total %s:"%(fid, len(evs_use_)))
+        evs_use_ = None
+        
+        if events_exclude:
+            print("Asked to exclude %s" % str(events_exclude))
+        
+            exclude_set = set(events_exclude)
+            evs_use_ = [name for name in allnames_ if name not in exclude_set]
+        
+        elif events_use:
+            # Case: one txt file per input file
+            if len(events_use) == len(fin) and str(events_use[i]).endswith(".txt"):
+                evs_use_ = onp.loadtxt(events_use[i], dtype=str)
+                evs_use_ = onp.atleast_1d(evs_use_).tolist()
+                print("Loaded list of events to use for %s from %s" % (fid, events_use[i]))
+        
+            else:
+                # Case: global whitelist for concatenated result
+                use_set = set(events_use)
+                evs_use_ = [name for name in allnames_ if name in use_set]
+
+        
+        if evs_use_ is not None:
+            print("For %s, requested explicitly to use the following events, total %s:" % (fid, len(evs_use_)))
             print(evs_use_)
-
+        
             missing = onp.setdiff1d(evs_use_, allnames_)
-
+        
             if missing.size > 0:
                 raise ValueError(
                     f"The following events are not in allnames_: {missing.tolist()}"
                 )
-
+        
             mask_ = onp.isin(allnames_, evs_use_)
             allnames_return.append(evs_use_)
-            
-
+        
         else:
-            mask_ = onp.full(len(allnames_), True )
+            mask_ = onp.full(len(allnames_), True)
             allnames_return.append(allnames_)
 
 
@@ -162,7 +190,7 @@ def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
 
     if nmax==-1:
         nmax=None
-    else:
+    if nmax is not None:
         allNsamples = onp.array([min(nmax, allNsamples[i]) for i in range(len(allNsamples)) ])
     
     res = {'m1d_samples': m1d_samples[:, :nmax], 
@@ -183,8 +211,16 @@ def load_data_samples(fin, nmax=None, events_use=[], use_rw=False):
         
 
 
-def load_data_interp(fin, events_use=[]):
+def load_data_interp(fin, events_use=None, events_exclude=None):
 
+    if events_use is None:
+        events_use = []
+
+    if events_exclude is None:
+        events_exclude = []
+
+    if events_use and events_exclude:
+        raise ValueError("Cannot pass events_use and events_exclude at the same time.")
 
     samples_means_dict =  {}
     samples_cho_covs_dict = {}
@@ -209,13 +245,28 @@ def load_data_interp(fin, events_use=[]):
         print("\nLoading data from %s"%fid)
         allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
                 
-        if events_use!=[]:
+        evs_use_ = None
 
-          
-    
-            #print('Done.')
-            evs_use_ = onp.loadtxt( events_use[i], dtype=str )
-            print("For %s, requested explicitly to use the following events, total %s:"%(fid, len(evs_use_)))
+        if events_exclude:
+            print("Asked to exclude %s" % str(events_exclude))
+
+            exclude_set = set(events_exclude)
+            evs_use_ = [name for name in allnames_ if name not in exclude_set]
+
+        elif events_use:
+            # Case: one txt file per input file
+            if len(events_use) == len(fin) and str(events_use[i]).endswith(".txt"):
+                evs_use_ = onp.loadtxt(events_use[i], dtype=str)
+                evs_use_ = onp.atleast_1d(evs_use_).tolist()
+                print("Loaded list of events to use for %s from %s" % (fid, events_use[i]))
+
+            else:
+                # Case: global whitelist for concatenated result
+                use_set = set(events_use)
+                evs_use_ = [name for name in allnames_ if name in use_set]
+
+        if evs_use_ is not None:
+            print("For %s, requested explicitly to use the following events, total %s:" % (fid, len(evs_use_)))
             print(evs_use_)
 
             missing = onp.setdiff1d(evs_use_, allnames_)
@@ -228,20 +279,24 @@ def load_data_interp(fin, events_use=[]):
             mask_ = onp.isin(allnames_, evs_use_)
             allnames_dict[fid] = allnames_
             evsuse_dict[fid] = evs_use_
-
             allnames_return.append(evs_use_)
-            
-            #print("mask_ is ")
-            #print(mask_)
-            if i==0:
+
+            if i == 0:
                 allnames_use = evs_use_
             else:
                 allnames_use = onp.concatenate([allnames_use, evs_use_])
 
         else:
-            mask_ = onp.full(len(allnames_), True )
+            mask_ = onp.full(len(allnames_), True)
             allnames_return.append(allnames_)
-            
+
+            if i == 0:
+                allnames_use = allnames_
+            else:
+                allnames_use = onp.concatenate([allnames_use, allnames_])            
+        
+        
+        
         print('Loading sample means and covs...')
 
         try:

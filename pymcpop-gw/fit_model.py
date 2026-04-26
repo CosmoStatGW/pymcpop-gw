@@ -78,13 +78,14 @@ def main():
     parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
     parser.add_argument("--fin_priors", default='', type=str, required=True)
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
-    parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
     parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
     
 
     parser.add_argument("--nev_min", default=0, type=int, required=False)
     parser.add_argument("--nev_max", default=-1, type=int, required=False)
+    parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
+    parser.add_argument("--events_exclude", nargs='+', default=[], type=str, required=False)
     
     parser.add_argument("--pop_only", default=0, type=int, required=False)
     
@@ -500,22 +501,15 @@ def main():
 
 
 
+    if ( FLAGS.events_exclude != [] or FLAGS.events_use != []) and (FLAGS.nev_min != 0 or FLAGS.nev_max != -1):
+            raise ValueError("Passed events_exclude=%s, events_use=%s, nev_min=%s, nev_max=%s. If events_exclude is not empty, nev_min must be 0 and nev_max=-1  "%(str(events_exclude), str(events_use), nev_min, nev_max ))
+        
     
     if not FLAGS.pop_only:
 
-        data = dt.load_data_interp(FLAGS.fin_data, events_use=FLAGS.events_use)
+        data = dt.load_data_interp(FLAGS.fin_data, events_use=FLAGS.events_use, events_exclude=FLAGS.events_exclude)
 
-        # samples_means_at = at.as_tensor_variable(data['samples_means'])
-        # samples_cho_covs_at = at.as_tensor_variable(data['samples_cho_covs']*FLAGS.cho_dil)
-    
-        # gmm_log_wts = at.as_tensor_variable(data['gmm_log_wts'])
-        # gmm_means = at.as_tensor_variable(data['gmm_means'])
-        # gmm_icovs = at.as_tensor_variable(data['gmm_icovs'])
-        # gmm_cho_covs = at.as_tensor_variable(data['gmm_cho_covs'])
-        # gmm_log_dets = at.as_tensor_variable(data['gmm_log_dets'])
-        # allNgm = at.as_tensor_variable(data['allNgm'])
-        # Nevents = at.as_tensor_variable(data['Nevents'])
-
+ 
         samples_means_at = data['samples_means']#.astype(X)
         samples_cho_covs_at = (data['samples_cho_covs']*FLAGS.cho_dil)#.astype(X)
     
@@ -528,9 +522,11 @@ def main():
         Nevents =  data['Nevents']#.astype(X)
         allnames =  data['allnames']
 
+        
+
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
-            if FLAGS.events_use!=[]:
+            if FLAGS.events_use!=[] or FLAGS.events_exclude!=[]:
                 raise ValueError("Cannot select by index and name at the same time")
                 
             N_or = Nevents
@@ -572,21 +568,14 @@ def main():
 
             print("Number of events used: %s. Original events were %s."%(Nevents, N_or))
 
-
-    
+ 
 
     else:
+        
         print("Using n max samples = %s"%FLAGS.nsamplesmax)
-        data = dt.load_data_samples(FLAGS.fin_data, nmax=FLAGS.nsamplesmax)
+        data = dt.load_data_samples(FLAGS.fin_data, nmax=FLAGS.nsamplesmax, events_exclude=FLAGS.events_exclude, events_use=FLAGS.events_use)
 
-        # m1d_samples = at.as_tensor_variable(data['m1d_samples'])
-        # m2d_samples = at.as_tensor_variable(data['m2d_samples'])
-        # dL_samples = at.as_tensor_variable(data['dL_samples'])
-        # print("dL_samples shape is %s"%(str(dL_samples.shape)))
-
-        # allNsamples = at.as_tensor_variable(data['allNsamples'])
-        # where_compute = at.as_tensor_variable(data['where_compute'])
-
+ 
         m1d_samples = data['m1d_samples']
         m2d_samples =  data['m2d_samples']
         dL_samples =  data['dL_samples']
@@ -599,6 +588,10 @@ def main():
         allnames =  data['allnames']
 
         Nevents =  m1d_samples.shape[0]
+
+        
+        if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
+            raise NotImplementedError()
 
         if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
 
