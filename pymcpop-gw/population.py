@@ -1097,7 +1097,7 @@ def _make_pop_and_sel_core(
                     bk,
                     logq,
                     0.0,
-                ) - jnp.log(Nsamples_evt - 1.0)
+                ) - jnp.log(Nsamples_all - 1.0)
 
                 var_evs = jnp.sum(jnp.exp(log_var_evt))
                 return log_l_evt, lax.stop_gradient(var_evs)

@@ -643,7 +643,60 @@ def bounded_sigmoid_logpositive(name: str, low: float, high: float, raw_sigma: f
 
 
     
+def evo_triplet_numpyro(
+    name: str,
+    theta0,
+    ivals: dict,
+    priors: dict,
+    positive: bool = False,
+    eps_pos: float = 1e-6,
+):
+    """
+    NumPyro equivalent of PyMC evo_triplet:
+        theta_inf = theta0 + delta_theta
+    """
+    delta_sigma = priors.get(f"delta_{name}_sigma", 1.0)
 
+    if positive:
+        lower = -theta0 + eps_pos
+        delta_theta = numpyro.sample(
+            f"delta_{name}",
+            dist.TruncatedNormal(
+                loc=0.0,
+                scale=delta_sigma,
+                low=lower,
+                high=jnp.inf,
+            ),
+        )
+    else:
+        delta_theta = numpyro.sample(
+            f"delta_{name}",
+            dist.Normal(0.0, delta_sigma),
+        )
+
+    theta_inf = theta0 + delta_theta
+    numpyro.deterministic(f"{name}_inf", theta_inf)
+
+    z_low, z_high = priors.get("z_t", (0.05, 2.5))
+    z_t = numpyro.sample(
+        f"z_{name}",
+        dist.Uniform(z_low, z_high),
+    )
+
+    dz_low, dz_high = priors.get("dz", (0.05, 3.0))
+    dz_mid = 0.5 * (dz_low + dz_high)
+
+    log_dz = numpyro.sample(
+        f"log_dz_{name}",
+        dist.Normal(jnp.log(dz_mid), 0.5),
+    )
+
+    dz = jnp.clip(jnp.exp(log_dz), dz_low, dz_high)
+    numpyro.deterministic(f"dz_{name}", dz)
+
+    return theta_inf, z_t, dz
+
+    
 
 
 def make_model_jax(  priors,
@@ -1400,6 +1453,293 @@ def make_model_jax(  priors,
                 epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_
             ]
 
+
+        elif mass_model == "DPLDP-z":
+
+            if priors["alpha1_0"] != priors["alpha2_0"]:
+                raise ValueError(
+                    f"alpha1/alpha2 priors differ: {priors['alpha1_0']} vs {priors['alpha2_0']}"
+                )
+        
+            # -------------------------
+            # Low-z alpha reparam
+            # -------------------------
+            a_low, a_high = priors["alpha1_0"][0], priors["alpha1_0"][1]
+            a_mid = 0.5 * (a_low + a_high)
+            a_sig = (a_high - a_low) / (2.0 * NORM_Q95)
+        
+            a_bar = numpyro.sample(
+                "alpha_bar",
+                dist.Normal(a_mid, a_sig),
+            )
+            a_diff = numpyro.sample(
+                "alpha_diff",
+                dist.Normal(0.0, jnp.sqrt(2.0) * a_sig),
+            )
+        
+            alpha1_0 = numpyro.deterministic("alpha1_0", a_bar - 0.5 * a_diff)
+            alpha2_0 = numpyro.deterministic("alpha2_0", a_bar + 0.5 * a_diff)
+        
+            beta_ = normal_from_bounds_95(
+                "beta",
+                priors["beta"][0],
+                priors["beta"][1],
+            )
+        
+            mb_0 = bounded_sigmoid(
+                "mb_0",
+                priors["mb_0"][0],
+                priors["mb_0"][1],
+                raw_sigma=1.0,
+            )
+        
+            mu1_0 = bounded_sigmoid(
+                "mu1_0",
+                priors["mu1_0"][0],
+                priors["mu1_0"][1],
+                raw_sigma=1.25,
+            )
+            mu2_0 = bounded_sigmoid(
+                "mu2_0",
+                priors["mu2_0"][0],
+                priors["mu2_0"][1],
+                raw_sigma=1.25,
+            )
+        
+            sigma1_0 = floored_lognormal_q95(
+                "sigma1_0",
+                priors["sigma1_0"][0],
+                priors["sigma1_0"][1],
+                median_frac=0.2,
+            )
+            sigma2_0 = floored_lognormal_q95(
+                "sigma2_0",
+                priors["sigma2_0"][0],
+                priors["sigma2_0"][1],
+                median_frac=0.3,
+            )
+        
+            # -------------------------
+            # m1_low, m2_low triangle
+            # -------------------------
+            u = unit_interval_sigmoid("u", raw_sigma=1.0)
+            m1_low_ = 3.0 + (10.0 - 3.0) * u**1.5
+            numpyro.deterministic("m1_low", m1_low_)
+        
+            v = unit_interval_sigmoid("v", raw_sigma=1.0)
+            m2_low_ = 3.0 + v * (m1_low_ - 3.0)
+            numpyro.deterministic("m2_low", m2_low_)
+        
+            # -------------------------
+            # m_high: same as PyMC, force_uniform_mhigh=False
+            # -------------------------
+            mhigh_floor = priors["m_high"][0]
+            mmax_median = 0.5 * (priors["m_high"][0] + priors["m_high"][1])
+            mmax_q95 = priors["m_high"][1]
+        
+            delta_med = jnp.maximum(mmax_median - mhigh_floor, 1e-6)
+            delta_q95 = jnp.maximum(mmax_q95 - mhigh_floor, 1e-6)
+        
+            mu_delta = jnp.log(delta_med)
+            sigma_delta = m_high_spread * (jnp.log(delta_q95) - mu_delta) / NORM_Q95
+        
+            delta_mhigh = numpyro.sample(
+                "delta_mhigh",
+                dist.LogNormal(loc=mu_delta, scale=sigma_delta),
+            )
+            m_high_ = mhigh_floor + delta_mhigh
+            numpyro.deterministic("m_high", m_high_)
+        
+            # -------------------------
+            # tapers
+            # -------------------------
+            delta_m1_ = floored_lognormal_q95(
+                "delta_m1",
+                priors["delta_m1"][0],
+                priors["delta_m1"][1],
+                median_frac=0.3,
+            )
+            numpyro.deterministic("m1_taper_end", m1_low_ + delta_m1_)
+        
+            delta_m2_ = floored_lognormal_q95(
+                "delta_m2",
+                priors["delta_m2"][0],
+                priors["delta_m2"][1],
+                median_frac=0.3,
+            )
+            numpyro.deterministic("m2_taper_end", m2_low_ + delta_m2_)
+        
+            epsilon_ = jnp.asarray(0.1, dtype=jnp.float64)
+            numpyro.deterministic("epsilon", epsilon_)
+        
+            # -------------------------
+            # secondary-mass gap
+            # -------------------------
+            if has_m2_break:
+                m_g_ = numpyro.sample(
+                    "m_g",
+                    dist.Uniform(priors["m_g"][0], priors["m_g"][1]),
+                )
+                w_g_ = numpyro.sample(
+                    "w_g",
+                    dist.Uniform(priors["w_g"][0], priors["w_g"][1]),
+                )
+                sig_g_l_ = jnp.asarray(1e-2, dtype=jnp.float64)
+                sig_g_h_ = jnp.asarray(1e-2, dtype=jnp.float64)
+            else:
+                m_g_ = jnp.asarray(45.0, dtype=jnp.float64)
+                w_g_ = jnp.asarray(70.0, dtype=jnp.float64)
+                sig_g_l_ = jnp.asarray(1e-2, dtype=jnp.float64)
+                sig_g_h_ = jnp.asarray(1e-2, dtype=jnp.float64)
+        
+            # -------------------------
+            # low-z mixture weights
+            # -------------------------
+            lam0_prior = priors.get("lambda0_vec_0", "Dirichlet(1,1,1)")
+        
+            if isinstance(lam0_prior, str) and lam0_prior.startswith("Dirichlet"):
+                inside = lam0_prior[len("Dirichlet("):-1]
+                alphas = [float(x.strip()) for x in inside.split(",")]
+            else:
+                alphas = lam0_prior
+        
+            lambda_vec0 = numpyro.sample(
+                "lambda0_vec",
+                dist.Dirichlet(jnp.asarray(alphas, dtype=jnp.float64)),
+            )
+        
+            lambda0_0 = numpyro.deterministic("lambda0_0", lambda_vec0[0])
+            lambda1_0 = numpyro.deterministic("lambda1_0", lambda_vec0[1])
+            lambda2_0 = numpyro.deterministic("lambda2_0", lambda_vec0[2])
+        
+            # -------------------------
+            # evolving hyperparameters
+            # -------------------------
+            alpha1_inf_, z_alpha1_, dz_alpha1_ = evo_triplet_numpyro(
+                "alpha1",
+                theta0=alpha1_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            alpha2_inf_, z_alpha2_, dz_alpha2_ = evo_triplet_numpyro(
+                "alpha2",
+                theta0=alpha2_0,
+                ivals=ivals,
+                priors=priors,
+            )
+        
+            if not vary_mb:
+                mb_inf_ = numpyro.deterministic("mb_inf", mb_0)
+                z_mb_ = numpyro.deterministic(
+                    "z_mb",
+                    jnp.asarray(0.0, dtype=jnp.float64),
+                )
+                dz_mb_ = numpyro.deterministic(
+                    "dz_mb",
+                    jnp.asarray(1.0, dtype=jnp.float64),
+                )
+            else:
+                mb_inf_, z_mb_, dz_mb_ = evo_triplet_numpyro(
+                    "mb",
+                    theta0=mb_0,
+                    ivals=ivals,
+                    priors=priors,
+                    positive=True,
+                    eps_pos=5.0,
+                )
+        
+            mu1_inf_, z_mu1_, dz_mu1_ = evo_triplet_numpyro(
+                "mu1",
+                theta0=mu1_0,
+                ivals=ivals,
+                priors=priors,
+                positive=True,
+                eps_pos=5.0,
+            )
+        
+            sigma1_inf_, z_sigma1_, dz_sigma1_ = evo_triplet_numpyro(
+                "sigma1",
+                theta0=sigma1_0,
+                ivals=ivals,
+                priors=priors,
+                positive=True,
+                eps_pos=0.1,
+            )
+        
+            mu2_inf_, z_mu2_, dz_mu2_ = evo_triplet_numpyro(
+                "mu2",
+                theta0=mu2_0,
+                ivals=ivals,
+                priors=priors,
+                positive=True,
+                eps_pos=5.0,
+            )
+        
+            sigma2_inf_, z_sigma2_, dz_sigma2_ = evo_triplet_numpyro(
+                "sigma2",
+                theta0=sigma2_0,
+                ivals=ivals,
+                priors=priors,
+                positive=True,
+                eps_pos=0.1,
+            )
+        
+            # -------------------------
+            # high-z mixture weights + shared transition
+            # -------------------------
+            lambda_vec_inf = numpyro.sample(
+                "lambda_inf_vec",
+                dist.Dirichlet(jnp.asarray([1.0, 1.0, 1.0], dtype=jnp.float64)),
+            )
+        
+            lambda0_inf_ = numpyro.deterministic("lambda0_inf", lambda_vec_inf[0])
+            lambda1_inf_ = numpyro.deterministic("lambda1_inf", lambda_vec_inf[1])
+            lambda2_inf_ = numpyro.deterministic("lambda2_inf", lambda_vec_inf[2])
+        
+            z_t_prior = priors.get("z_t", (0.05, 1.5))
+            dz_prior = priors.get("dz", (0.05, 2.0))
+        
+            z_lambda_ = numpyro.sample(
+                "z_lambda",
+                dist.Uniform(z_t_prior[0], z_t_prior[1]),
+            )
+        
+            log_dz_lambda_ = numpyro.sample(
+                "log_dz_lambda",
+                dist.Uniform(jnp.log(dz_prior[0]), jnp.log(dz_prior[1])),
+            )
+        
+            dz_lambda_ = numpyro.deterministic("dz_lambda", jnp.exp(log_dz_lambda_))
+        
+            if simplex_repair:
+                raise ValueError("simplex_repair for DPLDP-z is not implemented in NumPyro branch.")
+        
+            # -------------------------
+            # Pack in exact core order: 21 low-z + 26 evo = 47
+            # -------------------------
+            lambdaBBHmass_lowz_ = [
+                alpha1_0, alpha2_0, mb_0,
+                mu1_0, sigma1_0, mu2_0, sigma2_0,
+                m1_low_, m_high_, delta_m1_,
+                lambda0_0, lambda1_0, lambda2_0,
+                beta_, m2_low_, delta_m2_,
+                epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_,
+            ]
+        
+            evo_params_ = [
+                alpha1_inf_, z_alpha1_, dz_alpha1_,
+                alpha2_inf_, z_alpha2_, dz_alpha2_,
+                mb_inf_, z_mb_, dz_mb_,
+                mu1_inf_, z_mu1_, dz_mu1_,
+                sigma1_inf_, z_sigma1_, dz_sigma1_,
+                mu2_inf_, z_mu2_, dz_mu2_,
+                sigma2_inf_, z_sigma2_, dz_sigma2_,
+                lambda0_inf_, lambda1_inf_, lambda2_inf_,
+                z_lambda_, dz_lambda_,
+            ]
+        
+            Lambda_list += [*lambdaBBHmass_lowz_, *evo_params_]
 
         if not marginal_R0:
             R0 = numpyro.sample("R0", dist.Uniform(priors["R0"][0], priors["R0"][1]))
