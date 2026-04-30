@@ -8,7 +8,7 @@ from rate_models import log_p_z_MD_unnorm
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 import mass_models
 import spin_models
-from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid
+from pytensor_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid, safe_logsumexp_jax
 #from pytensor_utils import logsumexp as _logsumexp
 
 #from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_apply_multi_bk, _interp_prepare_uniform_bk
@@ -24,15 +24,7 @@ except Exception as e:
     raise ValueError()
 
 
-def safe_logsumexp(a, axis=0):
-    finite = jnp.isfinite(a)
-    all_bad = jnp.all(~finite, axis=axis, keepdims=True)
-    a_safe = jnp.where(finite, a, -jnp.inf)
-    m = jnp.max(jnp.where(all_bad, 0.0, a_safe), axis=axis, keepdims=True)
-    s = jnp.sum(jnp.exp(a_safe - m), axis=axis, keepdims=True)
-    out = m + jnp.log(s)
-    out = jnp.where(all_bad, -jnp.inf, out)
-    return jnp.squeeze(out, axis=axis)
+
 
 
 # ---------------------------------------------------------------------
@@ -798,7 +790,7 @@ def log_p_pop(
 
         # debugging version
         tmp = logp_components + logw[:, None]
-        lpmass = safe_logsumexp(tmp, axis=0)
+        lpmass = safe_logsumexp_jax(tmp, axis=0)
 
 
         # remove jacobian m1, m2 --> log(Mc), logit(q)

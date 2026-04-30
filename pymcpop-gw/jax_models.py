@@ -1183,7 +1183,7 @@ def make_model_jax(  priors,
         
         ## likelihood variance bound:
         if sel_smoothing=='sigmoid':
-            gate_llv = jax.nn.log_sigmoid( (log_lik_var_min - log_lik_var_sg) / 0.1 )
+            gate_llv = jax.nn.log_sigmoid( (log_lik_var_min - log_lik_var_sg) / 0.01 )
         elif sel_smoothing=='none':
             ## hard version 
             gate_llv = jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30)

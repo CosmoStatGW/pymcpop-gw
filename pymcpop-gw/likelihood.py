@@ -12,6 +12,8 @@ from jax import lax
 import cosmology as cosmo
 from backends import JAXBackend
 
+from pytensor_utils import safe_logsumexp_jax
+
 bk = JAXBackend()
 
 # -----------------------------
@@ -311,7 +313,9 @@ def _gw_terms_from_x(
         - 0.5 * data.log_dets_l
         + data.log_wts_l
     )
-    gwl = jax.scipy.special.logsumexp(logp_components, axis=1)       # (N,)
+    #gwl = jax.scipy.special.logsumexp(logp_components, axis=1)       # (N,)
+
+    gwl = safe_logsumexp_jax(logp_components, axis=1)
 
     # detector-frame masses and distance
     Mc = jnp.exp(log_Mc_det)

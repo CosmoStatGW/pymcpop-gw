@@ -52,6 +52,15 @@ def logit(bk, p):
 # 
 # ---------------------------------------------------------------------
 
+def safe_logsumexp_jax(a, axis=0):
+    finite = jnp.isfinite(a)
+    all_bad = jnp.all(~finite, axis=axis, keepdims=True)
+    a_safe = jnp.where(finite, a, -jnp.inf)
+    m = jnp.max(jnp.where(all_bad, 0.0, a_safe), axis=axis, keepdims=True)
+    s = jnp.sum(jnp.exp(a_safe - m), axis=axis, keepdims=True)
+    out = m + jnp.log(s)
+    out = jnp.where(all_bad, -jnp.inf, out)
+    return jnp.squeeze(out, axis=axis)
 
 def logsumexp(bk, x, axis=None):
     """
