@@ -1187,8 +1187,16 @@ def make_model_jax(  priors,
         elif sel_smoothing=='none':
             ## hard version 
             gate_llv = jnp.where(log_lik_var_sg <= log_lik_var_min, 0.0, -1e30)
+        elif sel_smoothing=='PL':
+            # Heinzel et al 2025
+            v = jnp.maximum(log_lik_var_sg - log_lik_var_min, 0.0)
+            gate_llv = -100.0 * v**2
+        elif sel_smoothing=='x30':
+            # Callister Farr 2023
+            x = log_lik_var_sg / log_lik_var_min
+            gate_llv = -jnp.log1p(x**30)
         else:
-            raise ValueError("sel_smoothing takes values sigmoid or none, got %s"%sel_smoothing)
+            raise ValueError("sel_smoothing takes values sigmoid, PL, none, x30, got %s"%sel_smoothing)
 
         ## Uncomment for debugging
         #jax.debug.print("log_lik_var_sg = {}", log_lik_var_sg)
