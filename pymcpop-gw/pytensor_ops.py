@@ -24,8 +24,10 @@ import jax.scipy as jsp
 
 
 from backends import JAXBackend
-from population import log_p_pop, sel_bias_with_uncertainty, make_dL_to_z_cuvjp, make_dL_to_z_cuvjp_uniform, _make_pop_and_sel_core
+from population import log_p_pop, sel_bias_with_uncertainty, make_dL_to_z_cuvjp, make_dL_to_z_cuvjp_uniform, _make_pop_and_sel_core_pymc
 from jax_utils import _interp_prepare_bk, _interp_apply_bk, _interp_prepare_uniform_bk, _interp_apply_multi_bk
+
+from population import _make_pop_and_sel_core_pymc as _make_pop_and_sel_core_pymc
 
 from pytensor.gradient import DisconnectedType, grad_not_implemented
 
@@ -134,7 +136,7 @@ class _PopAndSelJAXVJPOp(Op):
         bk = JAXBackend()
  
 
-        core_f = _make_pop_and_sel_core(
+        core_f = _make_pop_and_sel_core_pymc(
             
             bk=bk,
             
@@ -372,7 +374,7 @@ class PopAndSelJAXOp(Op):
 
     def _build_jax_fwd(self):
        
-        full_f = _make_pop_and_sel_core(
+        full_f = _make_pop_and_sel_core_pymc(
             bk=self._bk,
             z_nodes = self.zgrid,
             rate_model=self.rate_model,

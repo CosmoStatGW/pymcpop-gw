@@ -2749,7 +2749,18 @@ def make_model(  priors,
             # this has len = n. of observations
 
         
-            log_var_log_lik_evs_all = logdiffexp( ATBackend(), logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
+            # log_var_log_lik_evs_all = logdiffexp( ATBackend(), logs2 - 2.0 * log_p_pop_marg, 0. ) - at.log(allNsamples - 1.0)
+
+            # FIX: correct definition of logq
+            logq = at.logsumexp(2*log_p_pop, axis=1) \
+                   - 2.0 * at.logsumexp(log_p_pop, axis=1) \
+                   + at.log(allNsamples)
+            
+            log_var_log_lik_evs_all = logdiffexp(
+                ATBackend(),
+                logq,
+                0.0
+            ) - at.log(allNsamples - 1.0)
 
             var_log_lik_evs = at.sum( at.exp(log_var_log_lik_evs_all) )
             
@@ -2891,7 +2902,101 @@ def make_model(  priors,
                 pm.Deterministic("log_mu", log_mu_)
             
                         
+
+            print("\n" + "="*80)
+            print("Fixed-Lambda likelihood test (PyMC)")
+            print("="*80)
             
+            # ---- build point ----
+            point = {
+                "H0": 67.9,
+                "Om": 0.3065,
+                #"w0":-1,
+                #"Xi0":1,
+                #"nXi0":0,
+                "gamma": 3.2,
+                "kappa": 3.0,
+                "zp": 2.0,
+                "muChi": 0.024333031991381315,
+                "sigmaChi": 0.31873272890864474,
+                "zeta": 0.2123453198667594,
+                "sigmat": 3.0206244922342362,
+                "alpha1": 1.7,
+                "alpha2": 4.5,
+                "mb": 36.0,
+                "mu1": 9.8,
+                "sigma1": 0.65,
+                "mu2": 33.0,
+                "sigma2": 3.9,
+                "m1_low":2.1,
+                "m_high": 300.0,
+                "delta_m1": 4.3,
+                "lambda":[0.36, 0.59, 0.05],
+                "beta": 1.2,
+                "m2_low":2.,
+                "delta_m2": 4.9,
+                "epsilon":0.01
+            }
+
+            print("\nParameter values (PyMC point):")
+            for k, v in point.items():
+                print(f"{k:20s} = {v}")
+            
+            # ---- collect model variables (IMPORTANT) ----
+            vars_in_model = list(point.keys())
+            
+            # map names → PyMC variables
+            pymc_vars = [model[name] for name in vars_in_model]
+            print(pymc_vars)
+            
+            # ---- compile function ----
+            f = pytensor.function(
+                inputs=pymc_vars,
+                outputs=[log_p_pop_marg, var_log_lik_evs, log_mu_, log_var_log_lik_evs_all],
+            )
+            
+            # ---- evaluate ----
+            inputs = [point[name] for name in vars_in_model]
+            
+            log_evt_val, var_evs_val, log_mu_val, log_var_evt = f(*inputs)
+
+            # --- print parameter values (what you actually used) ---
+            print("\nParameter values used (point):")
+            for k, v in point.items():
+                print(f"{k:20s} = {v}")
+            
+            # --- per-event variance (MATCHES NUMPYRO) ---
+            #log_var_evt = log_var_log_lik_evs_all.eval()   # already defined in your model
+            
+            var_evt = np.exp(log_var_evt)
+            
+            print("\nPer-event MC variance (first 10):")
+            print(var_evt[:10])
+            
+            print("\nPer-event variance diagnostics:")
+            print("min =", var_evt.min())
+            print("max =", var_evt.max())
+            print("mean =", var_evt.mean())
+
+
+            
+            # ---- reconstruct ----
+            Nobs_val = log_evt_val.shape[0]
+            sum_log_evt = np.sum(log_evt_val)
+            ll_val = sum_log_evt - Nobs_val * log_mu_val
+            
+            # ---- print ----
+            print("ll =", float(ll_val))
+            print("sum log_evt =", float(sum_log_evt))
+            print("log_mu =", float(log_mu_val))
+            print("var_evs =", float(var_evs_val))
+            print("log_evt finite:", np.all(np.isfinite(log_evt_val)))
+            print("log_evt shape:", log_evt_val.shape)
+            print("log_evt first 10 =", log_evt_val[:10])
+            
+            print("="*80)
+
+
 
             if marginal_R0:
                 if include_sel_uncertainty:

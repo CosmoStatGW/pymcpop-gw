@@ -12,7 +12,7 @@ from jax import lax
 import cosmology as cosmo
 from backends import JAXBackend
 
-from pytensor_utils import safe_logsumexp_jax
+from pytensor_utils import safe_logsumexp_jax, logdiffexp as logdiffexp_bk
 
 bk = JAXBackend()
 
@@ -123,6 +123,47 @@ class LikDataGauss:
     subtract_log_p_incl: bool = False
     sample_from_pop: bool = False
     marginal_R0: bool = True
+
+
+
+@dataclass(frozen=True)
+class MarginalSampleData:
+    m1det_pe: jnp.ndarray
+    m2det_pe: jnp.ndarray
+    dL_pe: jnp.ndarray
+    spins_pe: jnp.ndarray
+    log_PE_prior_pe: jnp.ndarray
+    event_id_pe: jnp.ndarray
+    Nsamples_evt: jnp.ndarray
+
+    m1inj: jnp.ndarray
+    m2inj: jnp.ndarray
+    dLinj: jnp.ndarray
+    spins_inj: jnp.ndarray
+    log_p_draw: jnp.ndarray
+    log_p_incl: jnp.ndarray
+    Ndraw: jnp.ndarray
+
+    Nevs_per_chunk: Optional[jnp.ndarray] = None
+    allTobs: Optional[jnp.ndarray] = None
+    Nobs: int = 0
+    logNobs: Optional[jnp.float64] = 0
+    logr: Optional[jnp.float64] = 0
+
+    spin_model: str = "none"
+    rate_model: str = "MD"
+    mass_model: str = "DPLDP"
+    smoothing: str = "LVK"
+    simplex_repair: bool = False
+    has_m2_break: bool = False
+    norm_gauss: str = "uplow"
+    param: str = "vanilla"
+    integrate_dc: str = "trapz"
+    subtract_log_p_incl: bool = False
+    marginal_R0: bool = True
+    chunk_pe: int = 0
+
+
 
 
 # -----------------------------
@@ -352,7 +393,7 @@ def make_loglik_gauss(
         m1det, m2det, dLdet, spins_evt, log_jac_evt, logd = _gw_terms_from_x(x, data)
 
         # population + selection (log_mu scalar)
-        logp_pop_evt, log_mu, log_var = core_fn(
+        logp_pop_evt, log_mu, log_var, var_log_lik_evs = core_fn(
             m1det, m2det, dLdet, spins_evt,
             data.m1inj, data.m2inj, data.dLinj, data.spins_inj, data.log_p_draw, data.log_p_incl,
             Lambda, data.Ndraw
@@ -383,12 +424,53 @@ def make_loglik_gauss(
         # optional R0*Tobs term (only if not marginal_R0)
         if not data.marginal_R0:
             ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
+            # missing: also correct var_log_lik_sel
 
-        var_log_lik = jnp.exp( log_var+2*data.logNobs )
-        
-        # optional: detatch gradient
-        var_log_lik = lax.stop_gradient(var_log_lik)
+        var_log_lik_sel = jnp.exp(log_var + 2.0 * data.logNobs)
+        var_log_lik = lax.stop_gradient(var_log_lik_sel + var_log_lik_evs)
         
         return ll, var_log_lik
 
     return loglik
+
+
+
+
+def make_loglik_marginal_samples(core_fn, data):
+    Nobs = int(data.Nobs)
+
+    @jax.jit
+    def loglik(Lambda: jnp.ndarray, lR0=0.0):
+        log_evt, log_mu, log_var_sel_u, var_log_lik_evs = core_fn(
+            data.m1det_pe, data.m2det_pe, data.dL_pe, data.spins_pe,
+            data.m1inj, data.m2inj, data.dLinj, data.spins_inj,
+            data.log_p_draw, data.log_p_incl,
+            Lambda, data.Ndraw,
+            data.log_PE_prior_pe,
+            data.event_id_pe,
+            data.Nsamples_evt,
+        )
+
+        ll_evt = jnp.sum(log_evt)
+
+        sel_term = lax.cond(
+            data.logr == -1,
+            lambda _: log_mu,
+            lambda _: jnp.logaddexp(log_mu, -data.logr),
+            operand=None,
+        )
+
+        ll = ll_evt - (Nobs * sel_term)
+
+        if not data.marginal_R0:
+            ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
+
+        var_log_lik_sel = jnp.exp(log_var_sel_u + 2.0 * data.logNobs)
+        var_log_lik = lax.stop_gradient(var_log_lik_sel + var_log_lik_evs)
+
+        return ll, var_log_lik
+
+    return loglik
+
+
+

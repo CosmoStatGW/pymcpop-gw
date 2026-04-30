@@ -36,7 +36,8 @@ def _zeros_like_tree(x):
     # works for arrays, scalars, and lists/tuples of arrays
     return jax.tree_util.tree_map(lambda a: jnp.zeros_like(a), x)
 
-
+def _add_pytrees(a, b):
+    return jax.tree_util.tree_map(lambda x, y: x + y, a, b)
 
 def lambda_slices(rate_model, spin_model, mass_model):
     i = 0
@@ -183,7 +184,7 @@ def unpack_mass_DPLDP_z(mass_params):
 # ---------------------------------------------------------------------
 
 
-def _make_pop_and_sel_core(
+def _make_pop_and_sel_core_pymc(
     *,
     bk,
     #zgrid,
@@ -555,6 +556,757 @@ def _make_pop_and_sel_core(
         )
 
     return _f
+
+
+
+def _make_pop_and_sel_core(
+    *,
+    bk,
+    #zgrid,
+    rate_model,
+    mass_model,
+    spin_model,
+    smoothing,
+    simplex_repair,
+    has_m2_break,
+    norm_gauss,
+    param,
+    verbose,
+    subtract_log_p_incl,
+    skip_sel=False,
+    chunk_inj=0,
+    chunk_evt=0,
+    K_dp: int = 30,
+    DP_truncate=False,
+    DP_m1_env=False,
+    interp_mass = 0,
+    integrate_dc = 'trapz',
+    pop_only = False,
+    stop_grad_var_u: bool = True,
+    return_var = True,
+    z_nodes = None
+):
+    """Build the single source of truth JAX core function.
+
+    Returns a pure function:
+        (evt arrays..., inj arrays..., Lambda, Ndraw[, PE bookkeeping])
+        -> (log_evt, log_mu, log_var_sel_u, var_log_lik_evs)
+
+    Semantics:
+      - pop_only=False:
+          log_evt is the old per-event log_p_pop_evt, shape (Nevents,)
+          var_log_lik_evs = 0
+      - pop_only=True and PE bookkeeping is provided:
+          log_evt is the per-event MC-marginalized log likelihood, shape (Nevents,)
+          var_log_lik_evs is the event-MC contribution already in likelihood-variance scale.
+    """
+
+    def _f(
+        m1det, m2det, dLdet, spins_evt,
+        m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
+        Lambda, Ndraw,
+        log_PE_prior_evt=None,
+        event_id_evt=None,
+        Nsamples_evt=None,
+    ):
+
+        theta5 = Lambda[:5]
+        H0, Om, w0, Xi0, nXi0 = theta5
+
+        m1inj = lax.stop_gradient(m1inj)
+        m2inj = lax.stop_gradient(m2inj)
+        dLinj = lax.stop_gradient(dLinj)
+        spins_inj = lax.stop_gradient(spins_inj)
+        log_p_draw = lax.stop_gradient(log_p_draw)
+        log_p_incl = lax.stop_gradient(log_p_incl)
+        Ndraw = lax.stop_gradient(Ndraw)
+
+        if pop_only:
+            m1det = lax.stop_gradient(m1det)
+            m2det = lax.stop_gradient(m2det)
+            dLdet = lax.stop_gradient(dLdet)
+            spins_evt = lax.stop_gradient(spins_evt)
+            if log_PE_prior_evt is not None:
+                log_PE_prior_evt = lax.stop_gradient(log_PE_prior_evt)
+            if event_id_evt is not None:
+                event_id_evt = lax.stop_gradient(event_id_evt)
+            if Nsamples_evt is not None:
+                Nsamples_evt = lax.stop_gradient(Nsamples_evt)
+
+        d_nodes = None
+
+        ##################################################
+        # Optional : pre-compute p(m1, m2 (z)) on grids
+        # mandaory for DPLDP-z, not encouraged for other
+        
+        if interp_mass:
+            
+            # pre-computing mass function for later interpolation
+            if mass_model=='DPLDP' or mass_model == "PLDP":
+                
+                _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
+
+
+                alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_ = mass_p
+
+                eps_m = 1e-5
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low_ + eps_m
+                m2_taper_hi = m2_lo + bk.maximum(delta_m2_, 1e-6)
+                
+                u1 = bk.linspace(0.0, 1.0, n2_taper)
+                
+                eps_t = 1e-4
+                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                
+                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+                
+
+
+            
+                m1_grid_ = mass_models.build_m1_grid_DPLDP( bk, 
+                                            alpha1=alpha1_,
+                                            alpha2=alpha2_,
+                                            mb=mb_,
+                                            mu1=mu1_,
+                                            sigma1=sigma1_,
+                                            mu2=mu2_,
+                                            sigma2=sigma2_,
+                                            m1_low=m1_low_,
+                                            m_high=m_high_,
+                                            delta_m1=delta_m1_,
+                                            n_peak=interp_mass,      # or smaller if you want
+                                            n_tail_low=interp_mass//5,
+                                            n_tail_high=interp_mass//5,
+                                            #k_sigma=4.0,
+                                            n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
+                                            n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
+                                        )
+                
+                lp_m1_grid = mass_models.logpdfm1_DPLDP( bk, m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
+
+
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk, m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
+
+
+                # CDF over m2
+                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, np.inf)
+                
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = bk.log(cdf_m2)
+                
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation 
+                #lC_of_m1 = bk.interp(  mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                
+                # Normalization for m1
+
+                lp_max = bk.max(lp_m1_grid)
+                p_shift = bk.exp(lp_m1_grid - lp_max)
+                I = attrapzvec(bk, p_shift, m1_grid_)
+                I = bk.clip(I, 1e-300, jnp.inf)
+                ln = bk.log(I) + lp_max
+                
+                # Pack for later use
+                interp_vals_mass  = [lp_m1_grid, lp_m2_grid, lC_of_m1, ln]
+                interp_grids_mass = [m1_grid_, m2_grid_]
+                
+            
+            elif mass_model=='DPLDP-z':
+
+                _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
+                lambdaBBHmass_lowz, evo_params = unpack_mass_DPLDP_z(mass_p)
+
+          
+                (alpha1_0, alpha2_0, mb_0,
+                 mu1_0, sigma1_0, mu2_0, sigma2_0,
+                 m1_low, m_high, delta_m1,
+                 lambda0_0, lambda1_0, lambda2_0, 
+                 beta, m2_low, delta_m2,
+                 epsilon, m_g, w_g, sig_g_low, sig_g_high) = lambdaBBHmass_lowz
+            
+                # unpack evolution parameters
+                (alpha1_inf,  z_alpha1,  dz_alpha1,
+                 alpha2_inf,  z_alpha2,  dz_alpha2,
+                 mb_inf,      z_mb,      dz_mb,
+                 mu1_inf,     z_mu1,     dz_mu1,
+                 sigma1_inf,  z_sigma1,  dz_sigma1,
+                 mu2_inf,     z_mu2,     dz_mu2,
+                 sigma2_inf,  z_sigma2,  dz_sigma2,
+                 lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda) = evo_params
+                
+                eps_m = 1e-5 
+                n2 = 500
+                n2_taper = 100
+                
+                m2_lo = m2_low + eps_m
+                m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
+                
+                u1 = bk.linspace(0.0, 1.0, n2_taper)
+                
+                eps_t = 1e-4
+                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                
+                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                
+                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+
+                m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, z_nodes,
+                # low-z hyperparameters
+                mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+                # high-z (asymptotic) hyperparameters
+                mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
+                # evolution hyperparameters
+                z_mu1, dz_mu1,
+                z_sigma1, dz_sigma1,
+                z_mu2, dz_mu2,
+                z_sigma2, dz_sigma2,
+                z_mb, dz_mb,
+                # support for m1
+                m1_low, m_high,
+                delta_m1,
+                # grid resolution controls
+                n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
+                n_tail_low=interp_mass//5,   # points in low-mass tail
+                n_tail_high=interp_mass//5,  # points in high-mass tail
+                k_sigma=4.0,      #
+                n_taper=interp_mass//5,  # points in low-mass tapering
+                )
+
+
+                # ---------
+                # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
+                # ---------
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk,
+                    m2_grid_, beta , delta_m2 , m2_low ,
+                    m_g=m_g, w_g=w_g,  sig_g_low=sig_g_low , sig_g_high=sig_g_high ,
+                    has_m2_break=has_m2_break, smoothing=smoothing
+                )  # shape (N2,)
+            
+                # lC_grid evaluated on m1_grid (shape (N1,))
+                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
+
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = bk.log(cdf_m2)
+                
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                
+                # NON-UNIFORM interpolation
+                #lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                
+
+                # ---------
+                # 2) Bank lp_m1(z_k, m1_grid_) and ln(z_k)
+                # ---------
+                K  = z_nodes.shape[0]
+                N1 = m1_grid_.shape[0]
+                
+                M = bk.broadcast_to(m1_grid_[None, :], (K, N1))
+                Z = bk.broadcast_to(z_nodes[:, None],   (K, N1))
+                
+                lp_flat = mass_models.logpdfm1_DPLDP_z( bk, 
+                    M.reshape((K * N1,)),
+                    Z.reshape((K * N1,)),
+                    alpha1_0, alpha2_0, mb_0,
+                    mu1_0, sigma1_0, mu2_0, sigma2_0,
+                    m1_low , m_high , delta_m1 ,
+                    lambda0_0, lambda1_0, lambda2_0,
+                    epsilon ,
+                    *evo_params
+                                                        ,
+                    smoothing=smoothing,
+                    simplex_repair=simplex_repair,
+                    norm_gauss=norm_gauss
+                )
+                lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
+
+
+                lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
+                p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
+                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
+                I = bk.clip(I, 1e-300, jnp.inf)
+                ln_bank = bk.log(I) + lp_max[:, 0]
+             
+                # Pack for later use (include z_bank)
+                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
+                interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
+                
+
+            
+            else:
+                raise NotImplementedError()
+
+            interp_mass_vals = ( interp_grids_mass, interp_vals_mass )
+        
+        else:
+            
+            interp_mass_vals = None
+
+        ##################################################
+        # Event-side population evaluation helpers.
+        # These exactly reproduce the old event-side computation when called
+        # on the full event arrays. In marginal PE mode they are called on PE chunks.
+        ##################################################
+
+        def _event_logp_raw(Lam, interp_vals, m1d, m2d, dLd, spd):
+            H0_, Om_, w0_, Xi0_, nXi0_ = Lam[:5]
+
+            z_ = z_from_dL(
+                bk, dLd,
+                H0=H0_, Om=Om_, w0=w0_, Xi0=Xi0_, nXi0=nXi0_,
+                z_nodes=z_nodes,
+                d_nodes=d_nodes,
+                integrate_dc=integrate_dc,
+            )
+
+            onepz_ = 1.0 + z_
+            m1s_ = m1d / onepz_
+            m2s_ = m2d / onepz_
+
+            return log_p_pop(
+                bk,
+                m1s_, m2s_, z_, dLd,
+                spin_models._spins_as_list(spd, spin_model),
+                Lam,
+                rate_model=rate_model,
+                mass_model=mass_model,
+                spin_model=spin_model,
+                smoothing=smoothing,
+                simplex_repair=simplex_repair,
+                has_m2_break=has_m2_break,
+                norm_gauss=norm_gauss,
+                dc=None,
+                log_ddL_dz_pre=None,
+                Xi=None,
+                E=None,
+                param=param,
+                verbose=verbose,
+                K_dp=K_dp,
+                DP_truncate=DP_truncate,
+                DP_m1_env=DP_m1_env,
+                interp_mass_vals=interp_vals,
+            )
+
+        def _segment_logsumexp_evt(x, sid, nseg):
+            # Stable segment logsumexp over flattened PE samples.
+            m = jax.ops.segment_max(x, sid, num_segments=nseg)
+            m_safe = jnp.where(jnp.isfinite(m), m, 0.0)
+            u = jnp.exp(x - m_safe[sid])
+            u = jnp.where(jnp.isfinite(u), u, 0.0)
+            s = jax.ops.segment_sum(u, sid, num_segments=nseg)
+            return jnp.where(s > 0.0, m_safe + jnp.log(s), -jnp.inf)
+
+        def _event_marginal_full(Lam, interp_vals):
+            logp_flat = _event_logp_raw(Lam, interp_vals, m1det, m2det, dLdet, spins_evt)
+            logw_flat = logp_flat - log_PE_prior_evt
+
+            nseg = Nsamples_evt.shape[0]
+            log_sum_w = _segment_logsumexp_evt(logw_flat, event_id_evt, nseg)
+            log_sum_w2 = _segment_logsumexp_evt(2.0 * logw_flat, event_id_evt, nseg)
+
+            logN = jnp.log(Nsamples_evt)
+            log_l_evt = log_sum_w - logN
+
+            logs2 = log_sum_w2 - 2.0 * logN
+            logq = log_sum_w2 - 2.0 * log_sum_w + logN
+            
+            log_var_evt = logdiffexp_bk(
+                bk,
+                logq,
+                0.0,
+            ) - jnp.log(Nsamples_evt - 1.0)
+
+
+            # jax.debug.print(
+            #     "log_var_evt min={} max={} finite={} var_evs={}",
+            #     jnp.nanmin(log_var_evt),
+            #     jnp.nanmax(log_var_evt),
+            #     jnp.all(jnp.isfinite(log_var_evt)),
+            #     jnp.sum(jnp.exp(log_var_evt)),
+            # )
+
+            var_log_lik_evs = jnp.sum(jnp.exp(log_var_evt))
+            return log_l_evt, lax.stop_gradient(var_log_lik_evs)
+
+        def _event_marginal_streaming(Lam, interp_vals):
+            M = m1det.shape[0]
+            B = int(chunk_evt) if int(chunk_evt) > 0 else M
+
+            if B >= M:
+                return _event_marginal_full(Lam, interp_vals)
+
+            n_chunks = (M + B - 1) // B
+            Mpad = n_chunks * B
+            nseg = Nsamples_evt.shape[0]
+
+            @jax.custom_vjp
+            def _marginal_core(
+                Lam_,
+                interp_,
+                m1_all,
+                m2_all,
+                dL_all,
+                sp_all,
+                log_pe_all,
+                event_id_all,
+                Nsamples_all,
+            ):
+                return _marginal_core_impl(
+                    Lam_,
+                    interp_,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                    Nsamples_all,
+                )
+
+            def _pad1(x, fill):
+                pad = Mpad - x.shape[0]
+                return jnp.concatenate(
+                    [x, jnp.full((pad,), fill, dtype=x.dtype)],
+                    axis=0,
+                )
+
+            def _pad2(x, fill):
+                pad = Mpad - x.shape[0]
+                return jnp.concatenate(
+                    [x, jnp.full((pad, x.shape[1]), fill, dtype=x.dtype)],
+                    axis=0,
+                )
+
+            def _prepare_arrays(m1_all, m2_all, dL_all, sp_all, log_pe_all, event_id_all):
+                m1p = _pad1(m1_all, 1.0)
+                m2p = _pad1(m2_all, 1.0)
+                dLp = _pad1(dL_all, 1.0)
+                spp = _pad2(sp_all, 0.0)
+                pep = _pad1(log_pe_all, 0.0)
+                eip = _pad1(event_id_all, 0).astype(jnp.int32)
+                valid = jnp.arange(Mpad) < M
+                return m1p, m2p, dLp, spp, pep, eip, valid
+
+            def _chunk_logw(Lam_, interp_, m1p, m2p, dLp, spp, pep, eip, valid, k):
+                start = k * B
+                z0 = jnp.array(0, dtype=start.dtype)
+
+                m1c = lax.dynamic_slice(m1p, (start,), (B,))
+                m2c = lax.dynamic_slice(m2p, (start,), (B,))
+                dLc = lax.dynamic_slice(dLp, (start,), (B,))
+                spc = lax.dynamic_slice(spp, (start, z0), (B, spp.shape[1]))
+                pec = lax.dynamic_slice(pep, (start,), (B,))
+                eic = lax.dynamic_slice(eip, (start,), (B,))
+                vc = lax.dynamic_slice(valid, (start,), (B,))
+
+                logp = _event_logp_raw(Lam_, interp_, m1c, m2c, dLc, spc)
+                logw = jnp.where(vc, logp - pec, -jnp.inf)
+                return logw, eic, vc
+
+            def _stream_log_sums(
+                Lam_,
+                interp_,
+                m1_all,
+                m2_all,
+                dL_all,
+                sp_all,
+                log_pe_all,
+                event_id_all,
+                Nsamples_all,
+            ):
+                m1p, m2p, dLp, spp, pep, eip, valid = _prepare_arrays(
+                    m1_all, m2_all, dL_all, sp_all, log_pe_all, event_id_all
+                )
+
+                def body(carry, k):
+                    lse1, lse2 = carry
+
+                    logw, eic, vc = _chunk_logw(
+                        Lam_, interp_, m1p, m2p, dLp, spp, pep, eip, valid, k
+                    )
+
+                    lse1_c = _segment_logsumexp_evt(logw, eic, nseg)
+                    lse2_c = _segment_logsumexp_evt(2.0 * logw, eic, nseg)
+
+                    return (
+                        jnp.logaddexp(lse1, lse1_c),
+                        jnp.logaddexp(lse2, lse2_c),
+                    ), None
+
+                init = (
+                    jnp.full((nseg,), -jnp.inf, dtype=jnp.float64),
+                    jnp.full((nseg,), -jnp.inf, dtype=jnp.float64),
+                )
+
+                (log_sum_w, log_sum_w2), _ = lax.scan(
+                    body,
+                    init,
+                    jnp.arange(n_chunks, dtype=jnp.int32),
+                )
+                return log_sum_w, log_sum_w2
+
+            def _marginal_core_impl(
+                Lam_,
+                interp_,
+                m1_all,
+                m2_all,
+                dL_all,
+                sp_all,
+                log_pe_all,
+                event_id_all,
+                Nsamples_all,
+            ):
+                log_sum_w, log_sum_w2 = _stream_log_sums(
+                    Lam_,
+                    interp_,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                    Nsamples_all,
+                )
+
+                logN = jnp.log(Nsamples_all)
+                log_l_evt = log_sum_w - logN
+
+                logs2 = log_sum_w2 - 2.0 * logN
+                logq = logs2 - 2.0 * log_l_evt
+                
+                log_var_evt = logdiffexp_bk(
+                    bk,
+                    logq,
+                    0.0,
+                ) - jnp.log(Nsamples_evt - 1.0)
+
+                var_evs = jnp.sum(jnp.exp(log_var_evt))
+                return log_l_evt, lax.stop_gradient(var_evs)
+
+            def _marginal_fwd(
+                Lam_,
+                interp_,
+                m1_all,
+                m2_all,
+                dL_all,
+                sp_all,
+                log_pe_all,
+                event_id_all,
+                Nsamples_all,
+            ):
+                out = _marginal_core_impl(
+                    Lam_,
+                    interp_,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                    Nsamples_all,
+                )
+
+                log_sum_w, _ = _stream_log_sums(
+                    Lam_,
+                    interp_,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                    Nsamples_all,
+                )
+
+                residual = (
+                    Lam_,
+                    interp_,
+                    log_sum_w,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                )
+                return out, residual
+
+            def _marginal_bwd(res, g):
+                (
+                    Lam_,
+                    interp_,
+                    log_sum_w,
+                    m1_all,
+                    m2_all,
+                    dL_all,
+                    sp_all,
+                    log_pe_all,
+                    event_id_all,
+                ) = res
+
+                g_log_l_evt, _g_var = g
+
+                m1p, m2p, dLp, spp, pep, eip, valid = _prepare_arrays(
+                    m1_all, m2_all, dL_all, sp_all, log_pe_all, event_id_all
+                )
+
+                def body(carry, k):
+                    dLam_acc, dInterp_acc = carry
+
+                    logw, eic, vc = _chunk_logw(
+                        Lam_, interp_, m1p, m2p, dLp, spp, pep, eip, valid, k
+                    )
+
+                    start = k * B
+                    z0 = jnp.array(0, dtype=start.dtype)
+
+                    m1c = lax.dynamic_slice(m1p, (start,), (B,))
+                    m2c = lax.dynamic_slice(m2p, (start,), (B,))
+                    dLc = lax.dynamic_slice(dLp, (start,), (B,))
+                    spc = lax.dynamic_slice(spp, (start, z0), (B, spp.shape[1]))
+                    pec = lax.dynamic_slice(pep, (start,), (B,))
+
+                    cot = g_log_l_evt[eic] * jnp.exp(logw - log_sum_w[eic])
+                    cot = jnp.where(vc & jnp.isfinite(cot), cot, 0.0)
+
+                    if interp_ is None:
+                        def score_lam(Lam2):
+                            logp = _event_logp_raw(Lam2, None, m1c, m2c, dLc, spc)
+                            return logp - pec
+
+                        _, pull = jax.vjp(score_lam, Lam_)
+                        (dLam_c,) = pull(cot)
+                        dInterp_c = None
+                    else:
+                        def score_lam_interp(Lam2, interp2):
+                            logp = _event_logp_raw(Lam2, interp2, m1c, m2c, dLc, spc)
+                            return logp - pec
+
+                        _, pull = jax.vjp(score_lam_interp, Lam_, interp_)
+                        dLam_c, dInterp_c = pull(cot)
+
+                    if interp_ is None:
+                        return (dLam_acc + dLam_c, None), None
+                    else:
+                        return (
+                            dLam_acc + dLam_c,
+                            _add_pytrees(dInterp_acc, dInterp_c),
+                        ), None
+
+                dLam0 = jnp.zeros_like(Lam_)
+                dInterp0 = None if interp_vals is None else _zeros_like_tree(interp_vals)
+
+                (dLam, dInterp), _ = lax.scan(
+                    body,
+                    (dLam0, dInterp0),
+                    jnp.arange(n_chunks, dtype=jnp.int32),
+                )
+
+                return (
+                    dLam,       # Lam_
+                    dInterp,    # interp_
+                    None,       # m1_all
+                    None,       # m2_all
+                    None,       # dL_all
+                    None,       # sp_all
+                    None,       # log_pe_all
+                    None,       # event_id_all
+                    None,       # Nsamples_all
+                )
+
+            _marginal_core.defvjp(_marginal_fwd, _marginal_bwd)
+
+            return _marginal_core(
+                Lam,
+                interp_vals,
+                m1det,
+                m2det,
+                dLdet,
+                spins_evt,
+                log_PE_prior_evt,
+                event_id_evt,
+                Nsamples_evt,
+            )
+
+        ##################################################
+        # Event contribution.
+        # IMPORTANT: for pop_only/marginal mode this does NOT compute all PE logp
+        # before streaming. For pop_only=False this is exactly the old event path.
+        ##################################################
+
+        if pop_only and (log_PE_prior_evt is not None):
+            log_evt, var_log_lik_evs = _event_marginal_streaming(Lambda, interp_mass_vals)
+        else:
+            log_evt = _event_logp_raw(
+                Lambda, interp_mass_vals,
+                m1det, m2det, dLdet, spins_evt,
+            )
+            var_log_lik_evs = jnp.asarray(0.0, dtype=jnp.float64)
+
+        if skip_sel:
+            return (
+                log_evt,
+                jnp.asarray(0.0, dtype=jnp.float64).reshape(()),
+                jnp.asarray(0.0, dtype=jnp.float64).reshape(()),
+                jnp.asarray(var_log_lik_evs, dtype=jnp.float64).reshape(()),
+            )
+
+        log_mu, var_u = sel_bias_with_uncertainty(
+            bk,
+            m1inj, m2inj, dLinj,
+            spins_inj,
+            log_p_draw, log_p_incl,
+            Lambda, Ndraw,
+            rate_model=rate_model, mass_model=mass_model, spin_model=spin_model,
+            smoothing=smoothing, simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break, norm_gauss=norm_gauss,
+            param=param, 
+            z_grid=z_nodes, 
+            d_nodes = d_nodes, 
+            verbose=verbose,
+            subtract_log_p_incl=subtract_log_p_incl,
+            use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
+            sel_chunk_size=chunk_inj,            # <--- tune
+            K_dp=K_dp,
+            DP_truncate=DP_truncate,
+            DP_m1_env=DP_m1_env,
+            interp_mass_vals = interp_mass_vals,
+            integrate_dc = integrate_dc,
+            return_var = return_var,
+            interp_mass = interp_mass
+            
+        )
+        if stop_grad_var_u:
+            var_u = lax.stop_gradient(var_u)
+
+        return (
+            log_evt,
+            jnp.asarray(log_mu, dtype=jnp.float64).reshape(()),
+            jnp.asarray(var_u, dtype=jnp.float64).reshape(()),
+            jnp.asarray(var_log_lik_evs, dtype=jnp.float64).reshape(()),
+        )
+
+    return _f
+
 
 
 

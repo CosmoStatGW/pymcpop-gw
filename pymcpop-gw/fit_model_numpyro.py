@@ -754,6 +754,7 @@ def main():
         GWData=GWData,
         InjData=InjData,
         ivals=ivals,
+        pop_only = bool(FLAGS.pop_only),
         eps_init=FLAGS.eps_init,
         sampling_GW=FLAGS.sampling_gw,
         rate_model=FLAGS.rate_model,
@@ -769,7 +770,7 @@ def main():
         marginal_R0=bool(FLAGS.marginal_R0),
         dLprior=FLAGS.dLprior,
         chunk_inj=FLAGS.chunk_inj,
-        chunk_reduce=bool(FLAGS.chunk_reduce),
+        chunk_reduce= int(FLAGS.chunk_reduce),
         use_float32=bool(FLAGS.use_float32),
         use_float32_bias=bool(FLAGS.use_float32_bias),
         sel_method=FLAGS.sel,
@@ -796,6 +797,113 @@ def main():
         remove_spin_prior =  bool(FLAGS.remove_spin_prior),
         r = FLAGS.r
     )
+
+    ##########################################################################
+    ##########################################################################
+    # DEBUG 
+    ##########################################################################
+    ##########################################################################
+
+    if FLAGS.debug:
+        print("\n" + "="*80)
+        print("Fixed-Lambda likelihood test")
+        print("="*80)
+
+        print("pop only is %s"%FLAGS.pop_only)
+        print("PE prior is ")
+        print(lik_data.log_PE_prior_pe[:10])
+        
+        # Build Lambda from initial values / priors using the model trace machinery is annoying,
+        # so easiest is to use a known Lambda vector saved from PyMC or from your ivals.
+        # Replace this with the exact Lambda vector you want to compare.
+        Lambda_test = jnp.asarray([
+        
+            # --- cosmology (5)
+            67.9,          # H0
+            0.3065,        # Om
+            -1.0,          # w0 (default)
+            1.0,           # Xi0 (default)
+            0.0,           # nXi0 (default)
+        
+            # --- rate (3)
+            3.2,           # gamma
+            3.0,           # kappa
+            2.0,           # zp
+        
+            # --- spin (4)
+            0.024333031991381315,   # muChi
+            0.31873272890864474,    # sigmaChi
+            0.2123453198667594,     # zeta
+            3.0206244922342362,     # sigmat
+        
+            # --- mass (21)
+        
+            # power-law slopes
+            1.7,           # alpha1
+            4.5,           # alpha2
+            36.0,          # mb
+        
+            # Gaussians
+            9.8,           # mu1
+            0.65,          # sigma1
+            33.0,          # mu2
+            3.9,           # sigma2
+        
+            # low-mass cutoff
+            2.1,           # m1_low  (default guess)
+            300.0,         # m_high
+            4.3,           # delta_m1
+        
+            # mixture weights (lambda vector)
+            0.36,
+            0.59,
+            0.05,
+        
+            # secondary mass
+            1.2,           # beta
+            2.0,           # m2_low (default guess)
+            4.9,           # delta_m2
+        
+            # high-mass Gaussian tail (not provided → safe defaults)
+            0.01,           # epsilon
+            60.0,          # m_g
+            10.0,          # w_g
+            5.0,           # sig_g_l
+            5.0,           # sig_g_h
+        
+        ], dtype=jnp.float64)
+    
+        ll, var = loglik(Lambda_test)
+    
+        print("ll =", float(ll))
+        print("var_total =", float(var))
+    
+        if FLAGS.pop_only:
+            log_evt, log_mu, log_var_sel_u, var_evs = core(
+                lik_data.m1det_pe, lik_data.m2det_pe, lik_data.dL_pe, lik_data.spins_pe,
+                lik_data.m1inj, lik_data.m2inj, lik_data.dLinj, lik_data.spins_inj,
+                lik_data.log_p_draw, lik_data.log_p_incl,
+                Lambda_test, lik_data.Ndraw,
+                lik_data.log_PE_prior_pe,
+                lik_data.event_id_pe,
+                lik_data.Nsamples_evt,
+            )
+    
+            var_sel = jnp.exp(log_var_sel_u + 2.0 * lik_data.logNobs)
+
+            print("log_evt finite:", bool(jnp.all(jnp.isfinite(log_evt))))
+            print("log_evt shape:", log_evt.shape)
+            print("var_evs raw:", var_evs)
+    
+            print("sum log_evt =", float(jnp.sum(log_evt)))
+            print("log_mu =", float(log_mu))
+            print("var_sel =", float(var_sel))
+            print("var_evs =", float(var_evs))
+            print("var_total reconstructed =", float(var_sel + var_evs))
+            print("log_evt first 10 =", np.asarray(log_evt[:10]))
+    
+        print("="*80)
+        return
 
 
     ##########################################################################
@@ -939,14 +1047,15 @@ def main():
     init_vals = {
     k: jnp.asarray(v)    for (k, v), kk in zip(init_vals.items(), keys)
         }
-    
-    # ensure x init exists and is small-ish (with eps_init )
-    N  = int(lik_data.Nobs)
-    nd = int(lik_data.mus_s.shape[1])
-    if "x" not in init_vals:
-        # deterministic init is fine; or draw with a fixed seed once outside
-        init_vals["x"] = jnp.asarray( FLAGS.eps_init*np.random.normal(loc=0.0, scale=1.0, size=(N, nd)) , dtype=jnp.float64)
-        
+
+    if not FLAGS.pop_only:
+        # ensure x init exists and is small-ish (with eps_init )
+        N  = int(lik_data.Nobs)
+        nd = int(lik_data.mus_s.shape[1])
+        if "x" not in init_vals:
+            # deterministic init is fine; or draw with a fixed seed once outside
+            init_vals["x"] = jnp.asarray( FLAGS.eps_init*np.random.normal(loc=0.0, scale=1.0, size=(N, nd)) , dtype=jnp.float64)
+            
 
     
     # --- Initialize (lets you plug in mass matrix if you have one) ---
@@ -1429,17 +1538,18 @@ def main():
 
     try:
         print("Plotting trace...")
-        az.plot_trace(trace, var_names = vplot, );
+        az.plot_trace(idata, var_names = vplot, );
         plt.savefig( os.path.join(FLAGS.fout, 'trace.pdf'), bbox_inches='tight')
         plt.close()
-    except:
+    except Exception as e:
+        print(e)
         print('No trace plot produced')
 
     try:
         import corner
         print("Plotting corner...")
         _ = corner.corner(
-            trace,
+            idata.T,
             var_names = vplot,
             labels = vplot,  
             color='darkred',
@@ -1458,7 +1568,8 @@ def main():
     
         plt.savefig( os.path.join(FLAGS.fout, 'corner_all.pdf'), bbox_inches='tight')
         plt.close()
-    except:
+    except Exception as e:
+        print(e)
         print('No corner plot produced')
 
     print("\nDone.")

@@ -203,7 +203,7 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
             'allNsamples': allNsamples,
             'where_compute': where_compute[:, :nmax],
             'allnames' : allnames_return,
-               'dL_PE_prior' : dL_PE_prior
+               'dL_PE_prior' : dL_PE_prior[:, :nmax]
            }
     #print('allNsamples after cut is')
     #print(res['allNsamples'])

@@ -6,7 +6,7 @@ import json
 import numpy as np
 import jax
 import jax.numpy as jnp
-
+from jax import lax
 
 import numpyro
 import numpyro.distributions as dist
@@ -15,7 +15,7 @@ from numpyro.distributions import constraints
 
 import cosmology as cosmo
 from backends import NPBackend, JAXBackend
-from likelihood import LikDataGauss, encode_dLprior_list, make_loglik_gauss
+from likelihood import LikDataGauss, MarginalSampleData, encode_dLprior_list, make_loglik_gauss, make_loglik_marginal_samples
 from population import _make_pop_and_sel_core
 from constants import PlanckFiducials, PLANCK15_H0, PLANCK15_OM, z_nodes_jax
 
@@ -231,6 +231,147 @@ def pack_data_gauss_popnot(
 
     
 
+def _stack_spins_pe_flat(spins, mask_flat, spin_model: str, n_tot: int) -> np.ndarray:
+    if spin_model == "none":
+        return np.zeros((int(mask_flat.sum()), 0), dtype=np.float64)
+
+    arr = np.asarray(spins, dtype=np.float64)
+
+    # Accept:
+    #   (4,N,S)
+    #   (N,4,S)
+    #   (N,S,4)
+    if arr.ndim == 3 and arr.shape[0] in (2, 4):
+        arr = np.moveaxis(arr, 0, -1)   # -> (N,S,nspin)
+    elif arr.ndim == 3 and arr.shape[1] in (2, 4):
+        arr = np.moveaxis(arr, 1, -1)   # -> (N,S,nspin)
+    elif arr.ndim == 3 and arr.shape[-1] in (2, 4):
+        pass
+    else:
+        raise ValueError(f"Unexpected posterior spin sample shape: {arr.shape}")
+
+    arr_flat = arr.reshape((n_tot, arr.shape[-1]))
+    return arr_flat[mask_flat]
+
+
+
+def pack_data_samples_marginal(
+    *,
+    GWData,
+    InjData,
+    spin_model="none",
+    rate_model="MD",
+    mass_model="DPLDP",
+    smoothing="LVK",
+    simplex_repair=False,
+    has_m2_break=False,
+    norm_gauss="uplow",
+    param="vanilla",
+    integrate_dc="trapz",
+    subtract_log_p_incl=False,
+    marginal_R0=True,
+    allTobs=None,
+    chunk_pe=0,
+    r=0,
+):
+    """Pack flattened posterior samples for the marginalized NumPyro likelihood."""
+    # GWData = [m1d_samples, m2d_samples, dL_samples, spin_samples,
+    #           dL_prior, Tobs, allNsamples, where_compute, Nevents, allnames]
+    m1det, m2det, dL, spins, dL_prior, Tobs_np, allNsamples, where_compute, Nevs, allnames = GWData
+
+    m1det = np.asarray(m1det, dtype=np.float64)
+    m2det = np.asarray(m2det, dtype=np.float64)
+    dL = np.asarray(dL, dtype=np.float64)
+    dL_prior = np.asarray(dL_prior, dtype=np.float64)
+    where_compute = np.asarray(where_compute, dtype=bool)
+
+    if m1det.shape != m2det.shape or m1det.shape != dL.shape or m1det.shape != dL_prior.shape:
+        raise ValueError("posterior sample arrays m1det/m2det/dL/dL_prior must have identical shape")
+    if where_compute.shape != m1det.shape:
+        raise ValueError("where_compute must have same shape as posterior sample arrays")
+
+    N, S = m1det.shape
+    n_tot = N * S
+    mask_flat = where_compute.reshape(n_tot)
+
+    m1_flat = m1det.reshape(n_tot)[mask_flat]
+    m2_flat = m2det.reshape(n_tot)[mask_flat]
+    dL_flat = dL.reshape(n_tot)[mask_flat]
+    prior_flat_raw = dL_prior.reshape(n_tot)[mask_flat]
+    if np.all(prior_flat_raw > 0.0):
+        log_pe_flat = np.log(np.clip(prior_flat_raw, 1e-300, np.inf))
+    else:
+        log_pe_flat = prior_flat_raw
+        
+    
+    event_id_flat = np.repeat(np.arange(N, dtype=np.int32), S)[mask_flat]
+
+    Nsamples_evt = np.asarray(allNsamples, dtype=np.float64)
+    if Nsamples_evt.ndim == 0:
+        Nsamples_evt = np.full((N,), float(Nsamples_evt), dtype=np.float64)
+    if Nsamples_evt.shape != (N,):
+        raise ValueError(f"allNsamples must be scalar or shape ({N},), got {Nsamples_evt.shape}")
+    if not np.all(Nsamples_evt > 1):
+        raise ValueError("Need at least two posterior samples per event to compute MC variance")
+
+    spins_flat = _stack_spins_pe_flat(spins, mask_flat, spin_model, n_tot)
+
+    # Injections: same convention as pack_data_gauss_popnot
+    dLinj, m1inj, m2inj, spinsInj, lpdinj, Ndraw, _Ndet_np, lp_incl_inj = InjData
+    dLinj0 = np.asarray(dLinj[0], dtype=np.float64)
+    m1inj0 = np.asarray(m1inj[0], dtype=np.float64)
+    m2inj0 = np.asarray(m2inj[0], dtype=np.float64)
+    lpdinj0 = np.asarray(lpdinj[0], dtype=np.float64)
+    lp_incl0 = np.asarray(lp_incl_inj[0], dtype=np.float64)
+    ninj = int(m1inj0.shape[0])
+    spins_inj = _stack_spins_inj(spinsInj, ninj=ninj, spin_model=spin_model)
+    Ndraw = float(np.asarray(Ndraw).reshape(()))
+
+    Nevs_np = np.atleast_1d(Nevs).astype(np.int32)
+
+    if jnp.log(r) == -1:
+        raise ValueError()
+    logr = jnp.log(r) if r != 0 else -1
+
+    print(f"[PE marginal] M={m1_flat.shape[0]}, chunk_pe={int(chunk_pe)}")
+
+    return MarginalSampleData(
+        m1det_pe=jnp.asarray(m1_flat, dtype=jnp.float64),
+        m2det_pe=jnp.asarray(m2_flat, dtype=jnp.float64),
+        dL_pe=jnp.asarray(dL_flat, dtype=jnp.float64),
+        spins_pe=jnp.asarray(spins_flat, dtype=jnp.float64),
+        log_PE_prior_pe=jnp.asarray(log_pe_flat, dtype=jnp.float64),
+        event_id_pe=jnp.asarray(event_id_flat, dtype=jnp.int32),
+        Nsamples_evt=jnp.asarray(Nsamples_evt, dtype=jnp.float64),
+
+        m1inj=jnp.asarray(m1inj0, dtype=jnp.float64),
+        m2inj=jnp.asarray(m2inj0, dtype=jnp.float64),
+        dLinj=jnp.asarray(dLinj0, dtype=jnp.float64),
+        spins_inj=jnp.asarray(spins_inj, dtype=jnp.float64),
+        log_p_draw=jnp.asarray(lpdinj0, dtype=jnp.float64),
+        log_p_incl=jnp.asarray(lp_incl0, dtype=jnp.float64),
+        Ndraw=jnp.asarray(Ndraw, dtype=jnp.float64),
+
+        Nevs_per_chunk=jnp.asarray(Nevs_np, dtype=jnp.int32),
+        allTobs=None if allTobs is None else jnp.asarray(allTobs, dtype=jnp.float64),
+        Nobs=int(N),
+        logNobs=jnp.log(jnp.asarray(N, dtype=jnp.float64)),
+        logr=logr,
+
+        spin_model=str(spin_model),
+        rate_model=str(rate_model),
+        mass_model=str(mass_model),
+        smoothing=str(smoothing),
+        simplex_repair=bool(simplex_repair),
+        has_m2_break=bool(has_m2_break),
+        norm_gauss=str(norm_gauss),
+        param=str(param),
+        integrate_dc=str(integrate_dc),
+        subtract_log_p_incl=bool(subtract_log_p_incl),
+        marginal_R0=bool(marginal_R0),
+        chunk_pe=int(chunk_pe),
+    )
+
 
 
 
@@ -300,6 +441,55 @@ def build_core_and_loglik_gauss_popnot(
 
 
 
+def build_core_and_loglik_samples_marginal(
+    data,
+    *,
+    chunk_inj=0,
+    K_dp=30,
+    DP_truncate=False,
+    DP_m1_env=False,
+    interp_mass=0,
+    stop_grad_var_u=True,
+    verbose=False,
+    z_nodes=None,
+):
+    bk = JAXBackend()
+
+    core = _make_pop_and_sel_core(
+        bk=bk,
+        rate_model=data.rate_model,
+        mass_model=data.mass_model,
+        spin_model=data.spin_model,
+        smoothing=data.smoothing,
+        simplex_repair=data.simplex_repair,
+        has_m2_break=data.has_m2_break,
+        norm_gauss=data.norm_gauss,
+        param=data.param,
+        verbose=bool(verbose),
+        z_nodes=z_nodes,
+        subtract_log_p_incl=bool(data.subtract_log_p_incl),
+        skip_sel=False,
+        chunk_inj=int(chunk_inj),
+        chunk_evt=int(data.chunk_pe),
+        K_dp=int(K_dp),
+        DP_truncate=bool(DP_truncate),
+        DP_m1_env=bool(DP_m1_env),
+        interp_mass=int(interp_mass),
+        integrate_dc=data.integrate_dc,
+        pop_only=True,
+        stop_grad_var_u=bool(stop_grad_var_u),
+        return_var=True,
+    )
+
+    print("[PE marginal] using event streaming:", int(data.chunk_pe) > 0)
+    print("[PE marginal] chunk_pe:", int(data.chunk_pe))
+
+    loglik = make_loglik_marginal_samples(core, data)
+    return core, loglik
+
+
+
+##########################################################################
 
 NORM_Q95 = 1.959963984540054
 NORM_Q99 = 2.5758293035489004
@@ -442,6 +632,19 @@ def bounded_sigmoid_raw_init(initval, low: float, high: float):
     return np.log(t / (1.0 - t))
 
 
+def bounded_sigmoid_logpositive(name: str, low: float, high: float, raw_sigma: float = 1.5):
+    raw = numpyro.sample(f"{name}_raw", dist.Normal(0.0, raw_sigma))
+    lowlog, highlog = np.log(low), np.log(high)
+    logx = lowlog + (highlog - lowlog) * jax.nn.sigmoid(raw)
+    numpyro.deterministic(f"{name}_log", logx)
+    val = jnp.exp(logx)
+    numpyro.deterministic(name, val)
+    return val
+
+
+    
+
+
 
 def make_model_jax(  priors,
                  GWData,
@@ -463,7 +666,7 @@ def make_model_jax(  priors,
                  dLprior = ['none'],
                  fix_inj_len = False,
                  chunk_inj = -1,
-                 chunk_reduce = False,
+                 chunk_reduce = 0,
                  use_float32 = False,
                  use_float32_bias=False,
                  sel_method='Tobs',
@@ -652,7 +855,29 @@ def make_model_jax(  priors,
         dL_prior = dL_prior.reshape(NsamplesTot)
         
         # spins: if you store (Ne, S, nspin) -> flatten first two axes
-        spins = spins.reshape((NsamplesTot, spins.shape[-1]))
+        #spins = spins.reshape((NsamplesTot, spins.shape[-1]))
+        spins = np.asarray(spins, dtype=np.float64)
+
+        
+        if spin_model == "none":
+            spins = np.zeros((NsamplesTot, 0), dtype=np.float64)
+        else:
+            if spins.ndim == 3 and spins.shape[0] in (2, 4):
+                # (nspin, N, S) -> (N, S, nspin)
+                spins = np.moveaxis(spins, 0, -1)
+        
+            elif spins.ndim == 3 and spins.shape[1] in (2, 4):
+                # (N, nspin, S) -> (N, S, nspin)
+                spins = np.moveaxis(spins, 1, -1)
+        
+            elif spins.ndim == 3 and spins.shape[-1] in (2, 4):
+                # already (N, S, nspin)
+                pass
+        
+            else:
+                raise ValueError(f"Unexpected posterior spin sample shape: {spins.shape}")
+        
+            spins = spins.reshape((NsamplesTot, spins.shape[-1]))
 
        
 
@@ -818,47 +1043,78 @@ def make_model_jax(  priors,
     ################################################
 
 
-    if int(mus_l.shape[0]) != int(np.sum(Nevs_np)):
-        raise ValueError("Sum(Nevs_np) != mus_l.shape[0] (event count mismatch).")
+    if not pop_only:
+        if int(mus_l.shape[0]) != int(np.sum(Nevs_np)):
+            raise ValueError("Sum(Nevs_np) != mus_l.shape[0] (event count mismatch).")
 
-    data = pack_data_gauss_popnot(
-        GWData=GWData,
-        InjData=InjData,
-        dLprior=dLprior,
-        Nevs_np=Nevs_np,
-        all_PE_log_norms=all_PE_log_norms,
-        dLgrid_bilby_gpc=(dLgrid_bilby_gpc if vol_in_prior_from_bilby else None),
-        PE_prior_bilby_grid=(PE_prior_bilby_grid if vol_in_prior_from_bilby else None),
-        spin_model=spin_model_sel,     # <-- important
-        rate_model=rate_model,
-        mass_model=mass_model,
-        smoothing=smoothing,
-        simplex_repair=simplex_repair,
-        has_m2_break=has_m2_break,
-        norm_gauss=norm_gauss,
-        param=param,
-        integrate_dc=integrate_dc,
-        subtract_log_p_incl=False,     # or your flag
-        sample_from_pop=sample_from_pop,
-        marginal_R0=marginal_R0,
-        allTobs = allTobs,
-        r = r
-    )
+        data = pack_data_gauss_popnot(
+            GWData=GWData,
+            InjData=InjData,
+            dLprior=dLprior,
+            Nevs_np=Nevs_np,
+            all_PE_log_norms=all_PE_log_norms,
+            dLgrid_bilby_gpc=(dLgrid_bilby_gpc if vol_in_prior_from_bilby else None),
+            PE_prior_bilby_grid=(PE_prior_bilby_grid if vol_in_prior_from_bilby else None),
+            spin_model=spin_model_sel,
+            rate_model=rate_model,
+            mass_model=mass_model,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+            param=param,
+            integrate_dc=integrate_dc,
+            subtract_log_p_incl=False,
+            sample_from_pop=sample_from_pop,
+            marginal_R0=marginal_R0,
+            allTobs=allTobs,
+            r=r,
+        )
+        print("pack_data_gauss_popnot ok")
+        print()
+        core, loglik = build_core_and_loglik_gauss_popnot(
+            data,
+            chunk_inj=(0 if chunk_inj in (-1, None) else chunk_inj),
+            K_dp=30,
+            DP_truncate=False,
+            DP_m1_env=DP_m1_env,
+            interp_mass=interp_mass,
+            stop_grad_var_u=True,
+            skip_sel=False,
+            verbose=False,
+            z_nodes=z_nodes_jax,
+        )
+    else:
+        data = pack_data_samples_marginal(
+            GWData=GWData,
+            InjData=InjData,
+            spin_model=spin_model_sel,
+            rate_model=rate_model,
+            mass_model=mass_model,
+            smoothing=smoothing,
+            simplex_repair=simplex_repair,
+            has_m2_break=has_m2_break,
+            norm_gauss=norm_gauss,
+            param=param,
+            integrate_dc=integrate_dc,
+            subtract_log_p_incl=False,
+            marginal_R0=marginal_R0,
+            allTobs=allTobs,
+            chunk_pe=(0 if chunk_reduce in (False, 0, None) else int(chunk_reduce)),
+            r=r,
+        )
 
-
-
-    core, loglik = build_core_and_loglik_gauss_popnot(
-        data,
-        chunk_inj=(0 if chunk_inj in (-1, None) else chunk_inj),
-        K_dp=30,
-        DP_truncate=False,
-        DP_m1_env=DP_m1_env,
-        interp_mass=interp_mass,
-        stop_grad_var_u=True,
-        skip_sel = False,
-        verbose= False,
-        z_nodes = z_nodes_jax
-    )
+        core, loglik = build_core_and_loglik_samples_marginal(
+            data,
+            chunk_inj=(0 if chunk_inj in (-1, None) else chunk_inj),
+            K_dp=30,
+            DP_truncate=False,
+            DP_m1_env=DP_m1_env,
+            interp_mass=interp_mass,
+            stop_grad_var_u=True,
+            verbose=False,
+            z_nodes=z_nodes_jax,
+        )
 
     # `loglik` is now a jitted callable:
     #   loglik(Lambda: (npar,), x: (N, nd)) -> scalar
@@ -884,7 +1140,7 @@ def make_model_jax(  priors,
         else:
             if pade or integrate_dc == "pade":
                 raise NotImplementedError("Pade with varying w0 not implemented yet.")
-            w0_ = numpyro.sample("w0", dist.Uniform(priors["w0"][0], priors["w0"][1]))
+            w0_ = bounded_sigmoid("w0", priors["w0"][0], priors["w0"][1], raw_sigma=1.0)
     
         if fix_H0:
             H0_ = jnp.asarray(params_fix["H0"], dtype=jnp.float64)
@@ -896,8 +1152,8 @@ def make_model_jax(  priors,
             Xi0_  = jnp.asarray(1.0, dtype=jnp.float64)
             nXi0_ = jnp.asarray(0.0, dtype=jnp.float64)
         else:
-            Xi0_  = numpyro.sample("Xi0",  dist.Uniform(priors["Xi0"][0],  priors["Xi0"][1]))
-            nXi0_ = numpyro.sample("nXi0", dist.Uniform(priors["nXi0"][0], priors["nXi0"][1]))
+            nXi0_ = bounded_sigmoid("nXi0", priors["nXi0"][0], priors["nXi0"][1], raw_sigma=1.0)
+            Xi0_  = bounded_sigmoid_logpositive("Xi0", priors["Xi0"][0], priors["Xi0"][1], raw_sigma=1.5)
     
         Lambda_list = [H0_, Om_, w0_, Xi0_, nXi0_]
     
@@ -1161,17 +1417,22 @@ def make_model_jax(  priors,
         Lambda = jnp.stack([jnp.asarray(z, dtype=jnp.float64) for z in Lambda_list])
 
     
+
+
         # -------------------------
-        # Latent GW aux x (gauss path)
+        # Likelihood
         # -------------------------
-        N = int(data.Nobs)
-        nd = int(data.mus_s.shape[1])
-        x = numpyro.sample("x", dist.Normal(0.0, 1.0).expand((N, nd)))
-    
-        # -------------------------
-        # Likelihood factor
-        # -------------------------
-        ll, log_lik_var_sg = loglik(Lambda, x, lR0=lR0)
+        
+        if not pop_only:
+            N = int(data.Nobs)
+            nd = int(data.mus_s.shape[1])
+            x = numpyro.sample(
+                "x",
+                dist.Normal(0.0, 1.0).expand((N, nd)).to_event(2),
+            )
+            ll, log_lik_var_sg = loglik(Lambda, x, lR0=lR0)
+        else:
+            ll, log_lik_var_sg = loglik(Lambda, lR0=lR0)
 
         ## Uncomment for debugging
         # jax.debug.print("ll = {}", ll)
