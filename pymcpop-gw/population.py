@@ -37,6 +37,51 @@ def _zeros_like_tree(x):
     return jax.tree_util.tree_map(lambda a: jnp.zeros_like(a), x)
 
 
+
+def lambda_slices(rate_model, spin_model, mass_model):
+    i = 0
+
+    cosmo = slice(i, i + 5)
+    i += 5
+
+    if rate_model in ("MD", "DPUC-vol-MD"):
+        rate = slice(i, i + 3)
+        i += 3
+    elif rate_model == "PL":
+        rate = slice(i, i + 1)
+        i += 1
+    elif rate_model in ("DPUC", "DPUC-vol"):
+        rate = slice(i, i)
+    else:
+        raise ValueError(rate_model)
+
+    if spin_model == "chieffchip":
+        spin = slice(i, i + 5)
+        i += 5
+    elif spin_model == "chieffchip_uc":
+        spin = slice(i, i + 4)
+        i += 4
+    elif spin_model in ("default", "default_gauss"):
+        spin = slice(i, i + 4)
+        i += 4
+    else:
+        spin = slice(i, i)
+
+    if mass_model == "PLPreg":
+        mass = slice(i, i + 8)
+        i += 8
+    elif mass_model in ("DPLDP", "PLDP"):
+        mass = slice(i, i + 21)
+        i += 21
+    elif mass_model == "DPLDP-z":
+        mass = slice(i, i + 47)
+        i += 47
+    else:
+        raise ValueError(mass_model)
+
+    return cosmo, rate, spin, mass
+
+
 def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
     """
     Split the flat Lambda_ list into (cosmo, rate, spin, mass) lists,
@@ -1100,6 +1145,12 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
         x = jnp.where(mask_c, x, -jnp.inf)  # padded entries contribute nothing
         return x  # (B,)
 
+    # <TMP>
+    cosmo_sl, rate_sl, spin_sl, mass_sl = lambda_slices(
+        rate_model, spin_model, mass_model
+    )
+    # <END TMP>
+    
     @jax.custom_vjp
     def _sel_core(
         Lambda_,
@@ -1250,9 +1301,28 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
 
             def score_wrapped(Lam_):
                 return _score_chunk(Lam_, m1c, m2c, dLc, spc, lpdc, lpic, mc)
-
+            
             # Differentiate only w.r.t Lambda; NEVER w.r.t injection arrays
             x, pull = jax.vjp(score_wrapped, Lambda_)
+
+            # <TMP>
+            def score_cosmo(cosmo_):
+                Lam = Lambda_.at[cosmo_sl].set(cosmo_)
+                return score_wrapped(Lam)
+            
+            def score_rate(rate_):
+                Lam = Lambda_.at[rate_sl].set(rate_)
+                return score_wrapped(Lam)
+            
+            def score_spin(spin_):
+                Lam = Lambda_.at[spin_sl].set(spin_)
+                return score_wrapped(Lam)
+            
+            def score_mass(mass_):
+                Lam = Lambda_.at[mass_sl].set(mass_)
+                return score_wrapped(Lam)
+            # <END TMP>
+            
             w = jnp.exp(x - lse1)
             cot = g_log_mu * w
 

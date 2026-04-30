@@ -245,6 +245,10 @@ def main():
     parser.add_argument("--jax_debug_nans", default=0, type=int, required=False)
     parser.add_argument("--dense_mass", default=0, type=int, required=False)
     parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
+    parser.add_argument("--find_heuristic_step_size", default=0, type=int, required=False)
+    parser.add_argument("--regularize_mass_matrix", default=1e-04, type=float, required=False)
+
+    
     
     
     
@@ -1057,6 +1061,231 @@ def main():
 
         print("⚠️ Not yet available.")
 
+    ##########################################################################
+    ##########################################################################
+    # Profile if requested 
+    ##########################################################################
+    ##########################################################################
+
+    def _lambda_slices_for_benchmark(rate_model, spin_model, mass_model):
+        i = 0
+        cosmo = slice(i, i + 5); i += 5
+    
+        if rate_model in ("MD", "DPUC-vol-MD"):
+            rate = slice(i, i + 3); i += 3
+        elif rate_model == "PL":
+            rate = slice(i, i + 1); i += 1
+        elif rate_model in ("DPUC", "DPUC-vol"):
+            rate = slice(i, i)
+        else:
+            raise ValueError(f"Unknown rate_model={rate_model}")
+    
+        if spin_model == "chieffchip":
+            spin = slice(i, i + 5); i += 5
+        elif spin_model == "chieffchip_uc":
+            spin = slice(i, i + 4); i += 4
+        elif spin_model in ("default", "default_gauss"):
+            spin = slice(i, i + 4); i += 4
+        else:
+            spin = slice(i, i)
+    
+        if mass_model == "PLPreg":
+            mass = slice(i, i + 8); i += 8
+        elif mass_model in ("DPLDP", "PLDP"):
+            mass = slice(i, i + 21); i += 21
+        elif mass_model == "DPLDP-z":
+            mass = slice(i, i + 47); i += 47
+        else:
+            raise ValueError(f"Unknown mass_model={mass_model}")
+    
+        return {"cosmo": cosmo, "rate": rate, "spin": spin, "mass": mass, "npar": i}
+    
+    
+    def _trace_value(model_trace, name, default=None):
+        if name in model_trace:
+            return model_trace[name]["value"]
+        if default is not None:
+            return default
+        raise KeyError(f"Could not find {name!r} in model_trace and no default was given")
+    
+    
+    def _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace):
+        import jax.numpy as jnp
+    
+        vals = []
+    
+        # Cosmology: [H0, Om, w0, Xi0, nXi0]
+        vals.append(jnp.asarray(params_fix["H0"] if FLAGS.fix_H0 else _trace_value(model_trace, "H0"), dtype=jnp.float64))
+        vals.append(jnp.asarray(params_fix["Om"] if FLAGS.fix_Om else _trace_value(model_trace, "Om"), dtype=jnp.float64))
+        vals.append(jnp.asarray(-1.0 if FLAGS.fix_w0 else _trace_value(model_trace, "w0"), dtype=jnp.float64))
+        if FLAGS.fix_Xi0n:
+            vals += [jnp.asarray(1.0, dtype=jnp.float64), jnp.asarray(0.0, dtype=jnp.float64)]
+        else:
+            vals += [jnp.asarray(_trace_value(model_trace, "Xi0"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "nXi0"), dtype=jnp.float64)]
+    
+        # Rate
+        if FLAGS.rate_model in ("MD", "DPUC-vol-MD"):
+            vals += [jnp.asarray(_trace_value(model_trace, "gamma"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "kappa"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "zp"), dtype=jnp.float64)]
+        elif FLAGS.rate_model == "PL":
+            vals += [jnp.asarray(_trace_value(model_trace, "gamma"), dtype=jnp.float64)]
+        elif FLAGS.rate_model in ("DPUC", "DPUC-vol"):
+            pass
+        else:
+            raise ValueError(f"Unknown rate_model={FLAGS.rate_model}")
+    
+        # Spin
+        if FLAGS.spin_model == "default_gauss":
+            vals += [jnp.asarray(_trace_value(model_trace, "muChi"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "sigmaChi"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "zeta"), dtype=jnp.float64),
+                     jnp.asarray(_trace_value(model_trace, "sigmat"), dtype=jnp.float64)]
+        elif FLAGS.spin_model == "none":
+            pass
+        else:
+            raise NotImplementedError(f"Add spin packing for spin_model={FLAGS.spin_model}")
+    
+        # Mass. This mirrors the DPLDP/PLDP packing in jax_models.py.
+        if FLAGS.mass_model in ("DPLDP", "PLDP"):
+            vals += [
+                _trace_value(model_trace, "alpha1"),
+                _trace_value(model_trace, "alpha2"),
+                _trace_value(model_trace, "mb"),
+                _trace_value(model_trace, "mu1"),
+                _trace_value(model_trace, "sigma1"),
+                _trace_value(model_trace, "mu2"),
+                _trace_value(model_trace, "sigma2"),
+                _trace_value(model_trace, "m1_low"),
+                _trace_value(model_trace, "m_high"),
+                _trace_value(model_trace, "delta_m1"),
+                _trace_value(model_trace, "lambda0"),
+                _trace_value(model_trace, "lambda1"),
+                _trace_value(model_trace, "lambda2"),
+                _trace_value(model_trace, "beta"),
+                _trace_value(model_trace, "m2_low"),
+                _trace_value(model_trace, "delta_m2"),
+                _trace_value(model_trace, "epsilon", jnp.asarray(0.1, dtype=jnp.float64)),
+                _trace_value(model_trace, "m_g", jnp.asarray(45.0, dtype=jnp.float64)),
+                _trace_value(model_trace, "w_g", jnp.asarray(70.0, dtype=jnp.float64)),
+                _trace_value(model_trace, "sig_g_l", jnp.asarray(1e-2, dtype=jnp.float64)),
+                _trace_value(model_trace, "sig_g_h", jnp.asarray(1e-2, dtype=jnp.float64)),
+            ]
+        elif FLAGS.mass_model == "PLPreg":
+            vals += [
+                _trace_value(model_trace, "lambdaPeak"), _trace_value(model_trace, "alpha"),
+                _trace_value(model_trace, "beta"), _trace_value(model_trace, "deltam"),
+                _trace_value(model_trace, "ml"), _trace_value(model_trace, "mh"),
+                _trace_value(model_trace, "muMass"), _trace_value(model_trace, "sigmaMass"),
+            ]
+        elif FLAGS.mass_model == "DPLDP-z":
+            raise NotImplementedError(
+                "Benchmark Lambda packing for DPLDP-z needs the exact 47-name order from your active jax_models.py. "
+                "Do not guess it; add that list explicitly before using this benchmark."
+            )
+        else:
+            raise ValueError(f"Unknown mass_model={FLAGS.mass_model}")
+    
+        return jnp.stack([jnp.asarray(v, dtype=jnp.float64).reshape(()) for v in vals])
+    
+    
+    def run_selection_block_benchmark(FLAGS, priors, params_fix, model_trace, lik_data, core, *, repeats=10):
+        import time
+        import jax
+        import jax.numpy as jnp
+        import numpy as np
+        from likelihood import _gw_terms_from_x
+    
+        Lambda0 = _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace)
+        slices = _lambda_slices_for_benchmark(FLAGS.rate_model, FLAGS.spin_model, FLAGS.mass_model)
+    
+        if Lambda0.shape[0] != slices["npar"]:
+            raise RuntimeError(f"Lambda length mismatch: built {Lambda0.shape[0]}, expected {slices['npar']}")
+    
+        x0 = _trace_value(model_trace, "x", None)
+        if x0 is None:
+            x0 = init_vals.get("x", None)
+        if x0 is None:
+            raise RuntimeError("Cannot find initial x in model_trace or init_vals")
+        x0 = jnp.asarray(x0, dtype=jnp.float64)
+    
+        # Precompute event coordinates once. The selection term does not depend on x, but core() needs event args.
+        m1det, m2det, dLdet, spins_evt, _, _ = _gw_terms_from_x(x0, lik_data)
+    
+        def selection_only(Lam):
+            _, log_mu, _ = core(
+                m1det, m2det, dLdet, spins_evt,
+                lik_data.m1inj, lik_data.m2inj, lik_data.dLinj,
+                lik_data.spins_inj, lik_data.log_p_draw, lik_data.log_p_incl,
+                Lam, lik_data.Ndraw,
+            )
+            return log_mu
+    
+        full_grad = jax.jit(jax.value_and_grad(selection_only))
+    
+        def make_block_grad(sl):
+            def f(block):
+                Lam = Lambda0.at[sl].set(block)
+                return selection_only(Lam)
+            return jax.jit(jax.value_and_grad(f))
+    
+        block_grads = {}
+        for name in ("cosmo", "rate", "spin", "mass"):
+            sl = slices[name]
+            if sl.start != sl.stop:
+                block_grads[name] = (sl, make_block_grad(sl))
+    
+        def time_call(label, fn, arg):
+            # compile/warmup
+            y, g = fn(arg)
+            jax.block_until_ready(y)
+            jax.block_until_ready(g)
+    
+            ts = []
+            for _ in range(repeats):
+                t0 = time.perf_counter()
+                y, g = fn(arg)
+                jax.block_until_ready(y)
+                jax.block_until_ready(g)
+                ts.append(time.perf_counter() - t0)
+            arr = np.asarray(ts)
+            print(f"{label:>12s}: mean={arr.mean():.6f}s  min={arr.min():.6f}s  max={arr.max():.6f}s  grad_shape={tuple(g.shape)}  value={float(y):.6g}")
+            return float(arr.mean())
+    
+        print("\n" + "=" * 80)
+        print("Selection-gradient block benchmark")
+        print("This is a proxy benchmark: block functions still call the existing full core.")
+        print("If block timings are not clearly below full timing, a structural refactor is unlikely to pay off.")
+        print("=" * 80)
+        print("Lambda length:", Lambda0.shape[0])
+        print("Slices:", {k: (v.start, v.stop) for k, v in slices.items() if k != "npar"})
+        print("Ninj:", int(lik_data.m1inj.shape[0]), "chunk_inj:", int(FLAGS.chunk_inj))
+        print("repeats:", repeats)
+        print("-" * 80)
+    
+        times = {}
+        times["full"] = time_call("full", full_grad, Lambda0)
+        for name, (sl, fn) in block_grads.items():
+            times[name] = time_call(name, fn, Lambda0[sl])
+    
+        sum_blocks = sum(v for k, v in times.items() if k != "full")
+        print("-" * 80)
+        print(f"sum(blocks) / full = {sum_blocks / times['full']:.3f}")
+        print("Interpretation:")
+        print("  <~0.7 : structural decomposition may be worth it")
+        print("  ~1.0  : likely little speed gain")
+        print("  >1.0  : multiple VJPs probably worse unless memory improves")
+        print("=" * 80 + "\n")
+        return times
+
+    
+    if FLAGS.profile:
+        run_selection_block_benchmark(
+            FLAGS, priors, params_fix, model_trace, lik_data, core,
+            repeats=max(3, int(FLAGS.profile)),
+        )
+        return
 
     ##########################################################################
     ##########################################################################
@@ -1071,11 +1300,11 @@ def main():
         target_accept_prob=float(FLAGS.target_accept),
         max_tree_depth=int(FLAGS.max_tree_depth),
         dense_mass = dense_blocks,  # dense within each chain
-        step_size=1e-2,              # <-- seed a not-too-small epsilon
+        step_size = 1e-2,              # <-- seed a not-too-small epsilon
         adapt_step_size=True,        # keep adaptation ON
         adapt_mass_matrix=True,
-        find_heuristic_step_size = False,
-        regularize_mass_matrix = 1e-03,
+        find_heuristic_step_size = bool(FLAGS.find_heuristic_step_size),
+        regularize_mass_matrix = float(FLAGS.regularize_mass_matrix),
         forward_mode_differentiation = False,
         
     )
@@ -1117,12 +1346,52 @@ def main():
     )
     
     run_key, rng_key = random.split(rng_key)
-    mcmc.run(run_key)
+    mcmc.run(run_key,
+                extra_fields=(
+        "diverging",
+        "num_steps",
+        "accept_prob",
+        "adapt_state.step_size",
+    ),
+            )
     
     #mcmc.print_summary()
     samples = mcmc.get_samples(group_by_chain=True)
 
+    ################################################
+    # Print diagnostics
+    ################################################
+
+    extra = mcmc.get_extra_fields()
     
+    print("Available extra fields:", list(extra.keys()))
+    
+    num_steps = extra["num_steps"]
+    acc = extra["accept_prob"]
+    div = extra["diverging"]
+    
+    print("\n" + "="*80)
+    print("NUTS diagnostics")
+    print("="*80)
+    
+    print(f"num_steps: mean={num_steps.mean():.2f}  max={num_steps.max()}  min={num_steps.min()}")
+    print(f"accept_prob: mean={acc.mean():.3f}  min={acc.min():.3f}")
+    print(f"divergences: {div.sum()} / {div.size}")
+    if "adapt_state.step_size" in extra:
+        eps = extra["adapt_state.step_size"]
+        print(f"step_size: final={np.ravel(np.asarray(eps))[-1]:.4g}")
+    
+    # approximate tree depth from number of leapfrog steps
+    tree_depth_approx = np.ceil(np.log2(np.asarray(num_steps) + 1)).astype(int)
+    
+    unique, counts = np.unique(tree_depth_approx, return_counts=True)
+    print("\nApprox tree depth histogram:")
+    for u, c in zip(unique, counts):
+        print(f"  depth {int(u):2d}: {int(c)}")
+
+    
+    
+    print("="*80)    
 
     ################################################
     # Save and exit

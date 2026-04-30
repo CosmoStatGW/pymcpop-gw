@@ -313,8 +313,9 @@ def _gw_terms_from_x(
         - 0.5 * data.log_dets_l
         + data.log_wts_l
     )
+    
+    
     #gwl = jax.scipy.special.logsumexp(logp_components, axis=1)       # (N,)
-
     gwl = safe_logsumexp_jax(logp_components, axis=1)
 
     # detector-frame masses and distance
