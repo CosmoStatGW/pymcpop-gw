@@ -156,6 +156,8 @@ def main():
     parser.add_argument("--linear_mass", default=0, type=int, required=False)
     parser.add_argument("--linear_z", default=0, type=int, required=False)
 
+    parser.add_argument("--vary_mb", default=1, type=int, required=False)
+
     
     parser.add_argument("--N_DP_comp_max", default=30, type=int, required=False)
     parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
@@ -795,7 +797,8 @@ def main():
         fix_Xi0n=bool(FLAGS.fix_Xi0n),
         reparam_mass = bool(FLAGS.reparam_mass),
         remove_spin_prior =  bool(FLAGS.remove_spin_prior),
-        r = FLAGS.r
+        r = FLAGS.r,
+        vary_mb = FLAGS.vary_mb
     )
 
     ##########################################################################
@@ -816,8 +819,68 @@ def main():
         # Build Lambda from initial values / priors using the model trace machinery is annoying,
         # so easiest is to use a known Lambda vector saved from PyMC or from your ivals.
         # Replace this with the exact Lambda vector you want to compare.
-        Lambda_test = jnp.asarray([
         
+        
+        # Lambda_test = jnp.asarray([
+        
+        #     # --- cosmology (5)
+        #     67.9,          # H0
+        #     0.3065,        # Om
+        #     -1.0,          # w0 (default)
+        #     1.0,           # Xi0 (default)
+        #     0.0,           # nXi0 (default)
+        
+        #     # --- rate (3)
+        #     3.2,           # gamma
+        #     3.0,           # kappa
+        #     2.0,           # zp
+        
+        #     # --- spin (4)
+        #     0.024333031991381315,   # muChi
+        #     0.31873272890864474,    # sigmaChi
+        #     0.2123453198667594,     # zeta
+        #     3.0206244922342362,     # sigmat
+        
+        #     # --- mass (21)
+        
+        #     # power-law slopes
+        #     1.7,           # alpha1
+        #     4.5,           # alpha2
+        #     36.0,          # mb
+        
+        #     # Gaussians
+        #     9.8,           # mu1
+        #     0.65,          # sigma1
+        #     33.0,          # mu2
+        #     3.9,           # sigma2
+        
+        #     # low-mass cutoff
+        #     2.1,           # m1_low  (default guess)
+        #     300.0,         # m_high
+        #     4.3,           # delta_m1
+        
+        #     # mixture weights (lambda vector)
+        #     0.36,
+        #     0.59,
+        #     0.05,
+        
+        #     # secondary mass
+        #     1.2,           # beta
+        #     2.0,           # m2_low (default guess)
+        #     4.9,           # delta_m2
+        
+        #     # high-mass Gaussian tail (not provided → safe defaults)
+        #     0.01,           # epsilon
+        #     60.0,          # m_g
+        #     10.0,          # w_g
+        #     5.0,           # sig_g_l
+        #     5.0,           # sig_g_h
+        
+        # ], dtype=jnp.float64)
+
+        Lambda_test = jnp.asarray([
+
+
             # --- cosmology (5)
             67.9,          # H0
             0.3065,        # Om
@@ -835,43 +898,29 @@ def main():
             0.31873272890864474,    # sigmaChi
             0.2123453198667594,     # zeta
             3.0206244922342362,     # sigmat
+
+            
+            # low-z: 21
+            1.7, 4.5, 35.0,
+            8.5, 0.4, 30.0, 3.5,
+            3.189, 150.0, 4.3,
+            0.36, 0.59, 0.05,
+            1.2, 3.054, 4.9,
+            0.1, 45.0, 70.0, 1e-4, 1e-4,
         
-            # --- mass (21)
-        
-            # power-law slopes
-            1.7,           # alpha1
-            4.5,           # alpha2
-            36.0,          # mb
-        
-            # Gaussians
-            9.8,           # mu1
-            0.65,          # sigma1
-            33.0,          # mu2
-            3.9,           # sigma2
-        
-            # low-mass cutoff
-            2.1,           # m1_low  (default guess)
-            300.0,         # m_high
-            4.3,           # delta_m1
-        
-            # mixture weights (lambda vector)
-            0.36,
-            0.59,
-            0.05,
-        
-            # secondary mass
-            1.2,           # beta
-            2.0,           # m2_low (default guess)
-            4.9,           # delta_m2
-        
-            # high-mass Gaussian tail (not provided → safe defaults)
-            0.01,           # epsilon
-            60.0,          # m_g
-            10.0,          # w_g
-            5.0,           # sig_g_l
-            5.0,           # sig_g_h
-        
+            # evo: 26
+            1.7, 1.1, 0.5,
+            3.5, 1.1, 0.5,
+            35.0, 1.1, 0.5,
+            15.0, 1.1, 0.5,
+            2.5, 1.1, 0.5,
+            60.0, 1.1, 0.5,
+            15.0, 1.1, 0.5,
+            0.10, 0.05, 0.85,
+            1.1, 0.5,
         ], dtype=jnp.float64)
+        
+        print(Lambda_test.shape)  # must be (47,)
     
         ll, var = loglik(Lambda_test)
     
@@ -1037,6 +1086,190 @@ def main():
             init_vals["sigmat_raw"] = max(0.0, float(ivals["sigmat"]) - sigmat_floor)
 
 
+    if FLAGS.mass_model == "DPLDP-z" and FLAGS.reparam_mass:
+
+        # Drop deterministic/physical names that are produced from raw/reparam sites
+        for drop in [
+            "alpha1_0", "alpha2_0", "mb_0",
+            "mu1_0", "mu2_0", "sigma1_0", "sigma2_0",
+            "u", "v", "m1_low", "m2_low",
+            "m_high", "delta_m1", "delta_m2",
+            "gamma", "kappa", "zp", "H0", "Om",
+            "muChi", "sigmaChi", "zeta", "sigmat",
+            "lambda", "lambda0_0", "lambda1_0", "lambda2_0",
+            "lambda0_inf", "lambda1_inf", "lambda2_inf",
+            "dz_lambda",
+        ]:
+            init_vals.pop(drop, None)
+    
+        # -------------------------
+        # Cosmology / rate raw inits
+        # -------------------------
+        for k in ("gamma", "kappa", "zp", "H0", "Om"):
+            if k in priors:
+                pa, pb = priors[k][0], priors[k][1]
+                p0 = jm.bounded_sigmoid_raw_init(ivals.get(k), pa, pb)
+                if p0 is not None:
+                    init_vals[f"{k}_raw"] = p0
+    
+        # -------------------------
+        # Spin default_gauss raw inits
+        # -------------------------
+        for k in ("muChi", "sigmaChi", "zeta"):
+            if k in priors:
+                pa, pb = priors[k][0], priors[k][1]
+                p0 = jm.bounded_sigmoid_raw_init(ivals.get(k), pa, pb)
+                if p0 is not None:
+                    init_vals[f"{k}_raw"] = p0
+    
+        if ivals.get("sigmat") is not None:
+            sigmat_floor = float(priors["sigmat"][0])
+            init_vals["sigmat_raw"] = max(0.0, float(ivals["sigmat"]) - sigmat_floor)
+    
+        # -------------------------
+        # Low-z alpha_bar / alpha_diff
+        # -------------------------
+        if "alpha_bar" not in init_vals:
+            if ivals.get("alpha_bar") is not None:
+                init_vals["alpha_bar"] = float(ivals["alpha_bar"])
+            elif (ivals.get("alpha1_0") is not None) and (ivals.get("alpha2_0") is not None):
+                init_vals["alpha_bar"] = 0.5 * (float(ivals["alpha1_0"]) + float(ivals["alpha2_0"]))
+            elif ivals.get("alpha1_0") is not None:
+                init_vals["alpha_bar"] = float(ivals["alpha1_0"])
+            else:
+                a_low, a_high = priors["alpha1_0"][0], priors["alpha1_0"][1]
+                init_vals["alpha_bar"] = 0.5 * (a_low + a_high)
+    
+        if "alpha_diff" not in init_vals:
+            if ivals.get("alpha_diff") is not None:
+                init_vals["alpha_diff"] = float(ivals["alpha_diff"])
+            elif (ivals.get("alpha1_0") is not None) and (ivals.get("alpha2_0") is not None):
+                init_vals["alpha_diff"] = float(ivals["alpha2_0"]) - float(ivals["alpha1_0"])
+            else:
+                init_vals["alpha_diff"] = 0.0
+    
+        # -------------------------
+        # Low-z bounded sigmoid raw inits
+        # -------------------------
+        for k in ("mb_0", "mu1_0", "mu2_0"):
+            if k in priors:
+                pa, pb = priors[k][0], priors[k][1]
+                p0 = jm.bounded_sigmoid_raw_init(ivals.get(k), pa, pb)
+                if p0 is not None:
+                    init_vals[f"{k}_raw"] = p0
+    
+        # -------------------------
+        # u, v triangle raw inits
+        # -------------------------
+        u0 = jm.unit_interval_sigmoid_raw_init(ivals.get("u"))
+        if u0 is not None:
+            init_vals["u_raw"] = u0
+    
+        v0 = jm.unit_interval_sigmoid_raw_init(ivals.get("v"))
+        if v0 is not None:
+            init_vals["v_raw"] = v0
+    
+        # -------------------------
+        # Floored lognormal raw inits
+        # -------------------------
+        # These names must match the NumPyro sample sites:
+        # sigma1_0_raw, sigma2_0_raw, delta_m1_raw, delta_m2_raw
+        for nm in ("sigma1_0", "sigma2_0", "delta_m1", "delta_m2"):
+            if ivals.get(nm) is not None:
+                floor = float(priors[nm][0])
+                init_vals[f"{nm}_raw"] = max(1e-12, float(ivals[nm]) - floor)
+    
+        # -------------------------
+        # m_high shifted LogNormal init
+        # -------------------------
+        mhigh_floor = float(priors["m_high"][0])
+        m_high0 = float(ivals.get("m_high", 0.5 * (priors["m_high"][0] + priors["m_high"][1])))
+        init_vals["delta_mhigh"] = max(1e-6, m_high0 - mhigh_floor)
+    
+        # -------------------------
+        # Low-z lambda Dirichlet init
+        # -------------------------
+        if ivals.get("lambda") is not None:
+            init_vals["lambda0_vec"] = jnp.asarray(ivals["lambda"], dtype=jnp.float64)
+    
+        # -------------------------
+        # High-z lambda Dirichlet init
+        # -------------------------
+        if ivals.get("lambda_inf_vec") is not None:
+            init_vals["lambda_inf_vec"] = jnp.asarray(ivals["lambda_inf_vec"], dtype=jnp.float64)
+        else:
+            init_vals["lambda_inf_vec"] = jnp.asarray([0.10, 0.05, 0.85], dtype=jnp.float64)
+    
+        # -------------------------
+        # Evolution parameters
+        # -------------------------
+        # For evo_triplet_numpyro as I wrote it:
+        # theta_inf = theta0 + delta_name
+        # so initialize delta_name = theta_inf_init - theta0_init when available.
+        def _init_delta(name, theta0_key):
+            inf_key = f"{name}_inf"
+            delta_key = f"delta_{name}"
+            if ivals.get(inf_key) is not None and ivals.get(theta0_key) is not None:
+                init_vals[delta_key] = float(ivals[inf_key]) - float(ivals[theta0_key])
+            elif ivals.get(delta_key) is not None:
+                init_vals[delta_key] = float(ivals[delta_key])
+    
+        # --- delta (theta_inf - theta0) init ---
+        _init_delta("alpha1", "alpha1_0")
+        _init_delta("alpha2", "alpha2_0")
+        
+        if FLAGS.vary_mb:
+            _init_delta("mb", "mb_0")
+        
+        _init_delta("mu1", "mu1_0")
+        _init_delta("sigma1", "sigma1_0")
+        _init_delta("mu2", "mu2_0")
+        _init_delta("sigma2", "sigma2_0")
+        
+        
+        # --- z transition init ---
+        for nm in ("alpha1", "alpha2", "mu1", "sigma1", "mu2", "sigma2"):
+            zkey = f"z_{nm}"
+            if ivals.get(zkey) is not None:
+                init_vals[zkey] = float(ivals[zkey])
+        
+        if FLAGS.vary_mb:
+            if ivals.get("z_mb") is not None:
+                init_vals["z_mb"] = float(ivals["z_mb"])
+        
+        
+        # --- log_dz init ---
+        for nm in ("alpha1", "alpha2", "mu1", "sigma1", "mu2", "sigma2"):
+            logkey = f"log_dz_{nm}"
+            dzkey = f"dz_{nm}"
+            if ivals.get(logkey) is not None:
+                init_vals[logkey] = float(ivals[logkey])
+            elif ivals.get(dzkey) is not None:
+                init_vals[logkey] = float(np.log(ivals[dzkey]))
+        
+        if FLAGS.vary_mb:
+            if ivals.get("log_dz_mb") is not None:
+                init_vals["log_dz_mb"] = float(ivals["log_dz_mb"])
+            elif ivals.get("dz_mb") is not None:
+                init_vals["log_dz_mb"] = float(np.log(ivals["dz_mb"]))
+    
+        # log dz sites for evo_triplet_numpyro
+        for nm in ("alpha1", "alpha2", "mb", "mu1", "sigma1", "mu2", "sigma2"):
+            logkey = f"log_dz_{nm}"
+            dzkey = f"dz_{nm}"
+            if ivals.get(logkey) is not None:
+                init_vals[logkey] = float(ivals[logkey])
+            elif ivals.get(dzkey) is not None:
+                init_vals[logkey] = float(np.log(ivals[dzkey]))
+    
+        # Lambda-mixture transition
+        if ivals.get("z_lambda") is not None:
+            init_vals["z_lambda"] = float(ivals["z_lambda"])
+    
+        if ivals.get("log_dz_lambda") is not None:
+            init_vals["log_dz_lambda"] = float(ivals["log_dz_lambda"])
+        elif ivals.get("dz_lambda") is not None:
+            init_vals["log_dz_lambda"] = float(np.log(ivals["dz_lambda"]))
 
 
     # convert everything to jnp arrays (no python lists)
@@ -1057,6 +1290,14 @@ def main():
             init_vals["x"] = jnp.asarray( FLAGS.eps_init*np.random.normal(loc=0.0, scale=1.0, size=(N, nd)) , dtype=jnp.float64)
             
 
+
+    # print("\n" + "="*80)
+    # print("INIT VALS PASSED TO NUMPYRO")
+    # print("="*80)
+    # for k in sorted(init_vals.keys()):
+    #     v = np.asarray(init_vals[k])
+    #     print(f"{k:25s} shape={v.shape} value={v}")
+    # print("="*80)
     
     # --- Initialize (lets you plug in mass matrix if you have one) ---
     # Try init_to_value first; if it fails, fallback to feasible.
@@ -1074,9 +1315,43 @@ def main():
         )
         print("✅ init_to_value; initial values used.")
     except Exception as e:
+        
         print(e)
         print("⚠️ init_to_value failed; falling back to init_to_feasible.")
         print("   error:", repr(e))
+
+        print("init_to_value failed:", repr(e))
+    
+        # Run model trace at init values to inspect sites
+        from numpyro.handlers import seed, trace, substitute
+        from numpyro.util import format_shapes
+    
+        tr = trace(
+            seed(
+                substitute(model_numpyro, data=init_vals),
+                init_key,
+            )
+        ).get_trace()
+    
+        print(format_shapes(tr))
+    
+        for name, site in tr.items():
+            if site["type"] == "sample":
+                value = site["value"]
+                fn = site["fn"]
+                lp = fn.log_prob(value)
+    
+                print("\nSITE:", name)
+                print("value:", value)
+                print("support:", fn.support)
+                print("log_prob:", lp)
+    
+                if not jnp.all(jnp.isfinite(lp)):
+                    print("❌ BAD SITE:", name)
+    
+        raise
+
+        
         init_key, rng_key = random.split(rng_key)
         res = initialize_model(
             init_key,

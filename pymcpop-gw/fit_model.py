@@ -918,7 +918,8 @@ def main():
                                 m_high_spread = FLAGS.m_high_spread,
                                 force_uniform_mhigh = FLAGS.force_uniform_mhigh,
                                 truncate_dL_prior = FLAGS.truncate_dL_prior,
-                                vary_mb = FLAGS.vary_mb
+                                vary_mb = FLAGS.vary_mb,
+                                debug=FLAGS.debug
                                 )
     print(f"[TIMER] make_model took {time.time()-t0:.1f}s")
     log_mem("after make_model")
@@ -1076,16 +1077,6 @@ def main():
                 
             print("Done.")
             
-            if FLAGS.debug:
-                #print()
-                #print('*'*40)
-                print('Debugging...')
-                #print('*'*40)
-                #print()
-        
-                model.debug()
-
-                print('Done. ')
 
             if FLAGS.check_init:
                 #print()

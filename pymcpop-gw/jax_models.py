@@ -644,18 +644,29 @@ def bounded_sigmoid_logpositive(name: str, low: float, high: float, raw_sigma: f
 
     
 def evo_triplet_numpyro(
-    name: str,
+    name,
     theta0,
-    ivals: dict,
-    priors: dict,
-    positive: bool = False,
-    eps_pos: float = 1e-6,
+    ivals,
+    priors,
+    positive=False,
+    eps_pos=1e-6,
 ):
     """
-    NumPyro equivalent of PyMC evo_triplet:
-        theta_inf = theta0 + delta_theta
+    Exact NumPyro equivalent of PyMC putils.evo_triplet.
+
+    theta_inf = theta0 + delta_theta
+
+    Priors:
+      delta_theta ~ Normal(0, priors[f"delta_{name}_sigma"] or 1)
+      if positive: delta_theta ~ TruncatedNormal(..., low=-theta0+eps_pos)
+      z_name ~ Uniform(priors["z_t"])
+      log_dz_name ~ Normal(log(mid dz), 0.5)
+      dz_name = clip(exp(log_dz_name), dz_low, dz_high)
     """
-    delta_sigma = priors.get(f"delta_{name}_sigma", 1.0)
+
+    # ----- delta_theta prior -----
+    sigma_key = f"delta_{name}_sigma"
+    delta_sigma = priors.get(sigma_key, 1.0)
 
     if positive:
         lower = -theta0 + eps_pos
@@ -674,15 +685,20 @@ def evo_triplet_numpyro(
             dist.Normal(0.0, delta_sigma),
         )
 
-    theta_inf = theta0 + delta_theta
-    numpyro.deterministic(f"{name}_inf", theta_inf)
+    theta_inf = numpyro.deterministic(
+        f"{name}_inf",
+        theta0 + delta_theta,
+    )
 
+    # ----- z_t prior -----
     z_low, z_high = priors.get("z_t", (0.05, 2.5))
+
     z_t = numpyro.sample(
         f"z_{name}",
         dist.Uniform(z_low, z_high),
     )
 
+    # ----- dz prior -----
     dz_low, dz_high = priors.get("dz", (0.05, 3.0))
     dz_mid = 0.5 * (dz_low + dz_high)
 
@@ -691,12 +707,12 @@ def evo_triplet_numpyro(
         dist.Normal(jnp.log(dz_mid), 0.5),
     )
 
-    dz = jnp.clip(jnp.exp(log_dz), dz_low, dz_high)
-    numpyro.deterministic(f"dz_{name}", dz)
+    dz = numpyro.deterministic(
+        f"dz_{name}",
+        jnp.clip(jnp.exp(log_dz), dz_low, dz_high),
+    )
 
-    return theta_inf, z_t, dz
-
-    
+    return theta_inf, z_t, dz   
 
 
 def make_model_jax(  priors,
@@ -782,7 +798,8 @@ def make_model_jax(  priors,
                  DP_m1_env = False,
                  detach_var = False,
                 remove_spin_prior = False,
-                     r = 0
+                     r = 0,
+                     vary_mb = True,
                 ):
 
 
@@ -1541,7 +1558,7 @@ def make_model_jax(  priors,
             delta_q95 = jnp.maximum(mmax_q95 - mhigh_floor, 1e-6)
         
             mu_delta = jnp.log(delta_med)
-            sigma_delta = m_high_spread * (jnp.log(delta_q95) - mu_delta) / NORM_Q95
+            sigma_delta = (jnp.log(delta_q95) - mu_delta) / NORM_Q95
         
             delta_mhigh = numpyro.sample(
                 "delta_mhigh",

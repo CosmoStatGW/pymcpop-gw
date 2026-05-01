@@ -1091,13 +1091,22 @@ def _make_pop_and_sel_core(
                 log_l_evt = log_sum_w - logN
 
                 logs2 = log_sum_w2 - 2.0 * logN
-                logq = logs2 - 2.0 * log_l_evt
+                logq = log_sum_w2 - 2.0 * log_sum_w + logN
                 
                 log_var_evt = logdiffexp_bk(
                     bk,
                     logq,
                     0.0,
                 ) - jnp.log(Nsamples_all - 1.0)
+
+
+            #     jax.debug.print(
+            #     "log_var_evt min={} max={} finite={} var_evs={}",
+            #     jnp.nanmin(log_var_evt),
+            #     jnp.nanmax(log_var_evt),
+            #     jnp.all(jnp.isfinite(log_var_evt)),
+            #     jnp.sum(jnp.exp(log_var_evt)),
+            # )
 
                 var_evs = jnp.sum(jnp.exp(log_var_evt))
                 return log_l_evt, lax.stop_gradient(var_evs)
