@@ -241,6 +241,14 @@ class NPBackend:
     logspace = staticmethod(np.logspace)
     log10 = staticmethod(np.log10)
 
+    isfinite = staticmethod(np.isfinite)
+    isnan = staticmethod(np.isnan)
+    isinf = staticmethod(np.isinf)
+    
+    @staticmethod
+    def finite_or(x, fill):
+        return np.where(np.isfinite(x), x, fill)
+
 
 
 
@@ -560,6 +568,30 @@ class ATBackend:
         at = ATBackend._at()
         return at.maximum_accumulate(x, axis=axis)
 
+    @staticmethod
+    def isfinite(x):
+        at = ATBackend._at()
+        return at.logical_and(~at.isnan(x), ~at.isinf(x))
+    
+    @staticmethod
+    def isnan(x):
+        at = ATBackend._at()
+        return at.isnan(x)
+    
+    @staticmethod
+    def isinf(x):
+        at = ATBackend._at()
+        return at.isinf(x)
+    
+    @staticmethod
+    def finite_or(x, fill):
+        at = ATBackend._at()
+        return at.where(
+            ATBackend.isfinite(x),
+            x,
+            at.as_tensor_variable(fill)
+        )
+
 
 
 class JAXBackend:
@@ -690,3 +722,12 @@ class JAXBackend:
     def maximum_accumulate(x, axis=0):
         # jnp.maximum.accumulate exists and is JIT-friendly
         return jnp.maximum.accumulate(x, axis=axis)
+
+
+    isfinite = staticmethod(jnp.isfinite)
+    isnan = staticmethod(jnp.isnan)
+    isinf = staticmethod(jnp.isinf)
+    
+    @staticmethod
+    def finite_or(x, fill):
+        return jnp.where(jnp.isfinite(x), x, fill)

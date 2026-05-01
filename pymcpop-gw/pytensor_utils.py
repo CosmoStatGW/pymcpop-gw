@@ -81,10 +81,31 @@ def _logsumexp_np(x: np.ndarray) -> float:
     m = np.max(x)
     return float(m + np.log(np.sum(np.exp(x - m))))
 
-def logsumexp2(bk, a, b):
+def logsumexp2_unsafe(bk, a, b):
     """Stable log(exp(a)+exp(b)) for two terms."""
     m = bk.maximum(a, b)
     return m + bk.log(bk.exp(a - m) + bk.exp(b - m))
+
+
+def logsumexp2(bk, a, b):
+    both_neg_inf = bk.logical_and(
+        bk.eq(a, -jnp.inf),
+        bk.eq(b, -jnp.inf)
+    )
+
+    m = bk.maximum(a, b)
+
+    # safe shifts: replace -inf with large negative number BEFORE subtraction
+    a_safe = bk.where(bk.eq(a, -jnp.inf), -1e30, a)
+    b_safe = bk.where(bk.eq(b, -jnp.inf), -1e30, b)
+
+    m_safe = bk.maximum(a_safe, b_safe)
+
+    out = m_safe + bk.log(
+        bk.exp(a_safe - m_safe) + bk.exp(b_safe - m_safe)
+    )
+
+    return bk.where(both_neg_inf, -jnp.inf, out)
 
 
 def logaddexp(bk, a, b):

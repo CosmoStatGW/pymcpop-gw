@@ -5,6 +5,9 @@ import json
 
 import numpy as np
 import jax
+
+jax.config.update("jax_debug_nans", True)
+
 import jax.numpy as jnp
 from jax import lax
 
@@ -20,6 +23,20 @@ from population import _make_pop_and_sel_core
 from constants import PlanckFiducials, PLANCK15_H0, PLANCK15_OM, z_nodes_jax
 
 
+def make_z_grid_jax(zres=200):
+    nmid = max(2, int(zres / 10))
+    ntails = max(2, int(zres / 20))
+
+    z = np.sort(np.unique(np.concatenate([
+        np.logspace(-100, -15, ntails),
+        np.logspace(-30,  -4, nmid),
+        np.logspace( -4,   1, zres),
+        np.logspace(  1,   2, nmid),
+        np.logspace(  2,   5, ntails),
+    ])))
+
+    return jnp.asarray(z, dtype=jnp.float64)
+    
 
 def _stack_spins_inj(spinsInj, ninj: int, spin_model: str) -> np.ndarray:
     """
@@ -651,33 +668,29 @@ def evo_triplet_numpyro(
     positive=False,
     eps_pos=1e-6,
 ):
-    """
-    Exact NumPyro equivalent of PyMC putils.evo_triplet.
-
-    theta_inf = theta0 + delta_theta
-
-    Priors:
-      delta_theta ~ Normal(0, priors[f"delta_{name}_sigma"] or 1)
-      if positive: delta_theta ~ TruncatedNormal(..., low=-theta0+eps_pos)
-      z_name ~ Uniform(priors["z_t"])
-      log_dz_name ~ Normal(log(mid dz), 0.5)
-      dz_name = clip(exp(log_dz_name), dz_low, dz_high)
-    """
-
-    # ----- delta_theta prior -----
     sigma_key = f"delta_{name}_sigma"
     delta_sigma = priors.get(sigma_key, 1.0)
 
     if positive:
         lower = -theta0 + eps_pos
+    
         delta_theta = numpyro.sample(
             f"delta_{name}",
-            dist.TruncatedNormal(
-                loc=0.0,
-                scale=delta_sigma,
-                low=lower,
-                high=jnp.inf,
-            ),
+            dist.Normal(0.0, delta_sigma),
+        )
+    
+        # TruncatedNormal normalization for support delta > lower:
+        # Z = P[N(0, sigma) > lower] = Phi(-lower / sigma)
+        logZ = jax.scipy.special.log_ndtr(-lower / delta_sigma)
+    
+        numpyro.factor(
+            f"delta_{name}_trunc_norm",
+            -logZ,
+        )
+    
+        numpyro.factor(
+            f"delta_{name}_support",
+            jnp.where(delta_theta > lower, 0.0, -1e30),
         )
     else:
         delta_theta = numpyro.sample(
@@ -685,20 +698,22 @@ def evo_triplet_numpyro(
             dist.Normal(0.0, delta_sigma),
         )
 
-    theta_inf = numpyro.deterministic(
-        f"{name}_inf",
-        theta0 + delta_theta,
-    )
+    theta_inf_unclipped = theta0 + delta_theta
 
-    # ----- z_t prior -----
+    if positive:
+        theta_inf = numpyro.deterministic(
+            f"{name}_inf",
+            jnp.maximum(theta_inf_unclipped, eps_pos),
+        )
+    else:
+        theta_inf = numpyro.deterministic(
+            f"{name}_inf",
+            theta_inf_unclipped,
+        )
+
     z_low, z_high = priors.get("z_t", (0.05, 2.5))
+    z_t = numpyro.sample(f"z_{name}", dist.Uniform(z_low, z_high))
 
-    z_t = numpyro.sample(
-        f"z_{name}",
-        dist.Uniform(z_low, z_high),
-    )
-
-    # ----- dz prior -----
     dz_low, dz_high = priors.get("dz", (0.05, 3.0))
     dz_mid = 0.5 * (dz_low + dz_high)
 
@@ -712,8 +727,10 @@ def evo_triplet_numpyro(
         jnp.clip(jnp.exp(log_dz), dz_low, dz_high),
     )
 
-    return theta_inf, z_t, dz   
+    return theta_inf, z_t, dz
 
+
+    
 
 def make_model_jax(  priors,
                  GWData,
@@ -756,8 +773,8 @@ def make_model_jax(  priors,
                  integrate_dc = 'trapz',
                  z_pivot=0.5,
                pade=False,
-               zres=150,
-                z_grid_mode='cheb',
+               zres=200,
+                z_grid_mode='cst',
                 zmin_a=1e-05, zmin_b=1e-03, zmid_b=3.0, zmax_c=10.0, hi_boost=0.20,
                  find_z_bounds = False,
                params_fix=None,
@@ -1006,7 +1023,20 @@ def make_model_jax(  priors,
         raise NotImplementedError()
           
 
+    if z_grid_mode=='cst':
 
+        print("Using pre-defined z grid with 1200 points")
+        z_nodes = z_nodes_jax
+
+    elif z_grid_mode=='man':
+
+        print("Using custom z grid with %s points"%zres)
+        z_nodes = make_z_grid_jax( zres )
+
+    else:
+        raise ValueError()
+
+    print("Min, max redshift grid: %s, %s"%(z_nodes.min(), z_nodes.max()))
     #####################################################################################################
 
 
@@ -1152,7 +1182,7 @@ def make_model_jax(  priors,
             stop_grad_var_u=True,
             skip_sel=False,
             verbose=False,
-            z_nodes=z_nodes_jax,
+            z_nodes=z_nodes,
         )
     else:
         data = pack_data_samples_marginal(
@@ -1183,7 +1213,7 @@ def make_model_jax(  priors,
             interp_mass=interp_mass,
             stop_grad_var_u=True,
             verbose=False,
-            z_nodes=z_nodes_jax,
+            z_nodes=z_nodes,
         )
 
     # `loglik` is now a jitted callable:
@@ -1794,6 +1824,7 @@ def make_model_jax(  priors,
         ## Uncomment for debugging
         # jax.debug.print("ll = {}", ll)
         # jax.debug.print("ll finite? {}", jnp.all(jnp.isfinite(jnp.asarray(ll))))
+
 
         #ll_safe = jnp.where(jnp.isfinite(ll), ll, -1e30)
         numpyro.factor("likelihood", ll)

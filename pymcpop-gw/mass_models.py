@@ -86,12 +86,15 @@ def _log1mexp(bk, a):
         bk.log(-bk.expm1(-a)),
     )
 
-
 def _logdiffexp_posordered(bk, x, y):
-    """
-    Stable log(exp(x) - exp(y)) assuming x >= y.
-    """
-    return x + _log1mexp(bk, x - y)
+    # robustly compute log(abs(exp(x) - exp(y)))
+    hi = bk.maximum(x, y)
+    lo = bk.minimum(x, y)
+
+    d = hi - lo
+    d = bk.maximum(d, 1e-12)
+
+    return hi + bk.log1p(-bk.exp(-d))
 
 
 def truncGausslowerupper_at_lpdf(
@@ -648,6 +651,21 @@ def logpdfm1_DPLDP(
     term1 = log_lambda1 + log_pnorm1
     term2 = log_lambda2 + log_pnorm2
 
+    # def check(name, x):
+    #     jax.debug.print(
+    #         "{name}: nan={nan}, posinf={posinf}, neginf={neginf}, min={mn}, max={mx}",
+    #         name=name,
+    #         nan=jnp.any(jnp.isnan(x)),
+    #         posinf=jnp.any(x == jnp.inf),
+    #         neginf=jnp.any(x == -jnp.inf),
+    #         mn=jnp.nanmin(x),
+    #         mx=jnp.nanmax(x),
+    #     )
+    
+    # check("term0", term0)
+    # check("term1", term1)
+    # check("term2", term2)
+
     log_mix = logsumexp2(bk, logsumexp2(bk, term0, term1), term2)
     #log_mix = bk.logaddexp( bk.logaddexp( term0, term1), term2 )
 
@@ -909,7 +927,7 @@ def logpdf_DPLDP(
     if force_m2_less_than_m1:
         ok = bk.all(bk.asarray([(m2 <= m1), (m2 > 0.0), (m1 > 0.0)]), axis=0) if hasattr(bk, "all") else ((m2 <= m1) & (m2 > 0.0) & (m1 > 0.0))
         # (above keeps numpy happy; for ATBackend, & works fine too)
-        return bk.where(ok, lpdf, -jnp.inf)
+        return bk.where(ok, lpdf, -1.0e30)
     else:
         return lpdf
 
@@ -1784,10 +1802,13 @@ def theta_of_z(bk, z, theta_0, theta_inf, z_t, delta_z):
     where s is a smooth sigmoid between 0 and 1.
     Works with scalar or array z (broadcasts).
     """
+    delta_z = bk.maximum(delta_z, 1e-6)
     x = (z - z_t) / delta_z
     # tanh-based sigmoid: smoothly goes from 0 to 1 around z_t
     s = 0.5 * (1.0 + bk.tanh(x))
     return theta_0 + (theta_inf - theta_0) * s
+
+
 
 
 
@@ -2073,7 +2094,11 @@ def logNorm_DPLDP_z( bk,
     # reshape back to (K, N1) and integrate over m1
     logp = lp_flat.reshape((K, N1))
 
-    return bk.log(attrapzvec(bk, bk.exp(logp), m1_grid[None, :], axis=1))
+    #return bk.log(attrapzvec(bk, bk.exp(logp), m1_grid[None, :], axis=1))
+    
+    norm = attrapzvec(bk, bk.exp(logp), m1_grid[None, :], axis=1)
+    norm = bk.clip(norm, 1e-300, jnp.inf)
+    return bk.log(norm)
 
     #return bk.log( bk.trapezoid( bk.exp(logp), m1_grid[None, :], axis=1))
 
@@ -2352,6 +2377,27 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     m1_grid, m2_grid, z_bank = interp_grids
     lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals_mass
 
+    # jax.debug.print(
+    #     "\nACTUAL INTERP GRIDS:"
+    #     "\n  Nz={nz}, z=[{z0}, {z1}]"
+    #     "\n  Nm1={nm1}, m1=[{m10}, {m11}]"
+    #     "\n  Nm2={nm2}, m2=[{m20}, {m21}]\n",
+    #     nz=z_bank.shape[0],
+    #     z0=z_bank[0],
+    #     z1=z_bank[-1],
+    #     nm1=m1_grid.shape[0],
+    #     m10=m1_grid[0],
+    #     m11=m1_grid[-1],
+    #     nm2=m2_grid.shape[0],
+    #     m20=m2_grid[0],
+    #     m21=m2_grid[-1],
+    # )
+
+    lp_m1_bank = bk.where(bk.isfinite(lp_m1_bank), lp_m1_bank, -1e30)
+    lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
+    lC_of_m1   = bk.where(bk.isfinite(lC_of_m1),   lC_of_m1,   1e30)
+    ln_bank    = bk.where(bk.isfinite(ln_bank),    ln_bank,    1e30)
+
     # ------------------------------------------------------------
     # 0) HARD SUPPORT MASK (this is the production fix)
     # ------------------------------------------------------------
@@ -2423,4 +2469,5 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     # ------------------------------------------------------------
     lpdf = lpdfm1 + lpdfm2 - lC - ln
 
-    return bk.where(ok, lpdf, -jnp.inf)
+    #return bk.where(ok, lpdf, -1.0e30)
+    return bk.where(ok & bk.isfinite(lpdf), lpdf, -1e30)

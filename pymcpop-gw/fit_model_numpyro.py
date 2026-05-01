@@ -250,8 +250,7 @@ def main():
     parser.add_argument("--find_heuristic_step_size", default=0, type=int, required=False)
     parser.add_argument("--regularize_mass_matrix", default=1e-04, type=float, required=False)
 
-    
-    
+    parser.add_argument("--check_zres", nargs="+", type=int, default=[], required=False)
     
     
     parser.add_argument("--fix_H0", default=1, type=int, required=False)
@@ -265,7 +264,7 @@ def main():
     parser.add_argument("--param", default='vanilla', type=str, required=False)
     parser.add_argument("--pade", default=0, type=int, required=False)
     parser.add_argument("--zres", default=1000, type=int, required=False)
-    parser.add_argument("--z_grid_mode", default='piecewise_linear', type=str, required=False)
+    parser.add_argument("--z_grid_mode", default='man', type=str, required=False)
     
     parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
     parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
@@ -750,56 +749,189 @@ def main():
         ivals={}
     print()
 
+    if FLAGS.check_zres ==[]:
 
-    model_numpyro, lik_data, core, loglik = make_model_jax(
-        priors=priors,
-        GWData=GWData,
-        InjData=InjData,
-        ivals=ivals,
-        pop_only = bool(FLAGS.pop_only),
-        eps_init=FLAGS.eps_init,
-        sampling_GW=FLAGS.sampling_gw,
-        rate_model=FLAGS.rate_model,
-        mass_model=FLAGS.mass_model,
-        smoothing=FLAGS.smoothing,
-        simplex_repair=bool(FLAGS.simplex_repair),
-        interp_mass=FLAGS.interp_mass,
-        interp_z=FLAGS.interp_z,
-        has_m2_break=bool(FLAGS.has_m2_break),
-        norm_gauss=FLAGS.norm_gauss,
-        spin_model=FLAGS.spin_model,
-        spin_inj=FLAGS.spin_inj,
-        marginal_R0=bool(FLAGS.marginal_R0),
-        dLprior=FLAGS.dLprior,
-        chunk_inj=FLAGS.chunk_inj,
-        chunk_reduce= int(FLAGS.chunk_reduce),
-        use_float32=bool(FLAGS.use_float32),
-        use_float32_bias=bool(FLAGS.use_float32_bias),
-        sel_method=FLAGS.sel,
-        sel_smoothing = FLAGS.sel_smoothing,
-        N_DP_comp_max=FLAGS.N_DP_comp_max,
-        DP_m1_env=bool(FLAGS.DP_m1_env),
-        integrate_dc=FLAGS.integrate_dc,
-        param=FLAGS.param,
-        pade=bool(FLAGS.pade),
-        zres=FLAGS.zres,
-        z_grid_mode=FLAGS.z_grid_mode,
-        zmin_a=FLAGS.zmin_a, zmin_b=FLAGS.zmin_b, zmid_b=FLAGS.zmid_b, zmax_c=FLAGS.zmax_c, hi_boost=FLAGS.hi_boost,
-        find_z_bounds=bool(FLAGS.find_z_bounds),
-        sample_from_pop=bool(FLAGS.sample_from_pop),
-        penorm_lims=FLAGS.penorm_lims,
-        use_sel_spin=bool(FLAGS.use_sel_spin),
-        allTobs=(np.asarray(FLAGS.allTobs, dtype=np.float64) if FLAGS.allTobs is not None else None),
-        params_fix=params_fix,
-        fix_H0=bool(FLAGS.fix_H0),
-        fix_Om=bool(FLAGS.fix_Om),
-        fix_w0=bool(FLAGS.fix_w0),
-        fix_Xi0n=bool(FLAGS.fix_Xi0n),
-        reparam_mass = bool(FLAGS.reparam_mass),
-        remove_spin_prior =  bool(FLAGS.remove_spin_prior),
-        r = FLAGS.r,
-        vary_mb = FLAGS.vary_mb
-    )
+        model_numpyro, lik_data, core, loglik = make_model_jax(
+            priors=priors,
+            GWData=GWData,
+            InjData=InjData,
+            ivals=ivals,
+            pop_only = bool(FLAGS.pop_only),
+            eps_init=FLAGS.eps_init,
+            sampling_GW=FLAGS.sampling_gw,
+            rate_model=FLAGS.rate_model,
+            mass_model=FLAGS.mass_model,
+            smoothing=FLAGS.smoothing,
+            simplex_repair=bool(FLAGS.simplex_repair),
+            interp_mass=FLAGS.interp_mass,
+            interp_z=FLAGS.interp_z,
+            has_m2_break=bool(FLAGS.has_m2_break),
+            norm_gauss=FLAGS.norm_gauss,
+            spin_model=FLAGS.spin_model,
+            spin_inj=FLAGS.spin_inj,
+            marginal_R0=bool(FLAGS.marginal_R0),
+            dLprior=FLAGS.dLprior,
+            chunk_inj=FLAGS.chunk_inj,
+            chunk_reduce= int(FLAGS.chunk_reduce),
+            use_float32=bool(FLAGS.use_float32),
+            use_float32_bias=bool(FLAGS.use_float32_bias),
+            sel_method=FLAGS.sel,
+            sel_smoothing = FLAGS.sel_smoothing,
+            N_DP_comp_max=FLAGS.N_DP_comp_max,
+            DP_m1_env=bool(FLAGS.DP_m1_env),
+            integrate_dc=FLAGS.integrate_dc,
+            param=FLAGS.param,
+            pade=bool(FLAGS.pade),
+            zres=FLAGS.zres,
+            z_grid_mode=FLAGS.z_grid_mode,
+            zmin_a=FLAGS.zmin_a, zmin_b=FLAGS.zmin_b, zmid_b=FLAGS.zmid_b, zmax_c=FLAGS.zmax_c, hi_boost=FLAGS.hi_boost,
+            find_z_bounds=bool(FLAGS.find_z_bounds),
+            sample_from_pop=bool(FLAGS.sample_from_pop),
+            penorm_lims=FLAGS.penorm_lims,
+            use_sel_spin=bool(FLAGS.use_sel_spin),
+            allTobs=(np.asarray(FLAGS.allTobs, dtype=np.float64) if FLAGS.allTobs is not None else None),
+            params_fix=params_fix,
+            fix_H0=bool(FLAGS.fix_H0),
+            fix_Om=bool(FLAGS.fix_Om),
+            fix_w0=bool(FLAGS.fix_w0),
+            fix_Xi0n=bool(FLAGS.fix_Xi0n),
+            reparam_mass = bool(FLAGS.reparam_mass),
+            remove_spin_prior =  bool(FLAGS.remove_spin_prior),
+            r = FLAGS.r,
+            vary_mb = FLAGS.vary_mb
+        )
+
+
+    else:
+        
+        def build_model_for_zres(zres_value):
+            return make_model_jax(
+            priors=priors,
+            GWData=GWData,
+            InjData=InjData,
+            ivals=ivals,
+            pop_only=bool(FLAGS.pop_only),
+            eps_init=FLAGS.eps_init,
+            sampling_GW=FLAGS.sampling_gw,
+            rate_model=FLAGS.rate_model,
+            mass_model=FLAGS.mass_model,
+            smoothing=FLAGS.smoothing,
+            simplex_repair=bool(FLAGS.simplex_repair),
+            interp_mass=FLAGS.interp_mass,
+            interp_z=FLAGS.interp_z,
+            has_m2_break=bool(FLAGS.has_m2_break),
+            norm_gauss=FLAGS.norm_gauss,
+            spin_model=FLAGS.spin_model,
+            spin_inj=FLAGS.spin_inj,
+            marginal_R0=bool(FLAGS.marginal_R0),
+            dLprior=FLAGS.dLprior,
+            chunk_inj=FLAGS.chunk_inj,
+            chunk_reduce=int(FLAGS.chunk_reduce),
+            use_float32=bool(FLAGS.use_float32),
+            use_float32_bias=bool(FLAGS.use_float32_bias),
+            sel_method=FLAGS.sel,
+            sel_smoothing=FLAGS.sel_smoothing,
+            N_DP_comp_max=FLAGS.N_DP_comp_max,
+            DP_m1_env=bool(FLAGS.DP_m1_env),
+            integrate_dc=FLAGS.integrate_dc,
+            param=FLAGS.param,
+            pade=bool(FLAGS.pade),
+            zres=int(zres_value),
+            z_grid_mode=FLAGS.z_grid_mode,
+            zmin_a=FLAGS.zmin_a,
+            zmin_b=FLAGS.zmin_b,
+            zmid_b=FLAGS.zmid_b,
+            zmax_c=FLAGS.zmax_c,
+            hi_boost=FLAGS.hi_boost,
+            find_z_bounds=bool(FLAGS.find_z_bounds),
+            sample_from_pop=bool(FLAGS.sample_from_pop),
+            penorm_lims=FLAGS.penorm_lims,
+            use_sel_spin=bool(FLAGS.use_sel_spin),
+            allTobs=(np.asarray(FLAGS.allTobs, dtype=np.float64) if FLAGS.allTobs is not None else None),
+            params_fix=params_fix,
+            fix_H0=bool(FLAGS.fix_H0),
+            fix_Om=bool(FLAGS.fix_Om),
+            fix_w0=bool(FLAGS.fix_w0),
+            fix_Xi0n=bool(FLAGS.fix_Xi0n),
+            reparam_mass=bool(FLAGS.reparam_mass),
+            remove_spin_prior=bool(FLAGS.remove_spin_prior),
+            r=FLAGS.r,
+            vary_mb=FLAGS.vary_mb,
+        )
+    
+    
+        model_numpyro, lik_data, core, loglik = build_model_for_zres(FLAGS.zres)
+
+        print("\n" + "=" * 80)
+        print("CHECKING REDSHIFT GRID RESOLUTION")
+        print("=" * 80)
+    
+        Lambda_test = jnp.asarray([
+            67.9, 0.3065, -1.0, 1.0, 0.0,
+            3.2, 3.0, 2.0,
+            0.024333031991381315,
+            0.31873272890864474,
+            0.2123453198667594,
+            3.0206244922342362,
+    
+            1.7, 4.5, 35.0,
+            8.5, 0.4, 30.0, 3.5,
+            3.189, 150.0, 4.3,
+            0.36, 0.59, 0.05,
+            1.2, 3.054, 4.9,
+            0.1, 45.0, 70.0, 1e-4, 1e-4,
+    
+            1.7, 1.1, 0.5,
+            3.5, 1.1, 0.5,
+            35.0, 1.1, 0.5,
+            15.0, 1.1, 0.5,
+            2.5, 1.1, 0.5,
+            60.0, 1.1, 0.5,
+            15.0, 1.1, 0.5,
+            0.20, 0.20, 0.60,
+            1.1, 0.5,
+        ], dtype=jnp.float64)
+    
+        results = []
+    
+        for zr in FLAGS.check_zres:
+            print("\n" + "-" * 80)
+            print("zres =", zr)
+            print("-" * 80)
+    
+            _, lik_data_z, core_z, loglik_z = build_model_for_zres(zr)
+    
+            if FLAGS.pop_only:
+                ll, var = loglik_z(Lambda_test, lR0=0.0)
+            else:
+                x0 = jnp.zeros(
+                    (int(lik_data_z.Nobs), int(lik_data_z.mus_s.shape[1])),
+                    dtype=jnp.float64,
+                )
+                ll, var = loglik_z(Lambda_test, x0, lR0=0.0)
+    
+            ll_f = float(ll)
+            var_f = float(var)
+            print("ll =", ll_f)
+            print("var =", var_f)
+    
+            results.append((int(zr), ll_f, var_f))
+    
+        ref_z, ref_ll, ref_var = results[-1]
+    
+        print("\n" + "=" * 80)
+        print("ZRES SUMMARY")
+        print("reference zres:", ref_z)
+        print("=" * 80)
+    
+        for zr, ll, var in results:
+            print(
+                f"zres={zr:5d}  ll={ll: .8f}  "
+                f"dll_vs_ref={ll - ref_ll: .8e}  var={var: .8f}"
+            )
+    
+        print("=" * 80)
+        return
 
     ##########################################################################
     ##########################################################################
@@ -1206,14 +1338,25 @@ def main():
         # For evo_triplet_numpyro as I wrote it:
         # theta_inf = theta0 + delta_name
         # so initialize delta_name = theta_inf_init - theta0_init when available.
-        def _init_delta(name, theta0_key):
+        def _init_delta(name, theta0_key, positive=False, eps_pos=1e-6):
             inf_key = f"{name}_inf"
             delta_key = f"delta_{name}"
+        
             if ivals.get(inf_key) is not None and ivals.get(theta0_key) is not None:
-                init_vals[delta_key] = float(ivals[inf_key]) - float(ivals[theta0_key])
+                delta = float(ivals[inf_key]) - float(ivals[theta0_key])
             elif ivals.get(delta_key) is not None:
-                init_vals[delta_key] = float(ivals[delta_key])
-    
+                delta = float(ivals[delta_key])
+            else:
+                return
+        
+            if positive:
+                theta0 = float(ivals[theta0_key])
+                lower = -theta0 + eps_pos
+                delta = max(delta, lower + 1e-3)
+        
+            init_vals[delta_key] = delta   
+
+            
         # --- delta (theta_inf - theta0) init ---
         _init_delta("alpha1", "alpha1_0")
         _init_delta("alpha2", "alpha2_0")
@@ -1281,6 +1424,9 @@ def main():
     k: jnp.asarray(v)    for (k, v), kk in zip(init_vals.items(), keys)
         }
 
+    init_vals["delta_mhigh"] = 80.0   # not 150
+    init_vals["lambda_inf_vec"] = jnp.asarray([0.2, 0.2, 0.6], dtype=jnp.float64)
+
     if not FLAGS.pop_only:
         # ensure x init exists and is small-ish (with eps_init )
         N  = int(lik_data.Nobs)
@@ -1311,9 +1457,21 @@ def main():
             init_key,
             model_numpyro,
             init_strategy=init_strategy,
-            dynamic_args=False
+            dynamic_args=False,
+            #validate_grad=False,   # key
         )
+        # z = res.param_info.z
+        # pe = res.potential_fn(z)
+        # g = jax.grad(res.potential_fn)(z)
+
+        # print("PE:", pe, "finite:", jnp.isfinite(pe))
+
+        # for k, v in g.items():
+        #     print(k, "grad finite:", bool(jnp.all(jnp.isfinite(v))), "grad:", v)
+
+   
         print("✅ init_to_value; initial values used.")
+        
     except Exception as e:
         
         print(e)
@@ -1719,7 +1877,10 @@ def main():
         chain_method = "sequential"
     else:
         raise ValueError("chain_method must be parallel, vectorized, or sequential")
-    
+
+
+
+
     mcmc = MCMC(
         nuts,
         num_warmup=num_warmup,
@@ -1824,7 +1985,7 @@ def main():
         import corner
         print("Plotting corner...")
         _ = corner.corner(
-            idata.T,
+            idata,
             var_names = vplot,
             labels = vplot,  
             color='darkred',
