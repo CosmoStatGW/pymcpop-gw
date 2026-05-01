@@ -140,6 +140,9 @@ def main():
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
     parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
     parser.add_argument("--backend", default='ztrace', type=str, required=False)
+    parser.add_argument("--seed", default=0, type=int, required=False)
+
+    
     parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
     
 
@@ -1094,7 +1097,7 @@ def main():
     ##########################################################################
     
     init_vals = {k: v for k, v in ivals.items()}
-    rng_key = random.PRNGKey(0)
+    rng_key = random.PRNGKey(int(FLAGS.seed))
 
     if FLAGS.mass_model=='DPLDP' and FLAGS.reparam_mass:
 
@@ -1947,13 +1950,50 @@ def main():
     print("\nSaving trace...")
     try:
         idata = az.from_numpyro(mcmc)
-        tout = os.path.join(FLAGS.fout, "trace.nc")
-        az.to_netcdf(idata, tout)
-    
-        # also save raw samples in npz
-        np.savez(os.path.join(FLAGS.fout, "trace.npz"), **{k: np.asarray(v) for k, v in samples.items()})
-
-        print("✅ Trace saved in %s"%tout)
+        
+        # find next available trace_i.nc
+        existing = []
+        for fn in os.listdir(FLAGS.fout):
+            if fn.startswith("trace_") and fn.endswith(".nc"):
+                try:
+                    i = int(fn[len("trace_"):-len(".nc")])
+                    existing.append(i)
+                except ValueError:
+                    pass
+        
+        chain_id = 0 if len(existing) == 0 else max(existing) + 1
+        
+        tout_i = os.path.join(FLAGS.fout, f"trace_{chain_id}.nc")
+        az.to_netcdf(idata, tout_i)
+        
+        np.savez(
+            os.path.join(FLAGS.fout, f"trace_{chain_id}.npz"),
+            **{k: np.asarray(v) for k, v in samples.items()}
+        )
+        
+        print(f"✅ Single-chain trace saved in {tout_i}")
+        
+        # concatenate all trace_i.nc into trace.nc
+        trace_files = []
+        for fn in os.listdir(FLAGS.fout):
+            if fn.startswith("trace_") and fn.endswith(".nc"):
+                try:
+                    i = int(fn[len("trace_"):-len(".nc")])
+                    trace_files.append((i, os.path.join(FLAGS.fout, fn)))
+                except ValueError:
+                    pass
+        
+        trace_files = [p for _, p in sorted(trace_files)]
+        
+        if len(trace_files) > 0:
+            idatas = [az.from_netcdf(p) for p in trace_files]
+            idata = az.concat(idatas, dim="chain")
+        
+            tout = os.path.join(FLAGS.fout, "trace.nc")
+            az.to_netcdf(idata, tout)
+        
+            print(f"✅ Concatenated trace saved in {tout}")
+            print(f"✅ Number of chains concatenated: {len(trace_files)}")
     except Exception as e:
         print(e)
         print("⚠️ Saving failed !")
