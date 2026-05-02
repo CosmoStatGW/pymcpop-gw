@@ -12,7 +12,7 @@ from jax import lax
 import cosmology as cosmo
 from backends import JAXBackend
 
-from pytensor_utils import safe_logsumexp_jax, logdiffexp as logdiffexp_bk
+from numerical_utils import safe_logsumexp_jax, logdiffexp as logdiffexp_bk
 
 bk = JAXBackend()
 

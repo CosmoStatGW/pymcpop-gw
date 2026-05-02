@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pytensor_utils import attrapzvec, atinterp
+from numerical_utils import attrapzvec, atinterp
 from constants import _PI, c_light
-from pytensor_tools import zGridGlobals
 
 from constants import _x01_np as x01
 from constants import _w01_np as w01

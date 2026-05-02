@@ -4,7 +4,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from pytensor_utils import atinterp, attrapzvec
+from numerical_utils import atinterp, attrapzvec
 
 class NPBackend:
     floatX = np.float64

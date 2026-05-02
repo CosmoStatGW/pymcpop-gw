@@ -3,31 +3,8 @@ from __future__ import annotations
 from typing import Tuple
 import numpy as np
 import jax.numpy as jnp
-import pytensor.tensor as at
-from pytensor.graph.op import Op, Apply
 from constants import _PI
 import jax
-
-
-
-def pack1d(L):
-    """Flatten each entry (scalar -> length-1) and concatenate into one 1D tensor."""
-    flats = []
-    for v in L:
-        v = at.as_tensor_variable(v)
-        v = v[None] if v.ndim == 0 else v.ravel()
-        flats.append(v)
-    return at.concatenate(flats, axis=0)
-
-
-def pack1d_with_layout(L):
-    flats, lens = [], []
-    for v in L:
-        v = at.as_tensor_variable(v)
-        v = v[None] if v.ndim == 0 else v.ravel()
-        flats.append(v)
-        lens.append(v.shape[0])
-    return at.concatenate(flats, axis=0), at.stack(lens).astype("int64")
 
 
 # ---------------------------------------------------------------------
@@ -43,14 +20,17 @@ def Mcq_from_m1m2(m1, m2):
     return Mc, q
 
 
-def logit(bk, p):
-    return bk.log(p) - bk.log(1. - p)
 
-    
 # ---------------------------------------------------------------------
 # Utilities
 # 
 # ---------------------------------------------------------------------
+
+
+def logit(bk, p):
+    return bk.log(p) - bk.log(1. - p)
+
+
 
 def safe_logsumexp_jax(a, axis=0):
     finite = jnp.isfinite(a)
@@ -157,240 +137,7 @@ def logdiffexp(bk, a, b, eps=1e-16):
     return bk.where(b < a, out, -np.inf)
 
 
-# ---------------------------------------------------------------------
-# Interpolation
-# 
-# ---------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Uniform grid interpolation 
-
-
-def atinterp_uniform(bk, x, *args, eps=1e-12, side="left"):
-    # New style: (xp, fp)
-    if len(args) == 2:
-        xp, fp_const = args
-        n = xp.shape[0]
-        x0 = xp[0]
-        dx = xp[1] - xp[0]
-    # Legacy style: (x0, x1, nU, fp)
-    elif len(args) == 4:
-        x0, x1, nU, fp_const = args
-        n = nU
-        dx = (x1 - x0) / bk.maximum(nU - 1, 1)
-    else:
-        raise TypeError("atinterp_uniform expects (x, xp, fp) or (x, x0, x1, nU, fp)")
-
-    dx = bk.maximum(dx, eps)
-    t = (x - x0) / dx
-    t = bk.clip(t, 0.0, (n - 1) * 1.0)
-
-    if side == "right":
-        j = bk.ceil(t) - 1.0
-    else:
-        j = bk.floor(t)
-
-    if hasattr(bk, "asarray"):
-        j = bk.asarray(j, dtype="int32")
-    else:
-        j = j.astype("int32")
-    j = bk.clip(j, 0, n - 2)
-
-    xl = x0 + j * dx
-    yl = fp_const[j]
-    yh = fp_const[j + 1]
-    r = (x - xl) / dx
-    r = bk.clip(r, 0.0, 1.0)
-    return (1.0 - r) * yl + r * yh
-
-
-# ---------------------------------------------------------------------
-# interpolation
-
-
-def atinterp_clip(bk, x, xp, fp_const, eps=1e-12, side="left"):
-    n = xp.shape[0]
-    idx = bk.searchsorted(xp, x, side=side)
-    idx = bk.clip(idx, 1, n - 1)
-    #idx = bk.stop_grad(idx) 
-
-    xl = xp[idx - 1]; xh = xp[idx]
-    yl = fp_const[idx - 1]; yh = fp_const[idx]
-
-    denom = bk.maximum(xh - xl, eps)
-    r = (x - xl) / denom
-    return (1.0 - r) * yl + r * yh
-
-
-def atinterp(bk, x, xs, ys):
-
-  idxs = bk.searchsorted(xs, x, side='left')
-  idxs = bk.clip(idxs, 1, xs.shape[0] - 1) # out of index case
-
-  xl = xs[idxs-1]
-  yl = ys[idxs-1]
-  xh = xs[idxs]
-  yh = ys[idxs]
-
-  r = (x-xl)/(xh-xl)
-
-  return r*yh + (1.0-r)*yl
-
-
-def atinterp_rowwise(bk, xq, xgrid, ygrid, x_min=None, x_max=None, edge_width=0.05, truncate=False):
-    xq = at.as_tensor_variable(xq)
-    xgrid = at.as_tensor_variable(xgrid)
-    ygrid = at.as_tensor_variable(ygrid)
-
-    if x_min is None:
-        x_min = xgrid[:, 0]
-    else:
-        x_min = at.as_tensor_variable(x_min)
-
-    if x_max is None:
-        x_max = xgrid[:, -1]
-    else:
-        x_max = at.as_tensor_variable(x_max)
-
-    rows = at.arange(xgrid.shape[0])
-
-    k = at.sum(at.le(xgrid, xq[:, None]), axis=1) - 1
-    k = at.clip(k, 0, xgrid.shape[1] - 2)
-
-    x0 = xgrid[rows, k]
-    x1 = xgrid[rows, k + 1]
-    y0 = ygrid[rows, k]
-    y1 = ygrid[rows, k + 1]
-
-    t = (xq - x0) / (x1 - x0)
-    vals = y0 + t * (y1 - y0)
-    
-
-    if truncate:
-        width = edge_width * (x_max - x_min)
-        width = bk.maximum(width, 1e-6)
-        print("Truncation width:")
-        print(width.eval())
-        log_gate = log_sigmoid(bk, xq, x_min, width) + log_sigmoid(bk, x_max, xq, width)
-        return vals + log_gate
-    else:
-        return vals
-
-
-def atinterp_rowwise_v0(bk, x, xs, ys):
-    # x:  (N,)
-    # xs: (M,)
-    # ys: (N, M)
-
-    idxs = bk.searchsorted(xs, x, side="left")
-    idxs = bk.clip(idxs, 1, xs.shape[0] - 1)
-
-    xl = xs[idxs - 1]           # (N,)
-    xh = xs[idxs]               # (N,)
-
-    row_idx = bk.arange(x.shape[0])
-
-    yl = ys[row_idx, idxs - 1]  # (N,)
-    yh = ys[row_idx, idxs]      # (N,)
-
-    r = (x - xl) / (xh - xl)
-    return (1.0 - r) * yl + r * yh
-
-
-
-def atinterp_allpoints(bk, x, xs, ys):
-    # x:  (Nd,)
-    # xs: (M,)
-    # ys: (Nf, M)
-    # returns: (Nf, Nd)
-
-    idx = bk.searchsorted(xs, x, side="left")
-    idx = bk.clip(idx, 1, xs.shape[0] - 1)
-
-    xl = xs[idx - 1]        # (Nd,)
-    xh = xs[idx]            # (Nd,)
-
-    yl = ys[:, idx - 1]     # (Nf, Nd)
-    yh = ys[:, idx]         # (Nf, Nd)
-
-    r = (x - xl) / (xh - xl)    # (Nd,)
-    return (1.0 - r)[None, :] * yl + r[None, :] * yh
-    
-
-def _interp_indices_nonuniform_safe(bk, x, x_grid):
-    """
-    Robust index+weight for non-uniform 1D interpolation.
-
-    Returns:
-      j  in [1, N-1]
-      r  in [0, 1]
-    such that:
-      xL = x_grid[j-1], xR = x_grid[j]
-      y(x) ~ (1-r)*y[j-1] + r*y[j]
-    """
-    N = x_grid.shape[0]
-
-    # clip x into grid domain (avoid out-of-bounds indices)
-    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
-
-    # searchsorted gives insertion index in [0..N]
-    j = bk.searchsorted(x_grid, x_clip, side="left")
-
-    # clamp to valid interpolation interval [1..N-1]
-    j = bk.clip(j, 1, N - 1)
-
-    xL = x_grid[j - 1]
-    xR = x_grid[j]
-    denom = bk.maximum(xR - xL, 1e-30)
-
-    r = (x_clip - xL) / denom
-    r = bk.clip(r, 0.0, 1.0)
-
-    return j, r
-
-
-def interp_1d_nonuniform_multiY(bk, x, x_grid, Y, side="left", eps=1e-30):
-    """
-    Simple multi-Y nonuniform 1D linear interpolation.
-
-    Inputs:
-      x      : (...,)
-      x_grid : (N,)
-      Y      : (K, N)
-
-    Output:
-      out    : (K, ...)   (same as your Op)
-    """
-    N = x_grid.shape[0]
-
-    # clip x into grid domain
-    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
-
-    # indices of right/left bracket
-    j = bk.searchsorted(x_grid, x_clip, side=side)
-    j = bk.clip(j, 1, N - 1)
-
-    xL = x_grid[j - 1]
-    xR = x_grid[j]
-    denom = bk.maximum(xR - xL, eps)
-    r = (x_clip - xL) / denom
-    r = bk.clip(r, 0.0, 1.0)
-
-    # gather Y at j-1 and j for all K
-    jm1 = (j - 1)[None, ...]  # (1, ...)
-    j0  = j[None, ...]        # (1, ...)
-
-    # prefer take_along_axis if backend has it
-    if hasattr(bk, "take_along_axis"):
-        YL = bk.take_along_axis(Y, jm1, axis=1)  # (K, ...)
-        YR = bk.take_along_axis(Y, j0,  axis=1)  # (K, ...)
-    else:
-        # works for numpy-like backends
-        YL = Y[:, (j - 1)]
-        YR = Y[:, j]
-
-    out = (1.0 - r)[None, ...] * YL + r[None, ...] * YR
-    return out
 
 
 # ---------------------------------------------------------------------
@@ -457,33 +204,142 @@ def atcumtrapz(bk, y, x, *, axis=-1):
 
 
 
-def logtrapzexp_streaming(bk, logpdf_at_m, x):
+
+# ---------------------------------------------------------------------
+# Interpolation
+# 
+# ---------------------------------------------------------------------
+
+def atinterp(bk, x, xs, ys):
+
+  idxs = bk.searchsorted(xs, x, side='left')
+  idxs = bk.clip(idxs, 1, xs.shape[0] - 1) # out of index case
+
+  xl = xs[idxs-1]
+  yl = ys[idxs-1]
+  xh = xs[idxs]
+  yh = ys[idxs]
+
+  r = (x-xl)/(xh-xl)
+
+  return r*yh + (1.0-r)*yl
+
+
+def atinterp_uniform(bk, x, *args, eps=1e-12, side="left"):
+    # New style: (xp, fp)
+    if len(args) == 2:
+        xp, fp_const = args
+        n = xp.shape[0]
+        x0 = xp[0]
+        dx = xp[1] - xp[0]
+    # Legacy style: (x0, x1, nU, fp)
+    elif len(args) == 4:
+        x0, x1, nU, fp_const = args
+        n = nU
+        dx = (x1 - x0) / bk.maximum(nU - 1, 1)
+    else:
+        raise TypeError("atinterp_uniform expects (x, xp, fp) or (x, x0, x1, nU, fp)")
+
+    dx = bk.maximum(dx, eps)
+    t = (x - x0) / dx
+    t = bk.clip(t, 0.0, (n - 1) * 1.0)
+
+    if side == "right":
+        j = bk.ceil(t) - 1.0
+    else:
+        j = bk.floor(t)
+
+    if hasattr(bk, "asarray"):
+        j = bk.asarray(j, dtype="int32")
+    else:
+        j = j.astype("int32")
+    j = bk.clip(j, 0, n - 2)
+
+    xl = x0 + j * dx
+    yl = fp_const[j]
+    yh = fp_const[j + 1]
+    r = (x - xl) / dx
+    r = bk.clip(r, 0.0, 1.0)
+    return (1.0 - r) * yl + r * yh
+
+
+
+
+def _interp_indices_nonuniform_safe(bk, x, x_grid):
     """
-    logpdf_at_m: function m -> logpdf for all events, shape (K,)
-    x: 1D grid, shape (N1,)
-    returns: log integral per event, shape (K,)
+    Robust index+weight for non-uniform 1D interpolation.
+
+    Returns:
+      j  in [1, N-1]
+      r  in [0, 1]
+    such that:
+      xL = x_grid[j-1], xR = x_grid[j]
+      y(x) ~ (1-r)*y[j-1] + r*y[j]
     """
-    x = bk.asarray(x)
-    dx = bk.diff(x)  # (N1-1,)
+    N = x_grid.shape[0]
 
-    # init with logpdf at first grid point
-    lp0 = logpdf_at_m(x[0])  # (K,)
-    neginf = -1e300 if lp0.dtype == jnp.float64 else -1e30
-    logI = bk.full_like(lp0, neginf)  # log(0) per event
+    # clip x into grid domain (avoid out-of-bounds indices)
+    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
 
-    def step(carry, i):
-        lp_prev, logI = carry
-        lp_curr = logpdf_at_m(x[i+1])  # (K,)
+    # searchsorted gives insertion index in [0..N]
+    j = bk.searchsorted(x_grid, x_clip, side="left")
 
-        # log( 0.5*(exp(lp_prev)+exp(lp_curr)) * dx[i] )
-        log_term = bk.logaddexp(lp_prev, lp_curr) + bk.log(dx[i]) - bk.log(2.0)
+    # clamp to valid interpolation interval [1..N-1]
+    j = bk.clip(j, 1, N - 1)
 
-        # accumulate in log-space: logI = logaddexp(logI, log_term)
-        logI = bk.logaddexp(logI, log_term)
-        return (lp_curr, logI), None
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = bk.maximum(xR - xL, 1e-30)
 
-    (lp_last, logI), _ = jax.lax.scan(step, (lp0, logI), jnp.arange(dx.shape[0]))
-    return logI
+    r = (x_clip - xL) / denom
+    r = bk.clip(r, 0.0, 1.0)
+
+    return j, r
+
+
+
+def interp_1d_nonuniform_multiY(bk, x, x_grid, Y, side="left", eps=1e-30):
+    """
+    Simple multi-Y nonuniform 1D linear interpolation.
+
+    Inputs:
+      x      : (...,)
+      x_grid : (N,)
+      Y      : (K, N)
+
+    Output:
+      out    : (K, ...)   (same as your Op)
+    """
+    N = x_grid.shape[0]
+
+    # clip x into grid domain
+    x_clip = bk.clip(x, x_grid[0], x_grid[-1])
+
+    # indices of right/left bracket
+    j = bk.searchsorted(x_grid, x_clip, side=side)
+    j = bk.clip(j, 1, N - 1)
+
+    xL = x_grid[j - 1]
+    xR = x_grid[j]
+    denom = bk.maximum(xR - xL, eps)
+    r = (x_clip - xL) / denom
+    r = bk.clip(r, 0.0, 1.0)
+
+    # gather Y at j-1 and j for all K
+    jm1 = (j - 1)[None, ...]  # (1, ...)
+    j0  = j[None, ...]        # (1, ...)
+
+    # prefer take_along_axis if backend has it
+    if hasattr(bk, "take_along_axis"):
+        YL = bk.take_along_axis(Y, jm1, axis=1)  # (K, ...)
+        YR = bk.take_along_axis(Y, j0,  axis=1)  # (K, ...)
+    else:
+        # works for numpy-like backends
+        YL = Y[:, (j - 1)]
+        YR = Y[:, j]
+
+    out = (1.0 - r)[None, ...] * YL + r[None, ...] * YR
+    return out
 
 
 

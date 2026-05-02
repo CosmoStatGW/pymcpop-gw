@@ -3,7 +3,7 @@ from __future__ import annotations
 from constants import _PI as PI
 from mass_models import truncGausslowerupper_at_lpdf_safe, truncGausslowerupper_at_lpdf
 
-from pytensor_utils import logsumexp2
+from numerical_utils import logsumexp2
 
 
 def _spins_as_list(spins, spin_model):

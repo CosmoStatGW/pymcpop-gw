@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
-from pytensor_utils import attrapzvec, atcumtrapz, logtrapzexp_streaming, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY
+from numerical_utils import attrapzvec, atcumtrapz, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY, atinterp
 #from constants import _PI as PI
 from constants import max_m, _tgrid_np
-from pytensor_utils import atinterp
+
 
 try:
     import jax.numpy as jnp
