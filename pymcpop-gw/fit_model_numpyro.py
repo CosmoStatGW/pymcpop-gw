@@ -1456,9 +1456,15 @@ def main():
         # -------------------------
         # Evolution parameters
         # -------------------------
-        # For evo_triplet_numpyro as I wrote it:
+        # For evo_triplet_numpyro :
         # theta_inf = theta0 + delta_name
         # so initialize delta_name = theta_inf_init - theta0_init when available.
+        def _softplus_inv(y):
+            y = float(y)
+            y = max(y, 1e-12)
+            return float(np.log(np.expm1(y)))
+        
+        
         def _init_delta(name, theta0_key, positive=False, eps_pos=1e-6):
             inf_key = f"{name}_inf"
             delta_key = f"delta_{name}"
@@ -1472,23 +1478,38 @@ def main():
         
             if positive:
                 theta0 = float(ivals[theta0_key])
+                sigma = float(priors.get(f"delta_{name}_sigma", 1.0))
                 lower = -theta0 + eps_pos
-                delta = max(delta, lower + 1e-3)
         
-            init_vals[delta_key] = delta   
-
-            
+                # Model uses:
+                # delta = lower + sigma * softplus(raw)
+                # so raw init must satisfy:
+                # softplus(raw) = (delta - lower) / sigma
+                y = (delta - lower) / sigma
+        
+                if y <= 0.0:
+                    raise ValueError(
+                        f"Invalid init for delta_{name}: delta={delta}, "
+                        f"lower={lower}, sigma={sigma}, y={y}. "
+                        "Need delta > lower."
+                    )
+        
+                init_vals[f"delta_{name}_raw"] = _softplus_inv(y)
+            else:
+                init_vals[delta_key] = delta
+        
+        
         # --- delta (theta_inf - theta0) init ---
         _init_delta("alpha1", "alpha1_0")
         _init_delta("alpha2", "alpha2_0")
         
         if FLAGS.vary_mb:
-            _init_delta("mb", "mb_0")
+            _init_delta("mb", "mb_0", positive=True, eps_pos=5.0)
         
-        _init_delta("mu1", "mu1_0")
-        _init_delta("sigma1", "sigma1_0")
-        _init_delta("mu2", "mu2_0")
-        _init_delta("sigma2", "sigma2_0")
+        _init_delta("mu1", "mu1_0", positive=True, eps_pos=5.0)
+        _init_delta("sigma1", "sigma1_0", positive=True, eps_pos=0.1)
+        _init_delta("mu2", "mu2_0", positive=True, eps_pos=5.0)
+        _init_delta("sigma2", "sigma2_0", positive=True, eps_pos=0.1)
         
         
         # --- z transition init ---
@@ -1545,8 +1566,8 @@ def main():
     k: jnp.asarray(v)    for (k, v), kk in zip(init_vals.items(), keys)
         }
 
-    init_vals["delta_mhigh"] = 80.0   # not 150
-    init_vals["lambda_inf_vec"] = jnp.asarray([0.2, 0.2, 0.6], dtype=jnp.float64)
+    #init_vals["delta_mhigh"] = 80.0   # not 150
+    #init_vals["lambda_inf_vec"] = jnp.asarray([0.2, 0.2, 0.6], dtype=jnp.float64)
 
     if not FLAGS.pop_only:
         # ensure x init exists and is small-ish (with eps_init )

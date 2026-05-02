@@ -672,26 +672,74 @@ def evo_triplet_numpyro(
     delta_sigma = priors.get(sigma_key, 1.0)
 
     if positive:
+        # lower = -theta0 + eps_pos
+    
+        # delta_theta = numpyro.sample(
+        #     f"delta_{name}",
+        #     dist.Normal(0.0, delta_sigma),
+        # )
+    
+        # # TruncatedNormal normalization for support delta > lower:
+        # # Z = P[N(0, sigma) > lower] = Phi(-lower / sigma)
+        # logZ = jax.scipy.special.log_ndtr(-lower / delta_sigma)
+    
+        # numpyro.factor(
+        #     f"delta_{name}_trunc_norm",
+        #     -logZ,
+        # )
+    
+        # numpyro.factor(
+        #     f"delta_{name}_support",
+        #     jnp.where(delta_theta > lower, 0.0, -1e30),
+        # )
+        ####################################################################
+
         lower = -theta0 + eps_pos
-    
-        delta_theta = numpyro.sample(
-            f"delta_{name}",
-            dist.Normal(0.0, delta_sigma),
+        sigma = delta_sigma
+        
+        # Exact truncated-normal target:
+        # delta_theta | theta0 ~ Normal(0, sigma), with delta_theta > lower
+        #
+        # We sample an unconstrained raw variable and map it smoothly to the allowed region.
+        
+        raw = numpyro.sample(
+            f"delta_{name}_raw",
+            dist.Normal(0.0, 1.0),
         )
-    
-        # TruncatedNormal normalization for support delta > lower:
-        # Z = P[N(0, sigma) > lower] = Phi(-lower / sigma)
-        logZ = jax.scipy.special.log_ndtr(-lower / delta_sigma)
-    
+        
+        # Smooth bijection R -> (lower, +inf)
+        delta_theta = lower + sigma * jax.nn.softplus(raw)
+        
+        # log |d delta / d raw|
+        log_jac = jnp.log(sigma) + jax.nn.log_sigmoid(raw)
+        
+        # Truncated-normal normalization:
+        # Z = P[Normal(0, sigma) > lower]
+        logZ = jax.scipy.special.log_ndtr(-lower / sigma)
+        
+        # Correct the raw Normal base density into the desired truncated Normal density.
+        target_logp = dist.Normal(0.0, sigma).log_prob(delta_theta) - logZ
+        base_logp = dist.Normal(0.0, 1.0).log_prob(raw)
+        
         numpyro.factor(
-            f"delta_{name}_trunc_norm",
-            -logZ,
+            f"delta_{name}_softplus_trunc_correction",
+            target_logp + log_jac - base_logp,
         )
-    
-        numpyro.factor(
-            f"delta_{name}_support",
-            jnp.where(delta_theta > lower, 0.0, -1e30),
-        )
+        
+        numpyro.deterministic(f"delta_{name}", delta_theta)    
+
+
+        ####################################################################
+
+        # lower = -theta0 + eps_pos
+        # sigma = delta_sigma
+        
+        # # Different but valid prior
+        # raw = numpyro.sample(f"delta_{name}_raw", dist.Normal(0.0, 1.0))
+        # delta_theta = lower + sigma * jax.nn.softplus(raw)
+        # numpyro.deterministic(f"delta_{name}", delta_theta)
+
+
     else:
         delta_theta = numpyro.sample(
             f"delta_{name}",
@@ -1695,6 +1743,8 @@ def make_model_jax(  priors,
                     positive=True,
                     eps_pos=5.0,
                 )
+
+
         
             mu1_inf_, z_mu1_, dz_mu1_ = evo_triplet_numpyro(
                 "mu1",

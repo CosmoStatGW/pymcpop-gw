@@ -79,6 +79,7 @@ def _log1mexp(bk, a):
     """
     Stable log(1 - exp(-a)) for a > 0.
     """
+    a = bk.maximum(a, 1e-12)
     log2 = bk.log(2.0)
     return bk.where(
         a > log2,
@@ -86,15 +87,20 @@ def _log1mexp(bk, a):
         bk.log(-bk.expm1(-a)),
     )
 
+# def _logdiffexp_posordered(bk, hi, lo, eps=1e-300):
+#     """
+#     Compute log(exp(hi) - exp(lo)) assuming hi >= lo.
+#     """
+#     d = hi - lo
+#     d = bk.maximum(d, 1e-12)
+#     out = hi + bk.log1p(-bk.exp(-d))
+#     return bk.maximum(out, bk.log(eps))
+
 def _logdiffexp_posordered(bk, x, y):
-    # robustly compute log(abs(exp(x) - exp(y)))
-    hi = bk.maximum(x, y)
-    lo = bk.minimum(x, y)
-
-    d = hi - lo
-    d = bk.maximum(d, 1e-12)
-
-    return hi + bk.log1p(-bk.exp(-d))
+    """
+    Stable log(exp(x) - exp(y)) assuming x >= y.
+    """
+    return x + _log1mexp(bk, x - y)
 
 
 def truncGausslowerupper_at_lpdf(
@@ -2393,10 +2399,10 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     #     m21=m2_grid[-1],
     # )
 
-    lp_m1_bank = bk.where(bk.isfinite(lp_m1_bank), lp_m1_bank, -1e30)
-    lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
-    lC_of_m1   = bk.where(bk.isfinite(lC_of_m1),   lC_of_m1,   1e30)
-    ln_bank    = bk.where(bk.isfinite(ln_bank),    ln_bank,    1e30)
+    # lp_m1_bank = bk.where(bk.isfinite(lp_m1_bank), lp_m1_bank, -1e30)
+    # lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
+    # lC_of_m1   = bk.where(bk.isfinite(lC_of_m1),   lC_of_m1,   1e30)
+    # ln_bank    = bk.where(bk.isfinite(ln_bank),    ln_bank,    1e30)
 
     # ------------------------------------------------------------
     # 0) HARD SUPPORT MASK (this is the production fix)
@@ -2407,6 +2413,37 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
         & (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
         & (z  >= z_bank[0])  & (z  <= z_bank[-1])
     )
+    all_ok = ok.sum()
+    frac_bad = 1.0 - ok.mean()
+    
+    # jax.debug.print(
+    #     "support: ok_sum={ok_sum}, frac_bad={frac_bad}",
+    #     ok_sum=all_ok,
+    #     frac_bad=frac_bad,
+    # )
+
+    # bad_m1 = (m1 < m1_grid[0]) | (m1 > m1_grid[-1])
+    # bad_m2 = (m2 < m2_grid[0]) | (m2 > m2_grid[-1])
+    # bad_z  = (z  < z_bank[0])  | (z  > z_bank[-1])
+    
+    # jax.debug.print(
+    #     "bad: m1={bm1}, m2={bm2}, z={bz}; ranges m1=[{m1min},{m1max}] grid=[{g1min},{g1max}] m2=[{m2min},{m2max}] grid=[{g2min},{g2max}] z=[{zmin},{zmax}] grid=[{zgmin},{zgmax}]",
+    #     bm1=bad_m1.mean(),
+    #     bm2=bad_m2.mean(),
+    #     bz=bad_z.mean(),
+    #     m1min=m1.min(),
+    #     m1max=m1.max(),
+    #     g1min=m1_grid[0],
+    #     g1max=m1_grid[-1],
+    #     m2min=m2.min(),
+    #     m2max=m2.max(),
+    #     g2min=m2_grid[0],
+    #     g2max=m2_grid[-1],
+    #     zmin=z.min(),
+    #     zmax=z.max(),
+    #     zgmin=z_bank[0],
+    #     zgmax=z_bank[-1],
+    # )
 
 
     # optional physical constraint
@@ -2470,4 +2507,4 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     lpdf = lpdfm1 + lpdfm2 - lC - ln
 
     #return bk.where(ok, lpdf, -1.0e30)
-    return bk.where(ok & bk.isfinite(lpdf), lpdf, -1e30)
+    return bk.where(ok & bk.isfinite(lpdf), lpdf, -1e06)
