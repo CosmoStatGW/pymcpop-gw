@@ -11,11 +11,77 @@
 import os, argparse, sys
 
 
+def load_settings_file(path):
+    """Load command-line options from a simple INI settings file.
+
+    The file must use the standard-library ``configparser`` format with a
+    ``[settings]`` section.  Option names are the command-line names without
+    leading dashes, and values are written as they would appear after the
+    option on the command line.  For example:
+
+        [settings]
+        fin_data = data_1.h5 data_2.h5
+        nsteps = 1000
+
+    No external dependency is required.
+    """
+    import configparser
+
+    config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    config.optionxform = str  # preserve names such as N_DP_comp_max
+
+    read_files = config.read(path)
+    if not read_files:
+        raise FileNotFoundError(f"Could not read settings file: {path!r}")
+
+    if not config.has_section("settings"):
+        raise ValueError(
+            f"Settings file {path!r} must contain a [settings] section."
+        )
+
+    return dict(config.items("settings"))
+
+
+def settings_to_argv(settings, parser):
+    """Convert INI settings into argparse-style tokens."""
+    import shlex
+
+    actions_by_dest = {action.dest: action for action in parser._actions}
+    argv = []
+
+    for dest, value in settings.items():
+        if dest == "settings":
+            continue
+
+        action = actions_by_dest.get(dest)
+        if action is None:
+            raise KeyError(dest)
+
+        option_strings = [s for s in action.option_strings if s.startswith("--")]
+        if not option_strings:
+            raise KeyError(dest)
+
+        argv.append(option_strings[0])
+        argv.extend(shlex.split(value))
+
+    return argv
+
 def early_parse(argv):
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--nth", type=int, default=None)
+    p.add_argument("--settings", type=str, default=None)
     # ignore everything else
     args, _ = p.parse_known_args(argv)
+
+    # --nth controls environment variables before imports, so it must also be
+    # readable from the settings file during this early parse.  A command-line
+    # --nth, when provided, takes precedence.
+    if args.nth is None and args.settings is not None:
+        settings = load_settings_file(args.settings)
+        nth = settings.get("nth")
+        if nth is not None:
+            args.nth = int(str(nth).strip())
+
     return args
 
 
@@ -128,10 +194,58 @@ def jitter_simplex(v, key, eps):
 
 
 
+
+def parse_args_with_optional_settings(parser):
+    settings_probe = argparse.ArgumentParser(add_help=False)
+    settings_probe.add_argument("--settings", type=str, default=None)
+    settings_args, _ = settings_probe.parse_known_args()
+
+    required_dests = []
+    for action in parser._actions:
+        if action.required:
+            required_dests.append(action.dest)
+            action.required = False
+            action.default = argparse.SUPPRESS
+
+    valid_dests = {action.dest for action in parser._actions}
+
+    if settings_args.settings is not None:
+        settings = load_settings_file(settings_args.settings)
+        unknown = sorted(set(settings) - valid_dests)
+        if unknown:
+            parser.error(
+                "Unknown option(s) in settings file: "
+                + ", ".join(unknown)
+            )
+        try:
+            settings_argv = settings_to_argv(settings, parser)
+        except KeyError as exc:
+            parser.error(f"Unknown option in settings file: {exc.args[0]}")
+    else:
+        settings_argv = []
+
+    flags = parser.parse_args(settings_argv + sys.argv[1:])
+
+    missing = [
+        dest for dest in required_dests
+        if not hasattr(flags, dest) or getattr(flags, dest) in (None, "")
+    ]
+    if missing:
+        parser.error(
+            "the following arguments are required, either on the command line "
+            "or in --settings: "
+            + ", ".join("--" + dest for dest in missing)
+        )
+
+    return flags
+
+
 def main():
 
     
     parser = argparse.ArgumentParser()
+    parser.add_argument("--settings", default=None, type=str, required=False,
+                        help="Path to an INI settings file containing command-line options.")
     
     
     parser.add_argument("--fin_data", nargs='+', type=str, required=True)
@@ -139,7 +253,7 @@ def main():
     parser.add_argument("--fin_priors", default='', type=str, required=True)
     parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
     parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
-    parser.add_argument("--backend", default='ztrace', type=str, required=False)
+    parser.add_argument("--backend", default='disk', type=str, required=False)
     parser.add_argument("--seed", default=0, type=int, required=False)
 
     
@@ -185,7 +299,7 @@ def main():
     
     
     parser.add_argument("--marginal_R0", default=1, type=int, required=False)
-    parser.add_argument("--smoothing", default='LVK', type=str, required=False)
+    parser.add_argument("--smoothing", default='poly', type=str, required=False)
     parser.add_argument("--simplex_repair", default=0, type=int, required=False)
 
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
@@ -193,13 +307,13 @@ def main():
     
     
     
-    parser.add_argument("--dLprior", nargs='+', default=['none'], type=str, required=False)
+    parser.add_argument("--dLprior", nargs='+', default=['dLsq'], type=str, required=False)
     #parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
     parser.add_argument("--penorm_lims",  nargs='+', default=[], type=str, required=False)
     parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
     
     
-    parser.add_argument("--sampling_gw", default='gmm_cat', type=str, required=False)
+    parser.add_argument("--sampling_gw", default='gauss', type=str, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
@@ -233,7 +347,7 @@ def main():
     parser.add_argument("--spin_inj", default='none', type=str, required=False)
     parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
     parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='sigmoid', type=str, required=False)
+    parser.add_argument("--sel_smoothing", default='x30', type=str, required=False)
     parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
     parser.add_argument("--dil_factor", default=1, type=int, required=False)
     parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
@@ -284,8 +398,8 @@ def main():
     parser.add_argument("--r",  default=0, type=float, required=False)
     parser.add_argument("--allTobs", nargs='+', type=float, required=False)
 
-    parser.add_argument("--reparam_mass", default=0, type=int, required=False)
-    parser.add_argument("--reparam_z", default=0, type=int, required=False)
+    parser.add_argument("--reparam_mass", default=1, type=int, required=False)
+    parser.add_argument("--reparam_z", default=1, type=int, required=False)
 
     parser.add_argument("--remove_spin_prior", default=0, type=int, required=False)
 
@@ -297,7 +411,11 @@ def main():
 
 
 
-    FLAGS = parser.parse_args()
+    FLAGS = parse_args_with_optional_settings(parser)
+
+    os.makedirs(FLAGS.fout, exist_ok=True)
+
+    if hasattr(FLAGS, "settings") and FLAGS.settings: import shutil; shutil.copy(FLAGS.settings, os.path.join(FLAGS.fout, os.path.basename(FLAGS.settings)))
 
 
 
@@ -1842,16 +1960,15 @@ def main():
     # --- NUTS kernel config ---
     nuts = NUTS(
         model_numpyro,
-        target_accept_prob=float(FLAGS.target_accept),
-        max_tree_depth=int(FLAGS.max_tree_depth),
+        target_accept_prob = float(FLAGS.target_accept),
+        max_tree_depth = int(FLAGS.max_tree_depth),
         dense_mass = dense_blocks,  # dense within each chain
         step_size = 1e-2,              # <-- seed a not-too-small epsilon
         adapt_step_size=True,        # keep adaptation ON
         adapt_mass_matrix=True,
         find_heuristic_step_size = bool(FLAGS.find_heuristic_step_size),
         regularize_mass_matrix = float(FLAGS.regularize_mass_matrix),
-        forward_mode_differentiation = False,
-        
+        forward_mode_differentiation = False,    
     )
     
 

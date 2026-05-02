@@ -1016,7 +1016,9 @@ def make_model_jax(  priors,
 
 
  
-
+    ################################################
+    # Build grids and other data-dependend quantities
+    ################################################
     
     if ( find_z_bounds or (mass_model in ('DPUC', 'DP') and find_m_bounds) or mmin_inj!=-1 ):
 
@@ -1037,14 +1039,15 @@ def make_model_jax(  priors,
         raise ValueError()
 
     print("Min, max redshift grid: %s, %s"%(z_nodes.min(), z_nodes.max()))
-    #####################################################################################################
 
+
+    
+    ################################################
+    # PE prior on distance, if needed
+    ################################################
 
     if not pop_only:
         
-        # vol_in_prior = any( (('UniformSourceFrame' in s or 'UniformComovingVolume' in s) and not ('bilby' in s) ) for s in dLprior)
-        # #vol_in_prior_from_bilby = any('UniformSourceFrame-bilby' in s or 'UniformComovingVolume-bilby' in s for s in dLprior)
-        # vol_in_prior_from_bilby = any('UniformSourceFrame-bilby' in s for s in dLprior)
 
         vol_in_prior = any(
             (("UniformSourceFrame" in s or "UniformComovingVolume" in s) and ("bilby" not in s))
@@ -1052,9 +1055,6 @@ def make_model_jax(  priors,
         )
         vol_in_prior_from_bilby = any(s == "UniformSourceFrame-bilby" for s in dLprior)
 
-
-        
-        
     
         edges = [0]
         for n in Nevs_np:
