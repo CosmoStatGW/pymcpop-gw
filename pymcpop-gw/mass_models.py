@@ -2375,8 +2375,82 @@ def build_m1_grid_DPLDP_z( bk,
 
 
 
+def logpdf_DPLDP_z_from_interp_mid(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
-def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
+    interp_grids, interp_vals_mass = interp_vals
+    m1, m2 = theta
+
+    m1_grid, m2_grid, z_bank = interp_grids
+
+    (
+        lp_m2_grid,
+        lC_of_m1,
+        ln_bank,
+        lambdaBBHmass_lowz,
+        evo_params,
+    ) = interp_vals_mass
+
+    lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
+    lC_of_m1   = bk.where(bk.isfinite(lC_of_m1),   lC_of_m1,   1e30)
+    ln_bank    = bk.where(bk.isfinite(ln_bank),    ln_bank,    1e30)
+
+    (
+        alpha1_0, alpha2_0, mb_0,
+        mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1,
+        lambda0_0, lambda1_0, lambda2_0,
+        beta, m2_low, delta_m2,
+        epsilon, m_g, w_g, sig_g_low, sig_g_high,
+    ) = lambdaBBHmass_lowz
+
+    smoothing = "poly"
+    simplex_repair = False
+    norm_gauss = "uplow"
+
+    ok = (
+        (m1 >= m1_grid[0]) & (m1 <= m1_grid[-1])
+        & (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
+        & (z >= z_bank[0]) & (z <= z_bank[-1])
+    )
+
+    if force_m2_less_than_m1:
+        ok = ok & (m2 <= m1)
+
+    # Direct p(m1 | z)
+    lpdfm1 = logpdfm1_DPLDP_z(
+        bk,
+        m1,
+        z,
+        alpha1_0, alpha2_0, mb_0,
+        mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1,
+        lambda0_0, lambda1_0, lambda2_0,
+        epsilon,
+        *evo_params,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+        norm_gauss=norm_gauss,
+    )
+
+    # Interpolate log p(m2)
+    j2, r2 = _interp_indices_nonuniform_safe(bk, m2, m2_grid)
+    lpdfm2 = (1.0 - r2) * lp_m2_grid[j2 - 1] + r2 * lp_m2_grid[j2]
+
+    # Interpolate log C(m1)
+    j1, r1 = _interp_indices_nonuniform_safe(bk, m1, m1_grid)
+    lC = (1.0 - r1) * lC_of_m1[j1 - 1] + r1 * lC_of_m1[j1]
+
+    # Interpolate ln(z)
+    kR, rz = _interp_indices_nonuniform_safe(bk, z, z_bank)
+    kL = kR - 1
+    ln = (1.0 - rz) * ln_bank[kL] + rz * ln_bank[kR]
+
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    return bk.where(ok & bk.isfinite(lpdf), lpdf, -1e6)
+
+
+def logpdf_DPLDP_z_from_interp_minimal(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
     interp_grids, interp_vals_mass = interp_vals
     m1, m2 = theta
@@ -2459,7 +2533,7 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
 
 
 
-def logpdf_DPLDP_z_from_interp_full(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
+def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
     interp_grids, interp_vals_mass = interp_vals
     m1, m2 = theta

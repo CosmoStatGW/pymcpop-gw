@@ -367,24 +367,24 @@ def _make_pop_and_sel_core(
                  lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda) = evo_params
 
                 #### m2 grid 
-                # eps_m = 1e-5 
-                # n2 = 500
-                # n2_taper = 100
+                eps_m = 1e-5 
+                n2 = 500
+                n2_taper = 100
                 
-                # m2_lo = m2_low + eps_m
-                # m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
+                m2_lo = m2_low + eps_m
+                m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
                 
-                # u1 = bk.linspace(0.0, 1.0, n2_taper)
+                u1 = bk.linspace(0.0, 1.0, n2_taper)
                 
-                # eps_t = 1e-4
-                # t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                # t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                # seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                eps_t = 1e-4
+                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
                 
-                # u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
-                # seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
                 
-                # m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
 
                 
                 #### m1 grid 
@@ -411,29 +411,29 @@ def _make_pop_and_sel_core(
                 )
 
 
-                # # ---------
-                # # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
-                # # ---------
-                # lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk,
-                #     m2_grid_, beta , delta_m2 , m2_low ,
-                #     m_g=m_g, w_g=w_g,  sig_g_low=sig_g_low , sig_g_high=sig_g_high ,
-                #     has_m2_break=has_m2_break, smoothing=smoothing
-                # )  # shape (N2,)
+                # ---------
+                # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
+                # ---------
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk,
+                    m2_grid_, beta , delta_m2 , m2_low ,
+                    m_g=m_g, w_g=w_g,  sig_g_low=sig_g_low , sig_g_high=sig_g_high ,
+                    has_m2_break=has_m2_break, smoothing=smoothing
+                )  # shape (N2,)
             
-                # # lC_grid evaluated on m1_grid (shape (N1,))
-                # cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
-                # cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
+                # lC_grid evaluated on m1_grid (shape (N1,))
+                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
 
-                # # CDF lives on m2_grid_[1:]
-                # m2_cdf_grid = m2_grid_[1:]
-                # logcdf_m2   = bk.log(cdf_m2)
+                # CDF lives on m2_grid_[1:]
+                m2_cdf_grid = m2_grid_[1:]
+                logcdf_m2   = bk.log(cdf_m2)
                 
-                # # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
-                # mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
+                # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
+                mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
-                # # NON-UNIFORM interpolation
-                # #lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
-                # lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
+                # NON-UNIFORM interpolation
+                #lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
+                lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
                 
 
                 # ---------
@@ -471,22 +471,23 @@ def _make_pop_and_sel_core(
                 ln_bank = bk.log(I) + lp_max[:, 0]
                 
              
-                # # Full version: Pack for later use (include z_bank)
-                # interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
-                # interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
+                # Full version: Pack for later use (include z_bank)
+                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
+                interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
 
                 # Version 1: do not store lp_m1_bank in interp_vals_mass.
                 # We only keep the redshift-dependent normalization ln(z).
                 # The pointwise m1 density is evaluated directly later.
                 # Only keep the redshift-dependent normalization bank.
                 # The pointwise mass PDF is evaluated directly in mass_models.py.
-                interp_vals_mass = [
-                    ln_bank,
-                    lambdaBBHmass_lowz,
-                    evo_params,
-                ]
+                # interp_vals_mass = [
+                #     lp_m2_grid, lC_of_m1,
+                #     ln_bank,
+                #     lambdaBBHmass_lowz,
+                #     evo_params,
+                # ]
                 
-                interp_grids_mass = [z_nodes]
+                # interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
                                 
 
             
