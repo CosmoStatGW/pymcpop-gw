@@ -2375,7 +2375,91 @@ def build_m1_grid_DPLDP_z( bk,
 
 
 
+
 def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
+
+    interp_grids, interp_vals_mass = interp_vals
+    m1, m2 = theta
+
+    (z_bank,) = interp_grids
+
+    ln_bank, lambdaBBHmass_lowz, evo_params = interp_vals_mass
+
+    # Static settings for the current branch.
+    smoothing = "poly"
+    simplex_repair = False
+    norm_gauss = "uplow"
+    has_m2_break = False
+
+    ln_bank = bk.where(bk.isfinite(ln_bank), ln_bank, 1e30)
+
+    (
+        alpha1_0, alpha2_0, mb_0,
+        mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1,
+        lambda0_0, lambda1_0, lambda2_0,
+        beta, m2_low, delta_m2,
+        epsilon, m_g, w_g, sig_g_low, sig_g_high,
+    ) = lambdaBBHmass_lowz
+
+    lpdfm1 = logpdfm1_DPLDP_z(
+        bk,
+        m1,
+        z,
+        alpha1_0, alpha2_0, mb_0,
+        mu1_0, sigma1_0, mu2_0, sigma2_0,
+        m1_low, m_high, delta_m1,
+        lambda0_0, lambda1_0, lambda2_0,
+        epsilon,
+        *evo_params,
+        smoothing=smoothing,
+        simplex_repair=simplex_repair,
+        norm_gauss=norm_gauss,
+    )
+
+    lpdfm2 = logpdfm2_PLP_reg(
+        bk,
+        m2,
+        beta,
+        delta_m2,
+        m2_low,
+        m_g=m_g,
+        w_g=w_g,
+        sig_g_low=sig_g_low,
+        sig_g_high=sig_g_high,
+        has_m2_break=has_m2_break,
+        smoothing=smoothing,
+    )
+
+    lC = logC_DPLDP(
+        bk,
+        m1,
+        beta,
+        delta_m2,
+        m2_low,
+        m_g=m_g,
+        w_g=w_g,
+        sig_g_low=sig_g_low,
+        sig_g_high=sig_g_high,
+        has_m2_break=has_m2_break,
+        smoothing=smoothing,
+    )
+
+    kR, rz = _interp_indices_nonuniform_safe(bk, z, z_bank)
+    kL = kR - 1
+
+    ln = (1.0 - rz) * ln_bank[kL] + rz * ln_bank[kR]
+
+    lpdf = lpdfm1 + lpdfm2 - lC - ln
+
+    if force_m2_less_than_m1:
+        lpdf = bk.where(m2 <= m1, lpdf, -1e6)
+
+    return bk.where(bk.isfinite(lpdf), lpdf, -1e6)
+
+
+
+def logpdf_DPLDP_z_from_interp_full(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
     interp_grids, interp_vals_mass = interp_vals
     m1, m2 = theta
