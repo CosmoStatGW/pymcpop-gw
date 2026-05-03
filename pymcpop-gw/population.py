@@ -26,6 +26,27 @@ except Exception as e:
 #  utils
 # ---------------------------------------------------------------------
 
+def fixed_mass_grid(
+    lo_buffer=0.9,
+    mmin=3.0,
+    mbulk=100.0,
+    mmax=5000.0,
+    n_buffer=80,
+    n_bulk=3500,
+    n_tail=700,
+):
+    g0 = jnp.logspace(jnp.log10(lo_buffer), jnp.log10(mmin), n_buffer, endpoint=False)
+    g1 = jnp.logspace(jnp.log10(mmin), jnp.log10(mbulk), n_bulk, endpoint=False)
+    g2 = jnp.logspace(jnp.log10(mbulk), jnp.log10(mmax), n_tail)
+
+    return jnp.concatenate([g0, g1, g2])
+
+
+m1_grid_ = fixed_mass_grid( n_bulk=3500, n_tail=700, n_buffer=50 )
+m2_grid_ = fixed_mass_grid( n_bulk=1000, n_tail=400, n_buffer=50 )
+assert jnp.all(m1_grid_[1:] > m1_grid_[:-1])
+assert jnp.all(m2_grid_[1:] > m2_grid_[:-1])
+    
 
 def _zeros_like_tree(x):
     # works for arrays, scalars, and lists/tuples of arrays
@@ -203,7 +224,9 @@ def _make_pop_and_sel_core(
     pop_only = False,
     stop_grad_var_u: bool = True,
     return_var = True,
-    z_nodes = None
+    z_nodes = None,
+    taper_kind = "sigmoid",   # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 ):
     """Build the single source of truth JAX core function.
 
@@ -285,34 +308,34 @@ def _make_pop_and_sel_core(
                 u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
                 seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
                 
-                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+                # m2_grid_ = bk.concatenate([seg1[:-1], seg2])
                 
 
 
             
-                m1_grid_ = mass_models.build_m1_grid_DPLDP( bk, 
-                                            alpha1=alpha1_,
-                                            alpha2=alpha2_,
-                                            mb=mb_,
-                                            mu1=mu1_,
-                                            sigma1=sigma1_,
-                                            mu2=mu2_,
-                                            sigma2=sigma2_,
-                                            m1_low=m1_low_,
-                                            m_high=m_high_,
-                                            delta_m1=delta_m1_,
-                                            n_peak=interp_mass,      # or smaller if you want
-                                            n_tail_low=interp_mass//5,
-                                            n_tail_high=interp_mass//5,
-                                            #k_sigma=4.0,
-                                            n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
-                                            n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
-                                        )
+                # m1_grid_ = mass_models.build_m1_grid_DPLDP( bk, 
+                #                             alpha1=alpha1_,
+                #                             alpha2=alpha2_,
+                #                             mb=mb_,
+                #                             mu1=mu1_,
+                #                             sigma1=sigma1_,
+                #                             mu2=mu2_,
+                #                             sigma2=sigma2_,
+                #                             m1_low=m1_low_,
+                #                             m_high=m_high_,
+                #                             delta_m1=delta_m1_,
+                #                             n_peak=interp_mass,      # or smaller if you want
+                #                             n_tail_low=interp_mass//5,
+                #                             n_tail_high=interp_mass//5,
+                #                             #k_sigma=4.0,
+                #                             n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
+                #                             n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
+                #                         )
                 
-                lp_m1_grid = mass_models.logpdfm1_DPLDP( bk, m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss) 
+                lp_m1_grid = mass_models.logpdfm1_DPLDP( bk, m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss, taper_kind=taper_kind, taper_p=taper_p) 
 
 
-                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk, m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing ) 
+                lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk, m2_grid_, beta_, delta_m2_, m2_low_, m_g=m_g_, w_g=w_g_, sig_g_low = sig_g_l_, sig_g_high = sig_g_h_, has_m2_break=has_m2_break, smoothing=smoothing, taper_kind=taper_kind, taper_p=taper_p ) 
 
 
                 # CDF over m2
@@ -366,49 +389,51 @@ def _make_pop_and_sel_core(
                  sigma2_inf,  z_sigma2,  dz_sigma2,
                  lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda) = evo_params
 
+                #jax.debug.print("mass bank taper_kind={k}, taper_p={p}", k=taper_kind, p=taper_p)
+
                 #### m2 grid 
-                eps_m = 1e-5 
-                n2 = 500
-                n2_taper = 100
+                # eps_m = 1e-5 
+                # n2 = 500
+                # n2_taper = 100
                 
-                m2_lo = m2_low + eps_m
-                m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
+                # m2_lo = m2_low + eps_m
+                # m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
                 
-                u1 = bk.linspace(0.0, 1.0, n2_taper)
+                # u1 = bk.linspace(0.0, 1.0, n2_taper)
                 
-                eps_t = 1e-4
-                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
+                # eps_t = 1e-4
+                # t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
+                # t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
+                # seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
                 
-                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
-                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
+                # u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
+                # seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
                 
-                m2_grid_ = bk.concatenate([seg1[:-1], seg2])
+                # m2_grid_ = bk.concatenate([seg1[:-1], seg2])
 
                 
                 #### m1 grid 
-                m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, z_nodes,
-                # low-z hyperparameters
-                mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
-                # high-z (asymptotic) hyperparameters
-                mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
-                # evolution hyperparameters
-                z_mu1, dz_mu1,
-                z_sigma1, dz_sigma1,
-                z_mu2, dz_mu2,
-                z_sigma2, dz_sigma2,
-                z_mb, dz_mb,
-                # support for m1
-                m1_low, m_high,
-                delta_m1,
-                # grid resolution controls
-                n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
-                n_tail_low=interp_mass//5,   # points in low-mass tail
-                n_tail_high=interp_mass//5,  # points in high-mass tail
-                k_sigma=4.0,      #
-                n_taper=interp_mass//5,  # points in low-mass tapering
-                )
+                # m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, z_nodes,
+                # # low-z hyperparameters
+                # mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
+                # # high-z (asymptotic) hyperparameters
+                # mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
+                # # evolution hyperparameters
+                # z_mu1, dz_mu1,
+                # z_sigma1, dz_sigma1,
+                # z_mu2, dz_mu2,
+                # z_sigma2, dz_sigma2,
+                # z_mb, dz_mb,
+                # # support for m1
+                # m1_low, m_high,
+                # delta_m1,
+                # # grid resolution controls
+                # n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
+                # n_tail_low=interp_mass//5,   # points in low-mass tail
+                # n_tail_high=interp_mass//5,  # points in high-mass tail
+                # k_sigma=4.0,      #
+                # n_taper=interp_mass//5,  # points in low-mass tapering
+                # )
 
 
                 # ---------
@@ -417,12 +442,24 @@ def _make_pop_and_sel_core(
                 lp_m2_grid = mass_models.logpdfm2_PLP_reg( bk,
                     m2_grid_, beta , delta_m2 , m2_low ,
                     m_g=m_g, w_g=w_g,  sig_g_low=sig_g_low , sig_g_high=sig_g_high ,
-                    has_m2_break=has_m2_break, smoothing=smoothing
+                    has_m2_break=has_m2_break, smoothing=smoothing, taper_kind=taper_kind, taper_p=taper_p
                 )  # shape (N2,)
             
                 # lC_grid evaluated on m1_grid (shape (N1,))
-                cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
-                cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
+                #cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
+                #cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
+
+                lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
+
+                p2 = bk.where(
+                    bk.isfinite(lp_m2_grid),
+                    bk.exp(lp_m2_grid),
+                    0.0,
+                )
+                
+                cdf_m2 = atcumtrapz(bk, p2, m2_grid_)
+                cdf_m2 = bk.where(bk.isfinite(cdf_m2), cdf_m2, 0.0)
+                cdf_m2 = bk.maximum(cdf_m2, 1e-300)
 
                 # CDF lives on m2_grid_[1:]
                 m2_cdf_grid = m2_grid_[1:]
@@ -453,26 +490,43 @@ def _make_pop_and_sel_core(
                     m1_low , m_high , delta_m1 ,
                     lambda0_0, lambda1_0, lambda2_0,
                     epsilon ,
-                    *evo_params
-                                                        ,
+                    *evo_params,
                     smoothing=smoothing,
                     simplex_repair=simplex_repair,
-                    norm_gauss=norm_gauss
+                    norm_gauss=norm_gauss,
+                    taper_kind=taper_kind, taper_p=taper_p
                 )
                 
                 
-                lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
+                #lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
+                lp_flat = bk.where(bk.isfinite(lp_flat), lp_flat, -1e30)
+                lp_m1_bank = lp_flat.reshape((K, N1))
 
 
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
-                p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
-                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
-                I = bk.clip(I, 1e-300, jnp.inf)
-                ln_bank = bk.log(I) + lp_max[:, 0]
+                # p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
+                # I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
+                # I = bk.clip(I, 1e-300, jnp.inf)
+                # ln_bank = bk.log(I) + lp_max[:, 0]
                 
-             
-                # Full version: Pack for later use (include z_bank)
-                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank, ]
+                lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)
+
+                p_shift = bk.exp(lp_m1_bank - lp_max)
+                
+                I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)
+                
+                ln_bank = bk.where(
+                    (I > 0.0) & bk.isfinite(I),
+                    bk.log(I) + lp_max[:, 0],
+                    -jnp.inf,
+                )
+                
+                lp_m1_bank = bk.where(bk.isfinite(lp_m1_bank), lp_m1_bank, -1e30)
+                lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
+                lC_of_m1   = bk.where(bk.isfinite(lC_of_m1),   lC_of_m1,    1e30)
+                ln_bank    = bk.where(bk.isfinite(ln_bank),    ln_bank,     1e30)
+                
+                interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank]
                 interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
 
                 # Version 1: do not store lp_m1_bank in interp_vals_mass.
@@ -543,6 +597,7 @@ def _make_pop_and_sel_core(
                 DP_truncate=DP_truncate,
                 DP_m1_env=DP_m1_env,
                 interp_mass_vals=interp_vals,
+                taper_kind=taper_kind, taper_p=taper_p
             )
 
         def _segment_logsumexp_evt(x, sid, nseg):
@@ -940,7 +995,8 @@ def _make_pop_and_sel_core(
             interp_mass_vals = interp_mass_vals,
             integrate_dc = integrate_dc,
             return_var = return_var,
-            interp_mass = interp_mass
+            interp_mass = interp_mass,
+            taper_kind=taper_kind, taper_p=taper_p
             
         )
         if stop_grad_var_u:
@@ -988,6 +1044,8 @@ def log_p_pop(
     DP_truncate = False,
     DP_m1_env = False,
     interp_mass_vals=  None,
+    taper_kind = "sigmoid" ,  # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 ):
     """
     Backend-agnostic log_p_pop
@@ -1098,6 +1156,8 @@ def log_p_pop(
                 norm=True,
                 simplex_repair=simplex_repair,
                 norm_gauss=norm_gauss,
+                taper_kind = taper_kind,
+                taper_p = taper_p
         )
 
     # PLPreg
@@ -1122,6 +1182,8 @@ def log_p_pop(
                 (m1s, m2s),
                 lambdaBBHmass,
                 smoothing=smoothing,
+                 taper_kind = taper_kind,
+                taper_p = taper_p
             )
     
     # DPLDP-z
@@ -1195,7 +1257,9 @@ def log_p_pop(
                     has_m2_break=has_m2_break,
                     smoothing=smoothing,
                     simplex_repair=simplex_repair,
-                    norm_gauss=norm_gauss
+                    norm_gauss=norm_gauss,
+                     taper_kind = taper_kind,
+                    taper_p = taper_p
                 )
             
 
@@ -1331,7 +1395,9 @@ def sel_bias_with_uncertainty_legacy(
     DP_m1_env = False,
     interp_mass_vals=None,
     integrate_dc = 'trapz', 
-    return_var = True
+    return_var = True,
+    taper_kind = "sigmoid",   # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 
 ):
     """
@@ -1384,7 +1450,9 @@ def sel_bias_with_uncertainty_legacy(
         K_dp=K_dp, 
         DP_truncate=DP_truncate,
         DP_m1_env = DP_m1_env,
-        interp_mass_vals=interp_mass_vals
+        interp_mass_vals=interp_mass_vals,
+        taper_kind = taper_kind,
+        taper_p = taper_p,
     )
 
 
@@ -1452,7 +1520,9 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
     DP_m1_env=False,
     interp_mass_vals=None,
     integrate_dc="trapz",
-    return_var = True
+    return_var = True,
+    taper_kind = "sigmoid" ,  # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 ):
     """
     Optimized selection term (patched):
@@ -1539,6 +1609,8 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
             interp_mass_vals=interp_mass_vals,
+            taper_kind = taper_kind,
+            taper_p = taper_p,
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -1789,6 +1861,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
     interp_mass_vals=None,
     integrate_dc="trapz",
     return_var=True,
+    taper_kind = "sigmoid",   # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 ):
     """
     Optimized selection term with correct custom VJP behavior when interp_mass_vals depends on Lambda.
@@ -1892,6 +1966,8 @@ def sel_bias_with_uncertainty_streaming_vjp(
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
             interp_mass_vals=interp_mass_vals_,
+            taper_kind = taper_kind,
+            taper_p = taper_p,
         )
 
         x = lp_pop - lpd_c - lpi_c
@@ -2131,7 +2207,9 @@ def sel_bias_with_uncertainty(
     interp_mass_vals=None,
     integrate_dc = 'trapz',
     return_var = True,
-    interp_mass = False
+    interp_mass = False,
+    taper_kind = "sigmoid",   # or "power"
+    taper_p = 12.0           # only used if taper_kind == "power"
 ):
     
    
@@ -2153,7 +2231,9 @@ def sel_bias_with_uncertainty(
             DP_m1_env=DP_m1_env,
             interp_mass_vals=interp_mass_vals,
             integrate_dc = integrate_dc,
-            return_var = return_var
+            return_var = return_var,
+            taper_kind = taper_kind,
+            taper_p = taper_p,
             
         )
 
@@ -2177,7 +2257,9 @@ def sel_bias_with_uncertainty(
                 DP_m1_env=DP_m1_env,
                 interp_mass_vals=interp_mass_vals,
                 integrate_dc = integrate_dc,
-                return_var = return_var
+                return_var = return_var,
+                taper_kind = taper_kind,
+                   taper_p = taper_p,
             )
 
             
@@ -2199,7 +2281,9 @@ def sel_bias_with_uncertainty(
                 DP_m1_env=DP_m1_env,
                 interp_mass_vals=interp_mass_vals,
                 integrate_dc = integrate_dc,
-                return_var = return_var
+                return_var = return_var,
+                taper_kind = taper_kind,
+                taper_p = taper_p,
             )
 
 

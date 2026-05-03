@@ -137,8 +137,27 @@ def logdiffexp(bk, a, b, eps=1e-16):
     return bk.where(b < a, out, -np.inf)
 
 
+def log_power_gate(bk, x, low, high, p=16.0, eps=1e-12, clip=1e-15):
+    """
+    Smooth log gate on positive x:
 
+      low cutoff:  -log(1 + (low/x)^p)
+      high cutoff: -log(1 + (x/high)^p)
 
+    Returns log gate <= 0.
+    """
+
+    logx = bk.log(bk.maximum(x, eps))
+
+    t_low  = p * (bk.log(low)  - logx)
+    t_high = p * (logx - bk.log(high))
+
+    log_gate = -bk.logaddexp(0.0, t_low) - bk.logaddexp(0.0, t_high)
+
+    if clip is not None:
+        log_gate = bk.maximum(log_gate, bk.log(clip))
+
+    return log_gate
 
 # ---------------------------------------------------------------------
 # Integration

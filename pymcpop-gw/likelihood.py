@@ -122,7 +122,9 @@ class LikDataGauss:
     integrate_dc: str = "trapz"
     subtract_log_p_incl: bool = False
     sample_from_pop: bool = False
-    marginal_R0: bool = True
+    marginal_R0: bool = True,
+    taper_kind: str = "sigmoid" ,  # or "power"
+    taper_p: float = 12.0           # only used if taper_kind == "power"
 
 
 
@@ -161,7 +163,10 @@ class MarginalSampleData:
     integrate_dc: str = "trapz"
     subtract_log_p_incl: bool = False
     marginal_R0: bool = True
-    chunk_pe: int = 0
+    chunk_pe: int = 0,
+    
+    taper_kind: str = "sigmoid" ,  # or "power"
+    taper_p: float = 12.0           # only used if taper_kind == "power"
 
 
 

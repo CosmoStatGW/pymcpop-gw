@@ -107,7 +107,9 @@ def pack_data_gauss_popnot(
     sample_from_pop=False,
     marginal_R0=True,
     allTobs = None,
-    r = 0
+    r = 0,
+    taper_kind = "sigmoid", 
+     taper_p = 12.0
 ):
     """
     Build LikDataGauss for pop_only=False, sampling_GW='gauss'.
@@ -242,7 +244,10 @@ def pack_data_gauss_popnot(
         subtract_log_p_incl=bool(subtract_log_p_incl),
         sample_from_pop=bool(sample_from_pop),
         marginal_R0=bool(marginal_R0),
-        logr = logr
+        logr = logr,
+
+        taper_kind = taper_kind,
+        taper_p = taper_p
     )
     return data
 
@@ -290,7 +295,10 @@ def pack_data_samples_marginal(
     allTobs=None,
     chunk_pe=0,
     r=0,
+    taper_kind = "sigmoid", 
+    taper_p = 12.
 ):
+    
     """Pack flattened posterior samples for the marginalized NumPyro likelihood."""
     # GWData = [m1d_samples, m2d_samples, dL_samples, spin_samples,
     #           dL_prior, Tobs, allNsamples, where_compute, Nevents, allnames]
@@ -387,6 +395,9 @@ def pack_data_samples_marginal(
         subtract_log_p_incl=bool(subtract_log_p_incl),
         marginal_R0=bool(marginal_R0),
         chunk_pe=int(chunk_pe),
+    
+        taper_kind = taper_kind,
+        taper_p = taper_p
     )
 
 
@@ -404,7 +415,7 @@ def build_core_and_loglik_gauss_popnot(
     # selection handling
     skip_sel=False,              # keep False for your current pop_only=False workflow
     verbose=False,
-    z_nodes = None
+    z_nodes = None,
 ):
     """
     Build the population/selection core and the final log-likelihood callable:
@@ -426,6 +437,9 @@ def build_core_and_loglik_gauss_popnot(
         simplex_repair=data.simplex_repair,
         has_m2_break=data.has_m2_break,
         norm_gauss=data.norm_gauss,
+        taper_kind = data.taper_kind,   
+        taper_p = data.taper_p,           
+        
         param=data.param,
         verbose=bool(verbose),
         z_nodes = z_nodes,
@@ -481,6 +495,8 @@ def build_core_and_loglik_samples_marginal(
         simplex_repair=data.simplex_repair,
         has_m2_break=data.has_m2_break,
         norm_gauss=data.norm_gauss,
+        taper_kind = data.taper_kind,
+        taper_p = data.taper_p,
         param=data.param,
         verbose=bool(verbose),
         z_nodes=z_nodes,
@@ -668,111 +684,87 @@ def evo_triplet_numpyro(
     positive=False,
     eps_pos=1e-6,
 ):
+    dtype = jnp.float64
+
     sigma_key = f"delta_{name}_sigma"
-    delta_sigma = priors.get(sigma_key, 1.0)
+    delta_sigma = jnp.asarray(priors.get(sigma_key, 1.0), dtype=dtype)
 
+    theta0 = jnp.asarray(theta0, dtype=dtype)
+
+    # ------------------------------------------------------------
+    # delta evolution
+    # ------------------------------------------------------------
     if positive:
-        # lower = -theta0 + eps_pos
-    
-        # delta_theta = numpyro.sample(
-        #     f"delta_{name}",
-        #     dist.Normal(0.0, delta_sigma),
-        # )
-    
-        # # TruncatedNormal normalization for support delta > lower:
-        # # Z = P[N(0, sigma) > lower] = Phi(-lower / sigma)
-        # logZ = jax.scipy.special.log_ndtr(-lower / delta_sigma)
-    
-        # numpyro.factor(
-        #     f"delta_{name}_trunc_norm",
-        #     -logZ,
-        # )
-    
-        # numpyro.factor(
-        #     f"delta_{name}_support",
-        #     jnp.where(delta_theta > lower, 0.0, -1e30),
-        # )
-        ####################################################################
+        lower = -theta0 + jnp.asarray(eps_pos, dtype=dtype)
 
-        lower = -theta0 + eps_pos
-        sigma = delta_sigma
-        
-        # Exact truncated-normal target:
-        # delta_theta | theta0 ~ Normal(0, sigma), with delta_theta > lower
-        #
-        # We sample an unconstrained raw variable and map it smoothly to the allowed region.
-        
-        raw = numpyro.sample(
-            f"delta_{name}_raw",
-            dist.Normal(0.0, 1.0),
+        delta_theta = numpyro.sample(
+            f"delta_{name}",
+            dist.TruncatedNormal(
+                loc=jnp.asarray(0.0, dtype=dtype),
+                scale=delta_sigma,
+                low=lower,
+            ),
         )
-        
-        # Smooth bijection R -> (lower, +inf)
-        delta_theta = lower + sigma * jax.nn.softplus(raw)
-        
-        # log |d delta / d raw|
-        log_jac = jnp.log(sigma) + jax.nn.log_sigmoid(raw)
-        
-        # Truncated-normal normalization:
-        # Z = P[Normal(0, sigma) > lower]
-        logZ = jax.scipy.special.log_ndtr(-lower / sigma)
-        
-        # Correct the raw Normal base density into the desired truncated Normal density.
-        target_logp = dist.Normal(0.0, sigma).log_prob(delta_theta) - logZ
-        base_logp = dist.Normal(0.0, 1.0).log_prob(raw)
-        
-        numpyro.factor(
-            f"delta_{name}_softplus_trunc_correction",
-            target_logp + log_jac - base_logp,
+
+        # This should be strictly positive by construction.
+        theta_inf = numpyro.deterministic(
+            f"{name}_inf",
+            theta0 + delta_theta,
         )
-        
-        numpyro.deterministic(f"delta_{name}", delta_theta)    
-
-
-        ####################################################################
-
-        # lower = -theta0 + eps_pos
-        # sigma = delta_sigma
-        
-        # # Different but valid prior
-        # raw = numpyro.sample(f"delta_{name}_raw", dist.Normal(0.0, 1.0))
-        # delta_theta = lower + sigma * jax.nn.softplus(raw)
-        # numpyro.deterministic(f"delta_{name}", delta_theta)
-
 
     else:
         delta_theta = numpyro.sample(
             f"delta_{name}",
-            dist.Normal(0.0, delta_sigma),
+            dist.Normal(
+                loc=jnp.asarray(0.0, dtype=dtype),
+                scale=delta_sigma,
+            ),
         )
 
-    theta_inf_unclipped = theta0 + delta_theta
-
-    if positive:
         theta_inf = numpyro.deterministic(
             f"{name}_inf",
-            jnp.maximum(theta_inf_unclipped, eps_pos),
-        )
-    else:
-        theta_inf = numpyro.deterministic(
-            f"{name}_inf",
-            theta_inf_unclipped,
+            theta0 + delta_theta,
         )
 
+    # ------------------------------------------------------------
+    # transition redshift
+    # ------------------------------------------------------------
     z_low, z_high = priors.get("z_t", (0.05, 2.5))
-    z_t = numpyro.sample(f"z_{name}", dist.Uniform(z_low, z_high))
 
+    z_t = numpyro.sample(
+        f"z_{name}",
+        dist.Uniform(
+            jnp.asarray(z_low, dtype=dtype),
+            jnp.asarray(z_high, dtype=dtype),
+        ),
+    )
+
+    # ------------------------------------------------------------
+    # transition width
+    #
+    # This is
+    # log_dz ~ Normal(log(dz_mid), 0.5)
+    # dz = clip(exp(log_dz), dz_low, dz_high)
+    # ------------------------------------------------------------
     dz_low, dz_high = priors.get("dz", (0.05, 3.0))
+    dz_low = jnp.asarray(dz_low, dtype=dtype)
+    dz_high = jnp.asarray(dz_high, dtype=dtype)
+
     dz_mid = 0.5 * (dz_low + dz_high)
 
     log_dz = numpyro.sample(
         f"log_dz_{name}",
-        dist.Normal(jnp.log(dz_mid), 0.5),
+        dist.Normal(
+            loc=jnp.log(dz_mid),
+            scale=jnp.asarray(0.5, dtype=dtype),
+        ),
     )
+
+    dz_raw = jnp.exp(log_dz)
 
     dz = numpyro.deterministic(
         f"dz_{name}",
-        jnp.clip(jnp.exp(log_dz), dz_low, dz_high),
+        jnp.clip(dz_raw, dz_low, dz_high),
     )
 
     return theta_inf, z_t, dz
@@ -863,8 +855,10 @@ def make_model_jax(  priors,
                  DP_m1_env = False,
                  detach_var = False,
                 remove_spin_prior = False,
-                     r = 0,
+                r = 0,
                      vary_mb = True,
+                     taper_kind = "sigmoid",
+                taper_p = 12.0
                 ):
 
 
@@ -1217,6 +1211,8 @@ def make_model_jax(  priors,
             marginal_R0=marginal_R0,
             allTobs=allTobs,
             r=r,
+            taper_kind = taper_kind, 
+            taper_p = taper_p
         )
         print("pack_data_gauss_popnot ok")
         print()
@@ -1250,6 +1246,8 @@ def make_model_jax(  priors,
             allTobs=allTobs,
             chunk_pe=(0 if chunk_reduce in (False, 0, None) else int(chunk_reduce)),
             r=r,
+            taper_kind = taper_kind, 
+            taper_p = taper_p
         )
 
         core, loglik = build_core_and_loglik_samples_marginal(

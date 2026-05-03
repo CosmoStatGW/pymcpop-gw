@@ -304,6 +304,9 @@ def main():
 
     parser.add_argument("--has_m2_break", default=0, type=int, required=False)
     parser.add_argument("--norm_gauss", default='uplow', type=str, required=False)
+
+    parser.add_argument("--taper_kind", default='sigmoid', type=str, required=False)
+    parser.add_argument("--taper_p", default=15, type=float, required=False)
     
     
     
@@ -883,6 +886,9 @@ def main():
             rate_model=FLAGS.rate_model,
             mass_model=FLAGS.mass_model,
             smoothing=FLAGS.smoothing,
+            taper_kind = FLAGS.taper_kind,
+            taper_p = FLAGS.taper_p,
+            
             simplex_repair=bool(FLAGS.simplex_repair),
             interp_mass=FLAGS.interp_mass,
             interp_z=FLAGS.interp_z,
@@ -937,6 +943,8 @@ def main():
             rate_model=FLAGS.rate_model,
             mass_model=FLAGS.mass_model,
             smoothing=FLAGS.smoothing,
+            taper_kind = FLAGS.taper_kind,
+            taper_p = FLAGS.taper_p,
             simplex_repair=bool(FLAGS.simplex_repair),
             interp_mass=FLAGS.interp_mass,
             interp_z=FLAGS.interp_z,
