@@ -321,93 +321,143 @@ class EventBoundedGMMForPlot:
         return legacy, labels
 
 
-def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=False):
+def fit_cho(allsamples, allNsamples, spins='default', skymap=False, inclination=False,
+            dil_factor=1, bounded_transform=False, fit_coord_bounds=None,
+            fit_coord_names=None, bound_padding=1e-4):
+    """
+    Fit the single-Gaussian proposal used by the NumPyro likelihood.
+
+    In legacy mode this preserves the original coordinates:
+        logMc, logit(q), logdL, ...
+
+    In bounded mode this uses exactly the same event-bounded coordinates as
+    fit_gmm:
+        flogit(logMc; bounds), flogit(q; bounds), flogit(logdL; bounds), ...
+
+    No bounds are recomputed in bounded mode: fit_coord_bounds and
+    fit_coord_names must be provided by fit_gmm, so the proposal and GMM live in
+    the same coordinate system.
+    """
 
     samples_means = []
     samples_cho_covs = []
 
     nevs = len(allsamples)
     print('There are %s events'%nevs)
-    
-    
+
+    if bounded_transform:
+        if fit_coord_bounds is None or fit_coord_names is None:
+            raise NotImplementedError(
+                "bounded fit_cho requires fit_coord_bounds and fit_coord_names from fit_gmm"
+            )
+        fit_coord_bounds = np.asarray(fit_coord_bounds, dtype=float)
+        fit_coord_names = list(fit_coord_names)
+        if fit_coord_bounds.shape[0] != nevs:
+            raise NotImplementedError(
+                "bounded fit_cho currently requires bounds for every event. "
+                "Got %s bounds for %s events." % (fit_coord_bounds.shape[0], nevs)
+            )
+
     for i in tqdm(range(nevs), ):
-    
+
         jmax = allNsamples[i]
-    
-        
-        m1ds = allsamples[i, :jmax, 0]
-        m2ds = allsamples[i, :jmax, 1]
-        dLs = allsamples[i, :jmax, 2]
-        
-        Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
-        qs = m2ds/m1ds 
-        
-        qlogit = logit(qs)
 
-        pts_ = [ np.log(Mcs), qlogit, np.log(dLs),]
+        if bounded_transform:
+            raw_coords, coord_names, dilate_mask = build_raw_fit_coordinates(
+                allsamples[i, :jmax, :],
+                spins=spins,
+                skymap=skymap,
+                inclination=inclination,
+            )
 
-        if spins=='default':
-            chi1 = allsamples[i, :jmax, 3]
-            chi2 = allsamples[i, :jmax, 4]
-            cost1 = allsamples[i, :jmax, 5]
-            cost2 = allsamples[i, :jmax, 6]
-            
-            lchi1 = logit(chi1)
-            lchi2 = logit(chi2)
-            lcost1 = flogit(cost1)
-            lcost2 = flogit(cost2)
+            if list(coord_names) != fit_coord_names:
+                raise ValueError(
+                    "Coordinate names in fit_cho do not match fit_gmm bounds. "
+                    "fit_cho has %s, fit_gmm has %s" % (coord_names, fit_coord_names)
+                )
 
-            pts_.append( lchi1) 
-            pts_.append(lchi2) 
-            pts_.append( lcost1) 
-            pts_.append( lcost2  )
+            pts, _ = event_bounded_fit_coordinates(
+                raw_coords,
+                coord_names,
+                dilate_mask,
+                bound_padding=bound_padding,
+                dil_factor=dil_factor,
+                bounds=fit_coord_bounds[i],
+            )
 
-            s_start = 7
-            
-        elif spins=='aligned':
-            chi1z = allsamples[i, :jmax, 3]
-            chi2z = allsamples[i, :jmax, 4]
-            pts_.append(  flogit(chi1z) ) 
-            pts_.append(  flogit(chi2z)  )
+            print('Using event-bounded Gaussian proposal coordinates.')
+            print('Number of dimensions of each event: %s'%pts.shape[1])
 
-            s_start = 5
-            
-        elif spins=='none':
-            s_start = 3
-            pass
-
-
-        if skymap:
-            ra = allsamples[i, :jmax, s_start]
-            dec = allsamples[i, :jmax, s_start+1]
-            pts_.append( flogit(ra, xmin=0,xmax=2*np.pi) )
-            pts_.append( flogit(dec, xmin=-np.pi/2, xmax=np.pi/2) )
-            istart = s_start+2
         else:
-            istart = s_start
-                    
-        if inclination:
-            iota = allsamples[i, :jmax, istart]
-            pts_.append( flogit(iota, xmin=0,xmax=np.pi)  )
+            m1ds = allsamples[i, :jmax, 0]
+            m2ds = allsamples[i, :jmax, 1]
+            dLs = allsamples[i, :jmax, 2]
 
-        print('Number of dimensions of each event: %s'%len(pts_))
-            
-        pts = np.stack( pts_ ).T
-        
+            Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
+            qs = m2ds/m1ds
+
+            qlogit = logit(qs)
+
+            pts_ = [ np.log(Mcs), qlogit, np.log(dLs),]
+
+            if spins=='default':
+                chi1 = allsamples[i, :jmax, 3]
+                chi2 = allsamples[i, :jmax, 4]
+                cost1 = allsamples[i, :jmax, 5]
+                cost2 = allsamples[i, :jmax, 6]
+
+                lchi1 = logit(chi1)
+                lchi2 = logit(chi2)
+                lcost1 = flogit(cost1)
+                lcost2 = flogit(cost2)
+
+                pts_.append( lchi1)
+                pts_.append(lchi2)
+                pts_.append( lcost1)
+                pts_.append( lcost2  )
+
+                s_start = 7
+
+            elif spins=='aligned':
+                chi1z = allsamples[i, :jmax, 3]
+                chi2z = allsamples[i, :jmax, 4]
+                pts_.append(  flogit(chi1z) )
+                pts_.append(  flogit(chi2z)  )
+
+                s_start = 5
+
+            elif spins=='none':
+                s_start = 3
+                pass
+            else:
+                raise ValueError(f"Unknown spins option: {spins}")
+
+            if skymap:
+                ra = allsamples[i, :jmax, s_start]
+                dec = allsamples[i, :jmax, s_start+1]
+                pts_.append( flogit(ra, xmin=0,xmax=2*np.pi) )
+                pts_.append( flogit(dec, xmin=-np.pi/2, xmax=np.pi/2) )
+                istart = s_start+2
+            else:
+                istart = s_start
+
+            if inclination:
+                iota = allsamples[i, :jmax, istart]
+                pts_.append( flogit(iota, xmin=0,xmax=np.pi)  )
+
+            print('Number of dimensions of each event: %s'%len(pts_))
+
+            pts = np.stack( pts_ ).T
+
         samples_means.append( pts.mean(axis=0) )
         samples_cho_covs.append( np.linalg.cholesky( np.cov(pts, rowvar=False) ) )
-            
-        
-    
+
     samples_means = np.asarray(samples_means)
     samples_cho_covs = np.asarray(samples_cho_covs)
-    
+
     print("Done.")
 
     return samples_means, samples_cho_covs
-
-
-
 
 def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_bounds_full=None):
     """
@@ -1558,7 +1608,18 @@ if __name__=='__main__':
 
                                                                                                                                                 )
         
-            means_, cho_covs_ = fit_cho(allsamples_, data.Nsamples, spins=FLAGS.spins, skymap=FLAGS.skymap, inclination=FLAGS.inclination, )
+            means_, cho_covs_ = fit_cho(
+                allsamples_,
+                data.Nsamples,
+                spins=FLAGS.spins,
+                skymap=FLAGS.skymap,
+                inclination=FLAGS.inclination,
+                dil_factor=FLAGS.dil_factor,
+                bounded_transform=bool(FLAGS.bounded_transform),
+                fit_coord_bounds=fit_coord_bounds_,
+                fit_coord_names=fit_coord_names_,
+                bound_padding=FLAGS.bound_padding,
+            )
         
             np.savetxt( fngmm, allNgm_ ) 
         
@@ -1578,6 +1639,7 @@ if __name__=='__main__':
             with open(os.path.join(base_fname, '%s_gmm_fit_transform_info.json'%run_name.split('.')[0]), 'w') as f_info:
                 json.dump({
                     'bounded_transform': bool(FLAGS.bounded_transform),
+                    'transform_mode': 'event_bounded_flogit' if bool(FLAGS.bounded_transform) else 'legacy',
                     'bound_padding': FLAGS.bound_padding,
                     'coordinate_names': list(fit_coord_names_),
                     'note': 'GMM means/covariances are in event-bounded flogit coordinates when bounded_transform is true. Bounds are min/max+padded in the pre-bounded fit coordinates.'

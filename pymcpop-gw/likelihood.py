@@ -28,6 +28,10 @@ def inv_flogitat(x):
     # maps R -> (-1, 1)
     return 2.0 * jax.nn.sigmoid(x) - 1.0
 
+def inv_flogitat_bounds(x, xmin, xmax):
+    # maps R -> (xmin, xmax), elementwise.
+    return xmin + (xmax - xmin) * jax.nn.sigmoid(x)
+
 def m1m2_from_Mcq(Mc, q):
     # Standard chirp mass relation: Mc = (m1 m2)^(3/5) / (m1+m2)^(1/5)
     # with q = m2/m1 <= 1
@@ -78,6 +82,7 @@ class LikDataGauss:
     log_dets_l: jnp.ndarray   # (N, ngmm)
     log_wts_l: jnp.ndarray    # (N, ngmm)
 
+
     # injections / selection
     m1inj: jnp.ndarray        # (ninj,)
     m2inj: jnp.ndarray        # (ninj,)
@@ -100,6 +105,15 @@ class LikDataGauss:
     # bilby prior grid (in Gpc)
     dLgrid_bilby_gpc: Optional[jnp.ndarray] = None
     PE_prior_bilby_grid: Optional[jnp.ndarray] = None
+
+    # Optional event-bounded GMM coordinate transform metadata.
+    # If gmm_fit_transform_mode == "event_bounded_flogit", samples drawn in
+    # the Gaussian/GMM surrogate space are bounded coordinates z. They must be
+    # inverse-mapped with gmm_fit_coord_bounds before conversion to physical PE
+    # variables. Legacy mode keeps the historical coordinate interpretation.
+    gmm_fit_coord_bounds: Optional[jnp.ndarray] = None  # (N, nd, 2)
+    gmm_fit_transform_mode: str = "legacy"
+    gmm_fit_coord_names: Optional[Tuple[str, ...]] = None
 
     # misc constants for optional Poisson term
     Nevs_per_chunk: Optional[jnp.ndarray] = None   # (nchunks,)
@@ -306,6 +320,17 @@ def _gw_terms_from_x(
       spins_evt (N, nspin_evt)
       log_jac_evt = gwl - pilik (N,)
       plus logd (N,) for PE prior building.
+
+    Coordinate modes
+    ----------------
+    legacy:
+        samples are interpreted as the historical fit coordinates:
+            [logMc, logit(q), logdL, ...]
+
+    event_bounded_flogit:
+        samples are bounded-GMM coordinates z.  The GMM density and Gaussian
+        proposal density are both evaluated in z-space.  Physical PE variables
+        are obtained by inverse-bounded-flogit using per-event coordinate bounds.
     """
     mus_s = data.mus_s
     cho_s = data.cho_s
@@ -314,42 +339,32 @@ def _gw_terms_from_x(
     samples = mus_s + jnp.einsum("nij,nj->ni", cho_s, x)
 
     N, nd = samples.shape
-    
+
     # proposal logpdf for x and Cholesky determinant.
     # nd is now the ACTIVE dimension only.
     log_px = -0.5 * jnp.sum(x * x, axis=1) - 0.5 * nd * jnp.log(2.0 * jnp.pi)
     log_det_L = jnp.sum(jnp.log(jnp.diagonal(cho_s, axis1=1, axis2=2)), axis=1)
-    pilik = log_px - log_det_L  # log q_Gauss(theta)
-    
-    log_Mc_det = samples[:, 0]
-    logit_q = samples[:, 1]
-    logd = samples[:, 2]
-    
+    pilik = log_px - log_det_L  # log q_Gauss(samples)
+
+    X = samples
+
     if data.spin_model in ("default", "default_gauss"):
         if nd != 7:
             raise ValueError(f"Spin model {data.spin_model} requires nd=7, got nd={nd}")
-    
-        X = samples
         d_int = 7
-    
-        chi1 = inv_logitat(samples[:, 3])
-        chi2 = inv_logitat(samples[:, 4])
-        cost1 = inv_flogitat(samples[:, 5])
-        cost2 = inv_flogitat(samples[:, 6])
-        spins_evt = jnp.stack([chi1, chi2, cost1, cost2], axis=1)
-    
+        expected_names = ("logMc", "q", "logdL", "chi_1", "chi_2", "cos_t_1", "cos_t_2")
+
     elif data.spin_model == "none":
         if nd != 3:
             raise ValueError(f"spin_model='none' requires nd=3 after packing, got nd={nd}")
-    
-        X = samples
         d_int = 3
-        spins_evt = jnp.zeros((N, 0), dtype=jnp.float64)
-    
+        expected_names = ("logMc", "q", "logdL")
+
     else:
         raise NotImplementedError(f"spin_model={data.spin_model} not yet supported in gauss branch")
 
-    # GMM likelihood gwl
+    # GMM likelihood gwl, always evaluated in the sampled surrogate coordinate.
+    # In legacy mode this is the historical coordinate. In bounded mode this is z.
     diff = X[:, None, :] - data.mus_l[:, :, :d_int]                 # (N,ngmm,d)
     tmp = jnp.matmul(data.icovs_l[:, :, :d_int, :d_int], diff[..., None])[..., 0]  # (N,ngmm,d)
     quad = jnp.sum(diff * tmp, axis=-1)                              # (N,ngmm)
@@ -361,24 +376,79 @@ def _gw_terms_from_x(
         - 0.5 * data.log_dets_l
         + data.log_wts_l
     )
-    
-    
-    #gwl = jax.scipy.special.logsumexp(logp_components, axis=1)       # (N,)
+
     gwl = safe_logsumexp_jax(logp_components, axis=1)
 
-    # detector-frame masses and distance
-    Mc = jnp.exp(log_Mc_det)
-    q = inv_logitat(logit_q)
+    if data.gmm_fit_transform_mode == "legacy":
+        # Historical interpretation of samples.
+        log_Mc_det = samples[:, 0]
+        logit_q = samples[:, 1]
+        logd = samples[:, 2]
+
+        Mc = jnp.exp(log_Mc_det)
+        q = inv_logitat(logit_q)
+        dLdet = jnp.exp(logd)
+
+        if data.spin_model in ("default", "default_gauss"):
+            chi1 = inv_logitat(samples[:, 3])
+            chi2 = inv_logitat(samples[:, 4])
+            cost1 = inv_flogitat(samples[:, 5])
+            cost2 = inv_flogitat(samples[:, 6])
+            spins_evt = jnp.stack([chi1, chi2, cost1, cost2], axis=1)
+        else:
+            spins_evt = jnp.zeros((N, 0), dtype=jnp.float64)
+
+    elif data.gmm_fit_transform_mode == "event_bounded_flogit":
+        if data.gmm_fit_coord_bounds is None:
+            raise ValueError("gmm_fit_coord_bounds is required for event_bounded_flogit mode")
+        if data.gmm_fit_coord_names is None:
+            raise ValueError("gmm_fit_coord_names is required for event_bounded_flogit mode")
+        if tuple(data.gmm_fit_coord_names[:d_int]) != expected_names:
+            raise NotImplementedError(
+                "Unsupported bounded GMM coordinate names. "
+                f"Expected {expected_names}, got {tuple(data.gmm_fit_coord_names[:d_int])}."
+            )
+        if data.gmm_fit_coord_bounds.shape != (N, d_int, 2):
+            raise ValueError(
+                "gmm_fit_coord_bounds must have shape "
+                f"({N}, {d_int}, 2), got {data.gmm_fit_coord_bounds.shape}"
+            )
+
+        bounds = data.gmm_fit_coord_bounds
+        xmin = bounds[:, :, 0]
+        xmax = bounds[:, :, 1]
+
+        # Direct map from bounded-GMM coordinates z to physical/derived PE variables.
+        log_Mc_det = inv_flogitat_bounds(samples[:, 0], xmin[:, 0], xmax[:, 0])
+        q = inv_flogitat_bounds(samples[:, 1], xmin[:, 1], xmax[:, 1])
+        logd = inv_flogitat_bounds(samples[:, 2], xmin[:, 2], xmax[:, 2])
+
+        Mc = jnp.exp(log_Mc_det)
+        dLdet = jnp.exp(logd)
+
+        if data.spin_model in ("default", "default_gauss"):
+            chi1 = inv_flogitat_bounds(samples[:, 3], xmin[:, 3], xmax[:, 3])
+            chi2 = inv_flogitat_bounds(samples[:, 4], xmin[:, 4], xmax[:, 4])
+            cost1 = inv_flogitat_bounds(samples[:, 5], xmin[:, 5], xmax[:, 5])
+            cost2 = inv_flogitat_bounds(samples[:, 6], xmin[:, 6], xmax[:, 6])
+            spins_evt = jnp.stack([chi1, chi2, cost1, cost2], axis=1)
+        else:
+            spins_evt = jnp.zeros((N, 0), dtype=jnp.float64)
+
+    else:
+        raise NotImplementedError(
+            f"Unknown gmm_fit_transform_mode={data.gmm_fit_transform_mode!r}"
+        )
+
     m1det, m2det = m1m2_from_Mcq(Mc, q)
-    dLdet = jnp.exp(logd)  # Gpc (as per your convention)
 
     log_jac_evt = jnp.zeros((N,), dtype=jnp.float64)
     if (not data.sample_from_pop):
         # same as PyMC: log_jacobian -= pilik; += gwl
+        # Both gwl and pilik are densities in the sampled surrogate coordinate.
         log_jac_evt = gwl - pilik
 
     return m1det, m2det, dLdet, spins_evt, log_jac_evt, logd
-
 
 # -----------------------------
 # factory: build core + loglik

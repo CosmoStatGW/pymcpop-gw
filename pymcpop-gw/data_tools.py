@@ -6,7 +6,9 @@
 
 import numpy as onp
 import sys
-
+import os
+import json
+import h5py
 
 
 def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_rw=False):
@@ -211,7 +213,7 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
         
 
 
-def load_data_interp(fin, events_use=None, events_exclude=None):
+def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transform=False):
 
     if events_use is None:
         events_use = []
@@ -231,6 +233,9 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
     gmm_covs_dict = {}
     gmm_cho_covs_dict = {}
     gmm_log_dets_dict = {}
+    gmm_fit_coord_bounds_dict = {}
+    gmm_fit_coord_names_ref = None
+    gmm_fit_transform_info_ref = None
     allNgm_dict = {}
     nevs_dict = {}
     allnames_dict = {}
@@ -239,6 +244,55 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
 
     nevs_all = 0
     Ngm_max = 0
+
+    def _require_file(fname):
+        if not os.path.exists(fname):
+            raise FileNotFoundError(fname)
+        return fname
+
+    def _load_bounded_transform_metadata(fid, mask_, allnames_):
+        bounds_path = _require_file(fid + 'gmm_fit_coord_bounds.npy')
+        names_path = _require_file(fid + 'gmm_fit_coord_names.txt')
+        info_path = _require_file(fid + 'gmm_fit_transform_info.json')
+
+        bounds_all = onp.load(bounds_path)
+        coord_names = onp.loadtxt(names_path, dtype=str)
+        coord_names = onp.atleast_1d(coord_names).astype(str)
+
+        with open(info_path, 'r') as f_info:
+            transform_info = json.load(f_info)
+
+        if bounds_all.ndim != 3 or bounds_all.shape[-1] != 2:
+            raise ValueError(
+                "gmm_fit_coord_bounds.npy must have shape (Nevents, ndim, 2). "
+                f"Got {bounds_all.shape} for {bounds_path}"
+            )
+
+        if bounds_all.shape[0] != len(allnames_):
+            raise ValueError(
+                f"Bounds event axis mismatch for {bounds_path}: "
+                f"bounds has {bounds_all.shape[0]} events, allNames has {len(allnames_)}"
+            )
+
+        if bounds_all.shape[1] != len(coord_names):
+            raise ValueError(
+                f"Bounds dimension mismatch for {bounds_path}: "
+                f"bounds ndim is {bounds_all.shape[1]}, coord_names has {len(coord_names)}"
+            )
+
+        if not onp.isfinite(bounds_all).all():
+            raise ValueError(f"Non-finite entries in {bounds_path}")
+
+        if not onp.all(bounds_all[:, :, 1] > bounds_all[:, :, 0]):
+            raise ValueError(f"Every fitted-coordinate bound must satisfy xmax > xmin in {bounds_path}")
+
+        mode = transform_info.get('transform_mode', None)
+        if mode != 'event_bounded_flogit':
+            raise ValueError(
+                f"Expected transform_mode='event_bounded_flogit' in {info_path}, got {mode!r}"
+            )
+
+        return bounds_all[mask_], coord_names, transform_info
 
     for i,fid in enumerate(fin):
 
@@ -358,6 +412,44 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
             gmm_covs_dict[fid] = onp.asarray(gmm_covs)
             
         gmm_log_dets_dict[fid] =  onp.load( fid+'gmm_log_dets.npy' )[mask_, :max_gmm] 
+
+        if bounded_transform:
+            (
+                gmm_fit_coord_bounds_dict[fid],
+                coord_names_,
+                transform_info_,
+            ) = _load_bounded_transform_metadata(fid, mask_, allnames_)
+
+            nd = gmm_means_dict[fid].shape[-1]
+
+            if coord_names_.shape[0] != nd:
+                raise ValueError(
+                    f"Bounded coordinate names length {coord_names_.shape[0]} does not match "
+                    f"GMM dimension {nd} for {fid}"
+                )
+
+            if gmm_fit_coord_bounds_dict[fid].shape != (len(gmm_log_wts_dict[fid]), nd, 2):
+                raise ValueError(
+                    f"Masked bounded coordinate bounds have shape "
+                    f"{gmm_fit_coord_bounds_dict[fid].shape}; expected "
+                    f"({len(gmm_log_wts_dict[fid])}, {nd}, 2) for {fid}"
+                )
+
+            if gmm_fit_coord_names_ref is None:
+                gmm_fit_coord_names_ref = coord_names_
+            elif not onp.array_equal(gmm_fit_coord_names_ref, coord_names_):
+                raise ValueError(
+                    f"Bounded coordinate names differ across input files. "
+                    f"Reference: {gmm_fit_coord_names_ref}; for {fid}: {coord_names_}"
+                )
+
+            if gmm_fit_transform_info_ref is None:
+                gmm_fit_transform_info_ref = transform_info_
+            elif gmm_fit_transform_info_ref != transform_info_:
+                raise ValueError(
+                    f"Bounded transform info differs across input files. "
+                    f"Reference: {gmm_fit_transform_info_ref}; for {fid}: {transform_info_}"
+                )
         
         
         if i==0:
@@ -397,6 +489,13 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
     gmm_cho_covs = onp.zeros( (nevs_all, Ngm_max, nd, nd) )
     gmm_log_dets = onp.log( onp.ones( (nevs_all, Ngm_max) ))
 
+    if bounded_transform:
+        if gmm_fit_coord_names_ref is None or gmm_fit_transform_info_ref is None:
+            raise ValueError("bounded_transform=True but no bounded metadata was loaded.")
+        gmm_fit_coord_bounds = onp.zeros((nevs_all, nd, 2))
+    else:
+        gmm_fit_coord_bounds = None
+
     iev = 0
     for k,fid in enumerate(fin):
         #print("THis is %s"%fid)
@@ -418,11 +517,13 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
             gmm_cho_covs[iev, :ngm_] = gmm_cho_covs_dict[fid][i]
             gmm_covs[iev, :ngm_] = gmm_covs_dict[fid][i]
             gmm_log_dets[iev, :ngm_] = gmm_log_dets_dict[fid][i]
+            if bounded_transform:
+                gmm_fit_coord_bounds[iev] = gmm_fit_coord_bounds_dict[fid][i]
 
             iev+=1
     
 
-    return {'samples_means': samples_means, 
+    res = {'samples_means': samples_means, 
             'samples_cho_covs': samples_cho_covs,
             'gmm_log_wts': gmm_log_wts,
             'gmm_means': gmm_means,
@@ -434,6 +535,13 @@ def load_data_interp(fin, events_use=None, events_exclude=None):
             'Nevents': nevs_arr,
             'allnames' : allnames_return
            }
+
+    if bounded_transform:
+        res['gmm_fit_coord_bounds'] = gmm_fit_coord_bounds
+        res['gmm_fit_coord_names'] = gmm_fit_coord_names_ref
+        res['gmm_fit_transform_info'] = gmm_fit_transform_info_ref
+
+    return res
 
 
 

@@ -318,6 +318,7 @@ def main():
     
     
     parser.add_argument("--sampling_gw", default='gauss', type=str, required=False)
+    parser.add_argument("--bounded_gmm_transform", default=0, type=int, required=False)
     parser.add_argument("--cho_dil", default=1., type=float, required=False)
     parser.add_argument("--sel", default='Tobs', type=str, required=False)
     parser.add_argument("--ivals", default='', type=str, required=False)
@@ -421,6 +422,12 @@ def main():
     os.makedirs(FLAGS.fout, exist_ok=True)
 
     if hasattr(FLAGS, "settings") and FLAGS.settings: import shutil; shutil.copy(FLAGS.settings, os.path.join(FLAGS.fout, os.path.basename(FLAGS.settings)))
+
+    if bool(FLAGS.bounded_gmm_transform):
+        if FLAGS.pop_only:
+            raise NotImplementedError("--bounded_gmm_transform is only implemented for pop_only=0 surrogate fits.")
+        if FLAGS.sampling_gw != 'gauss':
+            raise NotImplementedError("--bounded_gmm_transform is only implemented for sampling_gw='gauss'.")
 
 
 
@@ -647,7 +654,12 @@ def main():
     if not FLAGS.pop_only:
 
         #data = dt.load_data_interp(FLAGS.fin_data, events_use=FLAGS.events_use)
-        data = dt.load_data_interp(FLAGS.fin_data, events_use=FLAGS.events_use, events_exclude=FLAGS.events_exclude)
+        data = dt.load_data_interp(
+            FLAGS.fin_data,
+            events_use=FLAGS.events_use,
+            events_exclude=FLAGS.events_exclude,
+            bounded_transform=bool(FLAGS.bounded_gmm_transform),
+        )
 
  
         samples_means_at = data['samples_means']#.astype(X)
@@ -661,6 +673,36 @@ def main():
         allNgm =  data['allNgm']#.astype(X)
         Nevents =  data['Nevents']#.astype(X)
         allnames =  data['allnames']
+
+        if bool(FLAGS.bounded_gmm_transform):
+            gmm_fit_coord_bounds = data['gmm_fit_coord_bounds']
+            gmm_fit_coord_names = data['gmm_fit_coord_names']
+            gmm_fit_transform_info = data['gmm_fit_transform_info']
+
+            if gmm_fit_coord_bounds.shape[0] != samples_means_at.shape[0]:
+                raise ValueError(
+                    "gmm_fit_coord_bounds event dimension does not match samples_means. "
+                    f"Got {gmm_fit_coord_bounds.shape[0]} and {samples_means_at.shape[0]}."
+                )
+            if gmm_fit_coord_bounds.shape[1] != samples_means_at.shape[1]:
+                raise ValueError(
+                    "gmm_fit_coord_bounds coordinate dimension does not match samples_means. "
+                    f"Got {gmm_fit_coord_bounds.shape[1]} and {samples_means_at.shape[1]}."
+                )
+            if gmm_fit_coord_bounds.shape[2] != 2:
+                raise ValueError(
+                    "gmm_fit_coord_bounds must have shape (Nevents, ndim, 2). "
+                    f"Got {gmm_fit_coord_bounds.shape}."
+                )
+            if len(gmm_fit_coord_names) != samples_means_at.shape[1]:
+                raise ValueError(
+                    "gmm_fit_coord_names length does not match samples_means dimension. "
+                    f"Got {len(gmm_fit_coord_names)} and {samples_means_at.shape[1]}."
+                )
+        else:
+            gmm_fit_coord_bounds = None
+            gmm_fit_coord_names = None
+            gmm_fit_transform_info = None
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
 
@@ -699,6 +741,8 @@ def main():
             gmm_icovs =  gmm_icovs[mask_3D]
             gmm_cho_covs =  gmm_cho_covs[mask_3D]
             gmm_log_dets =  gmm_log_dets[mask_1D]
+            if bool(FLAGS.bounded_gmm_transform):
+                gmm_fit_coord_bounds = gmm_fit_coord_bounds[mask_2D]
             allNgm =  allNgm[mask_0D]
             Nevents =  len(allNgm)
 
@@ -834,17 +878,33 @@ def main():
                         allnames
                       ]
         elif FLAGS.sampling_gw=='gauss':
-            GWData =  [samples_means_at, #.astype(X), 
-                       samples_cho_covs_at, #astype(X), 
-                       gmm_log_wts, #.astype(X), 
-                       gmm_means, #.astype(X), 
-                       gmm_icovs, #.astype(X), 
-                       gmm_log_dets, #.astype(X), 
-                       gmm_cho_covs, #.astype(X),
-                       injections['Tobs'], #.astype(X),
-                       Nevents, 
-                       allnames
-                      ]
+            if bool(FLAGS.bounded_gmm_transform):
+                GWData =  [samples_means_at, #.astype(X),
+                           samples_cho_covs_at, #astype(X),
+                           gmm_log_wts, #.astype(X),
+                           gmm_means, #.astype(X),
+                           gmm_icovs, #.astype(X),
+                           gmm_log_dets, #.astype(X),
+                           gmm_cho_covs, #.astype(X),
+                           gmm_fit_coord_bounds,
+                           gmm_fit_coord_names,
+                           gmm_fit_transform_info,
+                           injections['Tobs'], #.astype(X),
+                           Nevents,
+                           allnames
+                          ]
+            else:
+                GWData =  [samples_means_at, #.astype(X), 
+                           samples_cho_covs_at, #astype(X), 
+                           gmm_log_wts, #.astype(X), 
+                           gmm_means, #.astype(X), 
+                           gmm_icovs, #.astype(X), 
+                           gmm_log_dets, #.astype(X), 
+                           gmm_cho_covs, #.astype(X),
+                           injections['Tobs'], #.astype(X),
+                           Nevents, 
+                           allnames
+                          ]
             
 
     else:
@@ -940,6 +1000,12 @@ def main():
             r = FLAGS.r,
             vary_mb = FLAGS.vary_mb
         )
+
+        # print("---- bounded GMM diagnostic ----")
+        # print("lik_data.gmm_fit_transform_mode =", getattr(lik_data, "gmm_fit_transform_mode", None))
+        # print("lik_data.gmm_fit_coord_bounds shape =", None if getattr(lik_data, "gmm_fit_coord_bounds", None) is None else lik_data.gmm_fit_coord_bounds.shape)
+        # print("lik_data.gmm_fit_coord_names =", getattr(lik_data, "gmm_fit_coord_names", None))
+        # print("--------------------------------")
 
 
     else:

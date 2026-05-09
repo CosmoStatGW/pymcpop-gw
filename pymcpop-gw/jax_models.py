@@ -120,8 +120,66 @@ def pack_data_gauss_popnot(
     """
 
     # ---- Unpack GW surrogate data (gauss branch) ----
-    # GWData = (mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs_np, Nevs, allnames)
-    mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, _Tobs_np, _Nevs, _allnames = GWData
+    # Legacy GWData:
+    #   (mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l,
+    #    Tobs_np, Nevs, allnames)
+    # Bounded-transform GWData:
+    #   (mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l,
+    #    gmm_fit_coord_bounds, gmm_fit_coord_names, gmm_fit_transform_info,
+    #    Tobs_np, Nevs, allnames)
+    if len(GWData) == 10:
+        (
+            mus_s,
+            cho_s,
+            log_wts_l,
+            mus_l,
+            icovs_l,
+            log_dets_l,
+            cho_covs_l,
+            _Tobs_np,
+            _Nevs,
+            _allnames,
+        ) = GWData
+
+        gmm_fit_coord_bounds = None
+        gmm_fit_coord_names = None
+        gmm_fit_transform_mode = "legacy"
+
+    elif len(GWData) == 13:
+        (
+            mus_s,
+            cho_s,
+            log_wts_l,
+            mus_l,
+            icovs_l,
+            log_dets_l,
+            cho_covs_l,
+            gmm_fit_coord_bounds,
+            gmm_fit_coord_names,
+            gmm_fit_transform_info,
+            _Tobs_np,
+            _Nevs,
+            _allnames,
+        ) = GWData
+
+        if not isinstance(gmm_fit_transform_info, dict):
+            raise ValueError("gmm_fit_transform_info must be a dict for bounded-transform GWData.")
+
+        gmm_fit_transform_mode = gmm_fit_transform_info.get("transform_mode")
+        if gmm_fit_transform_mode != "event_bounded_flogit":
+            raise NotImplementedError(
+                "Only transform_mode='event_bounded_flogit' is implemented for bounded GMMs. "
+                f"Got {gmm_fit_transform_mode!r}."
+            )
+
+        gmm_fit_coord_names = tuple(str(x) for x in gmm_fit_coord_names)
+        gmm_fit_coord_bounds = np.asarray(gmm_fit_coord_bounds, dtype=np.float64)
+
+    else:
+        raise ValueError(
+            "GWData must have length 10 for legacy Gaussian surrogates or length 13 "
+            f"for event-bounded Gaussian/GMM surrogates. Got length {len(GWData)}."
+        )
 
     mus_s = np.asarray(mus_s, dtype=np.float64)
     cho_s = np.asarray(cho_s, dtype=np.float64)
@@ -130,6 +188,55 @@ def pack_data_gauss_popnot(
     log_dets_l = np.asarray(log_dets_l, dtype=np.float64)
     log_wts_l = np.asarray(log_wts_l, dtype=np.float64)
     cho_covs_l = np.asarray(cho_covs_l, dtype=np.float64)
+
+    N_evt_full = mus_s.shape[0]
+    nd_full = mus_s.shape[1]
+
+    if mus_s.ndim != 2:
+        raise ValueError(f"mus_s must have shape (N, nd), got {mus_s.shape}")
+    if cho_s.shape != (N_evt_full, nd_full, nd_full):
+        raise ValueError(
+            f"cho_s must have shape ({N_evt_full}, {nd_full}, {nd_full}), got {cho_s.shape}"
+        )
+    if mus_l.ndim != 3 or mus_l.shape[0] != N_evt_full or mus_l.shape[2] != nd_full:
+        raise ValueError(
+            "mus_l must have shape (N, K, nd) matching mus_s; "
+            f"got mus_l={mus_l.shape}, mus_s={mus_s.shape}"
+        )
+    if icovs_l.shape[:3] != mus_l.shape or icovs_l.shape[3] != nd_full:
+        raise ValueError(
+            "icovs_l must have shape (N, K, nd, nd) matching mus_l; "
+            f"got icovs_l={icovs_l.shape}, mus_l={mus_l.shape}"
+        )
+    if cho_covs_l.shape[:3] != mus_l.shape or cho_covs_l.shape[3] != nd_full:
+        raise ValueError(
+            "cho_covs_l must have shape (N, K, nd, nd) matching mus_l; "
+            f"got cho_covs_l={cho_covs_l.shape}, mus_l={mus_l.shape}"
+        )
+    if log_dets_l.shape != mus_l.shape[:2]:
+        raise ValueError(
+            f"log_dets_l must have shape {mus_l.shape[:2]}, got {log_dets_l.shape}"
+        )
+    if log_wts_l.shape != mus_l.shape[:2]:
+        raise ValueError(
+            f"log_wts_l must have shape {mus_l.shape[:2]}, got {log_wts_l.shape}"
+        )
+
+    if gmm_fit_transform_mode == "event_bounded_flogit":
+        if gmm_fit_coord_bounds.shape != (N_evt_full, nd_full, 2):
+            raise ValueError(
+                "gmm_fit_coord_bounds must have shape (N, nd, 2) matching mus_s; "
+                f"got bounds={gmm_fit_coord_bounds.shape}, mus_s={mus_s.shape}"
+            )
+        if len(gmm_fit_coord_names) != nd_full:
+            raise ValueError(
+                "gmm_fit_coord_names length must match mus_s coordinate dimension; "
+                f"got {len(gmm_fit_coord_names)} and {nd_full}"
+            )
+        if not np.isfinite(gmm_fit_coord_bounds).all():
+            raise ValueError("gmm_fit_coord_bounds contains non-finite values.")
+        if not np.all(gmm_fit_coord_bounds[:, :, 1] > gmm_fit_coord_bounds[:, :, 0]):
+            raise ValueError("Each gmm_fit_coord_bounds upper bound must be greater than its lower bound.")
 
     if spin_model == "none":
         d_int = 3
@@ -177,6 +284,10 @@ def pack_data_gauss_popnot(
         icovs_l = icovs_l_3
         log_dets_l = log_dets_l_3
         cho_covs_l = cho_covs_l_3
+
+        if gmm_fit_transform_mode == "event_bounded_flogit":
+            gmm_fit_coord_bounds = gmm_fit_coord_bounds[:, :d_int, :]
+            gmm_fit_coord_names = gmm_fit_coord_names[:d_int]
     
     else:
         # Spinful branch uses all coordinates as before.
@@ -252,6 +363,14 @@ def pack_data_gauss_popnot(
         icovs_l=jnp.asarray(icovs_l, dtype=jnp.float64),
         log_dets_l=jnp.asarray(log_dets_l, dtype=jnp.float64),
         log_wts_l=jnp.asarray(log_wts_l, dtype=jnp.float64),
+
+        gmm_fit_coord_bounds=(
+            None
+            if gmm_fit_coord_bounds is None
+            else jnp.asarray(gmm_fit_coord_bounds, dtype=jnp.float64)
+        ),
+        gmm_fit_transform_mode=str(gmm_fit_transform_mode),
+        gmm_fit_coord_names=gmm_fit_coord_names,
 
         # injections / selection
         m1inj=jnp.asarray(m1inj0, dtype=jnp.float64),
@@ -926,7 +1045,40 @@ def make_model_jax(  priors,
         # gw data are interpolants of single-event posteriors
         if sampling_GW=='gauss':
             # we sample single-event parameters from broad gaussian approximations of the posteriors
-            mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs_np, Nevs, allnames = GWData
+            if len(GWData) == 10:
+                (
+                    mus_s,
+                    cho_s,
+                    log_wts_l,
+                    mus_l,
+                    icovs_l,
+                    log_dets_l,
+                    cho_covs_l,
+                    Tobs_np,
+                    Nevs,
+                    allnames,
+                ) = GWData
+            elif len(GWData) == 13:
+                (
+                    mus_s,
+                    cho_s,
+                    log_wts_l,
+                    mus_l,
+                    icovs_l,
+                    log_dets_l,
+                    cho_covs_l,
+                    gmm_fit_coord_bounds,
+                    gmm_fit_coord_names,
+                    gmm_fit_transform_info,
+                    Tobs_np,
+                    Nevs,
+                    allnames,
+                ) = GWData
+            else:
+                raise ValueError(
+                    "GWData for sampling_GW='gauss' must have length 10 for legacy mode "
+                    "or length 13 for event-bounded mode. Got length %s." % len(GWData)
+                )
             wts_l = np.exp(log_wts_l)
             
         elif 'gmm' in sampling_GW or sampling_GW=='gumbel':
