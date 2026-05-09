@@ -44,7 +44,7 @@ from dataStructures.mockData import GWMockData
 
 
 import data_tools as dt
-import pytensor_utils_old as ptools
+from fit_model_numpyro import Logger
 
 #######################################################################################
 #######################################################################################
@@ -66,6 +66,259 @@ def m1m2_from_Mcq(Mc, q):
     m2 = q*m1
 
     return m1, m2
+
+
+
+
+# -----------------------------------------------------------------------------
+# Event-bounded GMM coordinate helpers
+# -----------------------------------------------------------------------------
+def _hard_bounds_for_coordinate(name):
+    """Known broad physical bounds for some pre-GMM coordinates."""
+    if name == 'q':
+        return 0.0, 1.0
+    if name in ('chi_1', 'chi_2'):
+        return 0.0, 1.0
+    if name in ('cos_t_1', 'cos_t_2', 'chi_1z', 'chi_2z'):
+        return -1.0, 1.0
+    if name == 'ra':
+        return 0.0, 2*np.pi
+    if name == 'dec':
+        return -np.pi/2, np.pi/2
+    if name == 'iota':
+        return 0.0, np.pi
+    return None, None
+
+
+def _padded_minmax(x, name, padding=1e-4):
+    """
+    Min/max bounds expanded by a relative padding.
+
+    This uses padding rather than clipping. For coordinates with known physical
+    ranges, the padded bounds are kept inside the broad physical range when
+    possible. If a sample lies exactly on a hard physical edge, the bound is
+    expanded just beyond that edge so that the bounded-logit remains finite.
+    """
+    x = np.asarray(x)
+    good = np.isfinite(x)
+    if not np.any(good):
+        raise ValueError(f"Cannot build bounds for {name}: no finite samples")
+
+    xmin = float(np.min(x[good]))
+    xmax = float(np.max(x[good]))
+
+    width = xmax - xmin
+    if not np.isfinite(width) or width <= 0:
+        scale = max(1.0, abs(xmin), abs(xmax))
+        width = scale
+
+    pad = float(padding) * width
+    if pad <= 0 or not np.isfinite(pad):
+        pad = 1e-12 * max(1.0, abs(xmin), abs(xmax))
+
+    lo = xmin - pad
+    hi = xmax + pad
+
+    hard_lo, hard_hi = _hard_bounds_for_coordinate(name)
+
+    if hard_lo is not None and lo < hard_lo:
+        lo = hard_lo
+    if hard_hi is not None and hi > hard_hi:
+        hi = hard_hi
+
+    # Ensure all original samples are strictly inside the interval. This avoids
+    # +/- infinity in flogit for samples equal to min/max. If a posterior sample
+    # sits exactly on a hard physical edge, this may expand slightly past the
+    # broad physical edge; this is deliberate padding, not sample clipping.
+    eps = max(pad, 1e-12 * max(1.0, abs(xmin), abs(xmax)))
+    if lo >= xmin:
+        lo = xmin - eps
+    if hi <= xmax:
+        hi = xmax + eps
+
+    if not lo < hi:
+        raise ValueError(f"Invalid bounds for {name}: [{lo}, {hi}]")
+
+    return lo, hi
+
+
+def build_raw_fit_coordinates(samples_i, spins='default', skymap=False, inclination=False):
+    """
+    Build the pre-bounded coordinates used by the event-bounded GMM.
+
+    These are not yet sent through flogit. They are the coordinates whose
+    event-specific min/max support will be enforced:
+        logMc, q, logdL, optional spin coordinates, optional sky/inclination.
+    """
+    m1ds = samples_i[:, 0]
+    m2ds = samples_i[:, 1]
+    dLs = samples_i[:, 2]
+
+    Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
+    qs = m2ds/m1ds
+
+    raw = [np.log(Mcs), qs, np.log(dLs)]
+    names = ['logMc', 'q', 'logdL']
+
+    # Same dimensions that were multiplied by dil_factor in the legacy fit.
+    dilate_mask = [True, False, False]
+
+    if spins == 'default':
+        chi1 = samples_i[:, 3]
+        chi2 = samples_i[:, 4]
+        cost1 = samples_i[:, 5]
+        cost2 = samples_i[:, 6]
+        raw += [chi1, chi2, cost1, cost2]
+        names += ['chi_1', 'chi_2', 'cos_t_1', 'cos_t_2']
+        dilate_mask += [True, True, True, True]
+        s_start = 7
+    elif spins == 'aligned':
+        chi1z = samples_i[:, 3]
+        chi2z = samples_i[:, 4]
+        raw += [chi1z, chi2z]
+        names += ['chi_1z', 'chi_2z']
+        dilate_mask += [True, True]
+        s_start = 5
+    elif spins == 'none':
+        s_start = 3
+    else:
+        raise ValueError(f"Unknown spins option: {spins}")
+
+    if skymap:
+        ra = samples_i[:, s_start]
+        dec = samples_i[:, s_start+1]
+        raw += [ra, dec]
+        names += ['ra', 'dec']
+        dilate_mask += [False, False]
+        istart = s_start + 2
+    else:
+        istart = s_start
+
+    if inclination:
+        iota = samples_i[:, istart]
+        raw += [iota]
+        names += ['iota']
+        dilate_mask += [False]
+
+    raw = np.stack(raw).T
+    return raw, names, np.asarray(dilate_mask, dtype=bool)
+
+
+def legacy_fit_coordinates_from_raw(raw, names, spins='default', skymap=False, inclination=False, dil_factor=1):
+    """
+    Convert pre-bounded coordinates back to the old fit coordinates.
+
+    This is used only for diagnostics/plots so that plot_samples can keep using
+    its existing inverse logic.
+    """
+    name_to_col = {name: j for j, name in enumerate(names)}
+
+    logMc = raw[:, name_to_col['logMc']]
+    q = raw[:, name_to_col['q']]
+    logdL = raw[:, name_to_col['logdL']]
+
+    pts = [dil_factor*logMc, logit(q), logdL]
+
+    if spins == 'default':
+        pts += [
+            dil_factor*logit(raw[:, name_to_col['chi_1']]),
+            dil_factor*logit(raw[:, name_to_col['chi_2']]),
+            dil_factor*flogit(raw[:, name_to_col['cos_t_1']]),
+            dil_factor*flogit(raw[:, name_to_col['cos_t_2']]),
+        ]
+    elif spins == 'aligned':
+        pts += [
+            dil_factor*flogit(raw[:, name_to_col['chi_1z']]),
+            dil_factor*flogit(raw[:, name_to_col['chi_2z']]),
+        ]
+
+    if skymap:
+        pts += [
+            flogit(raw[:, name_to_col['ra']], xmin=0, xmax=2*np.pi),
+            flogit(raw[:, name_to_col['dec']], xmin=-np.pi/2, xmax=np.pi/2),
+        ]
+
+    if inclination:
+        pts += [flogit(raw[:, name_to_col['iota']], xmin=0, xmax=np.pi)]
+
+    return np.stack(pts).T
+
+
+def event_bounded_fit_coordinates(raw, names, dilate_mask, bound_padding=1e-4, dil_factor=1, bounds=None):
+    """
+    Map raw per-event fit coordinates to event-bounded GMM coordinates.
+
+    If bounds is None, min/max bounds are computed from raw and expanded by
+    bound_padding. Returned bounds are in the raw pre-bounded coordinates.
+    """
+    raw = np.asarray(raw)
+
+    if bounds is None:
+        bounds = np.asarray([
+            _padded_minmax(raw[:, j], names[j], padding=bound_padding)
+            for j in range(raw.shape[1])
+        ], dtype=float)
+    else:
+        bounds = np.asarray(bounds, dtype=float)
+        if bounds.shape != (raw.shape[1], 2):
+            raise ValueError(
+                "bounds must have shape (%s, 2), got %s" % (raw.shape[1], bounds.shape)
+            )
+
+    z = np.empty_like(raw, dtype=float)
+    for j in range(raw.shape[1]):
+        z[:, j] = flogit(raw[:, j], xmin=bounds[j, 0], xmax=bounds[j, 1])
+
+    if np.any(dilate_mask):
+        z[:, dilate_mask] *= dil_factor
+
+    if not np.isfinite(z).all():
+        bad = np.where(~np.isfinite(z))
+        raise ValueError(
+            "Non-finite event-bounded fit coordinates. First bad index: %s" % (bad[0][0],)
+        )
+
+    return z, bounds
+
+
+class EventBoundedGMMForPlot:
+    """
+    Thin wrapper used only by plot_samples.
+
+    The saved GMM parameters remain in event-bounded coordinates. This wrapper
+    samples in that space, inverts the event-bounded transform, converts to the
+    legacy coordinates expected by plot_samples, and returns those coordinates.
+    """
+    def __init__(self, gmm, bounds, names, dilate_mask, spins='default', skymap=False,
+                 inclination=False, dil_factor=1):
+        self.gmm = gmm
+        self.bounds = np.asarray(bounds, dtype=float)
+        self.names = list(names)
+        self.dilate_mask = np.asarray(dilate_mask, dtype=bool)
+        self.spins = spins
+        self.skymap = skymap
+        self.inclination = inclination
+        self.dil_factor = dil_factor
+
+    def sample(self, n_samples):
+        z, labels = self.gmm.sample(n_samples)
+        x = np.array(z, copy=True)
+        if np.any(self.dilate_mask):
+            x[:, self.dilate_mask] /= self.dil_factor
+
+        raw = np.empty_like(x, dtype=float)
+        for j in range(x.shape[1]):
+            raw[:, j] = inv_flogit(x[:, j], xmin=self.bounds[j, 0], xmax=self.bounds[j, 1])
+
+        legacy = legacy_fit_coordinates_from_raw(
+            raw,
+            self.names,
+            spins=self.spins,
+            skymap=self.skymap,
+            inclination=self.inclination,
+            dil_factor=self.dil_factor,
+        )
+        return legacy, labels
 
 
 def fit_cho(allsamples, allNsamples,spins='default', skymap=False, inclination=False):
@@ -252,7 +505,7 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_b
 
     return dL_grid, loginvprior_grid, dL_min, dL_max
     
-def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1, fsummaries='summaries', fplots='plots'):
+def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='default', skymap=False, inclination=False, n_components=np.arange(0,20), dil_factor=1, refit=False, fname_base=None, safety_number=10, imin=0, imax=-1, fsummaries='summaries', fplots='plots', bounded_transform=False, bound_padding=1e-4):
 
     gmm_log_wts_l = []
     gmm_means_l = []
@@ -261,6 +514,9 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     gmm_cho_covs_l = []
     gmm_log_dets_l = []
     all_gmm_l = []
+    fit_coord_bounds_l = []
+    fit_coord_names = None
+    fit_coord_dilate_mask = None
     
     
     nevs = len(allsamples)
@@ -279,68 +535,45 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     for i in tqdm(range(imin, iend), ): 
 
         jmax = allNsamples[i]
-    
-        m1ds = allsamples[i, :jmax, 0]
-        m2ds = allsamples[i, :jmax, 1]
-        dLs = allsamples[i, :jmax, 2]
 
-        Mcs = (m1ds*m2ds)**(3/5)/(m1ds+m2ds)**(1/5)
-        qs = m2ds/m1ds 
-        qlogit = logit(qs)
-        
-        pts_ = [dil_factor*np.log(Mcs), qlogit, np.log(dLs),]
+        raw_coords, coord_names, dilate_mask = build_raw_fit_coordinates(
+            allsamples[i, :jmax, :],
+            spins=spins,
+            skymap=skymap,
+            inclination=inclination,
+        )
 
-        
-        if spins=='default':
-            chi1 = allsamples[i, :jmax, 3]
-            chi2 = allsamples[i, :jmax, 4]
-            cost1 = allsamples[i, :jmax, 5]
-            cost2 = allsamples[i, :jmax, 6]
-            lchi1 = logit(chi1)
-            lchi2 = logit(chi2)
-            lcost1 = flogit(cost1)
-            lcost2 = flogit(cost2)
-            
+        if fit_coord_names is None:
+            fit_coord_names = coord_names
+            fit_coord_dilate_mask = dilate_mask
+        elif fit_coord_names != coord_names:
+            raise ValueError("Coordinate names changed across events")
 
-            s_start = 7
-
-            pts_.append(dil_factor*lchi1) 
-            pts_.append(dil_factor*lchi2) 
-            pts_.append(dil_factor*lcost1) 
-            pts_.append(dil_factor*lcost2 )
-        
-        elif spins=='aligned':
-            chi1z = allsamples[i, :jmax, 3]
-            chi2z = allsamples[i, :jmax, 4]
-            lchi1z = flogit(chi1z)
-            lchi2z = flogit(chi2z)
-   
-            s_start = 5
-
-            pts_.append(dil_factor*lchi1z) 
-            pts_.append(dil_factor*lchi2z )
-        
-        elif spins=='none':
-            s_start = 3
-            pass
-
-
-        if skymap:
-            ra = allsamples[i, :jmax, s_start]
-            dec = allsamples[i, :jmax, s_start+1]
-            pts_.append( flogit(ra, xmin=0,xmax=2*np.pi) )
-            pts_.append( flogit(dec, xmin=-np.pi/2, xmax=np.pi/2) )
-            istart = s_start+2
+        if bounded_transform:
+            pts, fit_bounds_i = event_bounded_fit_coordinates(
+                raw_coords,
+                coord_names,
+                dilate_mask,
+                bound_padding=bound_padding,
+                dil_factor=dil_factor,
+            )
+            print('Using event-bounded GMM coordinates with min/max + padding.')
+            print('Bound padding: %s' % bound_padding)
+            print('Fit-coordinate bounds for event %s:' % allNames[i])
+            for name_, bounds_ in zip(coord_names, fit_bounds_i):
+                print('  %s: [%s, %s]' % (name_, bounds_[0], bounds_[1]))
         else:
-            istart = s_start
-                    
-        if inclination:
-            iota = allsamples[i, :jmax, istart]
-            pts_.append( flogit(iota, xmin=0,xmax=np.pi)  )
-            
-        print('Number of dimensions of each event: %s'%len(pts_))
-        
-        pts = np.stack( pts_ ).T
+            pts = legacy_fit_coordinates_from_raw(
+                raw_coords,
+                coord_names,
+                spins=spins,
+                skymap=skymap,
+                inclination=inclination,
+                dil_factor=dil_factor,
+            )
+            fit_bounds_i = np.full((pts.shape[1], 2), np.nan)
+
+        print('Number of dimensions of each event: %s'%pts.shape[1])
 
 
         print('\nEvent %s is fit between %s and %s components'%(allNames[i], n_components[i][0], n_components[i][1]))
@@ -473,7 +706,23 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
         gmm_covs_l.append( covariances_ )
         gmm_cho_covs_l.append( gmm_cho_covs_l_   )
         gmm_icovs_l.append( precisions_  )
-        all_gmm_l.append(gmm)
+
+        if bounded_transform and gmm is not None:
+            gmm_for_plot = EventBoundedGMMForPlot(
+                gmm,
+                fit_bounds_i,
+                fit_coord_names,
+                fit_coord_dilate_mask,
+                spins=spins,
+                skymap=skymap,
+                inclination=inclination,
+                dil_factor=dil_factor,
+            )
+        else:
+            gmm_for_plot = gmm
+
+        all_gmm_l.append(gmm_for_plot)
+        fit_coord_bounds_l.append(fit_bounds_i)
         gmm_log_dets_l.append( gmm_log_dets_l_ )
     
     
@@ -491,6 +740,7 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
     gmm_cho_covs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
     gmm_covs_l_full = np.zeros( (nevs_fit, Ngm, nd, nd) )
     gmm_log_dets_l_full = np.log(np.ones( (nevs_fit, Ngm) ))
+    fit_coord_bounds_full = np.asarray(fit_coord_bounds_l)
 
     for i in range(nevs_fit):
         ngm_  =  allNgm[i]
@@ -503,7 +753,7 @@ def fit_gmm(allsamples, allNsamples, allNames=None, fout_plot=None, spins='defau
         gmm_log_dets_l_full[i, :ngm_] = gmm_log_dets_l[i]
 
     
-    return gmm_means_l_full, gmm_icovs_l_full, gmm_covs_l_full, gmm_cho_covs_l_full, gmm_log_dets_l_full, gmm_log_wts_l_full, all_gmm_l, allNgm
+    return gmm_means_l_full, gmm_icovs_l_full, gmm_covs_l_full, gmm_cho_covs_l_full, gmm_log_dets_l_full, gmm_log_wts_l_full, all_gmm_l, allNgm, fit_coord_bounds_full, fit_coord_names
 
 
 
@@ -1035,6 +1285,8 @@ parser.add_argument("--spins", default='default', type=str, required=False)
 parser.add_argument("--imin", default=0, type=int, required=False)
 parser.add_argument("--imax", default=-1, type=int, required=False)
 parser.add_argument("--reweight", default=0, type=int, required=False)
+parser.add_argument("--bounded_transform", default=0, type=int, required=False)
+parser.add_argument("--bound_padding", default=1e-4, type=float, required=False)
 
 parser.add_argument("--fsummaries", default='summaries', type=str, required=False)
 parser.add_argument("--fplots", default='plots', type=str, required=False)
@@ -1053,7 +1305,7 @@ if __name__=='__main__':
             print('Using %s'%FLAGS.fout)
 
     logfile = os.path.join(FLAGS.fout, 'logfile.txt')
-    myLog = ptools.Logger(logfile)
+    myLog = Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
     
@@ -1285,7 +1537,7 @@ if __name__=='__main__':
                 print('allsamples_ %s comp shape: %s'%(k,allsamples_[k].shape ))
             allsamples_ = np.stack(allsamples_).transpose(1,2,0)
         
-            gmm_means_, gmm_icovs_, gmm_covs_, gmm_cho_covs_, gmm_log_dets_, gmm_log_wts_, all_gmm_, allNgm_ = fit_gmm( allsamples_, 
+            gmm_means_, gmm_icovs_, gmm_covs_, gmm_cho_covs_, gmm_log_dets_, gmm_log_wts_, all_gmm_, allNgm_, fit_coord_bounds_, fit_coord_names_ = fit_gmm( allsamples_, 
                                                                                                                                                  data.Nsamples, 
                                                                                                                                                  allNames = data.events, 
                                                                                                                                                  fout_plot = base_fname, 
@@ -1299,7 +1551,9 @@ if __name__=='__main__':
                                                                                                                        imin=FLAGS.imin,
                                                                                                                        imax=FLAGS.imax,
                                                                                                                                         fplots=FLAGS.fplots,
-                                                                                                                                        fsummaries=FLAGS.fsummaries
+                                                                                                                                        fsummaries=FLAGS.fsummaries,
+                                                                                                                                        bounded_transform=bool(FLAGS.bounded_transform),
+                                                                                                                                        bound_padding=FLAGS.bound_padding
 
 
                                                                                                                                                 )
@@ -1319,6 +1573,15 @@ if __name__=='__main__':
             np.save( os.path.join(base_fname, '%s_gmm_cho_covs.npy'%run_name.split('.')[0]), gmm_cho_covs_, )
             np.save( os.path.join(base_fname, '%s_gmm_log_dets.npy'%run_name.split('.')[0]), gmm_log_dets_, )
             np.save( os.path.join(base_fname, '%s_gmm_log_wts.npy'%run_name.split('.')[0]), gmm_log_wts_, )
+            np.save( os.path.join(base_fname, '%s_gmm_fit_coord_bounds.npy'%run_name.split('.')[0]), fit_coord_bounds_, )
+            np.savetxt( os.path.join(base_fname, '%s_gmm_fit_coord_names.txt'%run_name.split('.')[0]), fit_coord_names_, delimiter=" ", fmt="%s" )
+            with open(os.path.join(base_fname, '%s_gmm_fit_transform_info.json'%run_name.split('.')[0]), 'w') as f_info:
+                json.dump({
+                    'bounded_transform': bool(FLAGS.bounded_transform),
+                    'bound_padding': FLAGS.bound_padding,
+                    'coordinate_names': list(fit_coord_names_),
+                    'note': 'GMM means/covariances are in event-bounded flogit coordinates when bounded_transform is true. Bounds are min/max+padded in the pre-bounded fit coordinates.'
+                }, f_info, indent=2)
         
             if FLAGS.plot:
                 plot_samples(allsamples_, 
