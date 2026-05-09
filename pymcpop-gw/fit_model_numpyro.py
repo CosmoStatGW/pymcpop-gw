@@ -913,6 +913,8 @@ def main():
             use_float32_bias=bool(FLAGS.use_float32_bias),
             sel_method=FLAGS.sel,
             sel_smoothing = FLAGS.sel_smoothing,
+            log_lik_var_min = FLAGS.log_lik_var_min,
+            
             N_DP_comp_max=FLAGS.N_DP_comp_max,
             DP_m1_env=bool(FLAGS.DP_m1_env),
             integrate_dc=FLAGS.integrate_dc,

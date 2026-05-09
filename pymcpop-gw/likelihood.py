@@ -314,36 +314,38 @@ def _gw_terms_from_x(
     samples = mus_s + jnp.einsum("nij,nj->ni", cho_s, x)
 
     N, nd = samples.shape
-
-    # proposal logpdf for x and cholesky det
+    
+    # proposal logpdf for x and Cholesky determinant.
+    # nd is now the ACTIVE dimension only.
     log_px = -0.5 * jnp.sum(x * x, axis=1) - 0.5 * nd * jnp.log(2.0 * jnp.pi)
     log_det_L = jnp.sum(jnp.log(jnp.diagonal(cho_s, axis1=1, axis2=2)), axis=1)
-    pilik = log_px - log_det_L  # (N,)
-
+    pilik = log_px - log_det_L  # log q_Gauss(theta)
+    
     log_Mc_det = samples[:, 0]
     logit_q = samples[:, 1]
     logd = samples[:, 2]
-
+    
     if data.spin_model in ("default", "default_gauss"):
-        # mixture coordinates use the raw transformed spin dims (same as your PyMC)
-        X = jnp.stack(
-            [log_Mc_det, logit_q, logd, samples[:, 3], samples[:, 4], samples[:, 5], samples[:, 6]],
-            axis=1
-        )
+        if nd != 7:
+            raise ValueError(f"Spin model {data.spin_model} requires nd=7, got nd={nd}")
+    
+        X = samples
         d_int = 7
-
-        # physical spins for population
+    
         chi1 = inv_logitat(samples[:, 3])
         chi2 = inv_logitat(samples[:, 4])
         cost1 = inv_flogitat(samples[:, 5])
         cost2 = inv_flogitat(samples[:, 6])
-        spins_evt = jnp.stack([chi1, chi2, cost1, cost2], axis=1)  # (N,4)
-
+        spins_evt = jnp.stack([chi1, chi2, cost1, cost2], axis=1)
+    
     elif data.spin_model == "none":
-        X = jnp.stack([log_Mc_det, logit_q, logd], axis=1)
+        if nd != 3:
+            raise ValueError(f"spin_model='none' requires nd=3 after packing, got nd={nd}")
+    
+        X = samples
         d_int = 3
         spins_evt = jnp.zeros((N, 0), dtype=jnp.float64)
-
+    
     else:
         raise NotImplementedError(f"spin_model={data.spin_model} not yet supported in gauss branch")
 

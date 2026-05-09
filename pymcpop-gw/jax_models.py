@@ -121,7 +121,7 @@ def pack_data_gauss_popnot(
 
     # ---- Unpack GW surrogate data (gauss branch) ----
     # GWData = (mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, Tobs_np, Nevs, allnames)
-    mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, _, _Tobs_np, _Nevs, _allnames = GWData
+    mus_s, cho_s, log_wts_l, mus_l, icovs_l, log_dets_l, cho_covs_l, _Tobs_np, _Nevs, _allnames = GWData
 
     mus_s = np.asarray(mus_s, dtype=np.float64)
     cho_s = np.asarray(cho_s, dtype=np.float64)
@@ -129,6 +129,58 @@ def pack_data_gauss_popnot(
     icovs_l = np.asarray(icovs_l, dtype=np.float64)
     log_dets_l = np.asarray(log_dets_l, dtype=np.float64)
     log_wts_l = np.asarray(log_wts_l, dtype=np.float64)
+    cho_covs_l = np.asarray(cho_covs_l, dtype=np.float64)
+
+    if spin_model == "none":
+        d_int = 3
+    
+        mus_s = mus_s[:, :d_int]
+        cho_s = cho_s[:, :d_int, :d_int]
+    
+        mus_l = mus_l[:, :, :d_int]
+    
+        # Rebuild marginal 3D GMM precisions and log determinants from
+        # the 3D covariance blocks. Do not slice the full 7D precision.
+        cho_covs_l_3 = cho_covs_l[:, :, :d_int, :d_int]
+        covs_l_3 = np.einsum("...ik,...jk->...ij", cho_covs_l_3, cho_covs_l_3)
+    
+        # Symmetrize for numerical safety.
+        covs_l_3 = 0.5 * (covs_l_3 + np.swapaxes(covs_l_3, -1, -2))
+    
+        N_evt, K_evt = covs_l_3.shape[:2]
+        icovs_l_3 = np.empty_like(covs_l_3)
+        log_dets_l_3 = np.empty((N_evt, K_evt), dtype=np.float64)
+    
+        eye3 = np.eye(d_int, dtype=np.float64)
+    
+        for i in range(N_evt):
+            for k in range(K_evt):
+                C = covs_l_3[i, k]
+                jitter = 1e-12 * max(np.trace(C) / d_int, 1.0)
+    
+                # Robustify if needed.
+                for ntry in range(8):
+                    try:
+                        Cj = C + jitter * (10.0 ** ntry) * eye3
+                        L = np.linalg.cholesky(Cj)
+                        break
+                    except np.linalg.LinAlgError:
+                        if ntry == 7:
+                            evals, evecs = np.linalg.eigh(C)
+                            evals = np.clip(evals, jitter, None)
+                            Cj = (evecs * evals) @ evecs.T
+                            L = np.linalg.cholesky(Cj + jitter * eye3)
+    
+                icovs_l_3[i, k] = np.linalg.inv(Cj)
+                log_dets_l_3[i, k] = 2.0 * np.sum(np.log(np.diag(L)))
+    
+        icovs_l = icovs_l_3
+        log_dets_l = log_dets_l_3
+        cho_covs_l = cho_covs_l_3
+    
+    else:
+        # Spinful branch uses all coordinates as before.
+        pass
 
     # ---- Unpack injections (ndata_np==1) ----
     # InjData = (dLinj, m1inj, m2inj, spinsInj, lpdinj, Ndraw, Ndet_np, lp_incl_inj)
@@ -1217,6 +1269,14 @@ def make_model_jax(  priors,
         )
         print("pack_data_gauss_popnot ok")
         print()
+        if spin_model_sel == "none":
+            assert int(data.mus_s.shape[1]) == 3
+            assert int(data.mus_l.shape[2]) == 3
+            assert int(data.icovs_l.shape[2]) == 3
+            print("[check] spin_model none: using 3D PE surrogate for latent x")
+        else:
+            print("[check] spin_model with spins: using PE surrogate dimension", int(data.mus_s.shape[1]))
+        
         core, loglik = build_core_and_loglik_gauss_popnot(
             data,
             chunk_inj=(0 if chunk_inj in (-1, None) else chunk_inj),
