@@ -283,3 +283,152 @@ def compute_log_norm_UniformSourceFrame(bk, d_min, d_max, H0, Om0, w0, ):
     #norm = bk.trapezoid(integrand, z)
     norm = attrapzvec(bk, integrand, z)
     return bk.log(norm), z_min, z_max
+
+# GP distance-reconstruction helpers from gp-pure-jax (cefafc0).
+
+def softplus_bk(bk, x):
+    """Backend softplus, stable for JAX/NumPy-like backends."""
+    return bk.log1p(bk.exp(-bk.abs(x))) + bk.maximum(x, 0.0)
+
+def inv_softplus_bk(bk, y, tiny=1e-12, switch=20.0, large=1e100):
+    y = jnp.asarray(y)
+
+    # Remove NaN/Inf before any exp/log branch is built.
+    y = jnp.nan_to_num(y, nan=tiny, posinf=large, neginf=tiny)
+
+    # softplus inverse only defined for y > 0
+    y_pos = jnp.clip(y, tiny, large)
+
+    # IMPORTANT:
+    # keep the small branch bounded, because JAX evaluates both branches of where.
+    y_small = jnp.clip(y_pos, tiny, switch)
+
+    small_branch = jnp.log(jnp.expm1(y_small))
+    large_branch = y_pos
+
+    return jnp.where(y_pos > switch, large_branch, small_branch)
+
+def d_log_dLEM_dz(bk, z, H0, Om, w0, *, dc=None, E=None, integrate_dc="trapz"):
+    """d/dz log dL_EM(z) for flat wCDM, using existing distance conventions."""
+    if dc is None:
+        dc = dcfun_quad(bk, z, H0, Om, w0, integrate_dc=integrate_dc)
+    if E is None:
+        E = Efun(bk, z, Om, w0)
+
+    onepz = 1.0 + z
+    ddc_dz = c_light / (1.0e03 * H0 * E)
+    dL_em = onepz * dc
+    ddLem_dz = dc + onepz * ddc_dz
+    return ddLem_dz / bk.maximum(dL_em, 1e-300)
+
+def z_from_dL_at_monotone(
+    bk,
+    dL_eval,
+    *,
+    z_nodes,
+    f_nodes,
+    H0,
+    Om,
+    w0,
+    z_fine=None,
+    eps_q=1e-12,
+    integrate_dc="trapz",
+):
+    """
+    JAX/NumPyro port of the monotone-by-construction GP branch.
+
+    q(z) = d/dz log dL_GW(z)
+         = eps_q + softplus(inv_softplus(b(z)-eps_q) + f(z)) > 0
+
+    implemented in the algebraically equivalent stable form:
+
+        q = eps_q + y + log(exp(-y) + exp(f) * (1 - exp(-y)))
+
+    where y = max(b - eps_q, 1e-12), b = d/dz log dL_EM.
+    """
+
+    z_nodes = jnp.asarray(z_nodes, dtype=jnp.float64)
+    f_nodes = jnp.asarray(f_nodes, dtype=jnp.float64)
+
+    if z_fine is None:
+        z_fine = z_nodes
+    else:
+        z_fine = jnp.asarray(z_fine, dtype=jnp.float64)
+
+    # GP lives on x = log(1 + z), as in PyMC use_log1p_input=True
+    x_nodes = bk.log1p(z_nodes)
+    x_fine = bk.log1p(z_fine)
+    f_fine = atinterp(bk, x_fine, x_nodes, f_nodes)
+
+    # b(z) = d/dz log dL_EM(z)
+    dc_fine = dcfun_quad(bk, z_fine, H0, Om, w0, integrate_dc=integrate_dc)
+    E_fine = Efun(bk, z_fine, Om, w0)
+    dL_em_fine = dc_fine * (1.0 + z_fine)
+
+    b_fine = d_log_dLEM_dz(
+        bk,
+        z_fine,
+        H0,
+        Om,
+        w0,
+        dc=dc_fine,
+        E=E_fine,
+        integrate_dc=integrate_dc,
+    )
+
+    eps_q = jnp.asarray(eps_q, dtype=jnp.float64)
+
+    # Stable algebraic equivalent of softplus(inv_softplus(y) + f)
+    y_fine = bk.maximum(b_fine - eps_q, 1e-12)
+
+    em_fine = bk.exp(-y_fine)
+    one_minus_em_fine = -jnp.expm1(-y_fine)
+    ef_fine = bk.exp(f_fine)
+
+    q_fine = eps_q + y_fine + bk.log(
+        em_fine + ef_fine * one_minus_em_fine
+    )
+
+    g_fine = q_fine - b_fine
+
+    # integrate g to get logXi, with logXi(z_fine[0]) = 0
+    dz_raw = bk.diff(z_fine)
+    dz = bk.clip(dz_raw, 1e-18, jnp.inf)
+    g_mid = 0.5 * (g_fine[:-1] + g_fine[1:])
+    inc = g_mid * dz
+
+    h0 = jnp.asarray(0.0, dtype=jnp.float64)
+    logXi_fine = bk.concatenate([
+        h0[None],
+        h0 + bk.cumsum(inc),
+    ])
+
+    Xi_fine = bk.exp(logXi_fine)
+    dL_gw_fine = Xi_fine * dL_em_fine
+
+    log_ddL_dz_fine = (
+        bk.log(bk.maximum(dL_gw_fine, 1e-300))
+        + bk.log(bk.maximum(q_fine, 1e-300))
+    )
+
+    z_eval = atinterp(bk, dL_eval, dL_gw_fine, z_fine)
+    log_ddL_dz_eval = atinterp(bk, z_eval, z_fine, log_ddL_dz_fine)
+
+    return {
+        "z": z_eval,
+        "log_ddL_dz": log_ddL_dz_eval,
+        "z_fine": z_fine,
+        "dL_gw_fine": dL_gw_fine,
+        "log_ddL_dz_fine": log_ddL_dz_fine,
+        "logXi_fine": logXi_fine,
+        "g_fine": g_fine,
+        "q_fine": q_fine,
+        "b_fine": b_fine,
+        "dc_fine": dc_fine,
+    }
+
+def gp_z_from_dL_and_logdd(bk, dL, gp_state):
+    """Use a precomputed GP distance grid to invert dL and get log ddL/dz."""
+    z = atinterp(bk, dL, gp_state["dL_gw_fine"], gp_state["z_fine"])
+    logdd = atinterp(bk, z, gp_state["z_fine"], gp_state["log_ddL_dz_fine"])
+    return z, logdd

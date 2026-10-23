@@ -66,6 +66,7 @@ class NPBackend:
     sqrt = staticmethod(np.sqrt)
     abs = staticmethod(np.abs)
     tanh = staticmethod(np.tanh)
+    eye = staticmethod(np.eye)
 
     @staticmethod
     def erf(x):
@@ -244,6 +245,8 @@ class NPBackend:
     isfinite = staticmethod(np.isfinite)
     isnan = staticmethod(np.isnan)
     isinf = staticmethod(np.isinf)
+
+    power = staticmethod(np.power)
     
     @staticmethod
     def finite_or(x, fill):
@@ -252,345 +255,6 @@ class NPBackend:
 
 
 
-class ATBackend:
-    """
-    Lazy-import PyTensor so importing backends.py doesn't force pytensor import
-    in contexts where you only want NumPy.
-    """
-
-    floatX = "float64"
-
-    @staticmethod
-    def _at():
-        import pytensor.tensor as at
-        return at
-
-    # ---- arrays ----
-    @staticmethod
-    def asarray(x, dtype=None):
-        at = ATBackend._at()
-        out = at.as_tensor_variable(x)
-        if dtype is not None:
-            out = out.astype(dtype)
-        return out
-
-    @staticmethod
-    def atleast_1d(x, ):
-        at = ATBackend._at()
-        return at.atleast_1d(x)
-
-    @staticmethod
-    def repeat(a, reps, axis=None):
-        at = ATBackend._at()
-        return at.repeat(a, reps, axis=axis)
-
-    @staticmethod
-    def tile(x, reps):
-        at = ATBackend._at()
-        return at.tile(x, reps)
-
-    @staticmethod
-    def interp(x, xp, fp, left=None, right=None, period=None):
-        at = ATBackend._at()
-        return atinterp(at, x, xp, fp  )
-
-    @staticmethod
-    def trapezoid(y, x=None, dx=1.0, axis=-1):
-        at = ATBackend._at()
-        return attrapzvec(at, y, x=x, axis=axis)
-        
-    @staticmethod
-    def constant(x, dtype=None):
-        at = ATBackend._at()
-        x = np.asarray(x)
-        if dtype is not None:
-            x = x.astype(dtype)
-        return at.constant(x)
-
-    @staticmethod
-    def zeros(shape, dtype=None):
-        at = ATBackend._at()
-        return at.zeros(shape, dtype=dtype)
-
-    @staticmethod
-    def zeros_like(x):
-        at = ATBackend._at()
-        return at.zeros_like(x)
-
-    @staticmethod
-    def ones(shape, dtype=None):
-        at = ATBackend._at()
-        return at.ones(shape, dtype=dtype)
-
-    @staticmethod
-    def arange(*args, dtype=None):
-        at = ATBackend._at()
-        return at.arange(*args, dtype=dtype)
-
-    @staticmethod
-    def linspace(start, stop, num, dtype=None):
-        at = ATBackend._at()
-        out = at.linspace(start, stop, num)
-        if dtype is not None:
-            out = out.astype(dtype)
-        return out
-
-    @staticmethod
-    def logspace(minval, maxval, num, dtype=None):
-        at = ATBackend._at()
-        #minval = at.cast(minval, "float64"); maxval = at.cast(maxval, "float64")
-        t = at.linspace(minval, maxval, num)
-        out = at.power(10.0, t)   # since callers already pass log10 endpoints
-        if dtype is not None:
-            out = out.astype(dtype)
-        return out
-
-    # ---- math ----
-    @staticmethod
-    def exp(x):
-        at = ATBackend._at()
-        return at.exp(x)
-
-    @staticmethod
-    def log(x):
-        at = ATBackend._at()
-        return at.log(x)
-
-    @staticmethod
-    def log1p(x):
-        at = ATBackend._at()
-        return at.log1p(x)
-
-    @staticmethod
-    def log10(x):
-        at = ATBackend._at()
-        return at.log10(x)
-
-    @staticmethod
-    def sqrt(x):
-        at = ATBackend._at()
-        return at.sqrt(x)
-
-    @staticmethod
-    def abs(x):
-        at = ATBackend._at()
-        return at.abs(x)
-
-    @staticmethod
-    def tanh(x):
-        at = ATBackend._at()
-        return at.tanh(x)
-
-    @staticmethod
-    def pow(x1, x2):
-        at = ATBackend._at()
-        return at.pow(x1, x2)
-
-    @staticmethod
-    def square(x):
-        at = ATBackend._at()
-        return at.square(x)
-
-    @staticmethod
-    def erf(x):
-        from pytensor.tensor import special as tspecial
-        return tspecial.erf(x)
-
-    @staticmethod
-    def maximum(a, b):
-        at = ATBackend._at()
-        return at.maximum(a, b)
-
-    @staticmethod
-    def minimum(a, b):
-        at = ATBackend._at()
-        return at.minimum(a, b)
-
-    @staticmethod
-    def clip(x, a_min, a_max):
-        at = ATBackend._at()
-        return at.clip(x, a_min, a_max)
-
-    @staticmethod
-    def ceil(x):
-        at = ATBackend._at()
-        return at.ceil(x)
-
-    @staticmethod
-    def where(cond, x, y):
-        at = ATBackend._at()
-        return at.where(cond, x, y)
-
-    # ---- reductions ----
-    @staticmethod
-    def sum(x, axis=None, keepdims=False):
-        at = ATBackend._at()
-        return at.sum(x, axis=axis, keepdims=keepdims)
-
-    @staticmethod
-    def max(x, axis=None, keepdims=False):
-        at = ATBackend._at()
-        return at.max(x, axis=axis, keepdims=keepdims)
-
-    @staticmethod
-    def any(x, axis=None, keepdims=False):
-        at = ATBackend._at()
-        return at.any(x, axis=axis, keepdims=keepdims)
-
-    @staticmethod
-    def all(x, axis=None, keepdims=False):
-        at = ATBackend._at()
-        return at.all(x, axis=axis, keepdims=keepdims)
-
-    # ---- utils ----
-    @staticmethod
-    def stop_grad(x):
-        from pytensor.gradient import disconnected_grad
-        return disconnected_grad(x)
-
-    @staticmethod
-    def searchsorted(a, v, side="left"):
-        at = ATBackend._at()
-        return at.searchsorted(a, v, side=side)
-
-    @staticmethod
-    def take(a, idx, axis=0):
-        at = ATBackend._at()
-        return at.take(a, idx, axis=axis)
-
-    @staticmethod
-    def sort(x, axis=-1):
-        at = ATBackend._at()
-        return at.sort(x, axis=axis)
-
-    @staticmethod
-    def diff(x, n=1, axis=-1):
-        at = ATBackend._at()
-        return at.diff(x, n=n, axis=axis)
-
-    @staticmethod
-    def cumsum(x, axis=None):
-        at = ATBackend._at()
-        return at.cumsum(x, axis=axis)
-
-    @staticmethod
-    def reshape(x, shape):
-        at = ATBackend._at()
-        return at.reshape(x, shape)
-
-    @staticmethod
-    def expm1(x):
-        at = ATBackend._at()
-        return at.expm1(x)
-
-    @staticmethod
-    def squeeze(x):
-        at = ATBackend._at()
-        return at.squeeze(x)
-
-
-    @staticmethod
-    def logsumexp(x, axis=None, keepdims=False):
-        from pytensor.tensor import special as tspecial
-        return tspecial.logsumexp(x, axis=axis, keepdims=keepdims)
-
-    # ---- comparisons ----
-    @staticmethod
-    def gt(a, b):
-        at = ATBackend._at()
-        return at.gt(a, b)
-
-    @staticmethod
-    def ge(a, b):
-        at = ATBackend._at()
-        return at.ge(a, b)
-
-    @staticmethod
-    def lt(a, b):
-        at = ATBackend._at()
-        return at.lt(a, b)
-
-    @staticmethod
-    def le(a, b):
-        at = ATBackend._at()
-        return at.le(a, b)
-
-    @staticmethod
-    def eq(a, b):
-        at = ATBackend._at()
-        return at.eq(a, b)
-
-    @staticmethod
-    def ne(a, b):
-        at = ATBackend._at()
-        return at.neq(a, b)
-
-    # ---- logical ----
-    @staticmethod
-    def logical_and(a, b):
-        at = ATBackend._at()
-        return at.logical_and(a, b)
-
-    @staticmethod
-    def logical_or(a, b):
-        at = ATBackend._at()
-        return at.logical_or(a, b)
-
-    @staticmethod
-    def logical_not(a):
-        at = ATBackend._at()
-        return at.logical_not(a)
-
-    # ---- switch (at.switch semantics) ----
-    @staticmethod
-    def switch(cond, x, y):
-        at = ATBackend._at()
-        return at.switch(cond, x, y)
-
-    # ---- missing array ops you already use elsewhere ----
-    @staticmethod
-    def concatenate(xs, axis=0):
-        at = ATBackend._at()
-        return at.concatenate(xs, axis=axis)
-
-    @staticmethod
-    def stack(xs, axis=0):
-        at = ATBackend._at()
-        return at.stack(xs, axis=axis)
-
-    @staticmethod
-    def floor(x):
-        at = ATBackend._at()
-        return at.floor(x)
-
-    @staticmethod
-    def maximum_accumulate(x, axis=0):
-        at = ATBackend._at()
-        return at.maximum_accumulate(x, axis=axis)
-
-    @staticmethod
-    def isfinite(x):
-        at = ATBackend._at()
-        return at.logical_and(~at.isnan(x), ~at.isinf(x))
-    
-    @staticmethod
-    def isnan(x):
-        at = ATBackend._at()
-        return at.isnan(x)
-    
-    @staticmethod
-    def isinf(x):
-        at = ATBackend._at()
-        return at.isinf(x)
-    
-    @staticmethod
-    def finite_or(x, fill):
-        at = ATBackend._at()
-        return at.where(
-            ATBackend.isfinite(x),
-            x,
-            at.as_tensor_variable(fill)
-        )
 
 
 
@@ -627,6 +291,7 @@ class JAXBackend:
     where = staticmethod(jnp.where)
     ceil = staticmethod(jnp.ceil)
     sign = staticmethod(jnp.sign)
+    squeeze = staticmethod(jnp.squeeze)
     
     @staticmethod
     def searchsorted(a, v, side="left"):
@@ -697,6 +362,10 @@ class JAXBackend:
     le = staticmethod(jnp.less_equal)
     eq = staticmethod(jnp.equal)
     ne = staticmethod(jnp.not_equal)
+    nanmin = staticmethod(jnp.nanmin)
+    nanmax = staticmethod(jnp.nanmax)
+    isneginf = staticmethod(jnp.isneginf)
+    finfo = staticmethod(jnp.finfo)
 
     # logical
     logical_and = staticmethod(jnp.logical_and)
@@ -712,6 +381,7 @@ class JAXBackend:
     arange = staticmethod(jnp.arange)
 
     sigmoid = staticmethod(jax.nn.sigmoid)
+    eye = staticmethod(jnp.eye)
 
     # needed by your grid helpers
     any = staticmethod(jnp.any)
@@ -731,3 +401,8 @@ class JAXBackend:
     @staticmethod
     def finite_or(x, fill):
         return jnp.where(jnp.isfinite(x), x, fill)
+
+
+    @staticmethod
+    def take_along_axis(arr, indices, axis):
+        return jnp.take_along_axis(arr, indices, axis=axis)

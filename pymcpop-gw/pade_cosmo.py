@@ -8,8 +8,6 @@ C_LIGHT_KM_S = 299_792.458  # km/s
 
 import numpy as onp
 import jax.numpy as np
-#import pytensor
-#import pytensor.tensor as at
 
 
 

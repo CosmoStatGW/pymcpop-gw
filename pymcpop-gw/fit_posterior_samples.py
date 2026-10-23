@@ -7,6 +7,15 @@
 #    All rights reserved. Use of this source code is governed by the
 #    license that can be found in the LICENSE file.
 
+"""Fit posterior-sample approximations using external MGCosmoPop readers.
+
+Install a MGCosmoPop version providing the selected catalogue reader, or add
+the directory containing its ``dataStructures`` package to ``PYTHONPATH``.
+No particular checkout location is assumed. Relative CLI input/output paths
+are resolved from the invocation directory; older versions silently changed
+to its parent directory before interpreting these paths.
+"""
+
 import os
 import argparse
 import json
@@ -32,19 +41,32 @@ plt.rcParams["mathtext.fontset"] = "cm"
 
 import corner
 
-MGCpath = '../../MGCosmoPop/MGCosmoPop'
-sys.path.append(MGCpath)
-
-
-from dataStructures.O1O2data import O1O2Data
-from dataStructures.O3adata import O3aData
-from dataStructures.O3bdata import O3bData
-from dataStructures.O4adata import O4aData
-from dataStructures.mockData import GWMockData
-
-
-import data_tools as dt
 from fit_model_numpyro import Logger
+
+
+def _load_catalog_reader(module_name, class_name):
+    """Load an installed or explicitly configured MGCosmoPop reader."""
+    for package in ("MGCosmoPop.dataStructures", "dataStructures"):
+        qualified_name = f"{package}.{module_name}"
+        try:
+            module = importlib.import_module(qualified_name)
+        except ModuleNotFoundError as exc:
+            # A missing dependency inside a reader is a separate installation
+            # error, not evidence that the alternate import layout is needed.
+            if exc.name is None or not (
+                qualified_name == exc.name or qualified_name.startswith(exc.name + ".")
+            ):
+                raise
+            missing_reader = exc
+        else:
+            return getattr(module, class_name)
+
+    raise ImportError(
+        f"PE fitting requires the MGCosmoPop reader {module_name}.{class_name}. "
+        "Install MGCosmoPop with this reader, or add the directory containing "
+        "its dataStructures package to PYTHONPATH."
+    ) from missing_reader
+
 
 #######################################################################################
 #######################################################################################
@@ -499,14 +521,6 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_b
     if prior_floor <= 0:
         raise ValueError("prior_floor must be > 0")
 
-    if not np.isfinite(dL_samples).all():
-        raise ValueError("dL_samples contains non-finite values")
-
-    if not np.isfinite(prior_vals).all():
-        raise ValueError("prior_vals contains non-finite values")
-
-    if (dL_samples <= 0).any():
-        raise ValueError("dL_samples must be strictly positive")
 
     nevs, nsamps = dL_samples.shape
 
@@ -524,16 +538,30 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_b
         if (dL_bounds_full[:, 1] <= dL_bounds_full[:, 0]).any():
             raise ValueError("Each full dL bound must satisfy max > min")
 
-    dL_grid = np.empty_like(dL_samples, dtype=float)
-    loginvprior_grid = np.empty_like(prior_vals, dtype=float)
+    dL_grid = np.full_like(dL_samples, np.nan, dtype=float)
+    loginvprior_grid = np.full_like(prior_vals, np.nan, dtype=float)
     dL_min = np.empty(nevs, dtype=float)
     dL_max = np.empty(nevs, dtype=float)
 
     for i in range(nevs):
-        order = np.argsort(dL_samples[i])
-
-        dL_sorted = dL_samples[i, order]
-        prior_sorted = prior_vals[i, order]
+        
+        valid = (
+            np.isfinite(dL_samples[i])
+            & np.isfinite(prior_vals[i])
+            & (dL_samples[i] > 0)
+        )
+        
+        if not np.any(valid):
+            raise ValueError("No finite positive dL/prior samples for event %s" % i)
+        
+        dL_i = dL_samples[i, valid]
+        prior_i = prior_vals[i, valid]
+        
+        order = np.argsort(dL_i)
+        
+        dL_sorted = dL_i[order]
+        prior_sorted = prior_i[order]
+        n_valid = len(dL_sorted)
 
         if np.any(np.diff(dL_sorted) <= 0):
             raise ValueError(
@@ -543,8 +571,8 @@ def build_dL_prior_interpolants(dL_samples, prior_vals, prior_floor=1e-300, dL_b
 
         prior_sorted = np.maximum(prior_sorted, prior_floor)
 
-        dL_grid[i] = dL_sorted
-        loginvprior_grid[i] = -np.log(prior_sorted)
+        dL_grid[i, :n_valid] = dL_sorted
+        loginvprior_grid[i, :n_valid] = -np.log(prior_sorted)
 
         if dL_bounds_full is None:
             dL_min[i] = dL_sorted[0]
@@ -1343,9 +1371,7 @@ parser.add_argument("--fplots", default='plots', type=str, required=False)
 
 
 if __name__=='__main__':
-    
-    os.chdir("../")
-    
+
     FLAGS = parser.parse_args()
 
     if not os.path.exists(FLAGS.fout):
@@ -1375,7 +1401,8 @@ if __name__=='__main__':
 
         if run_name == 'O1O2':
     
-            data = O1O2Data(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins=FLAGS.spins, metadata = FLAGS.metadata[ir] )
+            reader = _load_catalog_reader("O1O2data", "O1O2Data")
+            data = reader(fname_, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th, which_spins=FLAGS.spins, metadata = FLAGS.metadata[ir] )
         
         elif run_name == 'O3a':
             
@@ -1384,7 +1411,8 @@ if __name__=='__main__':
                 
                 'use':None }
             
-            data = O3aData(fname_, 
+            reader = _load_catalog_reader("O3adata", "O3aData")
+            data = reader(fname_,
                            GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
               which_spins=FLAGS.spins,
@@ -1399,7 +1427,8 @@ if __name__=='__main__':
                 
                 'use':None }
             
-            data = O3bData(fname_, 
+            reader = _load_catalog_reader("O3bdata", "O3bData")
+            data = reader(fname_,
               #GWTC2_1=None, 
               events_use=events_names, SNR_th=FLAGS.snr_th, FAR_th=FLAGS.far_th,
               which_spins=FLAGS.spins,
@@ -1412,7 +1441,8 @@ if __name__=='__main__':
             events_names = {'not_use': ['GW230518_125908','GW230529_181500'], 
                         'use':None }
             
-            data = O4aData(fname_, 
+            reader = _load_catalog_reader("O4adata", "O4aData")
+            data = reader(fname_,
               events_use=events_names, 
                 SNR_th=FLAGS.snr_th, 
                 FAR_th=FLAGS.far_th,
@@ -1423,7 +1453,8 @@ if __name__=='__main__':
             
         else:
             # We are using simulated data 
-            data = GWMockData( fname_, 
+            reader = _load_catalog_reader("mockData", "GWMockData")
+            data = reader( fname_,
                                 SNR_th=FLAGS.snr_th, 
                                 which_spins=FLAGS.spins,
                                 inclination=FLAGS.inclination,

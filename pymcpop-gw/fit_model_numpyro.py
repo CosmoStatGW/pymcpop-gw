@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 #
 #    Copyright (c) 2025 Michele Mancarella <mancarella@cpt.univ-mrs.fr>
 #
@@ -9,62 +8,167 @@
 
 # --- set env vars BEFORE importing jax (propagates to spawned workers) ---
 import os, argparse, sys
+import logging
+
+_logger = logging.getLogger(__name__)
+from settings_io import build_parser, load_settings_file, parse_args_with_optional_settings, settings_to_argv
 
 
-def load_settings_file(path):
-    """Load command-line options from a simple INI settings file.
 
-    The file must use the standard-library ``configparser`` format with a
-    ``[settings]`` section.  Option names are the command-line names without
-    leading dashes, and values are written as they would appear after the
-    option on the command line.  For example:
+def _lambda_slices_for_benchmark(FLAGS):
+    rate_model, spin_model, mass_model = FLAGS.rate_model, FLAGS.spin_model, FLAGS.mass_model
+    i = 0
+    cosmo = slice(i, i + 5); i += 5
 
-        [settings]
-        fin_data = data_1.h5 data_2.h5
-        nsteps = 1000
+    rate = slice(i, i + 3); i += 3
 
-    No external dependency is required.
-    """
-    import configparser
+    if spin_model in ('default_gauss',):
+        spin = slice(i, i + 4); i += 4
+    else:
+        spin = slice(i, i)
 
-    config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    config.optionxform = str  # preserve names such as N_DP_comp_max
+    if mass_model == "PLPreg":
+        mass = slice(i, i + 8)
+        i += 8
+    elif mass_model in ('DPLDP',):
+        mass = slice(i, i + 21)
+        i += 21
+    elif mass_model == "DPLDP-z":
+        mass = slice(i, i + 47)
+        i += 47
+    elif mass_model == "DPUC_Primary":
+        K = int(FLAGS.N_DP_comp_max)
+        D = 1
+        W = 1
+        n_scalar_after_gmm = 8 + (4 if str(getattr(FLAGS, "DP_m1_env_form", "powerlaw")) == "smooth_broken_pl_2breaks" else 0)
+        mass = slice(i, i + 2 * D * K + W * K + n_scalar_after_gmm)
+        i += 2 * D * K + W * K + n_scalar_after_gmm
 
-    read_files = config.read(path)
-    if not read_files:
-        raise FileNotFoundError(f"Could not read settings file: {path!r}")
+    elif mass_model == "DPUC_TruncM2":
+        K = int(FLAGS.N_DP_comp_max)
+        D = 2
+        W = 1 if bool(getattr(FLAGS, "DPUC_TruncM2_shared_weights", 0)) else 2
+        n_scalar_after_gmm = 8 + (4 if str(getattr(FLAGS, "DP_m1_env_form", "powerlaw")) == "smooth_broken_pl_2breaks" else 0)
+        mass = slice(i, i + 2 * D * K + W * K + K + n_scalar_after_gmm)
+        i += 2 * D * K + W * K + K + n_scalar_after_gmm
 
-    if not config.has_section("settings"):
-        raise ValueError(
-            f"Settings file {path!r} must contain a [settings] section."
+
+    elif mass_model == "DPUC":
+        K = int(FLAGS.N_DP_comp_max)
+        n_scalar_after_gmm = 8 + (4 if FLAGS.DP_m1_env_form == "smooth_broken_pl_2breaks" else 0)
+        mass = slice(i, i + 5 * K + n_scalar_after_gmm)
+        i += 5 * K + n_scalar_after_gmm
+    else:
+        raise ValueError(f"Unknown mass_model={mass_model}")
+
+    return {"cosmo": cosmo, "rate": rate, "spin": spin, "mass": mass, "npar": i}
+
+
+def _trace_value(model_trace, name, default=None):
+    if name in model_trace:
+        return model_trace[name]["value"]
+    if default is not None:
+        return default
+    raise KeyError(f"Could not find {name!r} in model_trace and no default was given")
+
+
+def _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace):
+    """Use the model's canonical packing rather than reconstructing a second layout."""
+    return _trace_value(model_trace, "Lambda")
+
+
+def run_selection_block_benchmark(FLAGS, priors, params_fix, model_trace, lik_data, core, *, repeats=10, gp_state_factory=None):
+    import time
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from likelihood import _gw_terms_from_x
+
+    Lambda0 = _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace)
+    slices = _lambda_slices_for_benchmark(FLAGS)
+
+    if Lambda0.shape[0] != slices["npar"]:
+        raise RuntimeError(f"Lambda length mismatch: built {Lambda0.shape[0]}, expected {slices['npar']}")
+
+    if FLAGS.pop_only:
+        m1det, m2det, dLdet, spins_evt = (lik_data.m1det_pe, lik_data.m2det_pe,
+                                        lik_data.dL_pe, lik_data.spins_pe)
+    else:
+        x0 = jnp.asarray(_trace_value(model_trace, "x"), dtype=jnp.float64)
+        m1det, m2det, dLdet, spins_evt, _, _ = _gw_terms_from_x(x0, lik_data)
+
+    def selection_only(Lam):
+        _, log_mu, _ = core(
+            m1det, m2det, dLdet, spins_evt,
+            lik_data.m1inj, lik_data.m2inj, lik_data.dLinj,
+            lik_data.spins_inj, lik_data.log_p_draw, lik_data.log_p_incl,
+            Lam, lik_data.Ndraw,
+            gp_state=(gp_state_factory(Lam) if gp_state_factory else None),
         )
+        return log_mu
 
-    return dict(config.items("settings"))
+    full_grad = jax.jit(jax.value_and_grad(selection_only))
+
+    def make_block_grad(sl):
+        def f(block):
+            Lam = Lambda0.at[sl].set(block)
+            return selection_only(Lam)
+        return jax.jit(jax.value_and_grad(f))
+
+    block_grads = {}
+    for name in ("cosmo", "rate", "spin", "mass"):
+        sl = slices[name]
+        if sl.start != sl.stop:
+            block_grads[name] = (sl, make_block_grad(sl))
+
+    def time_call(label, fn, arg):
+        # compile/warmup
+        y, g = fn(arg)
+        jax.block_until_ready(y)
+        jax.block_until_ready(g)
+
+        ts = []
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            y, g = fn(arg)
+            jax.block_until_ready(y)
+            jax.block_until_ready(g)
+            ts.append(time.perf_counter() - t0)
+        arr = np.asarray(ts)
+        print(f"{label:>12s}: mean={arr.mean():.6f}s  min={arr.min():.6f}s  max={arr.max():.6f}s  grad_shape={tuple(g.shape)}  value={float(y):.6g}")
+        return float(arr.mean())
 
 
-def settings_to_argv(settings, parser):
-    """Convert INI settings into argparse-style tokens."""
-    import shlex
+    print("\n" + "=" * 80)
+    print("Selection-gradient block benchmark")
+    print("This is a proxy benchmark: block functions still call the existing full core.")
+    print("If block timings are not clearly below full timing, a structural refactor is unlikely to pay off.")
+    print("=" * 80)
+    print("Lambda length:", Lambda0.shape[0])
+    print("Slices:", {k: (v.start, v.stop) for k, v in slices.items() if k != "npar"})
+    print("Ninj:", int(lik_data.m1inj.shape[0]), "chunk_inj:", int(FLAGS.chunk_inj))
+    print("repeats:", repeats)
+    print("-" * 80)
 
-    actions_by_dest = {action.dest: action for action in parser._actions}
-    argv = []
+    times = {}
+    times["full"] = time_call("full", full_grad, Lambda0)
+    for name, (sl, fn) in block_grads.items():
+        times[name] = time_call(name, fn, Lambda0[sl])
 
-    for dest, value in settings.items():
-        if dest == "settings":
-            continue
+    sum_blocks = sum(v for k, v in times.items() if k != "full")
+    print("-" * 80)
+    print(f"sum(blocks) / full = {sum_blocks / times['full']:.3f}")
+    print("Interpretation:")
+    print("  <~0.7 : structural decomposition may be worth it")
+    print("  ~1.0  : likely little speed gain")
+    print("  >1.0  : multiple VJPs probably worse unless memory improves")
+    print("=" * 80 + "\n")
+    return times
 
-        action = actions_by_dest.get(dest)
-        if action is None:
-            raise KeyError(dest)
 
-        option_strings = [s for s in action.option_strings if s.startswith("--")]
-        if not option_strings:
-            raise KeyError(dest)
 
-        argv.append(option_strings[0])
-        argv.extend(shlex.split(value))
 
-    return argv
+
 
 def early_parse(argv):
     p = argparse.ArgumentParser(add_help=False)
@@ -150,14 +254,13 @@ class Logger(object):
         self.log.write(message)
 
     def flush(self):
-        #this flush method is needed for python 3 compatibility.
-        #this handles the flush command by doing nothing.
-        #you might want to specify some extra behavior here.
-        pass    
+        self.terminal.flush()
+        self.log.flush()
 
     def close(self):
-        self.log.close
+        self.log.close()
         sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
         
     def isatty(self):
         return False
@@ -195,229 +298,36 @@ def jitter_simplex(v, key, eps):
 
 
 
-def parse_args_with_optional_settings(parser):
-    settings_probe = argparse.ArgumentParser(add_help=False)
-    settings_probe.add_argument("--settings", type=str, default=None)
-    settings_args, _ = settings_probe.parse_known_args()
-
-    required_dests = []
-    for action in parser._actions:
-        if action.required:
-            required_dests.append(action.dest)
-            action.required = False
-            action.default = argparse.SUPPRESS
-
-    valid_dests = {action.dest for action in parser._actions}
-
-    if settings_args.settings is not None:
-        settings = load_settings_file(settings_args.settings)
-        unknown = sorted(set(settings) - valid_dests)
-        if unknown:
-            parser.error(
-                "Unknown option(s) in settings file: "
-                + ", ".join(unknown)
-            )
-        try:
-            settings_argv = settings_to_argv(settings, parser)
-        except KeyError as exc:
-            parser.error(f"Unknown option in settings file: {exc.args[0]}")
-    else:
-        settings_argv = []
-
-    flags = parser.parse_args(settings_argv + sys.argv[1:])
-
-    missing = [
-        dest for dest in required_dests
-        if not hasattr(flags, dest) or getattr(flags, dest) in (None, "")
-    ]
-    if missing:
-        parser.error(
-            "the following arguments are required, either on the command line "
-            "or in --settings: "
-            + ", ".join("--" + dest for dest in missing)
-        )
-
-    return flags
 
 
 def main():
 
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--settings", default=None, type=str, required=False,
-                        help="Path to an INI settings file containing command-line options.")
-    
-    
-    parser.add_argument("--fin_data", nargs='+', type=str, required=True)
-    parser.add_argument("--fin_injections", nargs='+', type=str, required=True)
-    parser.add_argument("--fin_priors", default='', type=str, required=True)
-    parser.add_argument("--priors_for_mmin", default='', type=str, required=False)
-    parser.add_argument("--events_use", nargs='+', default=[], type=str, required=False)
-    parser.add_argument("--events_exclude", nargs='+', default=[], type=str, required=False)
-    parser.add_argument("--backend", default='disk', type=str, required=False)
-    parser.add_argument("--seed", default=0, type=int, required=False)
-
-    
-    parser.add_argument("--draws_per_chunk", default=100, type=int, required=False)
-    
-
-    parser.add_argument("--nev_min", default=0, type=int, required=False)
-    parser.add_argument("--nev_max", default=-1, type=int, required=False)
-    
-    parser.add_argument("--pop_only", default=0, type=int, required=False)
-    
-    parser.add_argument("--rate_model", default='MD', type=str, required=False)
-    parser.add_argument("--mass_model", default='DPLDP', type=str, required=False)
-    parser.add_argument("--spin_model", default='none', type=str, required=False)
-    parser.add_argument("--interp_mass", default=0, type=int, required=False)
-    parser.add_argument("--interp_z", default=0, type=int, required=False)
-    parser.add_argument("--linear_mass", default=0, type=int, required=False)
-    parser.add_argument("--linear_z", default=0, type=int, required=False)
-
-    parser.add_argument("--vary_mb", default=1, type=int, required=False)
-
-    
-    parser.add_argument("--N_DP_comp_max", default=30, type=int, required=False)
-    parser.add_argument("--alpha_tail", default=-1, type=float, required=False)
-    parser.add_argument("--alpha_small", default=0.01, type=float, required=False)
-    parser.add_argument("--L_small_1", default=1., type=float, required=False)
-    parser.add_argument("--L_small_2", default=1., type=float, required=False)
-    parser.add_argument("--L_small_3", default=0.5, type=float, required=False)
-    parser.add_argument("--s_local", default=0.5, type=float, required=False)
-    parser.add_argument("--find_m_bounds", default=0, type=float, required=False)
-    parser.add_argument("--q_mbound", default=0.05, type=float, required=False)
-    parser.add_argument("--alpha_inv_params", nargs='+', type=float, default=[1., 1.], required=False)
-    parser.add_argument("--DP_prior", default='SB', type=str, required=False) # SB, dirichelet, softmax
-    parser.add_argument("--sigma_softmax", default=0.75, type=float, required=False)
-    parser.add_argument("--gamma_DP_params", nargs='+', type=float, default=[1., 1.], required=False)
-    parser.add_argument("--DP_truncate_up", default=0, type=int, required=False)
-    parser.add_argument("--DP_truncate_low", default=0, type=int, required=False)
-    parser.add_argument("--DP_m1_env", default=0, type=int, required=False)
-    
-    
-
-    
-    
-    
-    parser.add_argument("--marginal_R0", default=1, type=int, required=False)
-    parser.add_argument("--smoothing", default='poly', type=str, required=False)
-    parser.add_argument("--simplex_repair", default=0, type=int, required=False)
-
-    parser.add_argument("--has_m2_break", default=0, type=int, required=False)
-    parser.add_argument("--norm_gauss", default='uplow', type=str, required=False)
-
-    parser.add_argument("--taper_kind", default='sigmoid', type=str, required=False)
-    parser.add_argument("--taper_p", default=15, type=float, required=False)
-    
-    
-    
-    parser.add_argument("--dLprior", nargs='+', default=['dLsq'], type=str, required=False)
-    #parser.add_argument("--normalize_PE_prior",  default=1, type=int, required=False)
-    parser.add_argument("--penorm_lims",  nargs='+', default=[], type=str, required=False)
-    parser.add_argument("--use_sel_spin", default=0, type=int, required=False)
-    
-    
-    parser.add_argument("--sampling_gw", default='gauss', type=str, required=False)
-    parser.add_argument("--bounded_gmm_transform", default=0, type=int, required=False)
-    parser.add_argument("--cho_dil", default=1., type=float, required=False)
-    parser.add_argument("--sel", default='Tobs', type=str, required=False)
-    parser.add_argument("--ivals", default='', type=str, required=False)
-    parser.add_argument("--MAP_init", default=0, type=int, required=False)
-    parser.add_argument("--eps_init", default=0.01, type=float, required=False)
-    parser.add_argument("--params_fix", default='', type=str, required=False)
-    parser.add_argument("--check_init", default=0, type=int, required=False)
-    parser.add_argument("--debug", default=0, type=int, required=False)
-    parser.add_argument("--debug_sel_batch", default=0, type=int, required=False)
-    parser.add_argument("--profile", default=0, type=int, required=False)
-    parser.add_argument("--recompile", default=0, type=int, required=False)
-
-    parser.add_argument("--save_thetas", default=1, type=int, required=False)
-    
-    
-    
-    parser.add_argument("--n_inj_use", nargs='+', type=float, required=False)
-    parser.add_argument("--fix_inj_len", default=0, type=int, required=False)
-    parser.add_argument("--min_Neff", default=0, type=int, required=False)
-    parser.add_argument("--Neff_min_lik", default=0, type=int, required=False)
-    parser.add_argument("--log_lik_var_min", default=1, type=float, required=False)
-    parser.add_argument("--chunk_inj", default=0, type=int, required=False)
-    parser.add_argument("--chunk_reduce", default=0, type=int, required=False)
-    parser.add_argument("--use_float32", default=0, type=int, required=False)
-    parser.add_argument("--use_float32_bias", default=0, type=int, required=False)
-    parser.add_argument("--inj_loop", default='scan-GPU', type=str, required=False)
-    parser.add_argument("--interp_inj", default=0, type=int, required=False)
-    parser.add_argument("--detach_var", default=0, type=int, required=False)
-    
-    parser.add_argument("--nsamplesmax", default=-1, type=int, required=False)
-    parser.add_argument("--spin_inj", default='none', type=str, required=False)
-    parser.add_argument("--Nsamplesuse", default=-1, type=int, required=False)
-    parser.add_argument("--sel_uncertainty", default=0, type=int, required=False)
-    parser.add_argument("--sel_smoothing", default='x30', type=str, required=False)
-    parser.add_argument("--alpha_beta_prior", default='sigmoid', type=str, required=False)
-    parser.add_argument("--dil_factor", default=1, type=int, required=False)
-    parser.add_argument("--use_log_alpha_beta", default=0, type=int, required=False)
-    
-    parser.add_argument("--fout", default='results/', type=str, required=True)
-    
-    #parser.add_argument("--sampler", default='pymc_bar', type=str, required=False)
-    parser.add_argument("--nsteps", default=100, type=int, required=True)
-    parser.add_argument("--ntune", default=100, type=int, required=True)
-    parser.add_argument("--nchains", default=1, type=int, required=False)
-    parser.add_argument("--ncores", default=1, type=int, required=False)
-    parser.add_argument("--target_accept", default=0.9, type=float, required=False)
-    parser.add_argument("--chain_method", default='sequential', type=str, required=False)
-    parser.add_argument("--jax_debug_nans", default=0, type=int, required=False)
-    parser.add_argument("--dense_mass", default=0, type=int, required=False)
-    parser.add_argument("--max_tree_depth", default=10, type=int, required=False)
-    parser.add_argument("--find_heuristic_step_size", default=0, type=int, required=False)
-    parser.add_argument("--regularize_mass_matrix", default=1e-04, type=float, required=False)
-
-    parser.add_argument("--check_zres", nargs="+", type=int, default=[], required=False)
-    
-    
-    parser.add_argument("--fix_H0", default=1, type=int, required=False)
-    parser.add_argument("--fix_Om", default=1, type=int, required=False)
-    parser.add_argument("--fix_w0", default=1, type=int, required=False)
-    parser.add_argument("--fix_Xi0n", default=1, type=int, required=False)
-    parser.add_argument("--z_pivot", default=0, type=float, required=False)
-    parser.add_argument("--integrate_dc", default='pade', type=str, required=False)
-    
-    
-    parser.add_argument("--param", default='vanilla', type=str, required=False)
-    parser.add_argument("--pade", default=0, type=int, required=False)
-    parser.add_argument("--zres", default=1000, type=int, required=False)
-    parser.add_argument("--z_grid_mode", default='man', type=str, required=False)
-    
-    parser.add_argument("--zmin_a", default=1e-05, type=float, required=False)
-    parser.add_argument("--zmin_b", default=1e-03, type=float, required=False)
-    parser.add_argument("--zmid_b", default=3., type=float, required=False)
-    parser.add_argument("--zmax_c", default=10., type=float, required=False)
-    parser.add_argument("--hi_boost", default=.2, type=float, required=False)
-    parser.add_argument("--find_z_bounds", default=0, type=int, required=False)
-    parser.add_argument("--is_observed", default=0, type=int, required=False)
-    parser.add_argument("--sample_from_pop", default=0, type=int, required=False)
-
-    parser.add_argument("--mmin_inj", default=-1, type=float, required=False)
-    parser.add_argument("--is_compressed_inj", default=0, type=int, required=False)
-    
-    parser.add_argument("--r",  default=0, type=float, required=False)
-    parser.add_argument("--allTobs", nargs='+', type=float, required=False)
-
-    parser.add_argument("--reparam_mass", default=1, type=int, required=False)
-    parser.add_argument("--reparam_z", default=1, type=int, required=False)
-    parser.add_argument("--reparam_cosmo", default=1, type=int, required=False)
-
-    parser.add_argument("--remove_spin_prior", default=0, type=int, required=False)
-
-    
-
-    parser.add_argument("--xla_cpu_multi_thread_eigen", default='true', type=str, required=False)
-
-    parser.add_argument("--nth", type=int, default=None)
-
-
-
+    parser = build_parser()
     FLAGS = parse_args_with_optional_settings(parser)
+
+    if FLAGS.mass_model == "DPUC_Primary":
+        FLAGS.DP_q_env = 1
+        if FLAGS.DP_corr_m1m2:
+            raise ValueError("DPUC_Primary does not use DP_corr_m1m2.")
+
+    if str(FLAGS.mass_model) == "DPUC_Primary" and not bool(FLAGS.DP_q_env):
+        raise ValueError(
+            "mass_model='DPUC_Primary' implements the logm1 + q^beta branch and "
+            "therefore requires DP_q_env=1. Got DP_q_env=0."
+        )
+
+    if FLAGS.mass_model != "DPUC_Primary" and FLAGS.DPUC_Primary_q_norm != "conditional":
+        raise ValueError(
+            "--DPUC_Primary_q_norm is only meaningful for --mass_model DPUC_Primary."
+        )
+
+    if FLAGS.DPUC_kernel in ("local_native_gaussian", "local_native_product_gaussian"):
+        if FLAGS.mass_model != "DPUC":
+            raise ValueError(
+                "DPUC_kernel local-native branches are only supported for "
+                f"mass_model='DPUC'. Got mass_model={FLAGS.mass_model!r}."
+            )
 
     os.makedirs(FLAGS.fout, exist_ok=True)
 
@@ -436,12 +346,26 @@ def main():
     from tqdm.auto import tqdm
 
     import psutil
-    _process = psutil.Process(os.getpid())
+    try:
+        _process = psutil.Process(os.getpid())
+    except (psutil.Error, OSError) as exc:
+        _process = None
+        print(f"[MEM] Process memory monitoring unavailable: {exc}")
+
     def mem_gb():
-        return _process.memory_info().rss / (1024**3)  # Resident Set Size in GB
+        if _process is None:
+            return None
+        try:
+            return _process.memory_info().rss / (1024**3)  # Resident Set Size in GB
+        except (psutil.Error, OSError):
+            return None
     
     def log_mem(tag):
-        print(f"[MEM] {tag}: {mem_gb():.2f} GB RSS")
+        memory = mem_gb()
+        if memory is None:
+            print(f"[MEM] {tag}: unavailable")
+        else:
+            print(f"[MEM] {tag}: {memory:.2f} GB RSS")
 
  
     if FLAGS.chain_method == "vectorized" and FLAGS.ncores > 1:
@@ -528,7 +452,7 @@ def main():
     
     import numpyro
     from numpyro.infer import MCMC, NUTS
-    from numpyro.infer.initialization import init_to_value, init_to_feasible, init_to_median
+    from numpyro.infer.initialization import init_to_value
     from numpyro.infer.util import initialize_model
     import jax.random as random
     from numpyro.infer import MCMC, NUTS
@@ -600,6 +524,8 @@ def main():
     myLog = Logger(logfile)
     sys.stdout = myLog
     sys.stderr = myLog
+    print(f"Models: mass={FLAGS.mass_model}, rate={FLAGS.rate_model}, spin={FLAGS.spin_model}, "
+          f"cosmology={'GP' if FLAGS.is_GP_dL else 'standard'}; seed={FLAGS.seed}")
   
     
     print("dtype test:", np.array(0., dtype=np.float64).dtype)
@@ -611,6 +537,28 @@ def main():
 
     with open(FLAGS.fin_priors) as json_file:
         priors = json.load(json_file)
+
+    ########### GP
+    if FLAGS.is_GP_dL:
+        try:
+            Uprior = priors["U"]
+            if FLAGS.U != 0:
+                print(f"Prior for U is present in priors, but input U={FLAGS.U} was given. This will override the prior")
+                Uprior = FLAGS.U
+            else:
+                print(f"Prior for U from priors. U={Uprior}")
+        except KeyError:
+            if FLAGS.U == 0:
+                raise ValueError("Insert U in prior for Gaussian Process or pass U as input arg")
+            else:
+                print(f"Prior for U from input U={FLAGS.U}")
+                Uprior = FLAGS.U
+
+        if not FLAGS.invert_dL_GP:
+            raise ValueError("Gaussian Process for distance ratio requires inversion.")
+    else:
+        Uprior = None
+    ########### END GP
 
     if FLAGS.priors_for_mmin!='':
         with open(FLAGS.priors_for_mmin) as json_file:
@@ -633,7 +581,7 @@ def main():
         with open(FLAGS.params_fix) as json_file:
             params_fix = json.load(json_file) 
     else:
-        params_fix=None
+        params_fix={"H0":67.7, "Om":0.31, "w0":-1, "Xi0":1., "nXi0":0.}
 
     ################################################
     # Load data
@@ -648,7 +596,7 @@ def main():
 
 
     if ( FLAGS.events_exclude != [] or FLAGS.events_use != []) and (FLAGS.nev_min != 0 or FLAGS.nev_max != -1):
-        raise ValueError("Passed events_exclude=%s, events_use=%s, nev_min=%s, nev_max=%s. If events_exclude is not empty, nev_min must be 0 and nev_max=-1  "%(str(events_exclude), str(events_use), nev_min, nev_max ))
+        raise ValueError("Passed events_exclude=%s, events_use=%s, nev_min=%s, nev_max=%s. If events_exclude is not empty, nev_min must be 0 and nev_max=-1  "%(str(FLAGS.events_exclude), str(FLAGS.events_use), FLAGS.nev_min, FLAGS.nev_max ))
     
     
     if not FLAGS.pop_only:
@@ -705,50 +653,36 @@ def main():
             gmm_fit_transform_info = None
 
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
-
-            if FLAGS.events_use!=[] or FLAGS.events_exclude!=[]:
+            if FLAGS.events_use or FLAGS.events_exclude:
                 raise ValueError("Cannot select by index and name at the same time")
-                
-            N_or = Nevents
-
-            if FLAGS.nev_max == -1 :
-                print("Starting from event %s"%FLAGS.nev_min)
-                mask_0D = (slice(FLAGS.nev_min, None ))
-                mask_1D = (slice(FLAGS.nev_min, None ), slice(None))
-                mask_2D = (slice(FLAGS.nev_min, None), slice(None), slice(None))
-                mask_3D = (slice(FLAGS.nev_min , None), slice(None), slice(None), slice(None))
-                Nev_exp = Nevents - FLAGS.nev_min
-            elif FLAGS.nev_min == 0 :
-                print("Ending at event %s"%FLAGS.nev_max)
-                mask_0D = (slice(None, FLAGS.nev_max ))
-                mask_1D = (slice(None, FLAGS.nev_max ), slice(None))
-                mask_2D = (slice(None, FLAGS.nev_max), slice(None), slice(None))
-                mask_3D = (slice(None, FLAGS.nev_max), slice(None), slice(None), slice(None))
-                Nev_exp = FLAGS.nev_max
-            else:
-                print("Using events between %s and %s"%(FLAGS.nev_min,FLAGS.nev_max))
-                Nev_exp = FLAGS.nev_max - FLAGS.nev_min
-                mask_0D = (slice(FLAGS.nev_min, FLAGS.nev_max ))
-                mask_1D = (slice(FLAGS.nev_min, FLAGS.nev_max ), slice(None))
-                mask_2D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None))
-                mask_3D = (slice(FLAGS.nev_min, FLAGS.nev_max), slice(None), slice(None), slice(None))
-
-            samples_means_at = samples_means_at[mask_1D]
-            samples_cho_covs_at = samples_cho_covs_at[mask_2D]
-        
-            gmm_log_wts = gmm_log_wts[mask_1D]
-            gmm_means = gmm_means[mask_2D]
-            gmm_icovs =  gmm_icovs[mask_3D]
-            gmm_cho_covs =  gmm_cho_covs[mask_3D]
-            gmm_log_dets =  gmm_log_dets[mask_1D]
+            N_original = int(np.sum(Nevents))
+            first = int(FLAGS.nev_min)
+            last = N_original if FLAGS.nev_max == -1 else int(FLAGS.nev_max)
+            if not 0 <= first < last <= N_original:
+                raise ValueError(f"Event range [{first}, {last}) is outside [0, {N_original})")
+            selection = slice(first, last)
+            samples_means_at = samples_means_at[selection]
+            samples_cho_covs_at = samples_cho_covs_at[selection]
+            gmm_log_wts = gmm_log_wts[selection]
+            gmm_means = gmm_means[selection]
+            gmm_icovs = gmm_icovs[selection]
+            gmm_cho_covs = gmm_cho_covs[selection]
+            gmm_log_dets = gmm_log_dets[selection]
             if bool(FLAGS.bounded_gmm_transform):
-                gmm_fit_coord_bounds = gmm_fit_coord_bounds[mask_2D]
-            allNgm =  allNgm[mask_0D]
-            Nevents =  len(allNgm)
-
-            assert Nevents == Nev_exp
-
-            print("Number of events used: %s. Original events were %s."%(Nevents, N_or))
+                gmm_fit_coord_bounds = gmm_fit_coord_bounds[selection]
+            allNgm = allNgm[selection]
+            selected_groups = []
+            offset = 0
+            for names in allnames:
+                group_first = min(len(names), max(0, first - offset))
+                group_last = min(len(names), max(0, last - offset))
+                selected_groups.append(names[group_first:group_last])
+                offset += len(names)
+            allnames = selected_groups
+            Nevents = np.asarray([len(names) for names in allnames], dtype=np.int64)
+            if int(Nevents.sum()) != len(allNgm):
+                raise ValueError("Selected event names and GMM arrays are not aligned")
+            print(f"Using {last - first} of {N_original} events (indices [{first}, {last}))")
 
 
     
@@ -774,7 +708,7 @@ def main():
         if FLAGS.nev_min != 0 or FLAGS.nev_max != -1:
             raise NotImplementedError()
 
-        if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
+        if FLAGS.spin_model == 'default_gauss':
 
             chi1_samples =  data['chi1_samples']
             chi2_samples =  data['chi2_samples']
@@ -821,12 +755,9 @@ def main():
         spinsInj = []
     else:
         
-        if FLAGS.spin_inj=='chieffchip':
-            spinsInj = [injections['chieff'], injections['chip']]
-            
-        elif FLAGS.spin_inj=='chi12xyz':
+        if FLAGS.spin_inj=='chi12xyz':
 
-            if (FLAGS.spin_model=='default') or (FLAGS.spin_model=='default_gauss'):
+            if FLAGS.spin_model == 'default_gauss':
 
                 print("Computing chi1, chi2, cost1, cost2 in injections...")
     
@@ -867,16 +798,7 @@ def main():
     if not FLAGS.pop_only:  
     
         if 'gmm' in FLAGS.sampling_gw:
-            raise NotImplementedError()
-            
-            GWData =  [
-                       np.exp(gmm_log_wts), #.astype(X), 
-                       gmm_means, #.astype(X), 
-                       gmm_cho_covs, #.astype(X), 
-                       injections['Tobs'], #.astype(X),
-                        Nevents,
-                        allnames
-                      ]
+            raise NotImplementedError("sampling_gw containing 'gmm' has no implemented launcher path")
         elif FLAGS.sampling_gw=='gauss':
             if bool(FLAGS.bounded_gmm_transform):
                 GWData =  [samples_means_at, #.astype(X),
@@ -935,8 +857,8 @@ def main():
     if FLAGS.ivals!='':
         with open(FLAGS.ivals) as json_file:
                 ivals = json.load(json_file)
-        print('Initial values:')
-        print(ivals)
+        print(f'Loaded {len(ivals)} initialization entries from {FLAGS.ivals}')
+        _logger.debug('Initial values: %s', ivals)
     else:
         print('No initial values passed.')
         ivals={}
@@ -944,7 +866,7 @@ def main():
 
     if FLAGS.check_zres ==[]:
 
-        model_numpyro, lik_data, core, loglik = make_model_jax(
+        model_numpyro, lik_data, core, loglik, loglik_components, model_init_info = make_model_jax(
             priors=priors,
             GWData=GWData,
             InjData=InjData,
@@ -974,9 +896,79 @@ def main():
             sel_method=FLAGS.sel,
             sel_smoothing = FLAGS.sel_smoothing,
             log_lik_var_min = FLAGS.log_lik_var_min,
+            skip_sel = FLAGS.skip_sel,
+
             
             N_DP_comp_max=FLAGS.N_DP_comp_max,
+            alpha_tail=FLAGS.alpha_tail,
+            alpha_small=FLAGS.alpha_small,
+            L_small_1=FLAGS.L_small_1,
+            L_small_2=FLAGS.L_small_2,
+            s_local=FLAGS.s_local,
+            find_m_bounds=bool(FLAGS.find_m_bounds),
+            q_mbound_mu_low=FLAGS.q_mbound_mu_low,
+            q_mbound_mu_up=FLAGS.q_mbound_mu_up,
+            q_mbound_sig_low=FLAGS.q_mbound_sig_low,
+            q_mbound_sig_up=FLAGS.q_mbound_sig_up,
+            alpha_inv_params=FLAGS.alpha_inv_params,
+            DP_mu_bounds_source=FLAGS.DP_mu_bounds_source,
+            DP_sig_bounds_source=FLAGS.DP_sig_bounds_source,
+            M_active=FLAGS.M_active,
+            tau_prior=FLAGS.tau_prior,
+            DP_prior=FLAGS.DP_prior,
+            sigma_softmax=FLAGS.sigma_softmax,
+            gamma_DP_params=FLAGS.gamma_DP_params,
+            DP_truncate_up=bool(FLAGS.DP_truncate_up),
+            DPUC_mmax_fixed=FLAGS.DPUC_mmax_fixed,
+            DP_truncate_low=bool(FLAGS.DP_truncate_low),
             DP_m1_env=bool(FLAGS.DP_m1_env),
+            DP_m1_env_form=FLAGS.DP_m1_env_form,
+            DP_m1_env_delta1=FLAGS.DP_m1_env_delta1,
+            DP_m1_env_delta2=FLAGS.DP_m1_env_delta2,
+            DP_q_env=bool(FLAGS.DP_q_env),
+            DPUC_Primary_q_norm=FLAGS.DPUC_Primary_q_norm,
+            DP_corr_m1m2=bool(FLAGS.DP_corr_m1m2),
+            DP_corr_eta_rho = FLAGS.DP_corr_eta_rho,
+            DP_corr_f_minor = FLAGS.DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = bool(FLAGS.PL_DPUC_normalize_gmm),
+            DPUC_kernel = FLAGS.DPUC_kernel,
+            DPUC_kernel_rcut = FLAGS.DPUC_kernel_rcut,
+            DPUC_kernel_dr = FLAGS.DPUC_kernel_dr,
+            DPUC_kernel_xcut = FLAGS.DPUC_kernel_xcut,
+            DPUC_kernel_ycut = FLAGS.DPUC_kernel_ycut,
+            DPUC_q_coord = FLAGS.DPUC_q_coord,
+            DPUC_TruncM2_shared_weights=bool(FLAGS.DPUC_TruncM2_shared_weights),
+            DPUC_TruncM2_mu2_mode=FLAGS.DPUC_TruncM2_mu2_mode,
+            DPUC_TruncM2_secondary_coord=FLAGS.DPUC_TruncM2_secondary_coord,
+            DPUC_TruncM2_area_reg=bool(FLAGS.DPUC_TruncM2_area_reg),
+            DPUC_TruncM2_log_area_min=FLAGS.DPUC_TruncM2_log_area_min,
+            DPUC_TruncM2_log_area_width=FLAGS.DPUC_TruncM2_log_area_width,
+            DPUC_TruncM2_log_area_lambda=FLAGS.DPUC_TruncM2_log_area_lambda,
+            DPUC_TruncM2_aspect_reg=bool(FLAGS.DPUC_TruncM2_aspect_reg),
+            DPUC_TruncM2_aspect_max=FLAGS.DPUC_TruncM2_aspect_max,
+            DPUC_TruncM2_aspect_width=FLAGS.DPUC_TruncM2_aspect_width,
+            DPUC_TruncM2_aspect_lambda=FLAGS.DPUC_TruncM2_aspect_lambda,
+            DPUC_TruncM2_low_center_weight_reg=bool(FLAGS.DPUC_TruncM2_low_center_weight_reg),
+            DPUC_TruncM2_low_center_mcut=FLAGS.DPUC_TruncM2_low_center_mcut,
+            DPUC_TruncM2_low_center_log_width=FLAGS.DPUC_TruncM2_low_center_log_width,
+            DPUC_TruncM2_low_center_weight_cap=FLAGS.DPUC_TruncM2_low_center_weight_cap,
+            DPUC_TruncM2_low_center_weight_width=FLAGS.DPUC_TruncM2_low_center_weight_width,
+            DPUC_TruncM2_low_center_weight_lambda=FLAGS.DPUC_TruncM2_low_center_weight_lambda,
+            DPUC_TruncM2_weight_cap_reg=bool(FLAGS.DPUC_TruncM2_weight_cap_reg),
+            DPUC_TruncM2_weight_cap=FLAGS.DPUC_TruncM2_weight_cap,
+            DPUC_physical_Lsmall_shared_mode = FLAGS.DPUC_physical_Lsmall_shared_mode,
+            DPUC_q_mu_bounds_source = FLAGS.DPUC_q_mu_bounds_source,
+            DPUC_low_taper_deltas=FLAGS.DPUC_low_taper_deltas,
+            DPUC_low_end = FLAGS.DPUC_low_end,
+            DPUC_low_end_share = FLAGS.DPUC_low_end_share,
+            DPUC_high_taper_delta=FLAGS.DPUC_high_taper_delta,
+            center_eps_widths=bool(FLAGS.center_eps_widths),
+            L_small_source=FLAGS.L_small_source,
+            L_small_res_percentile=FLAGS.L_small_res_percentile,
+            L_small_res_factor=FLAGS.L_small_res_factor,
+            mu_log_alpha_inv = FLAGS.mu_log_alpha_inv,
+            sigma_log_alpha_inv = FLAGS.sigma_log_alpha_inv,
+    
             integrate_dc=FLAGS.integrate_dc,
             param=FLAGS.param,
             pade=bool(FLAGS.pade),
@@ -998,7 +990,39 @@ def main():
             reparam_z = bool(FLAGS.reparam_z),
             remove_spin_prior =  bool(FLAGS.remove_spin_prior),
             r = FLAGS.r,
-            vary_mb = FLAGS.vary_mb
+            vary_mb = FLAGS.vary_mb,
+            is_GP_dL=bool(FLAGS.is_GP_dL),
+            find_GP_L=bool(FLAGS.find_GP_L),
+            monotonicity=FLAGS.monotonicity,
+            GP_kernel=FLAGS.GP_kernel,
+            U=Uprior,
+            GP_prior=FLAGS.GP_prior,
+            GP_jitter=FLAGS.GP_jitter,
+            large_ell_penalty=bool(FLAGS.large_ell_penalty),
+            ell_min=FLAGS.ell_min,
+            ell_max=FLAGS.ell_max,
+            ell0_min=FLAGS.ell0_min,
+            ell0_max=FLAGS.ell0_max,
+            nu=FLAGS.nu,
+            lam=FLAGS.lam,
+            res_nbins=FLAGS.res_nbins,
+            res_q=FLAGS.res_q,
+            smooth_GP_resolution_loglinear=FLAGS.smooth_GP_resolution_loglinear,
+            fine_res=FLAGS.fine_res,
+            res_highz=FLAGS.res_highz,
+            res_lowz=FLAGS.res_lowz,
+            eps_DE=FLAGS.eps_DE,
+            invert_dL_GP=bool(FLAGS.invert_dL_GP),
+            n_gp_nodes=FLAGS.n_gp_nodes,
+            n_gp_fine=FLAGS.n_gp_fine,
+            fout=FLAGS.fout,
+            GP_oob_guard=bool(FLAGS.GP_oob_guard),
+            alpha_eta=FLAGS.alpha_eta,
+            alpha_ell=FLAGS.alpha_ell,
+            alpha_large=FLAGS.alpha_large,
+            logXi_guard=bool(FLAGS.logXi_guard),
+            logXi_abs_max_allowed=FLAGS.logXi_abs_max_allowed,
+            logXi_guard_strength=FLAGS.logXi_guard_strength,
         )
 
         # print("---- bounded GMM diagnostic ----")
@@ -1039,8 +1063,71 @@ def main():
             use_float32_bias=bool(FLAGS.use_float32_bias),
             sel_method=FLAGS.sel,
             sel_smoothing=FLAGS.sel_smoothing,
+            log_lik_var_min = FLAGS.log_lik_var_min,
+            skip_sel = FLAGS.skip_sel,
+                         
             N_DP_comp_max=FLAGS.N_DP_comp_max,
+            alpha_tail=FLAGS.alpha_tail,
+            alpha_small=FLAGS.alpha_small,
+            L_small_1=FLAGS.L_small_1,
+            L_small_2=FLAGS.L_small_2,
+            s_local=FLAGS.s_local,
+            find_m_bounds=bool(FLAGS.find_m_bounds),
+            q_mbound_mu_low=FLAGS.q_mbound_mu_low,
+            q_mbound_mu_up=FLAGS.q_mbound_mu_up,
+            q_mbound_sig_low=FLAGS.q_mbound_sig_low,
+            q_mbound_sig_up=FLAGS.q_mbound_sig_up,
+            alpha_inv_params=FLAGS.alpha_inv_params,
+                DP_mu_bounds_source=FLAGS.DP_mu_bounds_source,
+                DP_sig_bounds_source=FLAGS.DP_sig_bounds_source,
+            M_active=FLAGS.M_active,
+            tau_prior=FLAGS.tau_prior,
+            DP_prior=FLAGS.DP_prior,
+            sigma_softmax=FLAGS.sigma_softmax,
+            gamma_DP_params=FLAGS.gamma_DP_params,
+            DP_truncate_up=bool(FLAGS.DP_truncate_up),
+                DPUC_mmax_fixed=FLAGS.DPUC_mmax_fixed,
+            DP_truncate_low=bool(FLAGS.DP_truncate_low),
             DP_m1_env=bool(FLAGS.DP_m1_env),
+            DP_m1_env_form=FLAGS.DP_m1_env_form,
+            DP_m1_env_delta1=FLAGS.DP_m1_env_delta1,
+            DP_m1_env_delta2=FLAGS.DP_m1_env_delta2,
+            DP_q_env=bool(FLAGS.DP_q_env),
+            DPUC_Primary_q_norm=FLAGS.DPUC_Primary_q_norm,
+            DP_corr_eta_rho = FLAGS.DP_corr_eta_rho,
+            DP_corr_f_minor = FLAGS.DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = bool(FLAGS.PL_DPUC_normalize_gmm),
+            DPUC_kernel = FLAGS.DPUC_kernel,
+            DPUC_kernel_rcut = FLAGS.DPUC_kernel_rcut,
+            DPUC_kernel_dr = FLAGS.DPUC_kernel_dr,
+            DPUC_kernel_xcut = FLAGS.DPUC_kernel_xcut,
+            DPUC_kernel_ycut = FLAGS.DPUC_kernel_ycut,
+            DPUC_q_coord = FLAGS.DPUC_q_coord,
+            DPUC_TruncM2_shared_weights=bool(FLAGS.DPUC_TruncM2_shared_weights),
+            DPUC_TruncM2_mu2_mode=FLAGS.DPUC_TruncM2_mu2_mode,
+            DPUC_TruncM2_secondary_coord=FLAGS.DPUC_TruncM2_secondary_coord,
+            DPUC_TruncM2_area_reg=bool(FLAGS.DPUC_TruncM2_area_reg),
+            DPUC_TruncM2_log_area_min=FLAGS.DPUC_TruncM2_log_area_min,
+            DPUC_TruncM2_log_area_width=FLAGS.DPUC_TruncM2_log_area_width,
+            DPUC_TruncM2_log_area_lambda=FLAGS.DPUC_TruncM2_log_area_lambda,
+            DPUC_TruncM2_aspect_reg=bool(FLAGS.DPUC_TruncM2_aspect_reg),
+            DPUC_TruncM2_aspect_max=FLAGS.DPUC_TruncM2_aspect_max,
+            DPUC_TruncM2_aspect_width=FLAGS.DPUC_TruncM2_aspect_width,
+            DPUC_TruncM2_aspect_lambda=FLAGS.DPUC_TruncM2_aspect_lambda,
+            DPUC_TruncM2_low_center_weight_reg=bool(FLAGS.DPUC_TruncM2_low_center_weight_reg),
+            DPUC_TruncM2_low_center_mcut=FLAGS.DPUC_TruncM2_low_center_mcut,
+            DPUC_TruncM2_low_center_log_width=FLAGS.DPUC_TruncM2_low_center_log_width,
+            DPUC_TruncM2_low_center_weight_cap=FLAGS.DPUC_TruncM2_low_center_weight_cap,
+            DPUC_TruncM2_low_center_weight_width=FLAGS.DPUC_TruncM2_low_center_weight_width,
+            DPUC_TruncM2_low_center_weight_lambda=FLAGS.DPUC_TruncM2_low_center_weight_lambda,
+            DPUC_TruncM2_weight_cap_reg=bool(FLAGS.DPUC_TruncM2_weight_cap_reg),
+            DPUC_TruncM2_weight_cap=FLAGS.DPUC_TruncM2_weight_cap,
+            DPUC_physical_Lsmall_shared_mode = FLAGS.DPUC_physical_Lsmall_shared_mode,
+            DPUC_q_mu_bounds_source = FLAGS.DPUC_q_mu_bounds_source,
+            DPUC_low_taper_deltas=FLAGS.DPUC_low_taper_deltas,
+                DPUC_low_end = FLAGS.DPUC_low_end,
+            DPUC_low_end_share = FLAGS.DPUC_low_end_share,
+                DPUC_high_taper_delta=FLAGS.DPUC_high_taper_delta,
             integrate_dc=FLAGS.integrate_dc,
             param=FLAGS.param,
             pade=bool(FLAGS.pade),
@@ -1067,10 +1154,49 @@ def main():
             remove_spin_prior=bool(FLAGS.remove_spin_prior),
             r=FLAGS.r,
             vary_mb=FLAGS.vary_mb,
+            is_GP_dL=bool(FLAGS.is_GP_dL),
+            find_GP_L=bool(FLAGS.find_GP_L),
+            monotonicity=FLAGS.monotonicity,
+            GP_kernel=FLAGS.GP_kernel,
+            U=Uprior,
+            GP_prior=FLAGS.GP_prior,
+            GP_jitter=FLAGS.GP_jitter,
+            large_ell_penalty=bool(FLAGS.large_ell_penalty),
+            ell_min=FLAGS.ell_min,
+            ell_max=FLAGS.ell_max,
+            ell0_min=FLAGS.ell0_min,
+            ell0_max=FLAGS.ell0_max,
+            nu=FLAGS.nu,
+            lam=FLAGS.lam,
+            res_nbins=FLAGS.res_nbins,
+            res_q=FLAGS.res_q,
+            smooth_GP_resolution_loglinear=FLAGS.smooth_GP_resolution_loglinear,
+            fine_res=FLAGS.fine_res,
+            res_highz=FLAGS.res_highz,
+            res_lowz=FLAGS.res_lowz,
+            eps_DE=FLAGS.eps_DE,
+            invert_dL_GP=bool(FLAGS.invert_dL_GP),
+            n_gp_nodes=FLAGS.n_gp_nodes,
+            n_gp_fine=FLAGS.n_gp_fine,
+            fout=FLAGS.fout,
+            GP_oob_guard=bool(FLAGS.GP_oob_guard),
+            alpha_eta=FLAGS.alpha_eta,
+            alpha_ell=FLAGS.alpha_ell,
+            alpha_large=FLAGS.alpha_large,
+            logXi_guard=bool(FLAGS.logXi_guard),
+            logXi_abs_max_allowed=FLAGS.logXi_abs_max_allowed,
+            logXi_guard_strength=FLAGS.logXi_guard_strength,
+            DP_corr_m1m2=bool(FLAGS.DP_corr_m1m2),
+            center_eps_widths=bool(FLAGS.center_eps_widths),
+            L_small_source=FLAGS.L_small_source,
+            L_small_res_percentile=FLAGS.L_small_res_percentile,
+            L_small_res_factor=FLAGS.L_small_res_factor,
+            mu_log_alpha_inv=FLAGS.mu_log_alpha_inv,
+            sigma_log_alpha_inv=FLAGS.sigma_log_alpha_inv,
         )
     
     
-        model_numpyro, lik_data, core, loglik = build_model_for_zres(FLAGS.zres)
+        model_numpyro, lik_data, core, loglik, loglik_components, model_init_info = build_model_for_zres(FLAGS.zres)
 
         print("\n" + "=" * 80)
         print("CHECKING REDSHIFT GRID RESOLUTION")
@@ -1109,7 +1235,7 @@ def main():
             print("zres =", zr)
             print("-" * 80)
     
-            _, lik_data_z, core_z, loglik_z = build_model_for_zres(zr)
+            _, lik_data_z, core_z, loglik_z, _, _ = build_model_for_zres(zr)
     
             if FLAGS.pop_only:
                 ll, var = loglik_z(Lambda_test, lR0=0.0)
@@ -1303,7 +1429,7 @@ def main():
     ##########################################################################
     ##########################################################################
     
-    init_vals = {k: v for k, v in ivals.items()}
+    init_vals = {k: v for k, v in ivals.items() if not str(k).startswith("_")}
     rng_key = random.PRNGKey(int(FLAGS.seed))
 
     if FLAGS.mass_model=='DPLDP' and FLAGS.reparam_mass:
@@ -1406,107 +1532,6 @@ def main():
             sigmat_floor = float(priors["sigmat"][0])
             init_vals["sigmat_raw"] = max(0.0, float(ivals["sigmat"]) - sigmat_floor)
 
-    elif FLAGS.mass_model == "PLDP" and FLAGS.reparam_mass:
-
-        for drop in [
-            "u", "m1_low", "m2_low",
-            "mu1", "mu2", "sigma1", "sigma2",
-            "delta_m1", "delta_m2",
-            "alpha1", "alpha2", "alpha_diff",
-            "mb",
-            "gamma", "kappa", "zp", "H0", "Om",
-        ]:
-            init_vals.pop(drop, None)
-    
-        u0 = jm.unit_interval_sigmoid_raw_init(ivals.get("u"))
-        if u0 is not None:
-            init_vals["u_raw"] = u0
-    
-        for k in ("mu1", "mu2", "gamma", "kappa", "zp", "H0", "Om"):
-            pa, pb = priors[k][0], priors[k][1]
-            p0 = jm.bounded_sigmoid_raw_init(ivals.get(k), pa, pb)
-            if p0 is not None:
-                init_vals[k + "_raw"] = p0
-    
-        if "alpha_bar" not in init_vals:
-            if ivals.get("alpha_bar") is not None:
-                init_vals["alpha_bar"] = float(ivals["alpha_bar"])
-            elif ivals.get("alpha1") is not None:
-                init_vals["alpha_bar"] = float(ivals["alpha1"])
-            elif ivals.get("alpha2") is not None:
-                init_vals["alpha_bar"] = float(ivals["alpha2"])
-            else:
-                a_low, a_high = priors["alpha1"][0], priors["alpha1"][1]
-                init_vals["alpha_bar"] = 0.5 * (a_low + a_high)
-    
-        for nm in ("delta_m1", "sigma1", "sigma2"):
-            raw = jm.floored_lognormal_raw_init(ivals, nm, priors)
-            if raw is not None:
-                init_vals[f"{nm}_raw"] = raw
-    
-        mhigh_floor = float(priors["m_high"][0])
-        m_high0 = float(
-            ivals.get(
-                "m_high",
-                0.5 * (priors["m_high"][0] + priors["m_high"][1]),
-            )
-        )
-        init_vals["delta_mhigh"] = max(1e-6, m_high0 - mhigh_floor)
-    
-        if "lambda" in init_vals and not isinstance(init_vals["lambda"], jnp.ndarray):
-            init_vals["lambda"] = jnp.asarray(init_vals["lambda"], dtype=jnp.float64)
-    
-        # spins reparam init values
-        for drop in ["muChi", "sigmaChi", "zeta", "sigmat"]:
-            init_vals.pop(drop, None)
-    
-        muChi_a, muChi_b = priors["muChi"][0], priors["muChi"][1]
-        muChi0 = jm.bounded_sigmoid_raw_init(ivals.get("muChi"), muChi_a, muChi_b)
-        if muChi0 is not None:
-            init_vals["muChi_raw"] = muChi0
-    
-        zeta_a, zeta_b = priors["zeta"][0], priors["zeta"][1]
-        zeta0 = jm.bounded_sigmoid_raw_init(ivals.get("zeta"), zeta_a, zeta_b)
-        if zeta0 is not None:
-            init_vals["zeta_raw"] = zeta0
-    
-        sigmaChi_a, sigmaChi_b = priors["sigmaChi"][0], priors["sigmaChi"][1]
-        sigmaChi0 = jm.bounded_sigmoid_raw_init(ivals.get("sigmaChi"), sigmaChi_a, sigmaChi_b)
-        if sigmaChi0 is not None:
-            init_vals["sigmaChi_raw"] = sigmaChi0
-    
-        if ivals.get("sigmat") is not None:
-            sigmat_floor = float(priors["sigmat"][0])
-            init_vals["sigmat_raw"] = max(0.0, float(ivals["sigmat"]) - sigmat_floor)
-    
-    
-    elif FLAGS.mass_model == "PLDP" and not FLAGS.reparam_mass:
-    
-        for drop in [
-            "alpha2",
-            "mb",
-            "delta_m2",
-            "m2_low",
-            "alpha_diff",
-        ]:
-            init_vals.pop(drop, None)
-    
-        for k in [
-            "alpha1",
-            "delta_m1",
-            "m_high",
-            "m1_low",
-            "beta",
-            "sigma1",
-            "sigma2",
-            "mu1",
-            "mu2",
-        ]:
-            if ivals.get(k) is not None:
-                init_vals[k] = float(ivals[k])
-    
-        if "lambda" in init_vals and not isinstance(init_vals["lambda"], jnp.ndarray):
-            init_vals["lambda"] = jnp.asarray(init_vals["lambda"], dtype=jnp.float64)
 
     if FLAGS.mass_model == "DPLDP-z" and FLAGS.reparam_mass:
 
@@ -1726,18 +1751,620 @@ def main():
             init_vals["log_dz_lambda"] = float(np.log(ivals["dz_lambda"]))
 
 
-    # convert everything to jnp arrays (no python lists)
-    # init_vals = { k: jnp.asarray(v) + FLAGS.eps_init * jnp.asarray(np.random.normal())
-    # for k, v in init_vals.items()
-    #             }
-    keys = jax.random.split(rng_key, len(init_vals))
+
+    if FLAGS.mass_model in ('DPUC', 'DPUC_Primary', 'DPUC_TruncM2'):
+    
+        K = int(model_init_info["N_DP_comp_max"])
+        M_active = min(int(model_init_info["M_active"]), K)
+    
+        # ------------------------------------------------------------------
+        # CLEAN init_vals from anything that is NOT a NumPyro sample site
+        # ------------------------------------------------------------------
+        for drop in [
+            'beta',
+            'beta_q',
+            'mulMc',
+            'mulq',
+            'tau1',
+            'tau2',
+            'tau1_raw',
+            'tau2_raw',
+            'eps1',
+            'eps2',
+            'alpha_inv',
+            'alpha_SB',
+            'log_alpha_inv',
+            'mmax_DP',
+            'mmax_DP_raw',
+            'delta_mmax_DP',
+            'u',
+            'u_raw',
+            'v',
+            'v_raw',
+            'm1_low',
+            'm2_low',
+            'alpha',
+            'alpha_raw',
+            'DP_m1_env_alpha0',
+            'DP_m1_env_alpha0_raw',
+            'DP_m1_env_alpha1',
+            'DP_m1_env_alpha1_raw',
+            'DP_m1_env_alpha2',
+            'DP_m1_env_alpha2_raw',
+            'DP_m1_env_mb1',
+            'DP_m1_env_mb1_raw',
+            'DP_m1_env_mb2',
+            'DP_m1_env_mb2_raw',
+            'DP_m1_env_order_mb',
+            'deltam_PL_DPUC_m1',
+            'deltam_PL_DPUC_m2',
+            'deltam_PL_DPUC_m1_raw',
+            'deltam_PL_DPUC_m2_raw',
+            'deltam_PL_DPUC_m1_log',
+            'deltam_PL_DPUC_m2_log',
+            'eps1_raw',
+            'eps2_raw',
+            'alpha1',
+            'alpha2',
+            'alpha_bar',
+            'alpha_diff',
+            'mb',
+            'mb_raw',
+            'mu1',
+            'mu2',
+            'sigma1',
+            'sigma2',
+            'delta_m1',
+            'delta_m2',
+            'lambda',
+            'H0',
+            'H0_raw',
+            'Om',
+            'Om_raw',
+            'w0',
+            'w0_raw',
+            'gamma',
+            'gamma_raw',
+            'kappa',
+            'kappa_raw',
+            'zp',
+            'zp_raw',
+            'muChi',
+            'muChi_raw',
+            'sigmaChi',
+            'sigmaChi_raw',
+            'zeta',
+            'zeta_raw',
+            'sigmat',
+            'sigmat_raw',
+        ]:
+        
+            init_vals.pop(drop, None)
+
+        # Helpers for using an exported posterior draw as a NumPyro initial point.
+        # They are deliberately local to the DPUC-family block to avoid changing
+        # behavior for other mass models.
+        def _ivals_array(name, shape=None):
+            if name not in ivals or ivals.get(name) is None:
+                return None
+            arr = np.asarray(ivals.get(name), dtype=np.float64)
+            if shape is not None and tuple(arr.shape) != tuple(shape):
+                return None
+            if not np.all(np.isfinite(arr)):
+                return None
+            return arr
+
+        def _logit_unit(t):
+            t = np.clip(np.asarray(t, dtype=np.float64), 1.0e-6, 1.0 - 1.0e-6)
+            return np.log(t / (1.0 - t))
+
+        def _bounded_raw_from_value(x, lo, hi):
+            lo = float(lo); hi = float(hi)
+            x = np.asarray(x, dtype=np.float64)
+            x = np.clip(x, lo + 1.0e-6 * (hi - lo), hi - 1.0e-6 * (hi - lo))
+            return _logit_unit((x - lo) / (hi - lo))
+
+        def _stick_breaking_beta_from_logw(logw, K_use=None):
+            K_use = K if K_use is None else int(K_use)
+            logw = np.asarray(logw, dtype=np.float64).reshape(-1)
+            if logw.shape[0] != K_use or not np.all(np.isfinite(logw)):
+                return None
+            w = np.exp(logw - np.max(logw))
+            w = w / np.sum(w)
+            beta = np.zeros(K_use, dtype=np.float64)
+            remaining = 1.0
+            for kk in range(K_use):
+                if kk == K_use - 1:
+                    beta[kk] = 0.5
+                else:
+                    frac = w[kk] / max(remaining, 1.0e-12)
+                    beta[kk] = np.clip(frac, 1.0e-6, 1.0 - 1.0e-6)
+                    remaining -= w[kk]
+            return beta
+    
+        # ------------------------------------------------------------------
+        # COSMOLOGY / RATE (MATCH MODEL EXACTLY)
+        # ------------------------------------------------------------------
+        if not FLAGS.fix_H0:
+            if FLAGS.reparam_cosmo:
+                init_vals["H0_raw"] = float(_bounded_raw_from_value(ivals.get("H0", 70.0), priors["H0"][0], priors["H0"][1]))
+            else:
+                init_vals["H0"] = float(ivals.get("H0", 70.0))
+    
+        if not FLAGS.fix_Om:
+            if FLAGS.reparam_cosmo:
+                init_vals["Om_raw"] = float(_bounded_raw_from_value(ivals.get("Om", 0.3), priors["Om"][0], priors["Om"][1]))
+            else:
+                init_vals["Om"] = float(ivals.get("Om", 0.3))
+    
+        if not FLAGS.fix_w0:
+            if FLAGS.reparam_cosmo:
+                init_vals["w0_raw"] = float(_bounded_raw_from_value(ivals.get("w0", -1.0), priors["w0"][0], priors["w0"][1]))
+            else:
+                init_vals["w0"] = float(ivals.get("w0", -1.0))
+    
+        for k in ("gamma", "kappa", "zp"):
+            if FLAGS.reparam_z:
+                init_vals[f"{k}_raw"] = float(_bounded_raw_from_value(ivals.get(k, 0.5 * (float(priors[k][0]) + float(priors[k][1]))), priors[k][0], priors[k][1]))
+            else:
+                init_vals[k] = float(ivals.get(k, 0.0))
+    
+        # ------------------------------------------------------------------
+        # SPINS
+        # ------------------------------------------------------------------
+        if FLAGS.spin_model == "default_gauss":
+            for k in ("muChi", "sigmaChi", "zeta"):
+                init_vals[f"{k}_raw"] = 0.0
+            init_vals["sigmat_raw"] = 1.0
+    
+        # ------------------------------------------------------------------
+        # DP WEIGHTS (STICK BREAKING)
+        # Match the model-side M_active initialization logic.
+        # ------------------------------------------------------------------
+        init_vals["alpha_inv"] = float(ivals.get("alpha_inv", 10.0))
+        
+        M_active_init = min(int(FLAGS.M_active), K)
+        
+        if M_active_init == 0:
+            beta_init = np.full(K, 0.02, dtype=np.float64)
+            beta_init[:5] = [0.80, 0.60, 0.35, 0.20, 0.10]
+        else:
+            tail_mass_frac = 0.02
+            active_mass = 1.0 - tail_mass_frac
+            n_tail = K - M_active_init
+        
+            active_profile = np.linspace(1.0, 0.9, M_active_init)
+            active_profile = active_profile / active_profile.sum()
+            w_active = active_mass * active_profile
+        
+            if n_tail > 0:
+                w_tail = np.full(n_tail, tail_mass_frac / n_tail)
+                w_init = np.concatenate([w_active, w_tail])
+            else:
+                w_init = w_active.copy()
+        
+            beta_init = np.zeros(K, dtype=np.float64)
+            remaining = 1.0
+            eps_beta = 1e-6
+        
+            for k in range(K):
+                if k == K - 1:
+                    beta_init[k] = 0.5
+                else:
+                    frac = w_init[k] / max(remaining, 1e-12)
+                    beta_init[k] = np.clip(frac, eps_beta, 1.0 - eps_beta)
+                    remaining -= w_init[k]
+        
+        beta_from_trace = None
+        beta_arr = _ivals_array("beta", (K,))
+        if beta_arr is not None:
+            beta_from_trace = np.clip(beta_arr, 1.0e-6, 1.0 - 1.0e-6)
+        else:
+            beta_from_trace = _stick_breaking_beta_from_logw(_ivals_array("logw"))
+        init_vals["beta"] = beta_from_trace if beta_from_trace is not None else beta_init
+
+        if FLAGS.mass_model == 'DPUC_TruncM2' and (not bool(getattr(FLAGS, 'DPUC_TruncM2_shared_weights', 0))):
+            if "SB" in FLAGS.DP_prior:
+                beta_w2_from_trace = _stick_breaking_beta_from_logw(_ivals_array("logw2"))
+                init_vals["beta_w2"] = beta_w2_from_trace if beta_w2_from_trace is not None else beta_init.copy()
+            elif FLAGS.DP_prior == "dirichelet":
+                init_vals["w2"] = np.ones(K, dtype=np.float64) / float(K)
+            elif FLAGS.DP_prior == "softmax":
+                init_vals["raw_w2"] = np.zeros(K, dtype=np.float64)
+
+        if FLAGS.mass_model in ("DPUC_TruncM2", ) and bool(getattr(FLAGS, "DP_corr_m1m2", 0)):
+            # rho_u ~ Beta(eta, eta), rho = rho_max * (2*rho_u - 1).
+            rho_u_arr = _ivals_array("rho_u", (K,))
+            if rho_u_arr is not None:
+                init_vals["rho_u"] = np.clip(rho_u_arr, 1.0e-6, 1.0 - 1.0e-6)
+            else:
+                rho_arr = _ivals_array("rho", (K,))
+                if rho_arr is not None:
+                    rho_max0 = np.sqrt(max(0.0, 1.0 - float(FLAGS.DP_corr_f_minor) ** 2))
+                    init_vals["rho_u"] = np.clip(0.5 * (rho_arr / rho_max0 + 1.0), 1.0e-6, 1.0 - 1.0e-6)
+                else:
+                    init_vals["rho_u"] = 0.5 * np.ones(K, dtype=np.float64)
+
+
+        # ------------------------------------------------------------------
+        # DPUC low-taper width init.
+        #
+        # If:
+        #     --DPUC_low_taper_deltas -1
+        # then model samples:
+        #     deltam_PL_DPUC_m1_raw
+        #     deltam_PL_DPUC_m2_raw
+        #
+        # Deterministic physical outputs remain:
+        #     deltam_PL_DPUC_m1
+        #     deltam_PL_DPUC_m2
+        # ------------------------------------------------------------------
+        DPUC_low_taper_deltas_init = list(FLAGS.DPUC_low_taper_deltas)
+
+        if len(DPUC_low_taper_deltas_init) == 1 and float(DPUC_low_taper_deltas_init[0]) < 0.0:
+
+            def _bounded_logpositive_raw_init(initval, low, high):
+                low = float(low)
+                high = float(high)
+                initval = float(initval)
+
+                if not (0.0 < low < high):
+                    raise ValueError(f"Need 0 < low < high, got low={low}, high={high}")
+
+                initval = np.clip(initval, low * (1.0 + 1.0e-6), high * (1.0 - 1.0e-6))
+
+                t = (np.log(initval) - np.log(low)) / (np.log(high) - np.log(low))
+                t = np.clip(t, 1.0e-6, 1.0 - 1.0e-6)
+                return np.log(t / (1.0 - t))
+
+            dm1_low, dm1_high = float(priors["delta_m1"][0]), float(priors["delta_m1"][1])
+            dm2_low, dm2_high = float(priors["delta_m2"][0]), float(priors["delta_m2"][1])
+
+            dm1_init = float(
+                ivals.get(
+                    "deltam_PL_DPUC_m1",
+                    ivals.get("delta_m1", 2.0),
+                )
+            )
+            dm2_init = float(
+                ivals.get(
+                    "deltam_PL_DPUC_m2",
+                    ivals.get("delta_m2", 2.0),
+                )
+            )
+
+            init_vals["deltam_PL_DPUC_m1_raw"] = _bounded_logpositive_raw_init(
+                dm1_init,
+                dm1_low,
+                dm1_high,
+            )
+            init_vals["deltam_PL_DPUC_m2_raw"] = _bounded_logpositive_raw_init(
+                dm2_init,
+                dm2_low,
+                dm2_high,
+            )
+
+        elif len(DPUC_low_taper_deltas_init) == 2:
+            pass
+
+        else:
+            raise ValueError(
+                "DPUC_low_taper_deltas must be either two positive fixed values "
+                "or single negative value -1 to sample them. "
+                f"Got {DPUC_low_taper_deltas_init}."
+            )
+
+        # ------------------------------------------------------------------
+        # MEANS (STRICTLY INSIDE SUPPORT)
+        # ------------------------------------------------------------------
+        low1, up1 = float(model_init_info["lowmu1"]), float(model_init_info["upmu1"])
+        low2, up2 = float(model_init_info["lowmu2"]), float(model_init_info["upmu2"])
+    
+        eps = 1e-2
+    
+        mu1 = np.linspace(low1 + eps, up1 - eps, K)
+        mu2 = np.linspace(low2 + eps, up2 - eps, K)
+    
+        # init_vals["mulMc"] = mu1
+        # init_vals["mulq"] = mu2
+
+        t1 = (mu1 - low1) / (up1 - low1)
+        t2 = (mu2 - low2) / (up2 - low2)
+        
+        t1 = np.clip(t1, 1.0e-6, 1.0 - 1.0e-6)
+        t2 = np.clip(t2, 1.0e-6, 1.0 - 1.0e-6)
+        
+        mu_arr = _ivals_array("mu")
+        mulMc_raw_arr = _ivals_array("mulMc_raw", (K,))
+        mulq_raw_arr = _ivals_array("mulq_raw", (K,))
+        q_mu_raw_arr = _ivals_array("q_mu_raw", (K,))
+
+        if mulMc_raw_arr is not None:
+            init_vals["mulMc_raw"] = mulMc_raw_arr
+        elif mu_arr is not None and mu_arr.shape[0] >= 1 and mu_arr.shape[1] == K:
+            init_vals["mulMc_raw"] = _bounded_raw_from_value(mu_arr[0], low1, up1)
+        else:
+            init_vals["mulMc_raw"] = np.log(t1 / (1.0 - t1))
+
+        if not FLAGS.mass_model == 'DPUC_Primary':
+            if FLAGS.mass_model in ("DPUC_TruncM2") and FLAGS.DPUC_TruncM2_mu2_mode == "ordered":
+                if mulq_raw_arr is not None:
+                    init_vals["mulq_raw"] = mulq_raw_arr
+                else:
+                    init_vals["mulq_raw"] = np.zeros(K, dtype=np.float64)
+            elif FLAGS.mass_model in ("DPUC_TruncM2",  ) and FLAGS.DPUC_TruncM2_mu2_mode == "q_ratio":
+                if q_mu_raw_arr is not None:
+                    init_vals["q_mu_raw"] = q_mu_raw_arr
+                elif mu_arr is not None and mu_arr.shape[0] >= 2 and mu_arr.shape[1] == K:
+                    qlo = model_init_info.get("q_mu_low")
+                    qhi = model_init_info.get("q_mu_up")
+                    if qlo is None or qhi is None:
+                        init_vals["q_mu_raw"] = np.zeros(K, dtype=np.float64)
+                    else:
+                        if str(getattr(FLAGS, "DPUC_TruncM2_secondary_coord", "logm2")) == "logitq":
+                            q_mu0 = 1.0 / (1.0 + np.exp(-mu_arr[1]))
+                        else:
+                            q_mu0 = np.exp(mu_arr[1] - np.asarray(mu_arr[0]))
+                        init_vals["q_mu_raw"] = _bounded_raw_from_value(q_mu0, float(qlo), float(qhi))
+                else:
+                    init_vals["q_mu_raw"] = np.zeros(K, dtype=np.float64)
+            else:
+                if mulq_raw_arr is not None:
+                    init_vals["mulq_raw"] = mulq_raw_arr
+                elif mu_arr is not None and mu_arr.shape[0] >= 2 and mu_arr.shape[1] == K:
+                    init_vals["mulq_raw"] = _bounded_raw_from_value(mu_arr[1], low2, up2)
+                else:
+                    init_vals["mulq_raw"] = np.log(t2 / (1.0 - t2))
+    
+
+        
+        # ------------------------------------------------------------------
+        # WIDTHS (CRITICAL FOR NAN FIX)
+        # ------------------------------------------------------------------
+        U1 = up1 - low1
+        U2 = up2 - low2
+    
+        tau_floor_eps = 1.0e-6
+        L1_used = float(model_init_info.get("L_small_1", 0.0))
+        L2_used = float(model_init_info.get("L_small_2", 0.0))
+
+        def _set_tau_init(name, default, U, Lsmall):
+            val = ivals.get(name, default)
+            if FLAGS.tau_prior == "bounded_sigmoid":
+                init_vals[f"{name}_raw"] = float(_bounded_raw_from_value(val, tau_floor_eps, max(tau_floor_eps * 10.0, float(U - Lsmall))))
+            else:
+                init_vals[name] = float(np.clip(float(val), tau_floor_eps, max(tau_floor_eps * 10.0, float(U - Lsmall))))
+
+        _set_tau_init("tau1", 0.3 * U1, U1, L1_used)
+        if not FLAGS.mass_model == 'DPUC_Primary':
+            _set_tau_init("tau2", 0.4 * U2, U2, L2_used)
+
+    
+    
+        # ------------------------------------------------------------------
+        # NOISE TERMS (SMALL!)
+        # ------------------------------------------------------------------
+        if FLAGS.center_eps_widths:
+            e1 = _ivals_array("eps1_raw", (K,))
+            if e1 is None:
+                e1 = 1e-3 * np.random.randn(K)
+            init_vals["eps1_raw"] = e1 - np.mean(e1)
+            if not FLAGS.mass_model == 'DPUC_Primary':
+                e2 = _ivals_array("eps2_raw", (K,))
+                if e2 is None:
+                    e2 = 1e-3 * np.random.randn(K)
+                init_vals["eps2_raw"] = e2 - np.mean(e2)
+        
+        else:
+            eps1_arr = _ivals_array("eps1", (K,))
+            init_vals["eps1"] = eps1_arr if eps1_arr is not None else 1e-3 * np.random.randn(K)
+            if not FLAGS.mass_model == 'DPUC_Primary':
+                eps2_arr = _ivals_array("eps2", (K,))
+                init_vals["eps2"] = eps2_arr if eps2_arr is not None else 1e-3 * np.random.randn(K)
+        
+    
+        # ------------------------------------------------------------------
+        # TRUNCATION
+        #
+        # Match jax_models.py exactly:
+        #
+        #   mmax_DP = shifted_lognormal_q95("mmax_DP", floor, q95, ...)
+        #             sampled site: delta_mmax_DP
+        # ------------------------------------------------------------------
+        if FLAGS.DP_truncate_low:
+
+            DPUC_low_end_init = list(FLAGS.DPUC_low_end)
+
+            if len(DPUC_low_end_init) == 1 and float(DPUC_low_end_init[0]) < 0.0:
+                # sample low end 
+            
+                m1_lo = float(priors["m1_low"][0])
+                m1_hi = float(priors["m1_low"][1])
+                m2_lo = float(priors["m2_low"][0])
+
+                if m1_hi <= m1_lo:
+                    raise ValueError(f"Invalid m1_low prior bounds: {priors['m1_low']}")
+
+                if m2_lo >= m1_lo:
+                    raise ValueError(
+                        "Need priors['m2_low'][0] < priors['m1_low'][0] for the constrained DPUC low-mass prior."
+                    )
+
+                # Your model:
+                #   u = sigmoid(u_raw)
+                #   m1_low = m1_lo + (m1_hi - m1_lo) * u**1.5
+                m1_low0 = float(ivals.get("m1_low", 0.5 * (m1_lo + m1_hi)))
+                m1_low0 = np.clip(m1_low0, m1_lo + 1.0e-6, m1_hi - 1.0e-6)
+
+                u0 = ((m1_low0 - m1_lo) / (m1_hi - m1_lo)) ** (1.0 / 1.5)
+                u0 = np.clip(u0, 1.0e-6, 1.0 - 1.0e-6)
+
+                init_vals["u_raw"] = float(np.log(u0 / (1.0 - u0)))
+
+                # Your model:
+                #   v = sigmoid(v_raw)
+                #   m2_low = m2_lo + v * (m1_low - m2_lo)
+                m2_low0 = float(ivals.get("m2_low", 0.5 * (m2_lo + m1_low0)))
+                m2_low0 = np.clip(m2_low0, m2_lo + 1.0e-6, m1_low0 - 1.0e-6)
+
+                v0 = (m2_low0 - m2_lo) / (m1_low0 - m2_lo)
+                v0 = np.clip(v0, 1.0e-6, 1.0 - 1.0e-6)
+
+                init_vals["v_raw"] = float(np.log(v0 / (1.0 - v0)))
+            else:
+                # low end is fixed
+                pass
+        
+        if FLAGS.DP_truncate_up and float(getattr(FLAGS, "DPUC_mmax_fixed", -1.0)) <= 0.0:
+            mmax_floor = float(priors["mmax_DP"][0])
+            mmax_q95 = float(priors["mmax_DP"][1])
+        
+            mmax0 = float(
+                ivals.get(
+                    "mmax_DP",
+                    0.5 * (mmax_floor + mmax_q95),
+                )
+            )
+        
+            # Keep strictly above floor.
+            init_vals["delta_mmax_DP"] = max(1e-6, mmax0 - mmax_floor)
+    
+        if FLAGS.DP_m1_env:
+            if str(getattr(FLAGS, "DP_m1_env_form", "powerlaw")) == "smooth_broken_pl_2breaks":
+                for key in (
+                    "DP_m1_env_alpha0",
+                    "DP_m1_env_alpha1",
+                    "DP_m1_env_alpha2",
+                    "DP_m1_env_mb1",
+                    "DP_m1_env_mb2",
+                ):
+                    if key not in priors:
+                        raise KeyError(
+                            "DP_m1_env_form='smooth_broken_pl_2breaks' requires "
+                            f"priors[{key!r}]."
+                        )
+
+                def _bounded_raw_for_prior(name, default):
+                    lo, hi = float(priors[name][0]), float(priors[name][1])
+                    x = float(ivals.get(name, default))
+                    x = np.clip(x, lo + 1.0e-6 * (hi - lo), hi - 1.0e-6 * (hi - lo))
+                    t = (x - lo) / (hi - lo)
+                    t = np.clip(t, 1.0e-6, 1.0 - 1.0e-6)
+                    return float(np.log(t / (1.0 - t)))
+
+                init_vals["DP_m1_env_alpha0_raw"] = _bounded_raw_for_prior("DP_m1_env_alpha0", 0.0)
+                init_vals["DP_m1_env_alpha1_raw"] = _bounded_raw_for_prior("DP_m1_env_alpha1", 2.0)
+                init_vals["DP_m1_env_alpha2_raw"] = _bounded_raw_for_prior("DP_m1_env_alpha2", 5.0)
+                init_vals["DP_m1_env_mb1_raw"] = _bounded_raw_for_prior("DP_m1_env_mb1", 4.0)
+                init_vals["DP_m1_env_mb2_raw"] = _bounded_raw_for_prior("DP_m1_env_mb2", 40.0)
+            else:
+                # Initialize the physical Normal sample site; accept the legacy key.
+                init_vals["alpha"] = float(ivals.get("alpha", ivals.get("alpha1", 2.0)))
+
+        if FLAGS.DP_q_env:
+            def _bounded_raw_for_beta_q(x0=1.0):
+                lo, hi = priors["beta"][0], priors["beta"][1]
+                x = float(ivals.get("beta_q", ivals.get("beta", x0)))
+                x = np.clip(x, lo + 1.0e-6 * (hi - lo), hi - 1.0e-6 * (hi - lo))
+                t = (x - lo) / (hi - lo)
+                t = np.clip(t, 1.0e-6, 1.0 - 1.0e-6)
+                return float(np.log(t / (1.0 - t)))
+            init_vals["beta_q_raw"] = _bounded_raw_for_beta_q()
+
+
+        
+
+
+    # ----------------------------------------------------------------------
+    if FLAGS.is_GP_dL:
+
+        if ivals != {}:
+            if "f_rotated" not in ivals:
+
+                print("Initializing GP...")
+
+                #import numpy as onp
+                #import jax.numpy as jnp
+                #import jax
+                z_grid = jnp.asarray(model_init_info["z_gp_nodes"], dtype=jnp.float64)
+                x_grid = jnp.log1p(z_grid)
+                N = x_grid.shape[0]
+
+                if FLAGS.GP_kernel == "gibbs_resolution":
+                    ell = ivals.get("ell", 1.0)
+                    eta = ivals.get("eta", 0.2)
+                else:
+                    ell = ivals.get("ell", 0.3)
+                    eta = ivals.get("eta", 0.2)
+
+                print(f"Initial ell={ell}, eta={eta}")
+
+                if FLAGS.GP_kernel == "gibbs_resolution":
+                    x_centers = jnp.asarray(model_init_info["x_res_centers"], dtype=jnp.float64)
+                    r_centers = jnp.asarray(model_init_info["r_res_centers"], dtype=jnp.float64)
+                    from numerical_utils import gibbs_kernel_matrix
+                    from backends import JAXBackend
+
+                    K = gibbs_kernel_matrix(
+                        JAXBackend(), x_grid,
+                        ell,
+                        eta,
+                        x_centers,
+                        r_centers,
+                        jitter=0.0,
+                    )
+
+                else:
+                    from numerical_utils import matern52_kernel_matrix
+                    from backends import JAXBackend
+
+                    K = matern52_kernel_matrix(
+                        JAXBackend(), x_grid,
+                        ell,
+                        eta,
+                        jitter=0.0,
+                    )
+
+                K = K + 1e-6 * jnp.eye(N)
+
+                if FLAGS.init_GP == "zeros":
+                    f_nodes_init = jnp.zeros(N)
+
+                elif FLAGS.init_GP == "polexp":
+                    raise NotImplementedError(
+                        "init_GP='polexp' needs an exact JAX port from the PyMC init block; "
+                        "do not approximate it here."
+                    )
+
+                else:
+                    raise ValueError(f"Unknown init_GP: {FLAGS.init_GP}")
+
+                L = jnp.linalg.cholesky(K)
+
+                u_nodes = jax.scipy.linalg.solve_triangular(
+                    L,
+                    f_nodes_init,
+                    lower=True,
+                )
+
+                key = jax.random.PRNGKey(FLAGS.seed)
+                noise = 1e-6 * jax.random.normal(key, shape=u_nodes.shape)
+
+                init_vals["f_rotated"] = u_nodes + noise
+                init_vals["ell"] = float(ell)
+                init_vals["eta"] = float(eta)
+
+                print("GP init done.")
+
+    # Remove None before converting. Then force all init values to real float64.
+    init_vals = {k: v for k, v in init_vals.items() if v is not None}
+
     init_vals = {
-    k: jnp.asarray(v)    for (k, v), kk in zip(init_vals.items(), keys)
-        }
+        k: jnp.asarray(v, dtype=jnp.float64)
+        for k, v in init_vals.items()
+    }
 
-    #init_vals["delta_mhigh"] = 80.0   # not 150
-    #init_vals["lambda_inf_vec"] = jnp.asarray([0.2, 0.2, 0.6], dtype=jnp.float64)
-
+ 
     if not FLAGS.pop_only:
         # ensure x init exists and is small-ish (with eps_init )
         N  = int(lik_data.Nobs)
@@ -1748,6 +2375,7 @@ def main():
             
 
 
+        
     # print("\n" + "="*80)
     # print("INIT VALS PASSED TO NUMPYRO")
     # print("="*80)
@@ -1756,11 +2384,21 @@ def main():
     #     print(f"{k:25s} shape={v.shape} value={v}")
     # print("="*80)
     
+    if FLAGS.is_GP_dL and "f_rotated" in init_vals:
+        expected_gp = (len(model_init_info["z_gp_nodes"]),)
+        if tuple(init_vals["f_rotated"].shape) != expected_gp:
+            raise ValueError(f"f_rotated initialization has shape {init_vals['f_rotated'].shape}; "
+                             f"the selected GP grid requires {expected_gp}")
+    if not FLAGS.pop_only and "x" in init_vals:
+        expected_x = (int(lik_data.Nobs), int(lik_data.mus_s.shape[1]))
+        if tuple(init_vals["x"].shape) != expected_x:
+            raise ValueError(f"Event initialization x has shape {init_vals['x'].shape}; "
+                             f"selected events and coordinates require {expected_x}")
+
     # --- Initialize (lets you plug in mass matrix if you have one) ---
-    # Try init_to_value first; if it fails, fallback to feasible.
+    # Use the supplied initialization; report failures without changing the point.
     
     init_strategy = init_to_value(values=init_vals)
-    fallback_init_strategy = init_to_feasible()
 
     try:
         init_key, rng_key = random.split(rng_key)
@@ -1771,7 +2409,7 @@ def main():
             dynamic_args=False,
             #validate_grad=False,   # key
         )
-        # z = res.param_info.z
+        z = res.param_info.z
         # pe = res.potential_fn(z)
         # g = jax.grad(res.potential_fn)(z)
 
@@ -1786,7 +2424,7 @@ def main():
     except Exception as e:
         
         print(e)
-        print("⚠️ init_to_value failed; falling back to init_to_feasible.")
+        print("Initialization failed; inspect supplied initial values and model support.")
         print("   error:", repr(e))
 
         print("init_to_value failed:", repr(e))
@@ -1821,15 +2459,6 @@ def main():
         raise
 
         
-        init_key, rng_key = random.split(rng_key)
-        res = initialize_model(
-            init_key,
-            model_numpyro,
-            init_strategy=fallback_init_strategy,
-            dynamic_args=False,
-        )
-        
-
     # --- Robust unpack of initialize_model across numpyro versions ---
     potential_fn = None
     postprocess_fn = None
@@ -1866,6 +2495,82 @@ def main():
 
 
 
+    def _unpack_initialize_model_result(res_local):
+        """Return (param_info_or_params, potential_fn, postprocess_fn, model_trace)."""
+        if isinstance(res_local, tuple):
+            if len(res_local) == 4:
+                return res_local
+            if len(res_local) == 3:
+                a, b, c = res_local
+                if callable(b):
+                    return a, b, None, c
+                raise RuntimeError(
+                    f"initialize_model returned 3-tuple but second element is not callable. "
+                    f"Types: {[type(x) for x in res_local]}"
+                )
+        raise RuntimeError(f"Unexpected initialize_model result: {type(res_local)}")
+
+    def _param_info_to_z(param_info_or_params):
+        """NumPyro versions may return ParamInfo(z, pe, grad) or raw params."""
+        return param_info_or_params.z if hasattr(param_info_or_params, "z") else param_info_or_params
+
+    def _support_kind(site):
+        s = site["fn"].support
+        s_str = str(s).lower()
+        if "simplex" in s_str:
+            return "simplex"
+        if "positive" in s_str or "greaterthan(lower_bound=0" in s_str:
+            return "positive"
+        if hasattr(s, "lower_bound") and hasattr(s, "upper_bound"):
+            lb = np.asarray(s.lower_bound)
+            ub = np.asarray(s.upper_bound)
+            if np.all(np.isfinite(lb)) and np.all(np.isfinite(ub)):
+                return "interval"
+        return "real"
+
+    def _jitter_init_value_for_site(name, value, key, eps):
+        """Small constrained-space perturbation for a single sample-site init value."""
+        v = jnp.asarray(value)
+        if eps <= 0:
+            return v
+
+        site = model_trace.get(name, None)
+        kind = _support_kind(site) if site is not None else "real"
+
+        if kind == "simplex":
+            vv = jnp.clip(v, 1e-12, 1.0)
+            y = jnp.log(vv)
+            y = y + eps * jax.random.normal(key, shape=vv.shape, dtype=vv.dtype)
+            return jax.nn.softmax(y)
+
+        if kind == "positive":
+            return jnp.clip(v, 1e-300) * jnp.exp(eps * jax.random.normal(key, shape=v.shape, dtype=v.dtype))
+
+        if kind == "interval":
+            s = site["fn"].support
+            lb = jnp.asarray(s.lower_bound, dtype=v.dtype)
+            ub = jnp.asarray(s.upper_bound, dtype=v.dtype)
+            margin = jnp.asarray(1e-8, dtype=v.dtype)
+            t = jnp.clip((v - lb) / (ub - lb), margin, 1.0 - margin)
+            y = jnp.log(t) - jnp.log1p(-t)
+            y = y + eps * jax.random.normal(key, shape=v.shape, dtype=v.dtype)
+            return lb + (ub - lb) * jax.nn.sigmoid(y)
+
+        # real-valued unconstrained or normal sites: additive perturbation
+        return v + eps * jax.random.normal(key, shape=v.shape, dtype=v.dtype)
+
+    def _jitter_init_values(init_vals_base, key, eps):
+        """Return one independently jittered init_vals dictionary."""
+        keys_local = jax.random.split(key, max(1, len(init_vals_base)))
+        out = {}
+        for kk, (name, value) in zip(keys_local, init_vals_base.items()):
+            # Only perturb actual sampled sites. Extra deterministic/user entries are passed through.
+            if name in sample_sites:
+                out[name] = _jitter_init_value_for_site(name, value, kk, eps)
+            else:
+                out[name] = jnp.asarray(value)
+        return out
+
     # ---- what the model is sampling (from trace) ----
     sample_sites = [
         name for name, site in model_trace.items()
@@ -1893,253 +2598,404 @@ def main():
 
 
     # Lambda sites = all sampled sites except the big latents
-    big_latents = {"x", "f_rotated"}
+    big_latents = {'x', 'f_rotated', 'beta', 'eps1', 'eps2', 'eps1_raw', 'eps2_raw', 'mulMc', 'mulq', 'mulMc_raw', 'mulq_raw', 'q_mu', 'q_mu_raw', 'beta_w2', 'raw_w2', 'w2', 'rho_u'}
+
+
 
     lambda_sites = [
         n for n in sample_sites
         if n not in big_latents
     ]
+
+
     
-    
-    # NumPyro expects a list of tuples (each tuple is one dense block)
-    dense_blocks = [tuple(lambda_sites)] if len(lambda_sites) > 1 else False
-    print("[INFO] dense_mass blocks:", dense_blocks)
+    if FLAGS.dense_mass:
+        # NumPyro expects a list of tuples (each tuple is one dense block)
+        dense_blocks = [tuple(lambda_sites)] if len(lambda_sites) > 1 else False
+        print("[INFO] dense_mass blocks:", dense_blocks)
+        dense_blocks_plot = dense_blocks
+    else:
+        dense_blocks = []
+        dense_blocks_plot = [tuple(lambda_sites)] if len(lambda_sites) > 1 else False
 
     print()
 
+    def _gp_state_at_lambda(Lam):
+        """Rebuild distances for Lambda diagnostics at the initialized GP function."""
+        if not FLAGS.is_GP_dL:
+            return None
+        from backends import JAXBackend
+        from cosmology import z_from_dL_at_monotone
+        grid = z_from_dL_at_monotone(
+            JAXBackend(), jnp.asarray([1.0], dtype=jnp.float64),
+            z_nodes=jnp.asarray(model_init_info["z_gp_nodes"], dtype=jnp.float64),
+            f_nodes=_trace_value(model_trace, "f_nodes"),
+            H0=Lam[0], Om=Lam[1], w0=Lam[2],
+            z_fine=jnp.asarray(model_init_info["z_gp_fine"], dtype=jnp.float64),
+            eps_q=1e-12 if FLAGS.eps_DE < 0 else FLAGS.eps_DE,
+            integrate_dc=FLAGS.integrate_dc,
+        )
+        return {key: grid[key] for key in ("z_fine", "dL_gw_fine", "log_ddL_dz_fine")}
+
     if FLAGS.check_init:
+    
+        print()
+        print("=" * 100)
+        print("CHECK_INIT: likelihood decomposition at initialized point")
+        print("=" * 100)
+    
+        Lambda0 = _trace_value(model_trace, "Lambda")
+
+        if not FLAGS.pop_only:
+            x0 = _trace_value(model_trace, "x")
+    
+        try:
+            lR0_0 = _trace_value(model_trace, "lR0")
+        except KeyError:
+            lR0_0 = jnp.asarray(0.0, dtype=jnp.float64)
+
+
+
+        print("\nCHECK_INIT: constrained sample/deterministic sites")
+        print("-" * 100)
         
+        for name, site in model_trace.items():
+            if site.get("type") not in ("sample", "deterministic"):
+                continue
+        
+            val = np.asarray(jax.device_get(site["value"]))
+        
+            # avoid dumping huge event latent x fully
+            if name == "x":
+                print(
+                    f"{name:25s}: shape={val.shape} "
+                    f"min={np.nanmin(val): .6g} max={np.nanmax(val): .6g} "
+                    f"mean={np.nanmean(val): .6g}"
+                )
+            else:
+                print(f"{name:25s}: shape={val.shape} value={val}")
+        
+        print("-" * 100)
+
+        try:
+            log_lik_var_min_used = _trace_value(model_trace, "log_lik_var_min_used")
+            log_lik_var_sg_used = _trace_value(model_trace, "log_lik_var_sg_used")
+            passes_gate_used = _trace_value(model_trace, "passes_log_lik_var_gate_used")
+        
+            print("\nCHECK_INIT: variance gate values actually used in model")
+            print("-" * 100)
+            print("log_lik_var_min_used       :", np.asarray(jax.device_get(log_lik_var_min_used)))
+            print("log_lik_var_sg_used        :", np.asarray(jax.device_get(log_lik_var_sg_used)))
+            print("passes_log_lik_var_gate    :", np.asarray(jax.device_get(passes_gate_used)))
+            print("-" * 100)
+        except KeyError:
+            pass
+        
+        Lambda0 = _trace_value(model_trace, "Lambda")
+        Lambda0_np = np.asarray(jax.device_get(Lambda0))
+        
+        print("\nCHECK_INIT: packed Lambda")
+        print("-" * 100)
+        print(f"Lambda shape: {Lambda0_np.shape}")
+        print(Lambda0_np)
+        print("-" * 100)
+
+        if not FLAGS.pop_only:
+            comp = loglik_components(Lambda0, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lambda0))
+        else:
+            comp = loglik_components(Lambda0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lambda0))
+
+        dump_path = os.path.join(FLAGS.fout, "numpyro_check_init_likelihood_dump.npz")
+        np.savez(
+            dump_path,
+            **{k: np.asarray(jax.device_get(v)) for k, v in comp.items()}
+        )
+        print(f"Saved NumPyro check-init likelihood dump to: {dump_path}")
+        
+        point_path = os.path.join(FLAGS.fout, "numpyro_check_init_point.npz")
+        if not FLAGS.pop_only:
+            np.savez(
+                point_path,
+                Lambda=np.asarray(jax.device_get(Lambda0)),
+                x=np.asarray(jax.device_get(x0)),
+                lR0=np.asarray(jax.device_get(lR0_0)),
+            )
+        else:
+            np.savez(
+                point_path,
+                Lambda=np.asarray(jax.device_get(Lambda0)),
+                lR0=np.asarray(jax.device_get(lR0_0)),
+            )
+        print(f"Saved NumPyro check-init point to: {point_path}")
+
+    
+        keys_main = [
+            "ll",
+            "ll_evt",
+            "log_mu",
+            "sel_term",
+            "Nobs_sel_term",
+            "log_var_sel_u",
+            "var_log_lik_sel",
+            "var_log_lik_evs",
+            "var_log_lik",
+            "n_bad_logp_pop_evt",
+            "n_bad_log_PE_prior_evt",
+            "n_bad_log_jac_evt",
+            "min_logp_pop_evt",
+            "max_logp_pop_evt",
+            "min_log_PE_prior_evt",
+            "max_log_PE_prior_evt",
+            "min_log_jac_evt",
+            "max_log_jac_evt",
+        ]
+    
+        for k in keys_main:
+            if k in comp:
+                v = np.asarray(jax.device_get(comp[k]))
+                print(f"{k:25s}: shape={v.shape} value={v}")
+    
+        print("-" * 100)
+    
+        #ll0, var0 = loglik(Lambda0, x0, lR0=lR0_0)
+
+        if not FLAGS.pop_only:
+            ll0, var0 = loglik(Lambda0, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lambda0))
+        else:
+            ll0, var0 = loglik(Lambda0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lambda0))
+
+    
+        ll0 = np.asarray(jax.device_get(ll0))
+        var0 = np.asarray(jax.device_get(var0))
+        comp_ll = np.asarray(jax.device_get(comp["ll"]))
+        comp_var = np.asarray(jax.device_get(comp["var_log_lik"]))
+    
+        print("consistency ll          :", ll0, comp_ll, "diff=", ll0 - comp_ll)
+        print("consistency var_log_lik :", var0, comp_var, "diff=", var0 - comp_var)
+    
+        print("-" * 100)
+        print("finite ll              :", np.isfinite(ll0))
+        print("finite var_log_lik     :", np.isfinite(var0))
+        print("passes var gate        :", bool(var0 <= FLAGS.log_lik_var_min))
+        print("log_lik_var_min        :", FLAGS.log_lik_var_min)
+        print("=" * 100)
         print()
-        print('Checking initial point...')
-        print()
 
-        #raise NotImplementedError()
+        print("\nCHECK_INIT: gradient diagnostics at initialized point")
+        print("-" * 100)
+        
+        def scalar_ll_from_Lambda(Lam):
+            if not FLAGS.pop_only:
+                c = loglik_components(Lam, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            else:
+                c = loglik_components(Lam,lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            return c["ll"]
+        
+        def scalar_sel_from_Lambda(Lam):
+            if not FLAGS.pop_only:
+                c = loglik_components(Lam, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            else:
+                c = loglik_components(Lam, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            return -c["Nobs_sel_term"]
+        
+        def scalar_evt_from_Lambda(Lam):
+            if not FLAGS.pop_only:
+                c = loglik_components(Lam, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            else:
+                c = loglik_components(Lam, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+            return c["ll_evt"]
+        
+        g_ll = jax.grad(scalar_ll_from_Lambda)(Lambda0)
+        g_sel = jax.grad(scalar_sel_from_Lambda)(Lambda0)
+        g_evt = jax.grad(scalar_evt_from_Lambda)(Lambda0)
+        
+        for name, g in [
+            ("grad total ll", g_ll),
+            ("grad event ll", g_evt),
+            ("grad selection ll", g_sel),
+        ]:
+            gg = np.asarray(jax.device_get(g))
+            print(
+                f"{name:20s}: "
+                f"finite={np.all(np.isfinite(gg))} "
+                f"norm={np.linalg.norm(gg):.6g} "
+                f"maxabs={np.max(np.abs(gg)):.6g} "
+                f"argmax={np.argmax(np.abs(gg))}"
+            )
+        
+        print("-" * 100)
+        
+        slices = {
+            name: sl for name, sl in _lambda_slices_for_benchmark(FLAGS).items()
+            if isinstance(sl, slice) and sl.stop > sl.start
+        }
 
-        print("⚠️ Not yet available.")
+        if not FLAGS.pop_only:
+            for block, sl in slices.items():
+                for name, g in [
+                    ("total", g_ll),
+                    ("event", g_evt),
+                    ("selection", g_sel),
+                ]:
+                    gg = np.asarray(jax.device_get(g[sl]))
+                    print(
+                        f"{block:14s} {name:10s}: "
+                        f"norm={np.linalg.norm(gg):.6g} "
+                        f"maxabs={np.max(np.abs(gg)):.6g}"
+                    )
+        else:
+            for block, sl in slices.items():
+                for name, g in [
+                    ("total", g_ll),
+                    ("event", g_evt),
+                    ("selection", g_sel),
+                ]:
+                    gg = np.asarray(jax.device_get(g[sl]))
+                    print(
+                        f"{block:14s} {name:10s}: "
+                        f"norm={np.linalg.norm(gg):.6g} "
+                        #f"maxabs={np.max(np.abs(gg)):.6g}"
+                    )
+        
+        print("=" * 100)
 
+        print("\nCHECK_INIT: NumPyro unconstrained potential gradient")
+        print("-" * 100)
+        
+        # Correct source of unconstrained init params.
+        # Do NOT use model_trace here.
+        z0 = res.param_info.z
+        
+        pe0, gz0 = jax.value_and_grad(res.potential_fn)(z0)
+        
+        print("potential_energy:", np.asarray(jax.device_get(pe0)))
+        print("finite PE       :", np.isfinite(np.asarray(jax.device_get(pe0))))
+        
+        for k, g in gz0.items():
+            gg = np.asarray(jax.device_get(g))
+            print(
+                f"{k:25s}: shape={gg.shape} "
+                f"finite={np.all(np.isfinite(gg))} "
+                f"norm={np.linalg.norm(gg):.6g} "
+                f"maxabs={np.max(np.abs(gg)):.6g}"
+            )
+        
+        print("-" * 100)
+
+        print("\nCHECK_INIT: factor log_probs")
+        print("-" * 100)
+        
+        factor_total = 0.0
+        
+        for name, site in model_trace.items():
+            if site.get("type") != "sample":
+                continue
+        
+            is_observed = site.get("is_observed", False)
+            fn = site.get("fn", None)
+            val = site.get("value", None)
+        
+            if fn is None or val is None:
+                continue
+        
+            lp = fn.log_prob(val)
+            lp_sum = jnp.sum(lp)
+        
+            lp_np = np.asarray(jax.device_get(lp))
+            lp_sum_np = np.asarray(jax.device_get(lp_sum))
+        
+            print(
+                f"{name:25s}: observed={is_observed} "
+                f"shape={lp_np.shape} "
+                f"sum={lp_sum_np} "
+                f"finite={np.all(np.isfinite(lp_np))}"
+            )
+        
+            factor_total = factor_total + lp_sum
+        
+        print("-" * 100)
+        print("sum sample/factor log_probs:", np.asarray(jax.device_get(factor_total)))
+        print("minus sum log_probs        :", np.asarray(jax.device_get(-factor_total)))
+        print("=" * 100)
+
+        if FLAGS.mass_model=='DPUC':
+
+            print("\nCHECK_INIT: finite-difference sensitivity of sig2 block")
+            print("-" * 100)
+            
+            Lambda0 = _trace_value(model_trace, "Lambda")
+            if not FLAGS.pop_only:
+                x0 = _trace_value(model_trace, "x")
+            lR0_0 = _trace_value(model_trace, "lR0")
+            
+            mass_start = slices["mass"].start
+            K = int(FLAGS.N_DP_comp_max)
+            sig1_slice = slice(mass_start + 2 * K, mass_start + 3 * K)
+            sig2_slice = slice(mass_start + 3 * K, mass_start + 4 * K)
+            
+            def comp_at(Lam):
+                if not FLAGS.pop_only:
+                    c = loglik_components(Lam, x0, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+                else:
+                    c = loglik_components(Lam, lR0=lR0_0, gp_state=_gp_state_at_lambda(Lam))
+                return {
+                    "ll": c["ll"],
+                    "ll_evt": c["ll_evt"],
+                    "log_mu": c["log_mu"],
+                    "Nobs_sel_term": c["Nobs_sel_term"],
+                    "var_log_lik": c["var_log_lik"],
+                }
+            
+            c0 = comp_at(Lambda0)
+            
+            for frac in [1e-3, 3e-3, 1e-2, 3e-2, 5e-2]:
+                for sign in [-1.0, +1.0]:
+                    Lam = Lambda0.at[sig2_slice].multiply(1.0 + sign * frac)
+                    c = comp_at(Lam)
+            
+                    print(
+                        f"sig2 scale {1.0 + sign * frac: .6f} | "
+                        f"dll={float(c['ll'] - c0['ll']): .6g} | "
+                        f"dll_evt={float(c['ll_evt'] - c0['ll_evt']): .6g} | "
+                        f"dlog_mu={float(c['log_mu'] - c0['log_mu']): .6g} | "
+                        f"dNobs_sel={float(c['Nobs_sel_term'] - c0['Nobs_sel_term']): .6g} | "
+                        f"var={float(c['var_log_lik']): .6g}"
+                    )
+            
+            print("-" * 100)
+    
+            for label, sl in [("sig1", sig1_slice), ("sig2", sig2_slice)]:
+                print(f"\n{label} scale sensitivity")
+                c0 = comp_at(Lambda0)
+            
+                for frac in [1e-3, 3e-3, 1e-2, 3e-2, 5e-2]:
+                    for sign in [-1.0, +1.0]:
+                        Lam = Lambda0.at[sl].multiply(1.0 + sign * frac)
+                        c = comp_at(Lam)
+            
+                        print(
+                            f"{label} scale {1.0 + sign * frac: .6f} | "
+                            f"dll={float(c['ll'] - c0['ll']): .6g} | "
+                            f"dll_evt={float(c['ll_evt'] - c0['ll_evt']): .6g} | "
+                            f"dlog_mu={float(c['log_mu'] - c0['log_mu']): .6g} | "
+                            f"dNobs_sel={float(c['Nobs_sel_term'] - c0['Nobs_sel_term']): .6g} | "
+                            f"var={float(c['var_log_lik']): .6g}"
+                        )
+            print("=" * 100)
+    
     ##########################################################################
     ##########################################################################
     # Profile if requested 
     ##########################################################################
     ##########################################################################
 
-    def _lambda_slices_for_benchmark(rate_model, spin_model, mass_model):
-        i = 0
-        cosmo = slice(i, i + 5); i += 5
-    
-        if rate_model in ("MD", "DPUC-vol-MD"):
-            rate = slice(i, i + 3); i += 3
-        elif rate_model == "PL":
-            rate = slice(i, i + 1); i += 1
-        elif rate_model in ("DPUC", "DPUC-vol"):
-            rate = slice(i, i)
-        else:
-            raise ValueError(f"Unknown rate_model={rate_model}")
-    
-        if spin_model == "chieffchip":
-            spin = slice(i, i + 5); i += 5
-        elif spin_model == "chieffchip_uc":
-            spin = slice(i, i + 4); i += 4
-        elif spin_model in ("default", "default_gauss"):
-            spin = slice(i, i + 4); i += 4
-        else:
-            spin = slice(i, i)
-    
-        if mass_model == "PLPreg":
-            mass = slice(i, i + 8); i += 8
-        elif mass_model in ("DPLDP", "PLDP"):
-            mass = slice(i, i + 21); i += 21
-        elif mass_model == "DPLDP-z":
-            mass = slice(i, i + 47); i += 47
-        else:
-            raise ValueError(f"Unknown mass_model={mass_model}")
-    
-        return {"cosmo": cosmo, "rate": rate, "spin": spin, "mass": mass, "npar": i}
-    
-    
-    def _trace_value(model_trace, name, default=None):
-        if name in model_trace:
-            return model_trace[name]["value"]
-        if default is not None:
-            return default
-        raise KeyError(f"Could not find {name!r} in model_trace and no default was given")
-    
-    
-    def _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace):
-        import jax.numpy as jnp
-    
-        vals = []
-    
-        # Cosmology: [H0, Om, w0, Xi0, nXi0]
-        vals.append(jnp.asarray(params_fix["H0"] if FLAGS.fix_H0 else _trace_value(model_trace, "H0"), dtype=jnp.float64))
-        vals.append(jnp.asarray(params_fix["Om"] if FLAGS.fix_Om else _trace_value(model_trace, "Om"), dtype=jnp.float64))
-        vals.append(jnp.asarray(-1.0 if FLAGS.fix_w0 else _trace_value(model_trace, "w0"), dtype=jnp.float64))
-        if FLAGS.fix_Xi0n:
-            vals += [jnp.asarray(1.0, dtype=jnp.float64), jnp.asarray(0.0, dtype=jnp.float64)]
-        else:
-            vals += [jnp.asarray(_trace_value(model_trace, "Xi0"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "nXi0"), dtype=jnp.float64)]
-    
-        # Rate
-        if FLAGS.rate_model in ("MD", "DPUC-vol-MD"):
-            vals += [jnp.asarray(_trace_value(model_trace, "gamma"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "kappa"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "zp"), dtype=jnp.float64)]
-        elif FLAGS.rate_model == "PL":
-            vals += [jnp.asarray(_trace_value(model_trace, "gamma"), dtype=jnp.float64)]
-        elif FLAGS.rate_model in ("DPUC", "DPUC-vol"):
-            pass
-        else:
-            raise ValueError(f"Unknown rate_model={FLAGS.rate_model}")
-    
-        # Spin
-        if FLAGS.spin_model == "default_gauss":
-            vals += [jnp.asarray(_trace_value(model_trace, "muChi"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "sigmaChi"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "zeta"), dtype=jnp.float64),
-                     jnp.asarray(_trace_value(model_trace, "sigmat"), dtype=jnp.float64)]
-        elif FLAGS.spin_model == "none":
-            pass
-        else:
-            raise NotImplementedError(f"Add spin packing for spin_model={FLAGS.spin_model}")
-    
-        # Mass. This mirrors the DPLDP/PLDP packing in jax_models.py.
-        if FLAGS.mass_model in ("DPLDP", "PLDP"):
-            vals += [
-                _trace_value(model_trace, "alpha1"),
-                _trace_value(model_trace, "alpha2"),
-                _trace_value(model_trace, "mb"),
-                _trace_value(model_trace, "mu1"),
-                _trace_value(model_trace, "sigma1"),
-                _trace_value(model_trace, "mu2"),
-                _trace_value(model_trace, "sigma2"),
-                _trace_value(model_trace, "m1_low"),
-                _trace_value(model_trace, "m_high"),
-                _trace_value(model_trace, "delta_m1"),
-                _trace_value(model_trace, "lambda0"),
-                _trace_value(model_trace, "lambda1"),
-                _trace_value(model_trace, "lambda2"),
-                _trace_value(model_trace, "beta"),
-                _trace_value(model_trace, "m2_low"),
-                _trace_value(model_trace, "delta_m2"),
-                _trace_value(model_trace, "epsilon", jnp.asarray(0.1, dtype=jnp.float64)),
-                _trace_value(model_trace, "m_g", jnp.asarray(45.0, dtype=jnp.float64)),
-                _trace_value(model_trace, "w_g", jnp.asarray(70.0, dtype=jnp.float64)),
-                _trace_value(model_trace, "sig_g_l", jnp.asarray(1e-2, dtype=jnp.float64)),
-                _trace_value(model_trace, "sig_g_h", jnp.asarray(1e-2, dtype=jnp.float64)),
-            ]
-        elif FLAGS.mass_model == "PLPreg":
-            vals += [
-                _trace_value(model_trace, "lambdaPeak"), _trace_value(model_trace, "alpha"),
-                _trace_value(model_trace, "beta"), _trace_value(model_trace, "deltam"),
-                _trace_value(model_trace, "ml"), _trace_value(model_trace, "mh"),
-                _trace_value(model_trace, "muMass"), _trace_value(model_trace, "sigmaMass"),
-            ]
-        elif FLAGS.mass_model == "DPLDP-z":
-            raise NotImplementedError(
-                "Benchmark Lambda packing for DPLDP-z needs the exact 47-name order from your active jax_models.py. "
-                "Do not guess it; add that list explicitly before using this benchmark."
-            )
-        else:
-            raise ValueError(f"Unknown mass_model={FLAGS.mass_model}")
-    
-        return jnp.stack([jnp.asarray(v, dtype=jnp.float64).reshape(()) for v in vals])
-    
-    
-    def run_selection_block_benchmark(FLAGS, priors, params_fix, model_trace, lik_data, core, *, repeats=10):
-        import time
-        import jax
-        import jax.numpy as jnp
-        import numpy as np
-        from likelihood import _gw_terms_from_x
-    
-        Lambda0 = _build_lambda0_from_trace_for_benchmark(FLAGS, priors, params_fix, model_trace)
-        slices = _lambda_slices_for_benchmark(FLAGS.rate_model, FLAGS.spin_model, FLAGS.mass_model)
-    
-        if Lambda0.shape[0] != slices["npar"]:
-            raise RuntimeError(f"Lambda length mismatch: built {Lambda0.shape[0]}, expected {slices['npar']}")
-    
-        x0 = _trace_value(model_trace, "x", None)
-        if x0 is None:
-            x0 = init_vals.get("x", None)
-        if x0 is None:
-            raise RuntimeError("Cannot find initial x in model_trace or init_vals")
-        x0 = jnp.asarray(x0, dtype=jnp.float64)
-    
-        # Precompute event coordinates once. The selection term does not depend on x, but core() needs event args.
-        m1det, m2det, dLdet, spins_evt, _, _ = _gw_terms_from_x(x0, lik_data)
-    
-        def selection_only(Lam):
-            _, log_mu, _ = core(
-                m1det, m2det, dLdet, spins_evt,
-                lik_data.m1inj, lik_data.m2inj, lik_data.dLinj,
-                lik_data.spins_inj, lik_data.log_p_draw, lik_data.log_p_incl,
-                Lam, lik_data.Ndraw,
-            )
-            return log_mu
-    
-        full_grad = jax.jit(jax.value_and_grad(selection_only))
-    
-        def make_block_grad(sl):
-            def f(block):
-                Lam = Lambda0.at[sl].set(block)
-                return selection_only(Lam)
-            return jax.jit(jax.value_and_grad(f))
-    
-        block_grads = {}
-        for name in ("cosmo", "rate", "spin", "mass"):
-            sl = slices[name]
-            if sl.start != sl.stop:
-                block_grads[name] = (sl, make_block_grad(sl))
-    
-        def time_call(label, fn, arg):
-            # compile/warmup
-            y, g = fn(arg)
-            jax.block_until_ready(y)
-            jax.block_until_ready(g)
-    
-            ts = []
-            for _ in range(repeats):
-                t0 = time.perf_counter()
-                y, g = fn(arg)
-                jax.block_until_ready(y)
-                jax.block_until_ready(g)
-                ts.append(time.perf_counter() - t0)
-            arr = np.asarray(ts)
-            print(f"{label:>12s}: mean={arr.mean():.6f}s  min={arr.min():.6f}s  max={arr.max():.6f}s  grad_shape={tuple(g.shape)}  value={float(y):.6g}")
-            return float(arr.mean())
-    
-        print("\n" + "=" * 80)
-        print("Selection-gradient block benchmark")
-        print("This is a proxy benchmark: block functions still call the existing full core.")
-        print("If block timings are not clearly below full timing, a structural refactor is unlikely to pay off.")
-        print("=" * 80)
-        print("Lambda length:", Lambda0.shape[0])
-        print("Slices:", {k: (v.start, v.stop) for k, v in slices.items() if k != "npar"})
-        print("Ninj:", int(lik_data.m1inj.shape[0]), "chunk_inj:", int(FLAGS.chunk_inj))
-        print("repeats:", repeats)
-        print("-" * 80)
-    
-        times = {}
-        times["full"] = time_call("full", full_grad, Lambda0)
-        for name, (sl, fn) in block_grads.items():
-            times[name] = time_call(name, fn, Lambda0[sl])
-    
-        sum_blocks = sum(v for k, v in times.items() if k != "full")
-        print("-" * 80)
-        print(f"sum(blocks) / full = {sum_blocks / times['full']:.3f}")
-        print("Interpretation:")
-        print("  <~0.7 : structural decomposition may be worth it")
-        print("  ~1.0  : likely little speed gain")
-        print("  >1.0  : multiple VJPs probably worse unless memory improves")
-        print("=" * 80 + "\n")
-        return times
-
-    
     if FLAGS.profile:
+    
+    
         run_selection_block_benchmark(
             FLAGS, priors, params_fix, model_trace, lik_data, core,
             repeats=max(3, int(FLAGS.profile)),
+            gp_state_factory=_gp_state_at_lambda,
         )
         return
 
@@ -2154,6 +3010,7 @@ def main():
     nuts = NUTS(
         model_numpyro,
         target_accept_prob = float(FLAGS.target_accept),
+        init_strategy = init_strategy,
         max_tree_depth = int(FLAGS.max_tree_depth),
         dense_mass = dense_blocks,  # dense within each chain
         step_size = 1e-2,              # <-- seed a not-too-small epsilon
@@ -2194,6 +3051,64 @@ def main():
 
 
 
+
+
+    init_params_for_run = None
+    jitter_eps = float(FLAGS.init_per_chain_jitter)
+
+    if jitter_eps > 0.0 and num_chains > 1:
+        print()
+        print("[INFO] Building per-chain initial parameters from --ivals/init_vals")
+        print(f"[INFO] init_per_chain_jitter = {jitter_eps:.6g}")
+        print("[INFO] Perturbations are applied in constrained space, then converted by initialize_model.")
+
+        chain_keys = random.split(rng_key, num_chains + 1)
+        rng_key = chain_keys[0]
+        init_params_list = []
+
+        for c in range(num_chains):
+            vals_c = _jitter_init_values(init_vals, chain_keys[c + 1], jitter_eps)
+            init_strategy_c = init_to_value(values=vals_c)
+            res_c = initialize_model(
+                chain_keys[c + 1],
+                model_numpyro,
+                init_strategy=init_strategy_c,
+                dynamic_args=False,
+            )
+            init_params_c, _, _, _ = _unpack_initialize_model_result(res_c)
+            init_params_list.append(_param_info_to_z(init_params_c))
+
+        init_params_for_run = jax.tree_util.tree_map(
+            lambda *xs: jnp.stack(xs, axis=0),
+            *init_params_list,
+        )
+        print("[INFO] Per-chain init_params built and will be passed to mcmc.run(init_params=...).")
+
+    elif jitter_eps > 0.0 and num_chains == 1:
+        print()
+        print("[INFO] Building jittered single-chain initial parameters from --ivals/init_vals")
+        print(f"[INFO] init_per_chain_jitter = {jitter_eps:.6g}")
+        print("[INFO] Perturbations are applied in constrained space, then converted by initialize_model.")
+
+        jitter_key, rng_key = random.split(rng_key)
+        vals_0 = _jitter_init_values(init_vals, jitter_key, jitter_eps)
+        init_strategy_0 = init_to_value(values=vals_0)
+        res_0 = initialize_model(
+            jitter_key,
+            model_numpyro,
+            init_strategy=init_strategy_0,
+            dynamic_args=False,
+        )
+        init_params_0, _, _, _ = _unpack_initialize_model_result(res_0)
+        init_params_for_run = _param_info_to_z(init_params_0)
+        print("[INFO] Jittered single-chain init_params built and will be passed to mcmc.run(init_params=...).")
+
+    elif num_chains > 1:
+        print("[INFO] init_per_chain_jitter <= 0: chains use the same init_to_value strategy values where provided.")
+    else:
+        print("[INFO] init_per_chain_jitter <= 0: chain uses init_to_value strategy values where provided.")
+
+
     mcmc = MCMC(
         nuts,
         num_warmup=num_warmup,
@@ -2204,15 +3119,19 @@ def main():
     )
     
     run_key, rng_key = random.split(rng_key)
-    mcmc.run(run_key,
-                extra_fields=(
-        "diverging",
-        "num_steps",
-        "accept_prob",
-        "adapt_state.step_size",
-    ),
-            )
-    
+    run_kwargs = dict(extra_fields=(
+        "diverging", "num_steps", "accept_prob", "adapt_state.step_size",
+    ))
+    if init_params_for_run is not None:
+        run_kwargs["init_params"] = init_params_for_run
+    elif not FLAGS.is_GP_dL:
+        initial_z = _param_info_to_z(init_params)
+        if num_chains > 1:
+            initial_z = jax.tree_util.tree_map(
+                lambda value: jnp.broadcast_to(value, (num_chains,) + value.shape), initial_z)
+        run_kwargs["init_params"] = initial_z
+    mcmc.run(run_key, **run_kwargs)
+
     #mcmc.print_summary()
     samples = mcmc.get_samples(group_by_chain=True)
 
@@ -2320,7 +3239,7 @@ def main():
     
     import matplotlib.pyplot as plt
 
-    vplot = dense_blocks[0]
+    vplot = dense_blocks_plot[0]
 
     try:
         print("Plotting trace...")

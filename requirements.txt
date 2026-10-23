@@ -1,4 +1,1 @@
-astropy
-jax
-numpyro
-corner
+-r environment/requirements-cpu.txt

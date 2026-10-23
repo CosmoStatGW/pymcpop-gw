@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from numerical_utils import attrapzvec, atcumtrapz, logsumexp2, logaddexp, logdiffexp, sigmoid, log_sigmoid, safe_sigmoid, atinterp_uniform, logsumexp , _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY, atinterp, log_power_gate
-#from constants import _PI as PI
+from numerical_utils import attrapzvec, atcumtrapz, logsumexp2, logaddexp, logdiffexp, log_sigmoid, safe_sigmoid, _interp_indices_nonuniform_safe, interp_1d_nonuniform_multiY, atinterp, safe_logsumexp_jax
 from constants import max_m, _tgrid_np
 
 
@@ -19,15 +18,9 @@ except Exception as e:
     raise ValueError()
 
 
-
-
-
-
-    
 # ---------------------------------------------------------------------
 # Gaussians
 # ---------------------------------------------------------------------
-
 
 
 def truncGausslowerupper_at_lpdf_safe(
@@ -46,7 +39,6 @@ def truncGausslowerupper_at_lpdf_safe(
     za = (xmin - loc) / scale_pos
     zb = (xmax - loc) / scale_pos
 
-    # these must exist somewhere (paste next if not)
     logPhia = _log_ndtr_safe(bk, za)
     logPhib = _log_ndtr_safe(bk, zb)
 
@@ -78,33 +70,37 @@ def _log_ndtr_safe(bk, z):
     return bk.log(Phi)
 
 
+def _log1mexp(bk, t):
+    """
+    Computes log(1 - exp(-t)) for t >= 0.
+    """
 
-def _log1mexp(bk, a):
-    """
-    Stable log(1 - exp(-a)) for a > 0.
-    """
-    a = bk.maximum(a, 1e-12)
     log2 = bk.log(2.0)
-    return bk.where(
-        a > log2,
-        bk.log1p(-bk.exp(-a)),
-        bk.log(-bk.expm1(-a)),
-    )
 
-# def _logdiffexp_posordered(bk, hi, lo, eps=1e-300):
-#     """
-#     Compute log(exp(hi) - exp(lo)) assuming hi >= lo.
-#     """
-#     d = hi - lo
-#     d = bk.maximum(d, 1e-12)
-#     out = hi + bk.log1p(-bk.exp(-d))
-#     return bk.maximum(out, bk.log(eps))
+    t = bk.maximum(t, 0.0)
+
+    return bk.where(
+        t > log2,
+        bk.log1p(-bk.exp(-t)),
+        bk.log(-bk.expm1(-t)),
+    )
 
 def _logdiffexp_posordered(bk, x, y):
     """
     Stable log(exp(x) - exp(y)) assuming x >= y.
+
+    Returns -inf cleanly when x == y, including x = y = -inf.
     """
-    return x + _log1mexp(bk, x - y)
+
+    same = x == y
+
+    x_safe = bk.where(same, 0.0, x)
+    y_safe = bk.where(same, -1e030, y)
+
+    t = x_safe - y_safe
+    out = x_safe + _log1mexp(bk, t)
+
+    return bk.where(same, -1e030, out)
 
 
 def truncGausslowerupper_at_lpdf(
@@ -135,9 +131,18 @@ def truncGausslowerupper_at_lpdf(
     # Heuristic: if both bounds are on the right tail, use SF form.
     use_sf = (za > 0.0) & (zb > 0.0)
 
+    
     logZ_cdf = _logdiffexp_posordered(bk, logPhib, logPhia)
     logZ_sf  = _logdiffexp_posordered(bk, logSFa,  logSFb)
     logZ = bk.where(use_sf, logZ_sf, logZ_cdf)
+
+    log_floor = bk.log(bk.finfo(logZ.dtype).tiny)
+
+    logZ = bk.where(
+        bk.isfinite(logZ),
+        logZ,
+        log_floor,
+    )
 
     # Gaussian logpdf
     z = (x - loc) / scale
@@ -146,7 +151,6 @@ def truncGausslowerupper_at_lpdf(
     if truncate:
         return bk.where((x >= xmin) & (x <= xmax), logp, -jnp.inf)
     return logp
-
 
 
 def truncGausslowerupper_at_lpdf_std(
@@ -175,10 +179,7 @@ def truncGausslowerupper_at_lpdf_std(
 
     if truncate:
         return bk.where((x >= xmin) & (x <= xmax), logp, -jnp.inf)
-        #log_gate = log_sigmoid(bk, x, xmin, 0.05) + bk.log1p(-safe_sigmoid(bk, x, xmax, 0.05))
-        #return logp + log_gate 
     return logp
-
 
 
 def truncGausslower_at_lpdf(
@@ -202,8 +203,6 @@ def truncGausslower_at_lpdf(
 
     if truncate:
         return bk.where(x >= xmin, logp, -jnp.inf)
-        #log_gate = log_sigmoid(bk, x, xmin, 0.05)
-        #return logp + log_gate
     return logp
 
 
@@ -214,8 +213,7 @@ def _log_ndtr(bk, z):
     return bk.log(Phi)
 
 
-
-def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
+def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd):
     """
     Compute per-component 1D Gaussian log-pdfs for (m1, m2) given
     means mu and std-devs sd.
@@ -244,69 +242,515 @@ def gaussian_logpdf_pair(bk, m1s, m2s, mu, sd, z=None, mins=None, maxs=None):
     logp2 = const - 0.5 * bk.log(var2) - 0.5 * (diff2 * diff2 / var2)
 
 
-    if z is not None:
-        z = z[None, :]
-        muz = mu[2][:, None]       # (K, 1)
-        sdz = sd[2][:, None]
+    return logp1, logp2
 
-        varz = sdz * sdz
-        diffz = z - muz
-        logpz = const - 0.5 * bk.log(varz) - 0.5 * (diffz * diffz / varz)
-    else:
-        logpz = bk.zeros_like(logp1)
+def gaussian_logpdf_pair_corr_xy(
+    bk,
+    m1s,
+    m2s,
+    mu,
+    sd,
+    rho,
+):
+    """
+    Per-component correlated Gaussian log-pdf in the first two coordinates.
 
-    return logp1, logp2, logpz
+    Coordinates:
+        x = m1s = logMc
+        y = m2s = logitq
+
+    Component covariance in (x,y):
+        Sigma_k = [[sx_k^2, rho_k sx_k sy_k],
+                   [rho_k sx_k sy_k, sy_k^2]]
+
+    Returns
+    -------
+    logp_xy : shape (K, N)
+        correlated 2D Gaussian logpdf in (x,y)
+    """
+
+    x = m1s[None, :]          # (1, N)
+    y = m2s[None, :]          # (1, N)
+
+    mux = mu[0][:, None]      # (K, 1)
+    muy = mu[1][:, None]      # (K, 1)
+
+    sx = bk.maximum(sd[0][:, None], 1e-300)
+    sy = bk.maximum(sd[1][:, None], 1e-300)
+
+    rho = rho[:, None]
+    rho = bk.clip(rho, -0.999999, 0.999999)
+
+    one_minus_r2 = bk.maximum(1.0 - rho * rho, 1e-12)
+
+    ax = (x - mux) / sx
+    ay = (y - muy) / sy
+
+    Q = (ax * ax + ay * ay - 2.0 * rho * ax * ay) / one_minus_r2
+
+    logp_xy = (
+        -bk.log(2.0 * PI)
+        -bk.log(sx)
+        -bk.log(sy)
+        -0.5 * bk.log(one_minus_r2)
+        -0.5 * Q
+    )
 
 
+    return logp_xy
+
+
+def gaussian_logpdf_pair_trunc_q(
+    bk,
+    xs,
+    qs,
+    mu,
+    sd,
+):
+    """
+    Per-component independent Gaussian log-pdfs in (x, q), with q
+    represented by a Gaussian truncated to 0 <= q <= 1.
+
+    Coordinates:
+        x = logMc
+        q = m2 / m1
+
+    Returns
+    -------
+    logp_x : shape (K, N)
+    logp_q : shape (K, N)
+    """
+
+    x = xs[None, :]
+    q = qs[None, :]
+
+    mux = mu[0][:, None]
+    muq = mu[1][:, None]
+
+    sx = bk.maximum(sd[0][:, None], 1e-300)
+    sq = bk.maximum(sd[1][:, None], 1e-300)
+
+    ax = (x - mux) / sx
+    logp_x = (
+        -0.5 * bk.log(2.0 * PI)
+        -bk.log(sx)
+        -0.5 * ax * ax
+    )
+
+    logp_q = truncGausslowerupper_at_lpdf_safe(
+        bk,
+        q,
+        muq,
+        sq,
+        xmin=0.0,
+        xmax=1.0,
+        truncate=True,
+    )
+
+
+    return logp_x, logp_q
+
+
+def gaussian_logpdf_pair_corr_xy_trunc_q(
+    bk,
+    xs,
+    qs,
+    mu,
+    sd,
+    rho,
+):
+    """
+    Per-component correlated Gaussian log-pdf in (x, q), truncated only
+    in q to 0 <= q <= 1.
+
+    The truncation normalization is the marginal q normalizer:
+
+        Z_k = Phi((1 - mu_q) / sigma_q) - Phi((0 - mu_q) / sigma_q)
+
+    This remains correct with correlation because the truncation is only
+    on the marginal q coordinate.
+
+    Coordinates:
+        x = logMc
+        q = m2 / m1
+    """
+
+    x = xs[None, :]
+    q = qs[None, :]
+
+    mux = mu[0][:, None]
+    muq = mu[1][:, None]
+
+    sx = bk.maximum(sd[0][:, None], 1e-300)
+    sq = bk.maximum(sd[1][:, None], 1e-300)
+
+    rho = bk.clip(rho[:, None], -0.999999, 0.999999)
+    one_minus_r2 = bk.maximum(1.0 - rho * rho, 1e-12)
+
+    ax = (x - mux) / sx
+    aq = (q - muq) / sq
+
+    Q = (ax * ax + aq * aq - 2.0 * rho * ax * aq) / one_minus_r2
+
+    za = (0.0 - muq) / sq
+    zb = (1.0 - muq) / sq
+
+    logPhia = _log_ndtr_safe(bk, za)
+    logPhib = _log_ndtr_safe(bk, zb)
+
+    hi = bk.maximum(logPhib, logPhia)
+    lo = bk.minimum(logPhib, logPhia)
+
+    logZ = logdiffexp(bk, hi, lo)
+    logZ = bk.maximum(logZ, bk.log(1e-300))
+
+    logp_xy = (
+        -bk.log(2.0 * PI)
+        -bk.log(sx)
+        -bk.log(sq)
+        -0.5 * bk.log(one_minus_r2)
+        -0.5 * Q
+        -logZ
+    )
+
+    in_bounds = (q >= 0.0) & (q <= 1.0)
+    logp_xy = bk.where(in_bounds, logp_xy, -jnp.inf)
+
+
+    return logp_xy
 
 M = 40
 gh_nodes_np, gh_weights_np = np.polynomial.hermite.hermgauss(M)
-GH_NODES = gh_nodes_np   # (M,)
-GH_WEIGHTS = gh_weights_np  # (M,)
-SQRTPI = np.sqrt(np.pi)
+GH_NODES = gh_nodes_np
+GH_WEIGHTS = gh_weights_np
 
-def mixture_logZ_physical_vectorized( bk, 
-    mux, sdx, muy, sdy, logw, mmin, mmax,
-    #GH_NODES, GH_WEIGHTS,
-    eps=1e-10
+
+def dpuc_component_logZ_xy_physical(
+    bk,
+    mux,
+    sdx,
+    muy,
+    sdy,
+    *,
+    rho=None,
+    alpha=0.0,
+    mmin,
+    mmax,
+    DP_truncate=True,
+    DP_m1_env=False,
+    taper_kind="power",
+    taper_p=15.0,
+    taper_s=0.003,
+    eps_mass=1e-12,
+    rho_clip=0.999999,
 ):
     """
-    Returns scalar logZ for hard truncation in (m1,m2) but GMM in (x=logMc,y=logitq).
-    Uses 1D Gauss-Hermite in y; x-integral is Normal CDF difference.
+    Per-component physical normalization for DPUC mass kernels.
+
+    Coordinates:
+        x = log Mc_src
+        y = logit(q)
+
+    Component density before normalization:
+        N_k(x,y) * R(m1(x,y), m2(x,y))
+
+    where
+        R = G_low(m2; mmin) * G_high(m1; mmax) * m1^(-alpha)
+
+    depending on DP_truncate / DP_m1_env.
+
+    Returns
+    -------
+    logZk : shape (K,)
+        log Z_k, with
+
+        Z_k = E_{(x,y)~N_k}[R(m1(x,y),m2(x,y))]
+
+    Supports both diagonal and correlated x-y kernels.
+    For diagonal kernels, pass rho=None.
     """
- 
-    # y grid: (K,M)
-    y = muy[:, None] + bk.sqrt(2.0) * sdy[:, None] * GH_NODES[None, :]
+
+    if (not DP_truncate) and (not DP_m1_env):
+        return jnp.zeros_like(mux, dtype=jnp.float64)
+
+    gh_nodes = jnp.asarray(GH_NODES, dtype=jnp.float64)
+    gh_weights = jnp.asarray(GH_WEIGHTS, dtype=jnp.float64)
+
+    mux = jnp.asarray(mux, dtype=jnp.float64)
+    muy = jnp.asarray(muy, dtype=jnp.float64)
+
+    sdx = jnp.maximum(jnp.asarray(sdx, dtype=jnp.float64), 1e-300)
+    sdy = jnp.maximum(jnp.asarray(sdy, dtype=jnp.float64), 1e-300)
+
+    K = mux.shape[0]
+    M = gh_nodes.shape[0]
+
+    a = gh_nodes[None, :, None]  # (1, M, 1)
+    b = gh_nodes[None, None, :]  # (1, 1, M)
+
+    sqrt2 = jnp.sqrt(2.0)
+
+    x = mux[:, None, None] + sqrt2 * sdx[:, None, None] * a
+
+    if rho is None:
+        y = muy[:, None, None] + sqrt2 * sdy[:, None, None] * b
+    else:
+        rho = jnp.asarray(rho, dtype=jnp.float64)
+        rho = jnp.clip(rho, -rho_clip, rho_clip)
+
+        one_minus_r2 = jnp.maximum(1.0 - rho * rho, 1e-12)
+        y_std = rho[:, None, None] * a + jnp.sqrt(one_minus_r2)[:, None, None] * b
+        y = muy[:, None, None] + sqrt2 * sdy[:, None, None] * y_std
+
+    # GH expectation weights for E[f(X,Y)] under standard normals.
+    log_w_gh = (
+        jnp.log(gh_weights[None, :, None])
+        + jnp.log(gh_weights[None, None, :])
+        - jnp.log(jnp.pi)
+    )
+
+    # Stable transform (x,y) -> (m1,m2)
+    q = jax.nn.sigmoid(y)
+    q = jnp.clip(q, 1e-10, 1.0 - 1e-10)
+
+    logq = jnp.log(q)
+    log1pq = jnp.log1p(q)
+
+    # Mc = exp(x)
+    # m1 = Mc * (1+q)^(1/5) / q^(3/5)
+    # m2 = Mc * (1+q)^(1/5) * q^(2/5)
+    log_m1 = x + 0.2 * log1pq - 0.6 * logq
+    log_m2 = x + 0.2 * log1pq + 0.4 * logq
+
+    # Avoid overflow in exp for ridiculous quadrature tails.
+    log_m1 = jnp.clip(log_m1, -700.0, 700.0)
+    log_m2 = jnp.clip(log_m2, -700.0, 700.0)
+
+    m1 = jnp.exp(log_m1)
+    m2 = jnp.exp(log_m2)
+
+    m1_safe = jnp.maximum(m1, eps_mass)
+    m2_safe = jnp.maximum(m2, eps_mass)
+
+    logR = jnp.zeros_like(m1_safe)
+
+    if DP_truncate:
+        eps_trunc = 1e-8
+        mmin_safe = jnp.maximum(mmin, eps_mass)
+        mmax_safe = jnp.maximum(mmax, mmin_safe * (1.0 + eps_trunc))
+
+        logR = logR + log_low_gate(
+            bk,
+            m2_safe,
+            mmin_safe,
+            kind=taper_kind,
+            p=taper_p,
+            s=taper_s,
+        )
+
+        logR = logR + log_high_gate(
+            bk,
+            m1_safe,
+            mmax_safe,
+            kind=taper_kind,
+            p=taper_p,
+            s=taper_s,
+        )
+
+    if DP_m1_env:
+        logR = logR - alpha * jnp.log(m1_safe)
+
+    logR = jnp.where(jnp.isfinite(logR), logR, -1e30)
+
+    log_terms = (log_w_gh + logR).reshape((K, M * M))
+    logZk = safe_logsumexp_jax(log_terms, axis=1)
+
+    return logZk
+
+
+def dpuc_mixture_logZ_xy_pl_gate(
+    bk,
+    mux,
+    sdx,
+    muy,
+    sdy,
+    logw,
+    *,
+    rho=None,
+    alpha,
+    beta,
+    m1_low,
+    m2_low,
+    mmax,
+    deltam_PL_m1,
+    deltam_PL_m2,
+    deltam_PL_high,
+    DP_truncate,
+    DP_m1_env,
+    DP_q_env,
+    taper_kind="sigmoid",
+    taper_p=12.0,
+    eps_mass=1e-12,
+    eps_q=1e-10,
+    return_components=False,
+):
+    """
+    Native-coordinate normalization for the retained DPUC mass kernels.
+
+    Computes
+
+        Z_DPUC = int dx dy p_GMM(x,y) G(m1(x,y),m2(x,y))
+
+    with
+
+        x = log Mc
+        y = logit(q)
+
+    and mass-plane gate
+
+        G = L(m1; mmin, deltam_PL)
+          * L(m2; mmin, deltam_PL)
+          * H(m1; mmax)
+
+    plus optional m1^{-alpha} and q^beta envelopes.
+
+    This is the normalization of the whole gated GMM mixture:
+
+        logZ_DPUC = logsumexp_k[logw_k + logZ_k]
+
+    not component-normalized mixture semantics.
+
+    Returns
+    -------
+    logZ_DPUC : scalar
+        Default return value.
+    logZk : shape (K,)
+        Returned when return_components=True.
+    """
+
+    # If no modifier is active, every component integrates to one.
+    if (not DP_truncate) and (not DP_m1_env) and (not DP_q_env):
+        logZk = jnp.zeros_like(logw, dtype=jnp.float64)
+        if return_components:
+            return logZk
+        return safe_logsumexp_jax(logw + logZk, axis=0)
+
+    sdx = bk.maximum(sdx, 1.0e-300)
+    sdy = bk.maximum(sdy, 1.0e-300)
+
+    gh_nodes = jnp.asarray(GH_NODES, dtype=jnp.float64)
+    gh_weights = jnp.asarray(GH_WEIGHTS, dtype=jnp.float64)
+
+    log_gh_weights = bk.log(gh_weights)
+    sqrt2 = bk.sqrt(2.0)
+
+    # Shapes:
+    #   a : (1, M, 1)
+    #   b : (1, 1, M)
+    a = gh_nodes[None, :, None]
+    b = gh_nodes[None, None, :]
+
+    mux = mux[:, None, None]
+    muy = muy[:, None, None]
+
+    sdx = sdx[:, None, None]
+    sdy = sdy[:, None, None]
+
+    x = mux + sqrt2 * sdx * a
+
+    if rho is None:
+        y = muy + sqrt2 * sdy * b
+    else:
+        rho = bk.clip(rho[:, None, None], -0.999999, 0.999999)
+        omr2 = bk.maximum(1.0 - rho * rho, 1.0e-12)
+        y_std = rho * a + bk.sqrt(omr2) * b
+        y = muy + sqrt2 * sdy * y_std
+
+    # Product Gauss-Hermite weights for E_N[f(x,y)].
+    log_w_gh = (
+        log_gh_weights[None, :, None]
+        + log_gh_weights[None, None, :]
+        - bk.log(jnp.pi)
+    )
+
     q = bk.sigmoid(y)
+    q = bk.clip(q, eps_q, 1.0 - eps_q)
 
-    fac = (1.0 + q) ** 0.2
-    Mc_low  = mmin / (fac * q ** 0.4)
-    Mc_high = mmax * (q ** 0.6) / fac
+    logq = bk.log(q)
+    logfac = 0.2 * bk.log1p(q)
 
-    x_low  = bk.log(Mc_low)
-    x_high = bk.log(Mc_high)
+    # m1 = Mc (1+q)^(1/5) q^(-3/5)
+    # m2 = Mc (1+q)^(1/5) q^( 2/5)
+    log_m1 = x + logfac - 0.6 * logq
+    log_m2 = x + logfac + 0.4 * logq
 
+    m1 = bk.exp(log_m1)
+    m2 = bk.exp(log_m2)
 
-    z_high = (x_high - mux[:, None]) / sdx[:, None]
-    z_low  = (x_low  - mux[:, None]) / sdx[:, None]
+    m1_safe = bk.maximum(m1, eps_mass)
+    m2_safe = bk.maximum(m2, eps_mass)
 
-    # log(Phi(z_high)-Phi(z_low)) stably
-    lhi = _log_ndtr(bk, z_high)
-    llo = _log_ndtr(bk, z_low)
-    logPx = logdiffexp(bk, 
-                       lhi, llo)
+    logG = bk.zeros_like(m1_safe)
 
-    Px = bk.exp(logPx)  # (K,M), safe enough after log-space diff
+    if DP_truncate:
+        eps_trunc = 1.0e-8
+        m1_low_safe = jnp.maximum(m1_low, eps_mass)
+        m2_low_safe = jnp.maximum(m2_low, eps_mass)
+        mmax_safe = jnp.maximum(mmax, m1_low_safe * (1.0 + 1.0e-8))
+        
+        deltam_PL_m1_safe = bk.maximum(deltam_PL_m1, eps_mass)
+        deltam_PL_m2_safe = bk.maximum(deltam_PL_m2, eps_mass)
+        deltam_PL_high_safe = bk.maximum(deltam_PL_high, eps_mass)
 
-    # GH integrate over y: Zk = sum w_i Px / sqrt(pi)
-    Zk = bk.sum(GH_WEIGHTS[None, :] * Px, axis=1) / bk.sqrt(np.pi)  # (K,)
-    
+        logG = logG + (
+            log_low_gate_PL_DPUC(
+                bk,
+                m1_safe,
+                m1_low_safe,
+                deltam_PL_m1_safe,
+            )
+            +
+            log_low_gate_PL_DPUC(
+                bk,
+                m2_safe,
+                m2_low_safe,
+                deltam_PL_m2_safe,
+            )
+            +
+            log_high_gate_PL_DPUC(
+                bk,
+                m1_safe,
+                mmax_safe,
+                deltam_PL_high_safe,
+            )
+        )
 
-    logZ = bk.logsumexp(logw + bk.log(Zk))
-    return logZ, Zk
+    if DP_m1_env:
+        logG = logG - alpha * bk.log(m1_safe)
 
+    if DP_q_env:
+        logG = logG + beta * bk.log(q)
 
-    
+    valid = (
+        bk.isfinite(m1_safe)
+        & bk.isfinite(m2_safe)
+        & bk.isfinite(logG)
+        & (m1_safe > 0.0)
+        & (m2_safe > 0.0)
+        & (m2_safe < m1_safe)
+    )
+
+    logG = bk.where(valid, logG, -jnp.inf)
+
+    K = mux.shape[0]
+    log_terms = (log_w_gh + logG).reshape((K, -1))
+    logZk = safe_logsumexp_jax(log_terms, axis=1)
+
+    if return_components:
+        return logZk
+
+    return safe_logsumexp_jax(logw + logZk, axis=0)
+
     
 # ---------------------------------------------------------------------
 # Smoothings
@@ -346,7 +790,6 @@ def logS_PLP_LVK(bk, m, deltam, ml):
     return s1
 
 
-
 def log_low_gate(bk, x, low, kind="sigmoid", p=12.0, s=None):
     if kind == "sigmoid":
         return log_sigmoid(bk, x, low, s)
@@ -356,21 +799,95 @@ def log_low_gate(bk, x, low, kind="sigmoid", p=12.0, s=None):
         logx = bk.log(bk.maximum(x, 1e-12))
         return -bk.logaddexp(0.0, p * (bk.log(low) - logx))
 
+    elif kind == "none":
+        return bk.where( x<low, -1e030, 0.0 )
     else:
         raise ValueError(f"Unknown taper kind: {kind}")
 
 
 def log_high_gate(bk, x, high, kind="sigmoid", p=12.0, s=None):
     if kind == "sigmoid":
-        return bk.log1p(-sigmoid(bk, x, high, s))
+        return log_sigmoid(bk, high, x, s)
 
     elif kind == "power":
         # -log(1 + (x/high)^p)
         logx = bk.log(bk.maximum(x, 1e-12))
         return -bk.logaddexp(0.0, p * (logx - bk.log(high)))
-
+    elif kind == "none":
+        return bk.where( x>high, -1e030, 0.0 )
     else:
         raise ValueError(f"Unknown taper kind: {kind}")
+
+
+def _logit_scalar(bk, p):
+    return bk.log(p / (1.0 - p))
+
+
+def pl_dpuc_low_sigmoid_params(
+    bk,
+    mmin,
+    deltam,
+    *,
+    eps_low=1.0e-6,
+    eps_on=1.0e-3,
+    eps=1.0e-12,
+):
+    """
+    Parameters for a single low-edge sigmoid L(m).
+
+    The construction enforces
+        L(mmin) = eps_low
+        L(mmin + deltam) = 1 - eps_on
+    using the existing log_low_gate/log_sigmoid convention.
+    """
+
+    d = bk.maximum(deltam, eps)
+    a = _logit_scalar(bk, eps_low)
+    b = _logit_scalar(bk, 1.0 - eps_on)
+
+    s = d / (b - a)
+    center = mmin - s * a
+
+    return center, s
+
+
+def pl_dpuc_high_sigmoid_params(
+    bk,
+    mmax,
+    deltam_high,
+    *,
+    eps_high=1.0e-6,
+    p_at_mmax=0.99,
+    eps=1.0e-12,
+):
+    """
+    Parameters for the shared DPUC high-edge sigmoid H(m).
+
+    The construction enforces
+        H(mmax) = p_at_mmax
+        H(mmax + deltam_high) = eps_high
+
+    using the existing log_high_gate/log_sigmoid convention.
+    """
+
+    width = bk.maximum(deltam_high, eps)
+    a = _logit_scalar(bk, p_at_mmax)
+    b = _logit_scalar(bk, eps_high)
+
+    s = width / (a - b)
+    center = mmax + s * a
+
+    return center, s
+
+
+def log_low_gate_PL_DPUC(bk, x, mmin, deltam):
+    center, s = pl_dpuc_low_sigmoid_params(bk, mmin, deltam)
+    return log_low_gate(bk, x, center, kind="sigmoid", s=s)
+
+
+def log_high_gate_PL_DPUC(bk, x, mmax, deltam_high):
+    center, s = pl_dpuc_high_sigmoid_params(bk, mmax, deltam_high)
+    return log_high_gate(bk, x, center, kind="sigmoid", s=s)
 
 # ---------------------------------------------------------------------
 # Secondary mass
@@ -449,9 +966,7 @@ def logpdfm2_PLP_reg(
     taper_p=12.0,
 ):
 
-    #jax.debug.print(" p(m2) taper_kind={k}, taper_p={p}", k=taper_kind, p=taper_p)
 
-    
     return (
         logpdfm2_PLP_noreg(
             bk,
@@ -479,8 +994,6 @@ def logpdfm2_PLP_reg(
     )
 
 
-
-
 def logpdfq_PL_reg(
     bk,
     m1,
@@ -500,7 +1013,7 @@ def logpdfq_PL_reg(
     qmin = m2_low / m1
 
     # analytic norm for ∫ q^beta dq on [qmin, 1]
-    # your helper integrates m^{-alpha}, so use alpha = -beta
+    # The normalizer integrates m^{-alpha}, so use alpha = -beta.
     lnorm_q = log_norm_truncated_pl(bk, -beta, qmin, 1.0)
 
     lpdf_q = beta * bk.log(q) - lnorm_q
@@ -511,7 +1024,7 @@ def logpdfq_PL_reg(
     # hard support (fastest / simplest)
     valid = (m1 > 0.0) & (m2 >= m2_low) & (m2 <= m1)
 
-    return bk.where(valid, lpdf_m2_given_m1, -bk.inf)
+    return bk.where(valid, lpdf_m2_given_m1, -1e030)
 
 
 # ---------------------------------------------------------------------
@@ -531,8 +1044,6 @@ def log_norm_truncated_pl_num_simple(bk, alpha, mmin, mmax, eps=1e-12, t_floor=1
     log_not1 = bk.log(bk.abs(num)) - bk.log(bk.abs(t))
 
     # α = 1: log( log(mmax/mmin) )
-    # log_ratio = bk.log(mmax_c / mmin_c)
-    # log_eq1   = bk.log( log_ratio )
 
     return log_not1 #bk.switch(close, log_eq1, log_not1)
 
@@ -569,7 +1080,6 @@ def logpdfm1_PLP_noreg(bk, m, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMa
     return result
 
 
-
 def logC_PLP_reg(bk, m, beta, deltam, ml, smoothing="LVK", taper_kind="sigmoid", taper_p=12.0):
     _tgrid = _tgrid_np
     xx = ml + (max_m - ml) * _tgrid
@@ -589,8 +1099,6 @@ def logC_PLP_reg(bk, m, beta, deltam, ml, smoothing="LVK", taper_kind="sigmoid",
     return atinterp(bk, m, xx[1:], bk.log(cdf_scaled) + a)
 
 
-    
-
 def logNorm_PLP_reg(bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass,
                     smoothing="LVK", taper_kind="sigmoid", taper_p=12.0):
     _tgrid = _tgrid_np
@@ -600,8 +1108,6 @@ def logNorm_PLP_reg(bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass,
         smoothing=smoothing
     )
 
-    # lpdf = lpdf + log_low_gate(bk, ms, ml, kind=taper_kind, p=taper_p) \
-    #             + log_high_gate(bk, ms, mh, kind=taper_kind, p=taper_p)
 
     lpdf = bk.where(bk.isfinite(lpdf), lpdf, -1e30)
     a = bk.max(lpdf)
@@ -610,9 +1116,6 @@ def logNorm_PLP_reg(bk, lambdaPeak, alpha, deltam, ml, mh, muMass, sigmaMass,
     return bk.where((integ > 0.0) & bk.isfinite(integ), a + bk.log(integ), -jnp.inf)
 
 
-
-
-    
 def logpdf_PLP_reg(bk, theta, lambdaBBHmass, smoothing="LVK", taper_kind="sigmoid", taper_p=12.0):
     m1, m2 = theta
     lambdaPeak, alpha, beta, deltam, ml, mh, muMass, sigmaMass = lambdaBBHmass
@@ -631,13 +1134,11 @@ def logpdf_PLP_reg(bk, theta, lambdaBBHmass, smoothing="LVK", taper_kind="sigmoi
     return bk.where(finite, val, -1e30)        
 
 
-
 # ---------------------------------------------------------------------
 # Double Power Law plus Double Peak (DPLDP)
 # ---------------------------------------------------------------------
 
 
-    
 def logpdfm1_DPLDP(
     bk, m1, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2,
     m1_low, m_high, delta_m1, lambda0, lambda1, lambda2, epsilon,
@@ -647,22 +1148,16 @@ def logpdfm1_DPLDP(
 ):
 
 
-
-    #jax.debug.print("DPLDP m1 taper_kind={k}, taper_p={p}", k=taper_kind, p=taper_p)
-
-    
     if not simplex_repair:
         log_lambda0 = bk.log(lambda0)
         log_lambda1 = bk.log(lambda1)
         log_lambda2 = bk.log(lambda2)
     else:
-        # Simplex repair (keep your logic; just bk ops)
+        # Simplex repair
         lam0 = bk.clip(lambda0, eps_w, 1.0 - eps_w)
         lam1 = bk.clip(lambda1, eps_w, 1.0 - eps_w)
         lam2_raw = 1.0 - lam0 - lam1
 
-        # bk.softplus exists? If not, paste a bk-softplus utility later.
-        # For now assume you have it or will add it to backends.
         lam2 = eps_w + bk.log1p(bk.exp(lam2_raw - eps_w))
 
         denom = lam0 + lam1 + lam2
@@ -683,7 +1178,6 @@ def logpdfm1_DPLDP(
         log_pnorm2 = truncGausslowerupper_at_lpdf(bk, m1, mu2, sigma2, xmin=m1_low, xmax=m_high, truncate=True)
 
     elif norm_gauss == "low-once":
-        #print("norm_gauss is low-once")
         log_pnorm1 = truncGausslower_at_lpdf(bk, m1, mu1, sigma1, xmin=m1_low, truncate=True)
         log_pnorm2 = -0.5 * ((m1 - mu2) / sigma2) ** 2 - bk.log(sigma2) - 0.5 * bk.log(2.0 * PI)
 
@@ -703,30 +1197,14 @@ def logpdfm1_DPLDP(
     term1 = log_lambda1 + log_pnorm1
     term2 = log_lambda2 + log_pnorm2
 
-    # def check(name, x):
-    #     jax.debug.print(
-    #         "{name}: nan={nan}, posinf={posinf}, neginf={neginf}, min={mn}, max={mx}",
-    #         name=name,
-    #         nan=jnp.any(jnp.isnan(x)),
-    #         posinf=jnp.any(x == jnp.inf),
-    #         neginf=jnp.any(x == -jnp.inf),
-    #         mn=jnp.nanmin(x),
-    #         mx=jnp.nanmax(x),
-    #     )
-    
-    # check("term0", term0)
-    # check("term1", term1)
-    # check("term2", term2)
 
     log_mix = logsumexp2(bk, logsumexp2(bk, term0, term1), term2)
-    #log_mix = bk.logaddexp( bk.logaddexp( term0, term1), term2 )
 
     # gate
     log_gate = log_low_gate(bk, m1, m1_low, kind=taper_kind, p=taper_p, s=sl) \
          + log_high_gate(bk, m1, m_high, kind=taper_kind, p=taper_p, s=sh)
 
     return log_S + log_mix + log_gate
-
 
 
 def log_broken_power_law_DPLDP_pdf(
@@ -759,21 +1237,14 @@ def log_broken_power_law_DPLDP_pdf(
 
     
     ## alternative: Compute log normalization constant directly
-    # norm1 = (m_high * (m_high / mb) ** (-alpha2) - mb) / (-alpha2 + 1)
-    # norm2 = (mb - m1_low * (m1_low / mb) ** (-alpha1)) / (-alpha1 + 1)
-    # log_N = bk.log(norm1 + norm2)
-    #w = safe_sigmoid(bk, -m1, -mb, epsilon)
     
-    #w = bk.clip(w, eps_w, 1.0 - eps_w)
 
     log_w = bk.log(w)
     log_1mw = bk.log1p(-w)
 
-    #log_mix_val = bk.logaddexp( log_w + log_val1, log_1mw + log_val2)
     log_mix_val = logaddexp(bk, log_w + log_val1, log_1mw + log_val2)
     
     return log_mix_val - log_N
-
 
 
 def log_norm_truncated_pl(bk, alpha, mmin, mmax):
@@ -816,8 +1287,6 @@ def log_broken_pl_norm_DPLDP(bk, alpha1, alpha2, mb, m1_low, m_high):
     return bk.log(mb) + logaddexp(bk, logI1, logI2)
 
 
-
-
 def log_broken_pl_norm_DPLDP_safe(bk, alpha1, alpha2, mb, m1_low, m_high, eps=1e-12, t_floor=1e-12):
     mb_pos = bk.maximum(mb, eps)
 
@@ -857,8 +1326,6 @@ def log_norm_truncated_pl_num_alpha1_safe(bk, alpha, mmin, mmax, eps=1e-12, t_fl
     # need expm1; if backend doesn’t expose expm1, we can do exp(x)-1 safely later.
     # For now assume your backends have expm1 or you’ll add it.
     return t_safe * b + bk.log(bk.abs(bk.expm1(t_safe * delta))) - bk.log(bk.abs(t_safe))
-
-
 
 
 def logpdf_DPLDP(bk, theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_break=False,
@@ -930,10 +1397,9 @@ def logpdf_DPLDP(bk, theta, lambdaBBHmass, force_m2_less_than_m1=False, has_m2_b
         return lpdf
 
 
-
-
 def logC_DPLDP(bk, m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_high=5,
                has_m2_break=False, smoothing="LVK", taper_kind="sigmoid", taper_p=12.0):
+    
     xx = bk.logspace(bk.log10(m2_low), bk.log10(max_m), 1000)
     l2 = logpdfm2_PLP_reg(
         bk, xx, beta, deltam, m2_low, m_g=m_g, w_g=w_g,
@@ -947,8 +1413,6 @@ def logC_DPLDP(bk, m, beta, deltam, m2_low, m_g=45, w_g=80, sig_g_low=5, sig_g_h
     cdf = atcumtrapz(bk, p2, xx)
     cdf = bk.maximum(bk.where(bk.isfinite(cdf), cdf, 0.0), 1e-300)
     return atinterp(bk, m, xx[1:], bk.log(cdf) + a)
-
-
 
 
 def logNorm_DPLDP(bk, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_high,
@@ -970,9 +1434,7 @@ def logNorm_DPLDP(bk, alpha1, alpha2, mb, mu1, sigma1, mu2, sigma2, m1_low, m_hi
     ps = bk.exp(lpdf - a)
     integ = attrapzvec(bk, ps, ms)
     return bk.where((integ > 0.0) & bk.isfinite(integ), a + bk.log(integ), -jnp.inf)
-    
 
-    
 
 def build_m1_grid_DPLDP( bk, 
     alpha1, alpha2, mb,
@@ -1176,12 +1638,8 @@ def build_m1_grid_DPLDP( bk,
     # tiny ramp ensures strict increase (does not affect resolution)
     ramp_step = 1e-6
     ramp = ramp_step * bk.arange(m1_grid_sorted.shape[0], dtype=m1_grid_sorted.dtype)
-    #m1_grid_strict = m1_grid_sorted + ramp
     m1_grid_strict = bk.clip(m1_grid_sorted + ramp, xmin, xmax)
     return m1_grid_strict
-
-
-
 
 
 def logpdf_DPLDP_from_interp(bk, theta, interp_vals, force_m2_less_than_m1=False):
@@ -1206,22 +1664,16 @@ def logpdf_DPLDP_from_interp(bk, theta, interp_vals, force_m2_less_than_m1=False
 
     Y_m1 = bk.stack([lp_m1_grid, lC_of_m1], axis=0)   # shape (2, Nm1)
 
-    #out = interp_1d_nonuniform_multiY_numpyop(m1, m1_grid, Y_m1)
     out = interp_1d_nonuniform_multiY(bk, m1, m1_grid, Y_m1, side="left")
 
     lpdfm1 = out[0]
     lC     = out[1]
 
-    #lpdfm2 = interp_1d_nonuniform_numpyop(m2, m2_grid, lp_m2_grid)
-    #lpdfm2 = bk.interp( m2, m2_grid, lp_m2_grid)
     lpdfm2 = atinterp(bk, m2, m2_grid, lp_m2_grid)
 
 
-    
     lpdf = lpdfm1 + lpdfm2 - lC - ln
     return bk.where(ok, lpdf, -1e30)
-
-
 
 
 # ---------------------------------------------------------------------
@@ -1242,9 +1694,6 @@ def theta_of_z(bk, z, theta_0, theta_inf, z_t, delta_z):
     # tanh-based sigmoid: smoothly goes from 0 to 1 around z_t
     s = 0.5 * (1.0 + bk.tanh(x))
     return theta_0 + (theta_inf - theta_0) * s
-
-
-
 
 
 def logpdfm1_DPLDP_z(bk, m1, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
@@ -1281,8 +1730,6 @@ def logpdfm1_DPLDP_z(bk, m1, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0
     S_l = 0.5 * (1.0 + bk.tanh(x_l))  # same shape as in logpdf_DPLDP_z / logNorm_DPLDP_z
 
     # low-z and high-z λ2 from simplex
-    #lambda2_0   = 1.0 - lambda0_0 - lambda1_0
-    #lambda2_inf = 1.0 - lambda0_inf - lambda1_inf
 
     # convex combination: λ(z) = (1-S) λ(0) + S λ(∞)
     lambda0 = (1.0 - S_l) * lambda0_0 + S_l * lambda0_inf
@@ -1296,7 +1743,6 @@ def logpdfm1_DPLDP_z(bk, m1, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0
         smoothing=smoothing, simplex_repair=simplex_repair, norm_gauss=norm_gauss,
         taper_kind=taper_kind, taper_p=taper_p
     )
-
 
 
 def logpdf_DPLDP_z(bk, theta, z, lambdaBBHmass_lowz, evo_params,
@@ -1328,7 +1774,6 @@ def logpdf_DPLDP_z(bk, theta, z, lambdaBBHmass_lowz, evo_params,
 
     m1, m2 = theta
 
-    #jax.debug.print("DPLDP-z taper_kind={k}, taper_p={p}", k=taper_kind, p=taper_p)
 
     # unpack low-z hyperparameters (exactly your current order)
     (alpha1_0, alpha2_0, mb_0,
@@ -1361,14 +1806,11 @@ def logpdf_DPLDP_z(bk, theta, z, lambdaBBHmass_lowz, evo_params,
     x_l    = (z - z_lambda) / dz_lambda
     S_l    = 0.5 * (1.0 + bk.tanh(x_l))
 
-    #lambda2_0   = 1.0 - lambda0_0 - lambda1_0
-    #lambda2_inf = 1.0 - lambda0_inf - lambda1_inf
 
     lambda0 = (1.0 - S_l) * lambda0_0 + S_l * lambda0_inf
     lambda1 = (1.0 - S_l) * lambda1_0 + S_l * lambda1_inf
     lambda2 = (1.0 - S_l) * lambda2_0 + S_l * lambda2_inf
 
-    # (we only pass lambda0, lambda1 to logpdfm1_DPLDP; lambda2 is implied)
 
     # rebuild a z-dependent mass-parameter vector for the downstream calls
     lambdaBBHmass_z = (
@@ -1406,7 +1848,6 @@ def logpdf_DPLDP_z(bk, theta, z, lambdaBBHmass_lowz, evo_params,
     return lpdf_ - ln
 
 
-
 def logNorm_DPLDP_z(bk, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sigma2_0,
                     m1_low, m_high, delta_m1, lambda0_0, lambda1_0, lambda2_0, epsilon,
                     alpha1_inf, z_alpha1, dz_alpha1, alpha2_inf, z_alpha2, dz_alpha2,
@@ -1430,7 +1871,6 @@ def logNorm_DPLDP_z(bk, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sig
     m1_grid = m1_low + (m_high - m1_low) * _tgrid  # (N1,)
 
 
-    
     # --- make z a 1D tensor ---
     z = bk.atleast_1d(z)
     
@@ -1482,9 +1922,6 @@ def logNorm_DPLDP_z(bk, z, alpha1_0, alpha2_0, mb_0, mu1_0, sigma1_0, mu2_0, sig
     p = bk.exp(logp - a)
     norm = attrapzvec(bk, p, m1_grid[None, :], axis=1)
     return bk.where((norm > 0.0) & bk.isfinite(norm), a[:, 0] + bk.log(norm), -jnp.inf)
-
-
-
 
 
 def build_m1_grid_DPLDP_z( bk,
@@ -1678,7 +2115,6 @@ def build_m1_grid_DPLDP_z( bk,
         # if the window is effectively degenerate, kill it
 
         fallback_width = 1e-08 * span  #  small compared to global support
-        #fallback_width = bk.maximum(1e-8 * span, 10.0 * ramp_step)
         
         # center the fallback at the midpoint of the proposed window (≈ mu1 band)
         g1_center = 0.5 * (g1_min + g1_max)
@@ -1749,9 +2185,6 @@ def build_m1_grid_DPLDP_z( bk,
     return m1_grid_strict
 
 
-
-
-
 def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=False):
 
     interp_grids, interp_vals_mass = interp_vals
@@ -1759,22 +2192,6 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
 
     m1_grid, m2_grid, z_bank = interp_grids
     lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank = interp_vals_mass
-
-    # jax.debug.print(
-    #     "\nACTUAL INTERP GRIDS:"
-    #     "\n  Nz={nz}, z=[{z0}, {z1}]"
-    #     "\n  Nm1={nm1}, m1=[{m10}, {m11}]"
-    #     "\n  Nm2={nm2}, m2=[{m20}, {m21}]\n",
-    #     nz=z_bank.shape[0],
-    #     z0=z_bank[0],
-    #     z1=z_bank[-1],
-    #     nm1=m1_grid.shape[0],
-    #     m10=m1_grid[0],
-    #     m11=m1_grid[-1],
-    #     nm2=m2_grid.shape[0],
-    #     m20=m2_grid[0],
-    #     m21=m2_grid[-1],
-    # )
 
 
     # ------------------------------------------------------------
@@ -1786,39 +2203,6 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
         & (m2 >= m2_grid[0]) & (m2 <= m2_grid[-1])
         & (z  >= z_bank[0])  & (z  <= z_bank[-1])
     )
-    
-    
-    #all_ok = ok.sum()
-    #frac_bad = 1.0 - ok.mean()
-    
-    # jax.debug.print(
-    #     "support: ok_sum={ok_sum}, frac_bad={frac_bad}",
-    #     ok_sum=all_ok,
-    #     frac_bad=frac_bad,
-    # )
-
-    # bad_m1 = (m1 < m1_grid[0]) | (m1 > m1_grid[-1])
-    # bad_m2 = (m2 < m2_grid[0]) | (m2 > m2_grid[-1])
-    # bad_z  = (z  < z_bank[0])  | (z  > z_bank[-1])
-    
-    # jax.debug.print(
-    #     "bad: m1={bm1}, m2={bm2}, z={bz}; ranges m1=[{m1min},{m1max}] grid=[{g1min},{g1max}] m2=[{m2min},{m2max}] grid=[{g2min},{g2max}] z=[{zmin},{zmax}] grid=[{zgmin},{zgmax}]",
-    #     bm1=bad_m1.mean(),
-    #     bm2=bad_m2.mean(),
-    #     bz=bad_z.mean(),
-    #     m1min=m1.min(),
-    #     m1max=m1.max(),
-    #     g1min=m1_grid[0],
-    #     g1max=m1_grid[-1],
-    #     m2min=m2.min(),
-    #     m2max=m2.max(),
-    #     g2min=m2_grid[0],
-    #     g2max=m2_grid[-1],
-    #     zmin=z.min(),
-    #     zmax=z.max(),
-    #     zgmin=z_bank[0],
-    #     zgmax=z_bank[-1],
-    # )
 
 
     # optional physical constraint
@@ -1858,7 +2242,6 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     lC   = (1.0 - r1) * yl_C + r1 * yh_C
 
     # If logC is -inf or nan -> reject safely
-    #ok = ok & bk.isfinite(lC)
 
     # ------------------------------------------------------------
     # 4) Interpolate log p(m2)
@@ -1874,15 +2257,11 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     ln_R = ln_bank[kR]
     ln   = (1.0 - rz) * ln_L + rz * ln_R
 
-    #ok = ok & bk.isfinite(ln)
 
     # ------------------------------------------------------------
     # 6) Assemble joint logpdf
     # ------------------------------------------------------------
     
-    #lpdf = lpdfm1 + lpdfm2 - lC - ln
-    #return bk.where(ok, lpdf, -1.0e30)
-    #return bk.where(ok & bk.isfinite(lpdf), lpdf, -1e30)
 
     finite_lpdf = (
         bk.isfinite(lpdfm1)
@@ -1901,3 +2280,547 @@ def logpdf_DPLDP_z_from_interp(bk, theta, z, interp_vals, force_m2_less_than_m1=
     lpdf_safe = lpdfm1_s + lpdfm2_s - lC_s - ln_s
     
     return bk.where(ok_final, lpdf_safe, -1e30)
+
+
+# ---------------------------------------------------------------------
+# FullPop-4.0-inspired all-CBC mass model with conditional 2D structure
+# ---------------------------------------------------------------------
+#
+# Baseline single-object spectrum: Eq. (B8) of the GWTC-4.0 population
+# paper, with the targeted modifications agreed for this module:
+#   * sigmoid blends replace the three hard power-law transitions;
+#   * compact C1 tapers replace the outer Butterworth filters, giving
+#     exact support on (m_NSmin, m_BHmax);
+#   * the two notch filters use H(lower) * L(upper), following the
+#     ancestor Power Law + Dip construction so that they suppress the
+#     interval between their two edges.
+#
+# The final joint density is not the original symmetric FullPop pairing.
+# It is
+#
+#   p(m1, m2) = p_S(m1) p(m2 | m1),
+#
+# with p(m2 | m1) proportional to q**beta(m1) times a positive sum of
+# localized Gaussian modulations in (m1, m2).
+# ---------------------------------------------------------------------
+
+
+def log_compact_high_taper_FULLPOP4(bk, m, deltam, m_high):
+    """Reflected ``logS_PLP`` taper: one below the taper, zero at/above m_high."""
+    return logS_PLP(bk, m_high - m, deltam, 0.0)
+
+
+def log_lowpass_FULLPOP4(bk, m, m0, eta, eps=1e-12):
+    """log L(m|m0,eta), L = [1 + (m/m0)**eta]**(-1)."""
+    m_safe = bk.maximum(m, eps)
+    m0_safe = bk.maximum(m0, eps)
+    log_ratio = bk.log(m_safe) - bk.log(m0_safe)
+    return -logaddexp(bk, 0.0, eta * log_ratio)
+
+
+def log_highpass_FULLPOP4(bk, m, m0, eta, eps=1e-12):
+    """log H(m|m0,eta), H = [1 + (m0/m)**eta]**(-1)."""
+    m_safe = bk.maximum(m, eps)
+    m0_safe = bk.maximum(m0, eps)
+    log_ratio = bk.log(m0_safe) - bk.log(m_safe)
+    return -logaddexp(bk, 0.0, eta * log_ratio)
+
+
+def log_notch_FULLPOP4(
+    bk,
+    m,
+    m_low,
+    m_high,
+    eta_low,
+    eta_high,
+    amplitude,
+):
+    """
+    Log notch factor
+
+        N(m) = 1 - A H(m|m_low,eta_low) L(m|m_high,eta_high).
+
+    The H(lower) L(upper) orientation is the ancestor-model convention
+    that suppresses density between ordered lower and upper edges.
+    """
+    log_window = (
+        bk.log(amplitude)
+        + log_highpass_FULLPOP4(bk, m, m_low, eta_low)
+        + log_lowpass_FULLPOP4(bk, m, m_high, eta_high)
+    )
+    return logdiffexp(bk, 0.0, log_window)
+
+
+def log_backbone_FULLPOP4(
+    bk,
+    m,
+    m_NSmax,
+    m_BHmin,
+    m_break,
+    alpha1,
+    alpha_dip,
+    alpha2,
+    alpha3,
+    delta_NS_transition,
+    delta_BH_transition,
+    delta_break_transition,
+    eps=1e-12,
+):
+    """
+    Smooth continuous four-segment backbone.
+
+    Segments:
+        m**alpha1                         below m_NSmax
+        m**alpha_dip                      from m_NSmax to m_BHmin
+        m**alpha2                         from m_BHmin to m_break
+        m**alpha3                         above m_break
+
+    The three hard transitions are replaced by separate sigmoid blends.
+    Multiplicative continuity factors are retained at every break.
+    The intended ordering is
+
+        m_NSmax < m_BHmin < m_break < m_BHmax.
+    """
+    m_safe = bk.maximum(m, eps)
+    m_NSmax_safe = bk.maximum(m_NSmax, eps)
+    m_BHmin_safe = bk.maximum(m_BHmin, eps)
+    m_break_safe = bk.maximum(m_break, eps)
+
+    log_m = bk.log(m_safe)
+    log_m_NSmax = bk.log(m_NSmax_safe)
+    log_m_BHmin = bk.log(m_BHmin_safe)
+    log_m_break = bk.log(m_break_safe)
+
+    log_B1 = alpha1 * log_m
+    log_Bdip = (
+        alpha_dip * log_m
+        + (alpha1 - alpha_dip) * log_m_NSmax
+    )
+    log_B2 = (
+        alpha2 * log_m
+        + (alpha1 - alpha_dip) * log_m_NSmax
+        + (alpha_dip - alpha2) * log_m_BHmin
+    )
+    log_B3 = (
+        alpha3 * log_m
+        + (alpha1 - alpha_dip) * log_m_NSmax
+        + (alpha_dip - alpha2) * log_m_BHmin
+        + (alpha2 - alpha3) * log_m_break
+    )
+
+    s_NS = safe_sigmoid(
+        bk, m_safe, m_NSmax_safe, delta_NS_transition
+    )
+    log_B12 = logaddexp(
+        bk,
+        bk.log1p(-s_NS) + log_B1,
+        bk.log(s_NS) + log_Bdip,
+    )
+
+    s_BH = safe_sigmoid(
+        bk, m_safe, m_BHmin_safe, delta_BH_transition
+    )
+    log_B123 = logaddexp(
+        bk,
+        bk.log1p(-s_BH) + log_B12,
+        bk.log(s_BH) + log_B2,
+    )
+
+    s_break = safe_sigmoid(
+        bk, m_safe, m_break_safe, delta_break_transition
+    )
+    return logaddexp(
+        bk,
+        bk.log1p(-s_break) + log_B123,
+        bk.log(s_break) + log_B3,
+    )
+
+
+def log_peak_factor_FULLPOP4(
+    bk,
+    m,
+    c1,
+    c2,
+    mu1,
+    sigma1,
+    mu2,
+    sigma2,
+    m_NSmin,
+    m_BHmax,
+):
+    """
+    Log of the multiplicative peak factor
+
+        1 + c1 N_[m_NSmin,m_BHmax](m|mu1,sigma1)
+          + c2 N_[m_NSmin,m_BHmax](m|mu2,sigma2).
+    """
+    log_G1 = truncGausslowerupper_at_lpdf_safe(
+        bk,
+        m,
+        mu1,
+        sigma1,
+        xmin=m_NSmin,
+        xmax=m_BHmax,
+        truncate=False,
+    )
+    log_G2 = truncGausslowerupper_at_lpdf_safe(
+        bk,
+        m,
+        mu2,
+        sigma2,
+        xmin=m_NSmin,
+        xmax=m_BHmax,
+        truncate=False,
+    )
+
+    return logaddexp(
+        bk,
+        logaddexp(bk, 0.0, bk.log(c1) + log_G1),
+        bk.log(c2) + log_G2,
+    )
+
+
+def logpdfm1_FULLPOP4_unnorm(bk, m, lambda_S):
+    """
+    Unnormalized FullPop-4.0 single-object spectrum p_S(m).
+
+    ``lambda_S`` ordering:
+
+        (c1, c2, mu1, sigma1, mu2, sigma2,
+         m_NSmin, m_NSmax, m_BHmin, m_BHmax,
+         alpha1, alpha_dip, alpha2,
+         m_UMGmin, m_UMGmax,
+         eta_NSmax, eta_BHmin, A1,
+         eta_UMGmin, eta_UMGmax, A2,
+         delta_m1_low, delta_m1_high,
+         delta_NS_transition, delta_BH_transition,
+         m_break, alpha3, delta_break_transition)
+    """
+    (
+        c1,
+        c2,
+        mu1,
+        sigma1,
+        mu2,
+        sigma2,
+        m_NSmin,
+        m_NSmax,
+        m_BHmin,
+        m_BHmax,
+        alpha1,
+        alpha_dip,
+        alpha2,
+        m_UMGmin,
+        m_UMGmax,
+        eta_NSmax,
+        eta_BHmin,
+        A1,
+        eta_UMGmin,
+        eta_UMGmax,
+        A2,
+        delta_m1_low,
+        delta_m1_high,
+        delta_NS_transition,
+        delta_BH_transition,
+        m_break,
+        alpha3,
+        delta_break_transition,
+    ) = lambda_S
+
+    log_edges = (
+        logS_PLP(bk, m, delta_m1_low, m_NSmin)
+        + log_compact_high_taper_FULLPOP4(
+            bk, m, delta_m1_high, m_BHmax
+        )
+    )
+
+    log_peaks = log_peak_factor_FULLPOP4(
+        bk,
+        m,
+        c1,
+        c2,
+        mu1,
+        sigma1,
+        mu2,
+        sigma2,
+        m_NSmin,
+        m_BHmax,
+    )
+
+    log_n1 = log_notch_FULLPOP4(
+        bk,
+        m,
+        m_NSmax,
+        m_BHmin,
+        eta_NSmax,
+        eta_BHmin,
+        A1,
+    )
+    log_n2 = log_notch_FULLPOP4(
+        bk,
+        m,
+        m_UMGmin,
+        m_UMGmax,
+        eta_UMGmin,
+        eta_UMGmax,
+        A2,
+    )
+
+    log_backbone = log_backbone_FULLPOP4(
+        bk,
+        m,
+        m_NSmax,
+        m_BHmin,
+        m_break,
+        alpha1,
+        alpha_dip,
+        alpha2,
+        alpha3,
+        delta_NS_transition,
+        delta_BH_transition,
+        delta_break_transition,
+    )
+
+    logp = log_edges + log_peaks + log_n1 + log_n2 + log_backbone
+    in_support = (m > m_NSmin) & (m < m_BHmax)
+    return bk.where(in_support, logp, -jnp.inf)
+
+
+def logNorm_m1_FULLPOP4(bk, lambda_S, res=1000):
+    """Differentiable trapezoidal normalization of p_S on its exact support."""
+    m_NSmin = lambda_S[6]
+    m_BHmax = lambda_S[9]
+
+    t = bk.linspace(0.0, 1.0, res)
+    ms = m_NSmin + (m_BHmax - m_NSmin) * t
+
+    logp = logpdfm1_FULLPOP4_unnorm(bk, ms, lambda_S)
+    logp_safe = bk.where(bk.isfinite(logp), logp, -1.0e30)
+
+    shift = bk.max(logp_safe)
+    vals = bk.exp(logp_safe - shift)
+    integ = attrapzvec(bk, vals, ms)
+
+    valid = (
+        (m_BHmax > m_NSmin)
+        & (integ > 0.0)
+        & bk.isfinite(integ)
+        & bk.isfinite(shift)
+    )
+    return bk.where(valid, shift + bk.log(integ), -jnp.inf)
+
+
+def logpdfm1_FULLPOP4(bk, m, lambda_S, norm=True, res=1000):
+    """Normalized FullPop-4.0 single-object spectrum used as p_S(m1)."""
+    logp = logpdfm1_FULLPOP4_unnorm(bk, m, lambda_S)
+    if not norm:
+        return logp
+    return logp - logNorm_m1_FULLPOP4(bk, lambda_S, res=res)
+
+
+def beta_m1_FULLPOP4(bk, m1, Lambda_q):
+    """
+    Smooth NS-to-BH transition in the conditional mass-ratio exponent.
+
+    ``Lambda_q`` ordering:
+
+        (beta_NS, beta_BH, m_beta, delta_beta,
+         delta_m2_low, delta_m2_high)
+    """
+    beta_NS, beta_BH, m_beta, delta_beta, _, _ = Lambda_q
+    s = safe_sigmoid(bk, m1, m_beta, delta_beta)
+    return beta_NS + (beta_BH - beta_NS) * s
+
+
+def logR_FULLPOP4(bk, m1, m2, bumps=(), eps=1e-12):
+    """
+    Positive localized modulation in the (m1,m2) plane.
+
+        R = 1 + sum_k A_k exp[-0.5 ((m1-mu1_k)/sig1_k)^2
+                              -0.5 ((m2-mu2_k)/sig2_k)^2]
+
+    Each bump is packed as ``(amp, mu1, sigma1, mu2, sigma2)``.
+    """
+    logR = 0.0
+    if bumps is None:
+        return logR
+
+    for bump in bumps:
+        amp, mu1, sigma1, mu2, sigma2 = bump
+        sigma1_safe = bk.maximum(sigma1, eps)
+        sigma2_safe = bk.maximum(sigma2, eps)
+        log_bump = (
+            bk.log(amp)
+            - 0.5 * ((m1 - mu1) / sigma1_safe) ** 2
+            - 0.5 * ((m2 - mu2) / sigma2_safe) ** 2
+        )
+        logR = logaddexp(bk, logR, log_bump)
+
+    return logR
+
+
+def logkernel_m2_given_m1_FULLPOP4(
+    bk,
+    m1,
+    m2,
+    Lambda_q,
+    bumps,
+    m_NSmin,
+    m_BHmax,
+    eps=1e-12,
+):
+    """Unnormalized log kernel for p(m2|m1)."""
+    _, _, _, _, delta_m2_low, delta_m2_high = Lambda_q
+
+    m1_safe = bk.maximum(m1, eps)
+    m2_safe = bk.maximum(m2, eps)
+    q = m2_safe / m1_safe
+    beta = beta_m1_FULLPOP4(bk, m1, Lambda_q)
+
+    log_edges = (
+        logS_PLP(bk, m2, delta_m2_low, m_NSmin)
+        + log_compact_high_taper_FULLPOP4(
+            bk, m2, delta_m2_high, m_BHmax
+        )
+    )
+
+    return (
+        log_edges
+        + beta * bk.log(q)
+        + logR_FULLPOP4(bk, m1, m2, bumps=bumps)
+    )
+
+
+def logNorm_m2_given_m1_FULLPOP4(
+    bk,
+    m1,
+    Lambda_q,
+    bumps,
+    m_NSmin,
+    m_BHmax,
+    res=500,
+    eps=1e-12,
+):
+    """
+    Conditional normalization
+
+        Z_2(m1) = integral_[m_NSmin,m1] K(m1,m2) dm2.
+
+    A fixed t-grid is mapped to the parameter-dependent interval, keeping
+    the quadrature shape fixed and differentiable.
+    """
+    m1a = bk.asarray(m1)
+    span = m1a - m_NSmin
+    span_safe = bk.maximum(span, eps)
+
+    t = bk.linspace(0.0, 1.0, res)
+    m2_grid = m_NSmin + span_safe[..., None] * t
+    m1_grid = m1a[..., None]
+
+    logk = logkernel_m2_given_m1_FULLPOP4(
+        bk,
+        m1_grid,
+        m2_grid,
+        Lambda_q,
+        bumps,
+        m_NSmin,
+        m_BHmax,
+    )
+    logk_safe = bk.where(bk.isfinite(logk), logk, -1.0e30)
+
+    shift = bk.max(logk_safe, axis=-1, keepdims=True)
+    vals = bk.exp(logk_safe - shift)
+    integ = attrapzvec(bk, vals, m2_grid, axis=-1)
+    logZ = shift[..., 0] + bk.log(integ)
+
+    valid = (
+        (span > 0.0)
+        & (m1a < m_BHmax)
+        & (integ > 0.0)
+        & bk.isfinite(integ)
+        & bk.isfinite(logZ)
+    )
+    return bk.where(valid, logZ, -jnp.inf)
+
+
+def logpdfm2_given_m1_FULLPOP4(
+    bk,
+    m1,
+    m2,
+    Lambda_q,
+    bumps,
+    m_NSmin,
+    m_BHmax,
+    res=500,
+):
+    """Normalized conditional secondary-mass density p(m2|m1)."""
+    logk = logkernel_m2_given_m1_FULLPOP4(
+        bk,
+        m1,
+        m2,
+        Lambda_q,
+        bumps,
+        m_NSmin,
+        m_BHmax,
+    )
+    logZ = logNorm_m2_given_m1_FULLPOP4(
+        bk,
+        m1,
+        Lambda_q,
+        bumps,
+        m_NSmin,
+        m_BHmax,
+        res=res,
+    )
+
+    in_support = (
+        (m1 > m_NSmin)
+        & (m1 < m_BHmax)
+        & (m2 > m_NSmin)
+        & (m2 < m_BHmax)
+        & (m2 <= m1)
+    )
+    return bk.where(in_support, logk - logZ, -jnp.inf)
+
+
+def logpdf_FULLPOP4_conditional(
+    bk,
+    theta,
+    lambdaBBHmass,
+    res_m1=1000,
+    res_m2=500,
+):
+    """
+    Final normalized joint model
+
+        p(m1,m2) = p_S(m1) p(m2|m1).
+
+    Parameter packing:
+
+        lambdaBBHmass = (lambda_S, Lambda_q, bumps)
+
+    with ``lambda_S`` and ``Lambda_q`` ordered as documented in
+    ``logpdfm1_FULLPOP4_unnorm`` and ``beta_m1_FULLPOP4``. ``bumps`` is a
+    Python sequence of ``(amp, mu1, sigma1, mu2, sigma2)`` tuples.
+    """
+    m1, m2 = theta
+    lambda_S, Lambda_q, bumps = lambdaBBHmass
+
+    m_NSmin = lambda_S[6]
+    m_BHmax = lambda_S[9]
+
+    logp1 = logpdfm1_FULLPOP4(
+        bk, m1, lambda_S, norm=True, res=res_m1
+    )
+    logp2_given_1 = logpdfm2_given_m1_FULLPOP4(
+        bk,
+        m1,
+        m2,
+        Lambda_q,
+        bumps,
+        m_NSmin,
+        m_BHmax,
+        res=res_m2,
+    )
+
+    return logp1 + logp2_given_1

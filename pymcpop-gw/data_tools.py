@@ -5,10 +5,8 @@
 #    license that can be found in the LICENSE file.
 
 import numpy as onp
-import sys
 import os
 import json
-import h5py
 
 
 def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_rw=False):
@@ -30,13 +28,21 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
         is_h5 = str(fid).lower().endswith((".h5", ".hdf5"))
 
         if is_h5:
+            try:
+                import h5py
+            except ModuleNotFoundError as exc:
+                if exc.name != "h5py":
+                    raise
+                raise ImportError(
+                    "Reading HDF5 posterior samples requires h5py. "
+                    "Install h5py in the environment used to run this analysis."
+                ) from exc
             with h5py.File(fid, "r") as f:
                 props = f["properties"]  
                 gwnames = props["gwnames"][:]        # may be bytes -> decode if needed
-                #allnames_ = [x.decode() if isinstance(x, bytes) else x for x in gwnames]
                 allnames_ = [x.decode() if isinstance(x, bytes) else str(x) for x in gwnames]
         else:
-            allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
+            allnames_ = onp.atleast_1d(onp.loadtxt(fid+'allNames.txt', dtype=str))
 
         
         evs_use_ = None
@@ -72,11 +78,13 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
                 )
         
             mask_ = onp.isin(allnames_, evs_use_)
-            allnames_return.append(evs_use_)
         
         else:
             mask_ = onp.full(len(allnames_), True)
-            allnames_return.append(allnames_)
+
+        # Boolean indexing preserves source-file order, including when a
+        # whitelist file lists the events in a different order.
+        allnames_return.append(onp.asarray(allnames_)[mask_].tolist())
 
 
         print('Loading posterior samples...')
@@ -95,11 +103,7 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
                 
                 
                 prior = f["prior"]                   # group
-                props = f["properties"]              # group
-            
-                # examples: load datasets into memory
                 dL_samples_ = pe["dL"][mask_]                     # original posterior draws
-                #dL_samples_rw_ = pe_rw["dL"][mask_]               # reweighted draws
                 dL_PE_prior_ = prior["dL"][mask_]               # prior values
 
                 m1d_samples_raw_ = pe['m1det']
@@ -154,8 +158,45 @@ def load_data_samples(fin, nmax=None, events_use=None, events_exclude=None, use_
 
         
         
-        where_compute_=~onp.isnan(m1d_samples_)
-        allNsamples_ = where_compute_.sum(axis=-1) #onp.load( fid+'allnsamples.npy' )
+        where_compute_ = (
+            onp.isfinite(m1d_samples_)
+            & onp.isfinite(m2d_samples_)
+            & onp.isfinite(dL_samples_)
+            & onp.isfinite(dL_PE_prior_)
+            & onp.isfinite(chi1_samples_)
+            & onp.isfinite(chi2_samples_)
+            & onp.isfinite(cost1_samples_)
+            & onp.isfinite(cost2_samples_)
+            & (m1d_samples_ > 0.0)
+            & (m2d_samples_ > 0.0)
+            & (dL_samples_ > 0.0)
+        )
+        allNsamples_ = where_compute_.sum(axis=-1).astype(int) #onp.load( fid+'allnsamples.npy' )
+
+        if onp.any(allNsamples_ == 0):
+            bad = onp.where(allNsamples_ == 0)[0]
+            raise ValueError("Some events have no finite posterior samples after masking: %s" % bad.tolist())
+
+        for iev in range(m1d_samples_.shape[0]):
+            keep = onp.where(where_compute_[iev])[0]
+            n_keep = len(keep)
+
+            for arr in (
+                m1d_samples_,
+                m2d_samples_,
+                dL_samples_,
+                dL_PE_prior_,
+                chi1_samples_,
+                chi2_samples_,
+                cost1_samples_,
+                cost2_samples_,
+            ):
+                vals = arr[iev, keep]
+                arr[iev, :] = onp.nan
+                arr[iev, :n_keep] = vals
+
+            where_compute_[iev, :] = False
+            where_compute_[iev, :n_keep] = True
 
         if i==0:
 
@@ -224,9 +265,6 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
     if events_use and events_exclude:
         raise ValueError("Cannot pass events_use and events_exclude at the same time.")
 
-    samples_means_dict =  {}
-    samples_cho_covs_dict = {}
-
     gmm_log_wts_dict = {}
     gmm_means_dict = {}
     gmm_icovs_dict = {}
@@ -238,8 +276,6 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
     gmm_fit_transform_info_ref = None
     allNgm_dict = {}
     nevs_dict = {}
-    allnames_dict = {}
-    evsuse_dict = {}
     allnames_return = []
 
     nevs_all = 0
@@ -297,7 +333,7 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
     for i,fid in enumerate(fin):
 
         print("\nLoading data from %s"%fid)
-        allnames_ = onp.loadtxt( fid+'allNames.txt', dtype=str )
+        allnames_ = onp.atleast_1d(onp.loadtxt(fid+'allNames.txt', dtype=str))
                 
         evs_use_ = None
 
@@ -331,26 +367,12 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
                 )
 
             mask_ = onp.isin(allnames_, evs_use_)
-            allnames_dict[fid] = allnames_
-            evsuse_dict[fid] = evs_use_
-            allnames_return.append(evs_use_)
-
-            if i == 0:
-                allnames_use = evs_use_
-            else:
-                allnames_use = onp.concatenate([allnames_use, evs_use_])
 
         else:
             mask_ = onp.full(len(allnames_), True)
-            allnames_return.append(allnames_)
 
-            if i == 0:
-                allnames_use = allnames_
-            else:
-                allnames_use = onp.concatenate([allnames_use, allnames_])            
-        
-        
-        
+        allnames_return.append(onp.asarray(allnames_)[mask_].tolist())
+
         print('Loading sample means and covs...')
 
         try:
@@ -382,7 +404,7 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
     
         print('Loading gmm parameters...')
 
-        Ngmm_all = onp.loadtxt( fid+'allNgm.txt' ).astype('int')
+        Ngmm_all = onp.atleast_1d(onp.loadtxt(fid+'allNgm.txt')).astype('int')
         Ngmm_mask = Ngmm_all[mask_]
         
         allNgm_dict[fid] = Ngmm_mask #onp.loadtxt( fid+'allNgm.txt' ).astype('int')[mask_] 
@@ -478,7 +500,6 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
     nevs_arr = onp.asarray([ nevs_dict[k] for k in nevs_dict.keys() ])
     print('\nDone. Events:%s. Total: %s events. Max GMM number: %s. Number of dimensions: %s'%(nevs_arr,nevs_all, Ngm_max, nd))
     #print("Names: ")
-    #print(allnames_dict)
 
     print("\nConcatenating data...")
 
@@ -506,7 +527,6 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
                 print("TypeError found! ")
                 ngm_  =  allNgm_dict[fid]
 
-            #print("Event %s"%allnames_use[iev])
             #print("gmm_log_wts shape is %s"%str(gmm_log_wts.shape))
             #print("gmm_log_wts_dict[fid] shape is %s"%str(gmm_log_wts_dict[fid].shape))
             #print("gmm_log_wts[iev, :ngm_] shape is %s"%str(gmm_log_wts[iev, :ngm_].shape))
@@ -549,7 +569,6 @@ def load_data_interp(fin, events_use=None, events_exclude=None, bounded_transfor
 def load_injections(fin_injections, allPercUse=None):
 
 
-    Ttot = 0.
     ndetInj_max = 0
 
     alldLInj_dict = {}
@@ -561,8 +580,6 @@ def load_injections(fin_injections, allPercUse=None):
     Tobs_dict = {}
     ndetInj_dict = {}
     
-    allchiefftruesInj_dict = {}
-    allchiptruesInj_dict = {}
 
     allspin1xInj_dict = {}
     allspin2xInj_dict = {}
@@ -593,14 +610,6 @@ def load_injections(fin_injections, allPercUse=None):
         except:
             print("No log_p_incl in injections.")
             logPincl = False
-        try:
-            allchiefftruesInj_dict[fiinj] =  onp.load(fiinj+'chieff.npy')
-            allchiptruesInj_dict[fiinj] =  onp.load(fiinj+'chip.npy')
-            spins=True
-        except Exception as e:
-            print(e)
-            print("Chi_eff, chi_p not in spin injections.")
-            spins_chieffchip=False
 
         try:
             allspin1xInj_dict[fiinj] =  onp.load(fiinj+'spin1x.npy')
@@ -633,10 +642,7 @@ def load_injections(fin_injections, allPercUse=None):
             print("Chi1, chi2, cost1, cost2 not in spin injections.")
             spins_default=False
     
-        if (spins_chieffchip or spins_123xyz or spins_default):
-            spins=True
-        else:
-            spins=False
+        if not (spins_123xyz or spins_default):
             print('No spins in injections.')
         
         ngenInj_dict[fiinj] = onp.load( fiinj+'Ngen.npy').astype(int)
@@ -668,9 +674,6 @@ def load_injections(fin_injections, allPercUse=None):
 
             ngenInj_dict[fiinj] = Ngen_new
 
-            if spins_chieffchip:
-                allchiefftruesInj_dict[fiinj] = allchiefftruesInj_dict[fiinj][idxs][:Nuse]
-                allchiptruesInj_dict[fiinj] = allchiptruesInj_dict[fiinj][idxs][:Nuse]
             if spins_123xyz:
                 allspin1xInj_dict[fiinj] =  allspin1xInj_dict[fiinj][idxs][:Nuse]
                 allspin2xInj_dict[fiinj] =  allspin2xInj_dict[fiinj][idxs][:Nuse]
@@ -693,7 +696,6 @@ def load_injections(fin_injections, allPercUse=None):
         
         Tobs_dict[fiinj] = onp.loadtxt( fiinj+'Tobs.txt')
         
-        Ttot += Tobs_dict[fiinj]
 
         ndetInj_dict[fiinj] = len(alldLInj_dict[fiinj])#.astype(int)
         if ndetInj_dict[fiinj]>ndetInj_max:
@@ -717,9 +719,6 @@ def load_injections(fin_injections, allPercUse=None):
     ngenInj = onp.zeros( ndatasets)
     TobsInj = onp.zeros( ndatasets)
     ndetInj = onp.zeros( ndatasets)
-    if spins_chieffchip:
-        allchieffInj = onp.zeros( (ndatasets,  ndetInj_max))
-        allchipInj = onp.zeros( (ndatasets,  ndetInj_max))
     if spins_123xyz:
 
         allspin1xInj = onp.zeros( (ndatasets,  ndetInj_max))
@@ -754,9 +753,6 @@ def load_injections(fin_injections, allPercUse=None):
         ngenInj[i] = ngenInj_dict[fiinj]
         TobsInj[i] = Tobs_dict[fiinj]
         ndetInj[i] = ndetInj_dict[fiinj]
-        if spins_chieffchip:
-            allchieffInj[i, :nmax] = allchiefftruesInj_dict[fiinj]
-            allchipInj[i:nmax] = allchiptruesInj_dict[fiinj]
         if spins_123xyz:
             allspin1xInj[i, :nmax] = allspin1xInj_dict[fiinj]
             allspin2xInj[i, :nmax] = allspin2xInj_dict[fiinj]
@@ -786,9 +782,6 @@ def load_injections(fin_injections, allPercUse=None):
     inj['Ngen'] = ngenInj
     inj['Tobs'] = TobsInj
     inj['Ndet'] = ndetInj.astype(int)
-    if spins_chieffchip:
-        inj['chieff'] = allchieffInj
-        inj['chip'] = allchipInj
     if spins_123xyz:
         inj['spin1x'] = allspin1xInj
         inj['spin2x'] = allspin2xInj

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">pymcpop-gw</title>
+  <desc id="description">Two orbiting compact objects surrounding a gravitational-wave curve.</desc>
+  <ellipse cx="64" cy="64" rx="45" ry="27" transform="rotate(-32 64 64)" stroke="#21A6A1" stroke-width="4.5"/>
+  <path d="M8 64H35C41 64 40 76 46 76C53 76 49 43 58 43C67 43 63 85 72 85C79 85 77 64 85 64H120" stroke="#3B73D1" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="25.838" cy="87.846" r="7.5" fill="#21A6A1"/>
+  <circle cx="102.162" cy="40.154" r="7.5" fill="#3B73D1"/>
+</svg>

@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 # backend-agnostic pieces
-from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, dLfun, log_dV_dz
+from cosmology import Xi_vanilla, Xi_polexp, Efun, log_ddL_dz as log_ddL_dz_bk, z_from_dL, gp_z_from_dL_and_logdd, dcfun_quad
 
 
 from rate_models import log_p_z_MD_unnorm
 from spin_models import logpdf_default_spin_gauss as logpdf_default_spin_gauss_bk
 import mass_models
 import spin_models
-from numerical_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, log_sigmoid, safe_logsumexp_jax, atinterp, atinterp_uniform, atcumtrapz, attrapzvec
+from numerical_utils import logdiffexp as logdiffexp_bk, Mcq_from_m1m2, logit, safe_logsumexp_jax, atinterp, atinterp_uniform, atcumtrapz, attrapzvec
+
+
 
 import jax.numpy as jnp
 from jax import lax
 
-try:
-    import jax    
-except Exception as e:
-    print(e)
-    raise ValueError()
+import jax
 
 
 
@@ -44,6 +42,7 @@ def fixed_mass_grid(
 
 m1_grid_ = fixed_mass_grid( n_bulk=3500, n_tail=700, n_buffer=50 )
 m2_grid_ = fixed_mass_grid( n_bulk=1000, n_tail=400, n_buffer=50 )
+# DPUC_TruncM2 uses analytic truncated-normal normalization in log m2.
 assert jnp.all(m1_grid_[1:] > m1_grid_[:-1])
 assert jnp.all(m2_grid_[1:] > m2_grid_[:-1])
     
@@ -55,48 +54,70 @@ def _zeros_like_tree(x):
 def _add_pytrees(a, b):
     return jax.tree_util.tree_map(lambda x, y: x + y, a, b)
 
-def lambda_slices(rate_model, spin_model, mass_model):
-    i = 0
 
-    cosmo = slice(i, i + 5)
-    i += 5
+def _dp_m1_log_env(bk, m1, alpha0, alpha1, alpha2, mb1, mb2, delta1, delta2):
+    """Smooth 2-break m1 envelope in x=log(m1).
 
-    if rate_model in ("MD", "DPUC-vol-MD"):
-        rate = slice(i, i + 3)
-        i += 3
-    elif rate_model == "PL":
-        rate = slice(i, i + 1)
-        i += 1
-    elif rate_model in ("DPUC", "DPUC-vol"):
-        rate = slice(i, i)
-    else:
-        raise ValueError(rate_model)
+    log E = -a0*x -(a1-a0)*d1*softplus((x-x1)/d1)
+                  -(a2-a1)*d2*softplus((x-x2)/d2)
+    """
+    eps_mass = 1.0e-300
+    x = bk.log(bk.maximum(m1, eps_mass))
+    x1 = bk.log(bk.maximum(mb1, eps_mass))
+    x2 = bk.log(bk.maximum(mb2, eps_mass))
+    d1 = bk.maximum(jnp.asarray(delta1, dtype=jnp.float64), 1.0e-6)
+    d2 = bk.maximum(jnp.asarray(delta2, dtype=jnp.float64), 1.0e-6)
+    return (
+        -alpha0 * x
+        - (alpha1 - alpha0) * d1 * jax.nn.softplus((x - x1) / d1)
+        - (alpha2 - alpha1) * d2 * jax.nn.softplus((x - x2) / d2)
+    )
 
-    if spin_model == "chieffchip":
-        spin = slice(i, i + 5)
-        i += 5
-    elif spin_model == "chieffchip_uc":
+def _dp_m1_env_extra_count(DP_m1_env_form):
+    return 4 if str(DP_m1_env_form) == "smooth_broken_pl_2breaks" else 0
+
+
+def lambda_slices(
+    rate_model,
+    spin_model,
+    mass_model,
+    K_dp=30,
+    DPUC_TruncM2_shared_weights=False,
+    DP_m1_env_form="powerlaw",
+):
+    """Slices in the existing retained-model Lambda layout."""
+    if rate_model != "MD":
+        raise ValueError(f"Unknown rate_model: {rate_model}")
+    cosmo = slice(0, 5)
+    rate = slice(5, 8)
+    i = 8
+    if spin_model == "default_gauss":
         spin = slice(i, i + 4)
         i += 4
-    elif spin_model in ("default", "default_gauss"):
-        spin = slice(i, i + 4)
-        i += 4
-    else:
+    elif spin_model == "none":
         spin = slice(i, i)
+    else:
+        raise ValueError(f"Unknown spin_model: {spin_model}")
 
     if mass_model == "PLPreg":
-        mass = slice(i, i + 8)
-        i += 8
-    elif mass_model in ("DPLDP", "PLDP"):
-        mass = slice(i, i + 21)
-        i += 21
+        n_mass = 8
+    elif mass_model == "DPLDP":
+        n_mass = 21
     elif mass_model == "DPLDP-z":
-        mass = slice(i, i + 47)
-        i += 47
+        n_mass = 47
+    elif mass_model == "DPUC":
+        K = int(K_dp)
+        n_mass = 5 * K + 8 + _dp_m1_env_extra_count(DP_m1_env_form)
+    elif mass_model == "DPUC_Primary":
+        K = int(K_dp)
+        n_mass = 3 * K + 8 + _dp_m1_env_extra_count(DP_m1_env_form)
+    elif mass_model == "DPUC_TruncM2":
+        K = int(K_dp)
+        W = 1 if bool(DPUC_TruncM2_shared_weights) else 2
+        n_mass = (5 + W) * K + 8 + _dp_m1_env_extra_count(DP_m1_env_form)
     else:
-        raise ValueError(mass_model)
-
-    return cosmo, rate, spin, mass
+        raise ValueError(f"Unknown mass_model: {mass_model}")
+    return cosmo, rate, spin, slice(i, i + n_mass)
 
 
 def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
@@ -122,42 +143,18 @@ def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
     # -------------------------
     # Rate model
     # -------------------------
-    if rate_model in ("MD", "DPUC-vol-MD"):
-        # [gamma, kappa, zp]
-        rate = Lambda_[i:i+3]
-        i += 3
-    elif rate_model == "PL":
-        # [gamma]
-        rate = Lambda_[i:i+1]
-        i += 1
-    elif rate_model in ("DPUC", "DPUC-vol"):
-        # rate is modeled jointly with mass; nothing appended here
-        rate = []
-    else:
+    if rate_model != "MD":
         raise ValueError(f"Unknown rate_model: {rate_model}")
+    rate = Lambda_[i:i+3]
+    i += 3
 
-    # -------------------------
-    # Spin model
-    # -------------------------
-    if spin_model == "chieffchip":
-        # [muEff, sigEff, muP, sigP, rho]
-        spin = Lambda_[i:i+5]
-        i += 5
-    elif spin_model == "chieffchip_uc":
-        # [muEff, sigEff, muP, sigP]
+    if spin_model == "default_gauss":
         spin = Lambda_[i:i+4]
         i += 4
-    elif spin_model == "default":
-        # [alphaChi, betaChi, zeta, sigmat]
-        spin = Lambda_[i:i+4]
-        i += 4
-    elif spin_model == "default_gauss":
-        # [muChi, sigmaChi, zeta, sigmat]
-        spin = Lambda_[i:i+4]
-        i += 4
-    else:
-        # "No model of the spin distribution."
+    elif spin_model == "none":
         spin = []
+    else:
+        raise ValueError(f"Unknown spin_model: {spin_model}")
 
     # -------------------------
     # Mass model
@@ -167,7 +164,7 @@ def split_Lambda(Lambda_, mass_model, rate_model, spin_model):
         mass = Lambda_[i:i+8]
         i += 8
 
-    elif mass_model == "DPLDP" or mass_model == "PLDP":
+    elif mass_model == "DPLDP":
         mass = Lambda_[i:i+21]
         i += 21
 
@@ -219,12 +216,30 @@ def _make_pop_and_sel_core(
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env=False,
+    DPUC_Primary_q_norm="conditional",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho = 2.0,
+    DP_corr_f_minor = 0.25,
+    PL_DPUC_normalize_gmm=False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DPUC_TruncM2_shared_weights=False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass = 0,
     integrate_dc = 'trapz',
     pop_only = False,
     stop_grad_var_u: bool = True,
     return_var = True,
     z_nodes = None,
+    is_single_PE=False,
     taper_kind = "sigmoid",   # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
 ):
@@ -243,6 +258,21 @@ def _make_pop_and_sel_core(
           var_log_lik_evs is the event-MC contribution already in likelihood-variance scale.
     """
 
+    if str(mass_model) == "DPUC_Primary":
+        mass_model = "DPUC_Primary"
+        DP_q_env = True
+
+    DPUC_Primary_q_norm = str(DPUC_Primary_q_norm)
+    if DPUC_Primary_q_norm not in ("conditional", "joint"):
+        raise ValueError(
+            "DPUC_Primary_q_norm must be 'conditional' or 'joint', "
+            f"got {DPUC_Primary_q_norm!r}."
+        )
+    if str(mass_model) != "DPUC_Primary" and DPUC_Primary_q_norm != "conditional":
+        raise ValueError(
+            "DPUC_Primary_q_norm='joint' is only supported for mass_model='DPUC_Primary'."
+        )
+
     def _f(
         m1det, m2det, dLdet, spins_evt,
         m1inj, m2inj, dLinj, spins_inj, log_p_draw, log_p_incl,
@@ -250,6 +280,7 @@ def _make_pop_and_sel_core(
         log_PE_prior_evt=None,
         event_id_evt=None,
         Nsamples_evt=None,
+        gp_state=None,
     ):
 
         theta5 = Lambda[:5]
@@ -284,54 +315,13 @@ def _make_pop_and_sel_core(
         if interp_mass:
             
             # pre-computing mass function for later interpolation
-            if mass_model=='DPLDP' or mass_model == "PLDP":
+            if mass_model == "DPLDP":
                 
                 _, _, _, mass_p = split_Lambda(Lambda, mass_model, rate_model, spin_model)
 
 
                 alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, beta_, m2_low_, delta_m2_, epsilon_, m_g_, w_g_, sig_g_l_, sig_g_h_ = mass_p
 
-                eps_m = 1e-5
-                n2 = 500
-                n2_taper = 100
-                
-                m2_lo = m2_low_ + eps_m
-                m2_taper_hi = m2_lo + bk.maximum(delta_m2_, 1e-6)
-                
-                u1 = bk.linspace(0.0, 1.0, n2_taper)
-                
-                eps_t = 1e-4
-                t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
-                
-                u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
-                seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
-                
-                # m2_grid_ = bk.concatenate([seg1[:-1], seg2])
-                
-
-
-            
-                # m1_grid_ = mass_models.build_m1_grid_DPLDP( bk, 
-                #                             alpha1=alpha1_,
-                #                             alpha2=alpha2_,
-                #                             mb=mb_,
-                #                             mu1=mu1_,
-                #                             sigma1=sigma1_,
-                #                             mu2=mu2_,
-                #                             sigma2=sigma2_,
-                #                             m1_low=m1_low_,
-                #                             m_high=m_high_,
-                #                             delta_m1=delta_m1_,
-                #                             n_peak=interp_mass,      # or smaller if you want
-                #                             n_tail_low=interp_mass//5,
-                #                             n_tail_high=interp_mass//5,
-                #                             #k_sigma=4.0,
-                #                             n_taper=interp_mass//5,          # NEW: points inside [m1_low, m1_low+delta_m1]
-                #                             n_taper_eff=200.0,   # NEW: used for tie-only ramp scale
-                #                         )
-                
                 lp_m1_grid = mass_models.logpdfm1_DPLDP( bk, m1_grid_, alpha1_, alpha2_, mb_, mu1_, sigma1_, mu2_, sigma2_, m1_low_, m_high_, delta_m1_, lambda0_, lambda1_, lambda2_, epsilon_,  smoothing=smoothing, norm_gauss=norm_gauss, taper_kind=taper_kind, taper_p=taper_p) 
 
 
@@ -340,7 +330,7 @@ def _make_pop_and_sel_core(
 
                 # CDF over m2
                 cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
-                cdf_m2 = bk.clip(cdf_m2, 1e-300, np.inf)
+                cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
                 
                 # CDF lives on m2_grid_[1:]
                 m2_cdf_grid = m2_grid_[1:]
@@ -350,7 +340,6 @@ def _make_pop_and_sel_core(
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
                 
                 # NON-UNIFORM interpolation 
-                #lC_of_m1 = bk.interp(  mcap, m2_cdf_grid, logcdf_m2 )
                 lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
                 
                 # Normalization for m1
@@ -389,53 +378,6 @@ def _make_pop_and_sel_core(
                  sigma2_inf,  z_sigma2,  dz_sigma2,
                  lambda0_inf, lambda1_inf, lambda2_inf, z_lambda, dz_lambda) = evo_params
 
-                #jax.debug.print("mass bank taper_kind={k}, taper_p={p}", k=taper_kind, p=taper_p)
-
-                #### m2 grid 
-                # eps_m = 1e-5 
-                # n2 = 500
-                # n2_taper = 100
-                
-                # m2_lo = m2_low + eps_m
-                # m2_taper_hi = m2_lo + bk.maximum(delta_m2 , 1e-6)
-                
-                # u1 = bk.linspace(0.0, 1.0, n2_taper)
-                
-                # eps_t = 1e-4
-                # t = bk.exp(bk.log(eps_t) * (1.0 - u1))     # eps_t -> 1
-                # t = (t - eps_t) / (1.0 - eps_t)            # -> [0,1]
-                # seg1 = m2_lo + (m2_taper_hi - m2_lo) * t
-                
-                # u2 = bk.linspace(0.0, 1.0, n2 - n2_taper)
-                # seg2 = m2_taper_hi + (300.0 - m2_taper_hi) * u2
-                
-                # m2_grid_ = bk.concatenate([seg1[:-1], seg2])
-
-                
-                #### m1 grid 
-                # m1_grid_ =  mass_models.build_m1_grid_DPLDP_z( bk, z_nodes,
-                # # low-z hyperparameters
-                # mu1_0, sigma1_0, mu2_0, sigma2_0, mb_0,
-                # # high-z (asymptotic) hyperparameters
-                # mu1_inf, sigma1_inf, mu2_inf, sigma2_inf, mb_inf,
-                # # evolution hyperparameters
-                # z_mu1, dz_mu1,
-                # z_sigma1, dz_sigma1,
-                # z_mu2, dz_mu2,
-                # z_sigma2, dz_sigma2,
-                # z_mb, dz_mb,
-                # # support for m1
-                # m1_low, m_high,
-                # delta_m1,
-                # # grid resolution controls
-                # n_peak=interp_mass,      # points in the "interesting" band (peaks + break)
-                # n_tail_low=interp_mass//5,   # points in low-mass tail
-                # n_tail_high=interp_mass//5,  # points in high-mass tail
-                # k_sigma=4.0,      #
-                # n_taper=interp_mass//5,  # points in low-mass tapering
-                # )
-
-
                 # ---------
                 # 1) m2 grids (depend on m2 params, but NOT on z in your current model)
                 # ---------
@@ -446,8 +388,6 @@ def _make_pop_and_sel_core(
                 )  # shape (N2,)
             
                 # lC_grid evaluated on m1_grid (shape (N1,))
-                #cdf_m2 = atcumtrapz(bk, bk.exp(lp_m2_grid), m2_grid_)
-                #cdf_m2 = bk.clip(cdf_m2, 1e-300, jnp.inf)
 
                 lp_m2_grid = bk.where(bk.isfinite(lp_m2_grid), lp_m2_grid, -1e30)
 
@@ -467,9 +407,10 @@ def _make_pop_and_sel_core(
                 
                 # C(m1) = CDF evaluated at m2=m1 (clipped into CDF grid support)
                 mcap = bk.clip(m1_grid_, m2_cdf_grid[0], m2_cdf_grid[-1])
-                
+
+                logcdf_m2 = bk.where( bk.isfinite(logcdf_m2), logcdf_m2, -708.3964)
+
                 # NON-UNIFORM interpolation
-                #lC_of_m1 = bk.interp( mcap, m2_cdf_grid, logcdf_m2 )
                 lC_of_m1 = atinterp( bk, mcap, m2_cdf_grid, logcdf_m2 )
                 
 
@@ -496,18 +437,10 @@ def _make_pop_and_sel_core(
                     norm_gauss=norm_gauss,
                     taper_kind=taper_kind, taper_p=taper_p
                 )
-                
-                
-                #lp_m1_bank = bk.clip( lp_flat, -1e30, 1e030 ).reshape((K, N1)) # (K,N1)
                 lp_flat = bk.where(bk.isfinite(lp_flat), lp_flat, -1e30)
                 lp_m1_bank = lp_flat.reshape((K, N1))
 
 
-                lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)          # (K,1)
-                # p_shift = bk.exp(lp_m1_bank - lp_max)                       # safe exp
-                # I = attrapzvec(bk, p_shift, m1_grid_[None, :], axis=1)            # (K,)
-                # I = bk.clip(I, 1e-300, jnp.inf)
-                # ln_bank = bk.log(I) + lp_max[:, 0]
                 
                 lp_max = bk.max(lp_m1_bank, axis=1, keepdims=True)
 
@@ -529,22 +462,6 @@ def _make_pop_and_sel_core(
                 interp_vals_mass  = [lp_m1_bank, lp_m2_grid, lC_of_m1, ln_bank]
                 interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
 
-                # Version 1: do not store lp_m1_bank in interp_vals_mass.
-                # We only keep the redshift-dependent normalization ln(z).
-                # The pointwise m1 density is evaluated directly later.
-                # Only keep the redshift-dependent normalization bank.
-                # The pointwise mass PDF is evaluated directly in mass_models.py.
-                # interp_vals_mass = [
-                #     lp_m2_grid, lC_of_m1,
-                #     ln_bank,
-                #     lambdaBBHmass_lowz,
-                #     evo_params,
-                # ]
-                
-                # interp_grids_mass = [m1_grid_, m2_grid_, z_nodes]
-                                
-
-            
             else:
                 raise NotImplementedError()
 
@@ -560,16 +477,22 @@ def _make_pop_and_sel_core(
         # on the full event arrays. In marginal PE mode they are called on PE chunks.
         ##################################################
 
-        def _event_logp_raw(Lam, interp_vals, m1d, m2d, dLd, spd):
+        def _event_logp_raw(Lam, interp_vals, m1d, m2d, dLd, spd, gp_state_=None):
             H0_, Om_, w0_, Xi0_, nXi0_ = Lam[:5]
 
-            z_ = z_from_dL(
-                bk, dLd,
-                H0=H0_, Om=Om_, w0=w0_, Xi0=Xi0_, nXi0=nXi0_,
-                z_nodes=z_nodes,
-                d_nodes=d_nodes,
-                integrate_dc=integrate_dc,
-            )
+            if gp_state_ is None:
+                z_ = z_from_dL(
+                    bk, dLd,
+                    H0=H0_, Om=Om_, w0=w0_, Xi0=Xi0_, nXi0=nXi0_,
+                    z_nodes=z_nodes,
+                    d_nodes=d_nodes,
+                    integrate_dc=integrate_dc,
+                )
+                log_ddL_dz_evt = None
+                dc_evt = None
+            else:
+                z_, log_ddL_dz_evt = gp_z_from_dL_and_logdd(bk, dLd, gp_state_)
+                dc_evt = dcfun_quad(bk, z_, H0_, Om_, w0_, integrate_dc=integrate_dc)
 
             onepz_ = 1.0 + z_
             m1s_ = m1d / onepz_
@@ -587,20 +510,51 @@ def _make_pop_and_sel_core(
                 simplex_repair=simplex_repair,
                 has_m2_break=has_m2_break,
                 norm_gauss=norm_gauss,
-                dc=None,
-                log_ddL_dz_pre=None,
+                dc=dc_evt,
+                log_ddL_dz_pre=log_ddL_dz_evt,
                 Xi=None,
                 E=None,
                 param=param,
                 verbose=verbose,
                 K_dp=K_dp,
                 DP_truncate=DP_truncate,
+                DP_corr_m1m2=DP_corr_m1m2,
+                    DP_corr_eta_rho = DP_corr_eta_rho,
+                DP_corr_f_minor = DP_corr_f_minor,
+                PL_DPUC_normalize_gmm=PL_DPUC_normalize_gmm,
+                    DPUC_kernel=DPUC_kernel,
+                    DPUC_kernel_rcut=DPUC_kernel_rcut,
+                    DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
                 DP_m1_env=DP_m1_env,
+                DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+                DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
                 interp_mass_vals=interp_vals,
                 taper_kind=taper_kind, taper_p=taper_p
             )
 
         def _segment_logsumexp_evt(x, sid, nseg):
+            if gp_state is not None:
+                # Finite-safe reduction from the historical GP implementation.
+                x_finite = jnp.isfinite(x)
+                x_for_max = jnp.where(x_finite, x, -jnp.inf)
+                m = jax.ops.segment_max(x_for_max, sid, num_segments=nseg)
+                m_safe = jnp.where(jnp.isfinite(m), m, 0.0)
+                m_safe = lax.stop_gradient(m_safe)
+                shifted = jnp.where(x_finite, x - m_safe[sid], -jnp.inf)
+                shifted = jnp.clip(shifted, -745.0, 60.0)
+                u = jnp.exp(shifted)
+                u = jnp.where(x_finite, u, 0.0)
+                total = jax.ops.segment_sum(u, sid, num_segments=nseg)
+                total_safe = jnp.clip(total, 1e-300, jnp.inf)
+                return jnp.where(total > 0.0, m_safe + jnp.log(total_safe), -jnp.inf)
             # Stable segment logsumexp over flattened PE samples.
             m = jax.ops.segment_max(x, sid, num_segments=nseg)
             m_safe = jnp.where(jnp.isfinite(m), m, 0.0)
@@ -610,7 +564,7 @@ def _make_pop_and_sel_core(
             return jnp.where(s > 0.0, m_safe + jnp.log(s), -jnp.inf)
 
         def _event_marginal_full(Lam, interp_vals):
-            logp_flat = _event_logp_raw(Lam, interp_vals, m1det, m2det, dLdet, spins_evt)
+            logp_flat = _event_logp_raw(Lam, interp_vals, m1det, m2det, dLdet, spins_evt, gp_state)
             logw_flat = logp_flat - log_PE_prior_evt
 
             nseg = Nsamples_evt.shape[0]
@@ -630,13 +584,6 @@ def _make_pop_and_sel_core(
             ) - jnp.log(Nsamples_evt - 1.0)
 
 
-            # jax.debug.print(
-            #     "log_var_evt min={} max={} finite={} var_evs={}",
-            #     jnp.nanmin(log_var_evt),
-            #     jnp.nanmax(log_var_evt),
-            #     jnp.all(jnp.isfinite(log_var_evt)),
-            #     jnp.sum(jnp.exp(log_var_evt)),
-            # )
 
             var_log_lik_evs = jnp.sum(jnp.exp(log_var_evt))
             return log_l_evt, lax.stop_gradient(var_log_lik_evs)
@@ -957,11 +904,15 @@ def _make_pop_and_sel_core(
         ##################################################
 
         if pop_only and (log_PE_prior_evt is not None):
-            log_evt, var_log_lik_evs = _event_marginal_streaming(Lambda, interp_mass_vals)
+            if gp_state is None:
+                log_evt, var_log_lik_evs = _event_marginal_streaming(Lambda, interp_mass_vals)
+            else:
+                # The custom VJP has no GP-state cotangent; retain the GP fallback.
+                log_evt, var_log_lik_evs = _event_marginal_full(Lambda, interp_mass_vals)
         else:
             log_evt = _event_logp_raw(
                 Lambda, interp_mass_vals,
-                m1det, m2det, dLdet, spins_evt,
+                m1det, m2det, dLdet, spins_evt, gp_state,
             )
             var_log_lik_evs = jnp.asarray(0.0, dtype=jnp.float64)
 
@@ -987,20 +938,40 @@ def _make_pop_and_sel_core(
             d_nodes = d_nodes, 
             verbose=verbose,
             subtract_log_p_incl=subtract_log_p_incl,
-            use_streaming_vjp= bool(chunk_inj>0),          # <--- enable optimized backward
+            use_streaming_vjp=bool(chunk_inj > 0) and gp_state is None,
             sel_chunk_size=chunk_inj,            # <--- tune
             K_dp=K_dp,
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
+            DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+            DP_corr_m1m2 = DP_corr_m1m2,
+            DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+            DPUC_kernel = DPUC_kernel,
+            DPUC_kernel_rcut = DPUC_kernel_rcut,
+            DPUC_kernel_dr = DPUC_kernel_dr,
+            DPUC_kernel_xcut = DPUC_kernel_xcut,
+            DPUC_kernel_ycut = DPUC_kernel_ycut,
+            DPUC_q_coord = DPUC_q_coord,
             interp_mass_vals = interp_mass_vals,
             integrate_dc = integrate_dc,
             return_var = return_var,
             interp_mass = interp_mass,
+            gp_state=gp_state,
+            DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
             taper_kind=taper_kind, taper_p=taper_p
             
         )
         if stop_grad_var_u:
             var_u = lax.stop_gradient(var_u)
+
+        if pop_only and is_single_PE:
+            var_log_lik_evs = jnp.zeros_like(var_log_lik_evs)
 
         return (
             log_evt,
@@ -1043,6 +1014,23 @@ def log_p_pop(
     K_dp : int = 30,
     DP_truncate = False,
     DP_m1_env = False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env = False,
+    DPUC_Primary_q_norm="conditional",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho = 2.0,
+    DP_corr_f_minor = 0.25,
+    PL_DPUC_normalize_gmm = False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DPUC_TruncM2_shared_weights = False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass_vals=  None,
     taper_kind = "sigmoid" ,  # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
@@ -1050,6 +1038,23 @@ def log_p_pop(
     """
     Backend-agnostic log_p_pop
     """
+
+
+    DPUC_TruncM2_secondary_coord = str(DPUC_TruncM2_secondary_coord)
+    if DPUC_TruncM2_secondary_coord not in ("logm2", "logitq"):
+        raise ValueError(
+            "DPUC_TruncM2_secondary_coord must be 'logm2' or 'logitq', "
+            f"got {DPUC_TruncM2_secondary_coord!r}."
+        )
+
+    DP_m1_env_form = str(DP_m1_env_form)
+    if DP_m1_env_form not in ("powerlaw", "smooth_broken_pl_2breaks"):
+        raise ValueError(
+            "DP_m1_env_form must be 'powerlaw' or 'smooth_broken_pl_2breaks', "
+            f"got {DP_m1_env_form!r}."
+        )
+
+
 
     # Cosmology hyper-params
     H0, Om, w0, Xi0, n = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
@@ -1073,27 +1078,11 @@ def log_p_pop(
     # -----------------------
     log_one_p_z = bk.log1p(z)
     
-    if rate_model == "MD" or rate_model == "DPUC-vol-MD":
-        
-        gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7]
-        lpz = log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
-        istart = 8
-        z_dpuc = None
-        
-    elif rate_model=='DPUC':
-        
-        lpz = log_one_p_z
-        
-        istart = 5
-
-    elif rate_model=='DPUC-vol':
-        
-        lpz = log_dV_dz(bk, z, H0, Om, w0, dc=dc, E=E )
-        
-        istart = 5
-
-    else:
+    if rate_model != "MD":
         raise ValueError(f"Unknown rate_model: {rate_model}")
+    gamma, kappa, zp = Lambda[5], Lambda[6], Lambda[7]
+    lpz = log_p_z_MD_unnorm(bk, z, gamma, kappa, zp, H0, Om, w0, dc=dc, E=E)
+    istart = 8
 
     # -----------------------
     # spin model 
@@ -1118,11 +1107,11 @@ def log_p_pop(
     # -----------------------
     
     # DPLDP
-    if mass_model == "DPLDP" or mass_model == "PLDP":
+    if mass_model == "DPLDP":
 
         if interp_mass_vals is not None:
             
-            lpmass = mass_models.logpdf_DPLDPfrom_interp(
+            lpmass = mass_models.logpdf_DPLDP_from_interp(
                     bk, (m1s, m2s), interp_mass_vals)
 
         else:
@@ -1264,84 +1253,585 @@ def log_p_pop(
             
 
 
-    # DPUC   
-    elif mass_model=='DPUC':
-
-
-        D = 3 if rate_model in ("DPUC", "DPUC-vol", "DPUC-vol-MD") else 2
-        K = K_dp
-        
-        j = int(istart_spin)
-        D = int(D)
-        K = int(K)
-
-        mu   = Lambda[j : j + D*K].reshape((D, K)); j += int(D*K)
-        sd   = Lambda[j : j + D*K].reshape((D, K)); j += int(D*K)
-        logw = Lambda[j : j + K];                  j += K
-        mmin = Lambda[j];                          j += 1
-        mmax = Lambda[j];                          j += 1
-        alpha = Lambda[j];                          j += 1
-
-
-        Mc_src, q = Mcq_from_m1m2( m1s, m2s )
-        logMc_src, logit_q = bk.log( bk.maximum(Mc_src, 1e-10)), logit(bk, q)
-            
-        logp1, logp2, logp3 = mass_models.gaussian_logpdf_pair( bk, logMc_src, logit_q, mu, sd, z=log_one_p_z )
-
-
-        if rate_model in ('PL', 'MD'):
-            logp_components = logp1 + logp2                    
-        else:
-            logp_components = logp1 + logp2 + logp3  
-        
-        # Mixture over components → (n_obs,)
-        #lpmass = bk.logsumexp( logp_components + logw[:, None], axis=0, )
-
-        # debugging version
-        tmp = logp_components + logw[:, None]
-        lpmass = safe_logsumexp_jax(tmp, axis=0)
-
-
-        # remove jacobian m1, m2 --> log(Mc), logit(q)
-        lpmass += ( - bk.log(m2s) 
-                      - bk.log(bk.maximum( m1s - m2s, 1e-10
-                                         ) )
-                     )
-        if rate_model in ('DPUC','DPUC-vol', 'DPUC-vol-MD'):
-                lpmass -= log_one_p_z
-
-        
-        if DP_m1_env:
-            lpmass += -alpha * bk.log(m1s)
-
-            
-        if DP_truncate:
-            # truncate low and up and renormalize
-
-            s_logm = 0.003
-            log_gate = (
-                log_sigmoid(bk, bk.log(m2s), bk.log(mmin), s_logm) +
-                log_sigmoid(bk, bk.log(mmax) - bk.log(m1s), 0.0, s_logm)
+    # DPUC_TruncM2
+    elif mass_model == "DPUC_TruncM2":
+    
+        if rate_model != "MD":
+            raise NotImplementedError(
+                "DPUC_TruncM2 is currently implemented for rate_model='MD'. "
+                f"Got rate_model={rate_model!r}."
             )
-            lpmass += log_gate
-            
-            #inside = (m2Src >= mmin) & (m1Src <= mmax) & (m1Src >= mmin) & (m2Src <= mmax)
-            #log_p_pop = bk.switch(inside, log_p_pop, -np.inf)
-
-            logZ, Zk = mass_models.mixture_logZ_physical_vectorized( bk,
-                    mux=mu[0], sdx=sd[0],
-                    muy=mu[1], sdy=sd[1],
-                    logw=logw,
-                    mmin=mmin, mmax=mmax
+    
+    
+    
+        K = int(K_dp)
+        D = 2
+    
+        # ---------------------------------------------------------------
+        # Unpack population parameters
+        # ---------------------------------------------------------------
+    
+        j = int(istart_spin)
+    
+        mu = Lambda[j : j + D * K].reshape((D, K))
+        j += D * K
+    
+        sd = Lambda[j : j + D * K].reshape((D, K))
+        j += D * K
+    
+        logw1 = Lambda[j : j + K]
+        j += K
+    
+        if bool(DPUC_TruncM2_shared_weights):
+            logw2 = logw1
+        else:
+            logw2 = Lambda[j : j + K]
+            j += K
+    
+        rho = Lambda[j : j + K]
+        j += K
+    
+        m1_low = Lambda[j]
+        j += 1
+    
+        m2_low = Lambda[j]
+        j += 1
+    
+        mmax = Lambda[j]
+        j += 1
+    
+        alpha = Lambda[j]
+        j += 1
+    
+        beta = Lambda[j]
+        j += 1
+    
+        if str(DP_m1_env_form) == "smooth_broken_pl_2breaks":
+            alpha1_env = Lambda[j]
+            j += 1
+    
+            alpha2_env = Lambda[j]
+            j += 1
+    
+            mb1_env = Lambda[j]
+            j += 1
+    
+            mb2_env = Lambda[j]
+            j += 1
+        else:
+            alpha1_env = alpha
+            alpha2_env = alpha
+            mb1_env = jnp.asarray(1.0, dtype=jnp.float64)
+            mb2_env = jnp.asarray(1.0, dtype=jnp.float64)
+    
+        deltam_PL_m1 = Lambda[j]
+        j += 1
+    
+        deltam_PL_m2 = Lambda[j]
+        j += 1
+    
+        deltam_PL_high = Lambda[j]
+        j += 1
+    
+        # ---------------------------------------------------------------
+        # Safe physical variables
+        # ---------------------------------------------------------------
+    
+        eps_mass = 1.0e-12
+        eps_q = 1.0e-10
+    
+        m1s_safe = bk.maximum(m1s, eps_mass)
+        m2s_safe = bk.maximum(m2s, eps_mass)
+    
+        q = bk.clip(
+            m2s_safe / m1s_safe,
+            eps_q,
+            1.0 - eps_q,
+        )
+    
+        sd = bk.maximum(sd, eps_mass)
+    
+        m1_low_safe = bk.maximum(m1_low, eps_mass)
+        m2_low_safe = bk.maximum(m2_low, eps_mass)
+    
+        mmax_safe = bk.maximum(
+            mmax,
+            m1_low_safe * (1.0 + 1.0e-8),
+        )
+    
+        deltam_PL_m1 = bk.maximum(deltam_PL_m1, eps_mass)
+        deltam_PL_m2 = bk.maximum(deltam_PL_m2, eps_mass)
+        deltam_PL_high = bk.maximum(deltam_PL_high, eps_mass)
+    
+        # ---------------------------------------------------------------
+        # Primary Gaussian mixture in log(m1)
+        # ---------------------------------------------------------------
+    
+        x1 = bk.log(m1s_safe)[None, :]
+    
+        mu1 = mu[0][:, None]
+        sd1 = sd[0][:, None]
+    
+        logp1_components_x = (
+            -0.5 * bk.log(2.0 * jnp.pi)
+            - bk.log(sd1)
+            - 0.5 * ((x1 - mu1) / sd1) ** 2
+        )
+    
+        # Convert from a density in log(m1) to a density in m1.
+        logp1_components_m = (
+            logp1_components_x
+            - bk.log(m1s_safe)[None, :]
+        )
+    
+        logg1 = safe_logsumexp_jax(
+            logw1[:, None] + logp1_components_m,
+            axis=0,
+        )
+    
+        # ---------------------------------------------------------------
+        # Smooth mass tapers
+        # ---------------------------------------------------------------
+    
+        log_gate_m1 = bk.zeros_like(m1s_safe)
+        log_gate_m2 = bk.zeros_like(m2s_safe)
+    
+        if DP_truncate:
+            # Smooth lower and upper transitions for the primary mass.
+            log_gate_m1 = (
+                mass_models.log_low_gate_PL_DPUC(
+                    bk,
+                    m1s_safe,
+                    m1_low_safe,
+                    deltam_PL_m1,
                 )
+                + mass_models.log_high_gate_PL_DPUC(
+                    bk,
+                    m1s_safe,
+                    mmax_safe,
+                    deltam_PL_high,
+                )
+            )
+    
+            # Smooth lower transition for the secondary mass.
+            log_gate_m2 = mass_models.log_low_gate_PL_DPUC(
+                bk,
+                m2s_safe,
+                m2_low_safe,
+                deltam_PL_m2,
+            )
+    
+        # ---------------------------------------------------------------
+        # Optional primary-mass envelope
+        # ---------------------------------------------------------------
+    
+        log_env_m1 = bk.zeros_like(m1s_safe)
+    
+        if DP_m1_env:
+            if str(DP_m1_env_form) == "smooth_broken_pl_2breaks":
+                log_env_m1 = _dp_m1_log_env(
+                    bk,
+                    m1s_safe,
+                    alpha,
+                    alpha1_env,
+                    alpha2_env,
+                    mb1_env,
+                    mb2_env,
+                    DP_m1_env_delta1,
+                    DP_m1_env_delta2,
+                )
+            else:
+                log_env_m1 = -alpha * bk.log(m1s_safe)
+    
+        # ---------------------------------------------------------------
+        # Conditional secondary Gaussian
+        # ---------------------------------------------------------------
+    
+        x1_flat = bk.log(m1s_safe)[None, :]
+    
+        mu1_c = mu[0][:, None]
+        sd1_c = bk.maximum(sd[0][:, None], eps_mass)
+    
+        mu2_base = mu[1][:, None]
+        sd2_base = bk.maximum(sd[1][:, None], eps_mass)
+    
+        rho_c = bk.clip(
+            rho[:, None],
+            -1.0 + 1.0e-6,
+            1.0 - 1.0e-6,
+        )
+    
+        cond_mu2 = (
+            mu2_base
+            + rho_c
+            * (sd2_base / sd1_c)
+            * (x1_flat - mu1_c)
+        )
+    
+        cond_sd2 = bk.maximum(
+            sd2_base
+            * bk.sqrt(
+                bk.maximum(
+                    1.0 - rho_c**2,
+                    1.0e-12,
+                )
+            ),
+            eps_mass,
+        )
+    
+        if DPUC_TruncM2_secondary_coord == "logitq":
+            y2 = logit(bk, q)[None, :]
+        elif DPUC_TruncM2_secondary_coord == "logm2":
+            y2 = bk.log(m2s_safe)[None, :]
+        else:
+            raise ValueError(
+                "DPUC_TruncM2_secondary_coord must be 'logm2' or 'logitq'. "
+                f"Got {DPUC_TruncM2_secondary_coord!r}."
+            )
+    
+        logp2_components_x = (
+            -0.5 * bk.log(2.0 * jnp.pi)
+            - bk.log(cond_sd2)
+            - 0.5 * ((y2 - cond_mu2) / cond_sd2) ** 2
+        )
+    
+        # Convert the conditional kernel to a density in physical m2.
+        # No conditional truncation normalization is applied.
+        if DPUC_TruncM2_secondary_coord == "logitq":
+            # y = logit(q), q = m2/m1:
+            #
+            # |dy/dm2| = 1 / [m2 (1-q)]
+            #
+            # at fixed m1.
+            logp2_components_m = (
+                logp2_components_x
+                - bk.log(m2s_safe)[None, :]
+                - bk.log1p(-q)[None, :]
+            )
+        else:
+            # y = log(m2):
+            #
+            # |dy/dm2| = 1 / m2.
+            logp2_components_m = (
+                logp2_components_x
+                - bk.log(m2s_safe)[None, :]
+            )
+    
+        # ---------------------------------------------------------------
+        # Combine primary and secondary mixtures
+        # ---------------------------------------------------------------
+    
+        if bool(DPUC_TruncM2_shared_weights):
+            # Correlated K-component mixture:
+            #
+            # sum_k w_k p_k(m1) p_k(m2 | m1).
+            logg12_m = safe_logsumexp_jax(
+                logw1[:, None]
+                + logp1_components_m
+                + logp2_components_m,
+                axis=0,
+            )
+    
+            lpmass_core = logg12_m
+    
+        else:
+            # Product of the primary mixture and a separately weighted
+            # conditional-secondary mixture.
+            logg2_m = safe_logsumexp_jax(
+                logw2[:, None]
+                + logp2_components_m,
+                axis=0,
+            )
+    
+            lpmass_core = logg1 + logg2_m
+    
+        # ---------------------------------------------------------------
+        # Physical ordering and optional q envelope
+        # ---------------------------------------------------------------
+    
+        # The low-mass boundaries are smooth tapers. The only hard support
+        # condition is the physical component-mass ordering.
+        log_gate_support = bk.where(
+            m2s < m1s,
+            0.0,
+            -1.0e100,
+        )
+    
+        log_env_q = bk.zeros_like(m1s_safe)
+    
+        if DP_q_env and DPUC_TruncM2_secondary_coord == "logitq":
+            log_env_q = beta * bk.log(q)
+    
+        # ---------------------------------------------------------------
+        # Final mass log-density
+        # ---------------------------------------------------------------
+    
+        lpmass = (
+            lpmass_core
+            + log_env_m1
+            + log_env_q
+            + log_gate_m1
+            + log_gate_m2
+            + log_gate_support
+        )
+
+    # DPUC_Primary
+    elif mass_model == "DPUC_Primary":
+
+        if rate_model != "MD":
+            raise NotImplementedError(
+                "DPUC_Primary is currently implemented for rate_model='MD'. "
+                f"Got rate_model={rate_model!r}."
+            )
+        if DP_corr_m1m2:
+            raise ValueError(
+                "DPUC_Primary is a factorized physical-mass model and does not use "
+                "DP_corr_m1m2."
+            )
+
+        K = int(K_dp)
+        D = 1
+
+        j = int(istart_spin)
+        mu = Lambda[j : j + D * K].reshape((D, K)); j += D * K
+        sd = Lambda[j : j + D * K].reshape((D, K)); j += D * K
+        logw1 = Lambda[j : j + K]; j += K
+        m1_low = Lambda[j]; j += 1
+        m2_low = Lambda[j]; j += 1
+        mmax = Lambda[j]; j += 1
+        alpha = Lambda[j]; j += 1
+        beta = Lambda[j]; j += 1
+        if str(DP_m1_env_form) == "smooth_broken_pl_2breaks":
+            alpha1_env = Lambda[j]; j += 1
+            alpha2_env = Lambda[j]; j += 1
+            mb1_env = Lambda[j]; j += 1
+            mb2_env = Lambda[j]; j += 1
+        else:
+            alpha1_env = alpha
+            alpha2_env = alpha
+            mb1_env = jnp.asarray(1.0, dtype=jnp.float64)
+            mb2_env = jnp.asarray(1.0, dtype=jnp.float64)
+        deltam_PL_m1 = Lambda[j]; j += 1
+        deltam_PL_m2 = Lambda[j]; j += 1
+        deltam_PL_high = Lambda[j]; j += 1
+
+        eps_mass = 1.0e-12
+        eps_q = 1.0e-10
+        m1s_safe = bk.maximum(m1s, eps_mass)
+        m2s_safe = bk.maximum(m2s, eps_mass)
+        q = bk.clip(m2s_safe / m1s_safe, eps_q, 1.0 - eps_q)
+
+        sd = bk.maximum(sd, eps_mass)
+
+        # DPUC_Primary GMM is in x=log(m).  Convert to physical-mass density
+        # with the Jacobian |d log m / dm| = 1/m.
+        x1 = bk.log(m1s_safe)[None, :]
+        mu1 = mu[0][:, None]
+        sd1 = sd[0][:, None]
+        logp1_components_x = (
+            -0.5 * bk.log(2.0 * jnp.pi)
+            - bk.log(sd1)
+            - 0.5 * ((x1 - mu1) / sd1) ** 2
+        )
+        logg1 = safe_logsumexp_jax(logw1[:, None] + logp1_components_x, axis=0) - bk.log(m1s_safe)
+
+        logg2 = bk.zeros_like(logg1)
+
+        m1_low_safe = bk.maximum(m1_low, eps_mass)
+        m2_low_safe = bk.maximum(m2_low, eps_mass)
+        mmax_safe = bk.maximum(mmax, m1_low_safe * (1.0 + 1.0e-8))
+        deltam_PL_m1 = bk.maximum(deltam_PL_m1, eps_mass)
+        deltam_PL_m2 = bk.maximum(deltam_PL_m2, eps_mass)
+        deltam_PL_high = bk.maximum(deltam_PL_high, eps_mass)
+
+        log_gate = bk.zeros_like(m1s_safe)
+        if DP_truncate:
+            log_gate = log_gate + (
+                mass_models.log_low_gate_PL_DPUC(bk, m1s_safe, m1_low_safe, deltam_PL_m1)
+                + mass_models.log_low_gate_PL_DPUC(bk, m2s_safe, m2_low_safe, deltam_PL_m2)
+                + mass_models.log_high_gate_PL_DPUC(bk, m1s_safe, mmax_safe, deltam_PL_high)
+                + mass_models.log_high_gate_PL_DPUC(bk, m2s_safe, mmax_safe, deltam_PL_high)
+            )
+
+        # Strict ordered-support mask.  This is intentionally not a per-component truncation.
+        in_order = m2s < m1s
+        log_gate = bk.where(in_order, log_gate, -jnp.inf)
+
+        log_env = bk.zeros_like(m1s_safe)
+        if DP_m1_env:
+            if str(DP_m1_env_form) == "smooth_broken_pl_2breaks":
+                # For the smooth all-CBC envelope use the primary mass only.
+                log_env = log_env + _dp_m1_log_env(
+                    bk, m1s_safe, alpha, alpha1_env, alpha2_env,
+                    mb1_env, mb2_env, DP_m1_env_delta1, DP_m1_env_delta2
+                )
+            else:
+                log_env = log_env - alpha * bk.log(m1s_safe)
+        if DP_q_env:
+            log_env = log_env + beta * bk.log(q)
+
+        DPUC_Primary_q_norm = str(DPUC_Primary_q_norm)
+        if DPUC_Primary_q_norm == "conditional":
+            # Conditional secondary-mass normalization for DPUC_Primary:
+            #   Z_q(m1) = int_0^1 q^beta G_low(m1*q) G_high(m1*q) m1 dq
+            #
+            # This is equivalent to integrating over m2, with m2=m1*q and dm2=m1*dq,
+            # but avoids dependence on the fixed global m2_grid_ lower edge.
+            q_grid = bk.linspace(eps_q, 1.0 - eps_q, 512)
+
+            qg = q_grid[None, :]
+            m1g = m1s_safe[:, None]
+            m2g = m1g * qg
+
+            log_int = bk.log(bk.maximum(m1g, eps_mass))  # Jacobian: dm2 = m1 dq
+
+            if DP_truncate:
+                log_int = log_int + (
+                    mass_models.log_low_gate_PL_DPUC(bk, m2g, m2_low_safe, deltam_PL_m2)
+                    + mass_models.log_high_gate_PL_DPUC(bk, m2g, mmax_safe, deltam_PL_high)
+                )
+
+            if DP_q_env:
+                log_int = log_int + beta * bk.log(qg)
+
+            integrand = bk.where(bk.isfinite(log_int), bk.exp(log_int), 0.0)
+            Zq = attrapzvec(bk, integrand, bk.stop_grad(q_grid), axis=-1)
+            logZq = bk.log(bk.maximum(Zq, eps_mass))
+
+        elif DPUC_Primary_q_norm == "joint":
+            # Joint-envelope variant: no conditional normalization at fixed m1.
+            logZq = bk.zeros_like(m1s_safe)
+
+        else:
+            raise ValueError(
+                "DPUC_Primary_q_norm must be 'conditional' or 'joint', "
+                f"got {DPUC_Primary_q_norm!r}."
+            )
+
+        lpmass = logg1 + logg2 + log_env + log_gate - logZq
+
+    # DPUC mass-only mixture
+    elif mass_model == "DPUC":
+        K = K_dp
+        if DPUC_kernel not in ('gaussian', 'local_native_gaussian', 'local_native_product_gaussian'):
+            raise ValueError(f"DPUC_kernel must be 'gaussian', 'local_native_gaussian', or 'local_native_product_gaussian'. Got {DPUC_kernel!r}.")
+        if DPUC_q_coord not in ('logitq', 'q'):
+            raise ValueError(f"DPUC_q_coord must be 'logitq' or 'q'. Got {DPUC_q_coord!r}.")
+        use_q_coord = DPUC_q_coord == 'q'
+        use_local_native_kernel = DPUC_kernel in ('local_native_gaussian', 'local_native_product_gaussian')
+        use_local_native_product_kernel = DPUC_kernel == 'local_native_product_gaussian'
+        j = int(istart_spin)
+        K = int(K)
+        mu = Lambda[j:j + 2 * K].reshape((2, K))
+        j += 2 * K
+        sd = Lambda[j:j + 2 * K].reshape((2, K))
+        j += 2 * K
+        logw = Lambda[j:j + K]
+        j += K
+        m1_low = Lambda[j]
+        j += 1
+        m2_low = Lambda[j]
+        j += 1
+        mmax = Lambda[j]
+        j += 1
+        alpha = Lambda[j]
+        j += 1
+        beta = Lambda[j]
+        j += 1
+        if DP_corr_m1m2:
+            rho = Lambda[j:j + K]
+            j += K
+        else:
+            rho = None
+        eps_mass = 1e-12
+        eps_q = 1e-10
+        m1_low_safe = bk.maximum(m1_low, eps_mass)
+        m2_low_safe = bk.maximum(m2_low, eps_mass)
+        mmax_safe = bk.maximum(mmax, m1_low_safe * (1.0 + 1e-08))
+        mmin_safe = m1_low_safe
+        deltam_PL_m1 = Lambda[j]
+        j += 1
+        deltam_PL_m2 = Lambda[j]
+        j += 1
+        deltam_PL_high = Lambda[j]
+        j += 1
+        deltam_PL_m1 = bk.maximum(deltam_PL_m1, eps_mass)
+        deltam_PL_m2 = bk.maximum(deltam_PL_m2, eps_mass)
+        deltam_PL_high = bk.maximum(deltam_PL_high, eps_mass)
+
+        def log_low_plp_reg_m1(m):
+            return mass_models.log_low_gate_PL_DPUC(bk, m, m1_low_safe, deltam_PL_m1)
+
+        def log_low_plp_reg_m2(m):
+            return mass_models.log_low_gate_PL_DPUC(bk, m, m2_low_safe, deltam_PL_m2)
+        m1s_safe = bk.maximum(m1s, eps_mass)
+        m2s_safe = bk.maximum(m2s, eps_mass)
+        m2s_safe = bk.minimum(m2s_safe, m1s_safe * (1.0 - eps_q))
+        Mc_src, q = Mcq_from_m1m2(m1s_safe, m2s_safe)
+        q = bk.clip(q, eps_q, 1.0 - eps_q)
+        logMc_src = bk.log(bk.maximum(Mc_src, eps_mass))
+        if use_q_coord:
+            coord2_q = q
+            if DP_corr_m1m2:
+                logp_xy = mass_models.gaussian_logpdf_pair_corr_xy_trunc_q(bk, logMc_src, coord2_q, mu, sd, rho)
+            else:
+                logp1, logp2 = mass_models.gaussian_logpdf_pair_trunc_q(bk, logMc_src, coord2_q, mu, sd)
+                logp_xy = logp1 + logp2
+            native_coord2 = coord2_q
+        else:
+            logit_q = logit(bk, q)
+            if DP_corr_m1m2:
+                logp_xy = mass_models.gaussian_logpdf_pair_corr_xy(bk, logMc_src, logit_q, mu, sd, rho)
+            else:
+                logp1, logp2 = mass_models.gaussian_logpdf_pair(bk, logMc_src, logit_q, mu, sd)
+                logp_xy = logp1 + logp2
+            native_coord2 = logit_q
+        log_kernel_window = 0.0
+        if use_local_native_kernel:
+            x_std = (logMc_src[None, :] - mu[0][:, None]) / bk.maximum(sd[0][:, None], 1e-12)
+            y_std = (native_coord2[None, :] - mu[1][:, None]) / bk.maximum(sd[1][:, None], 1e-12)
+            dr_kernel = bk.maximum(jnp.asarray(DPUC_kernel_dr, dtype=jnp.float64), 1e-12)
+            if use_local_native_product_kernel:
+                log_kernel_window = mass_models.log_high_gate_PL_DPUC(bk, bk.abs(x_std), jnp.asarray(DPUC_kernel_xcut, dtype=jnp.float64), dr_kernel) + mass_models.log_high_gate_PL_DPUC(bk, bk.abs(y_std), jnp.asarray(DPUC_kernel_ycut, dtype=jnp.float64), dr_kernel)
+            else:
+                if DP_corr_m1m2:
+                    rho_k = bk.clip(rho[:, None], -0.999999, 0.999999)
+                    one_minus_rho2 = bk.maximum(1.0 - rho_k * rho_k, 1e-12)
+                    r2_native = (x_std * x_std + y_std * y_std - 2.0 * rho_k * x_std * y_std) / one_minus_rho2
+                else:
+                    r2_native = x_std * x_std + y_std * y_std
+                r_native = bk.sqrt(bk.maximum(r2_native, 0.0))
+                log_kernel_window = mass_models.log_high_gate_PL_DPUC(bk, r_native, jnp.asarray(DPUC_kernel_rcut, dtype=jnp.float64), dr_kernel)
+        eps_trunc = 1e-08
+        mmax_safe = bk.maximum(mmax, mmin_safe * (1.0 + eps_trunc))
+        log_modifier = bk.zeros_like(logMc_src)
+        if DP_truncate:
+            log_modifier = log_modifier + (log_low_plp_reg_m1(m1s_safe) + log_low_plp_reg_m2(m2s_safe) + mass_models.log_high_gate_PL_DPUC(bk, m1s_safe, mmax_safe, deltam_PL_high))
+        if DP_m1_env:
+            if str(DP_m1_env_form) == 'smooth_broken_pl_2breaks':
+                log_modifier = log_modifier + _dp_m1_log_env(bk, m1s_safe, alpha, alpha1_env, alpha2_env, mb1_env, mb2_env, DP_m1_env_delta1, DP_m1_env_delta2)
+            else:
+                log_modifier = log_modifier - alpha * bk.log(m1s_safe)
+        if DP_q_env:
+            log_modifier = log_modifier + beta * bk.log(q)
+        log_modifier = bk.where(bk.isfinite(log_modifier), log_modifier, -1e+30)
+        logp_components = logp_xy
+        if use_local_native_kernel:
+            logp_components = logp_components + log_kernel_window
+        logp_DPUC = log_modifier + safe_logsumexp_jax(logw[:, None] + logp_components, axis=0)
+        if use_q_coord:
+            logp_DPUC = logp_DPUC - 2.0 * bk.log(m1s_safe)
+        else:
+            logp_DPUC = logp_DPUC - bk.log(m2s_safe)
+            dm_safe_jac = bk.maximum(m1s_safe - m2s_safe, eps_mass)
+            logp_DPUC = logp_DPUC - bk.log(dm_safe_jac)
+        if PL_DPUC_normalize_gmm and (not use_local_native_kernel):
+            logZ_DPUC = mass_models.dpuc_mixture_logZ_xy_pl_gate(bk, mu[0], sd[0], mu[1], sd[1], logw, rho=rho if DP_corr_m1m2 else None, alpha=alpha, beta=beta, m1_low=m1_low_safe, m2_low=m2_low_safe, mmax=mmax_safe, deltam_PL_m1=deltam_PL_m1, deltam_PL_m2=deltam_PL_m2, deltam_PL_high=deltam_PL_high, DP_truncate=DP_truncate, DP_m1_env=DP_m1_env, DP_q_env=DP_q_env, taper_kind=taper_kind, taper_p=taper_p, eps_mass=eps_mass, eps_q=eps_q)
+            logp_DPUC = logp_DPUC - logZ_DPUC
+        lpmass = logp_DPUC
+
+
             
-            lpmass -= logZ
-
-
-
-    else:
-        raise ValueError(f"Unknown mass_model: {mass_model}")
-
     # -----------------------
     # Jacobian term
     # -----------------------
@@ -1393,9 +1883,27 @@ def sel_bias_with_uncertainty_legacy(
     K_dp: int  = 30,
     DP_truncate=False,
     DP_m1_env = False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env = False,
+    DPUC_Primary_q_norm="conditional",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho = 2.0,
+    DP_corr_f_minor = 0.25,
+    PL_DPUC_normalize_gmm = False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DPUC_TruncM2_shared_weights=False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass_vals=None,
     integrate_dc = 'trapz', 
     return_var = True,
+    gp_state=None,
     taper_kind = "sigmoid",   # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
 
@@ -1410,20 +1918,26 @@ def sel_bias_with_uncertainty_legacy(
 
     H0, Om, w0, Xi0, nXi0 = Lambda[0], Lambda[1], Lambda[2], Lambda[3], Lambda[4]
     
-    zinj = z_from_dL(
-            bk,
-            dLinj,
-            H0=H0,
-            Om=Om,
-            w0=w0,
-            Xi0=Xi0,
-            nXi0=nXi0,
-            z_nodes = z_grid,
-            d_nodes = d_nodes,
-            param = param,
-            integrate_dc = integrate_dc
+    if gp_state is None:
+        zinj = z_from_dL(
+                bk,
+                dLinj,
+                H0=H0,
+                Om=Om,
+                w0=w0,
+                Xi0=Xi0,
+                nXi0=nXi0,
+                z_nodes = z_grid,
+                d_nodes = d_nodes,
+                param = param,
+                integrate_dc = integrate_dc
 
-        )
+            )
+        log_ddL_dz_inj = None
+        dc_inj = None
+    else:
+        zinj, log_ddL_dz_inj = gp_z_from_dL_and_logdd(bk, dLinj, gp_state)
+        dc_inj = dcfun_quad(bk, zinj, H0, Om, w0, integrate_dc=integrate_dc)
 
     onepz = 1.0 + zinj
     m1Src = m1inj / onepz
@@ -1441,8 +1955,8 @@ def sel_bias_with_uncertainty_legacy(
         simplex_repair=simplex_repair,
         has_m2_break=has_m2_break,
         norm_gauss=norm_gauss,
-        dc=None,
-        log_ddL_dz_pre=None,
+        dc=dc_inj,
+        log_ddL_dz_pre=log_ddL_dz_inj,
         Xi=None,
         E=None,
         param=param,
@@ -1450,6 +1964,20 @@ def sel_bias_with_uncertainty_legacy(
         K_dp=K_dp, 
         DP_truncate=DP_truncate,
         DP_m1_env = DP_m1_env,
+        DP_q_env = DP_q_env,
+        DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+        DP_corr_m1m2=DP_corr_m1m2,
+            DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+        PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+        DPUC_kernel=DPUC_kernel,
+        DPUC_kernel_rcut=DPUC_kernel_rcut,
+        DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+        DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
         interp_mass_vals=interp_mass_vals,
         taper_kind = taper_kind,
         taper_p = taper_p,
@@ -1518,9 +2046,27 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env=False,
+    DPUC_Primary_q_norm="conditional",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho = 2.0,
+    DP_corr_f_minor = 0.25,
+    PL_DPUC_normalize_gmm = False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DPUC_TruncM2_shared_weights=False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass_vals=None,
     integrate_dc="trapz",
     return_var = True,
+    gp_state=None,
     taper_kind = "sigmoid" ,  # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
 ):
@@ -1537,6 +2083,11 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
       - logdiffexp_bk(bk, a, b)
       - jax, jnp, lax
     """
+    if gp_state is not None:
+        raise NotImplementedError(
+            "Streaming selection VJP does not accept GP state; use the legacy GP path."
+        )
+
     B = int(chunk_size) if chunk_size and chunk_size > 0 else 0
 
     def _pad_to_multiple(x, n_pad, *, mode="edge"):
@@ -1608,6 +2159,23 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
             K_dp=K_dp,
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
+            DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+            DP_corr_m1m2=DP_corr_m1m2,
+                DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+            DPUC_kernel=DPUC_kernel,
+            DPUC_kernel_rcut=DPUC_kernel_rcut,
+            DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+            DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
             interp_mass_vals=interp_mass_vals,
             taper_kind = taper_kind,
             taper_p = taper_p,
@@ -1617,12 +2185,6 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
         x = jnp.where(mask_c, x, -jnp.inf)  # padded entries contribute nothing
         return x  # (B,)
 
-    # <TMP>
-    cosmo_sl, rate_sl, spin_sl, mass_sl = lambda_slices(
-        rate_model, spin_model, mass_model
-    )
-    # <END TMP>
-    
     @jax.custom_vjp
     def _sel_core(
         Lambda_,
@@ -1777,24 +2339,6 @@ def sel_bias_with_uncertainty_streaming_vjp_clean(
             # Differentiate only w.r.t Lambda; NEVER w.r.t injection arrays
             x, pull = jax.vjp(score_wrapped, Lambda_)
 
-            # <TMP>
-            def score_cosmo(cosmo_):
-                Lam = Lambda_.at[cosmo_sl].set(cosmo_)
-                return score_wrapped(Lam)
-            
-            def score_rate(rate_):
-                Lam = Lambda_.at[rate_sl].set(rate_)
-                return score_wrapped(Lam)
-            
-            def score_spin(spin_):
-                Lam = Lambda_.at[spin_sl].set(spin_)
-                return score_wrapped(Lam)
-            
-            def score_mass(mass_):
-                Lam = Lambda_.at[mass_sl].set(mass_)
-                return score_wrapped(Lam)
-            # <END TMP>
-            
             w = jnp.exp(x - lse1)
             cot = g_log_mu * w
 
@@ -1858,9 +2402,27 @@ def sel_bias_with_uncertainty_streaming_vjp(
     K_dp: int = 30,
     DP_truncate=False,
     DP_m1_env=False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env=False,
+    DPUC_Primary_q_norm="conditional",
+    PL_DPUC_normalize_gmm = False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho=2.0,
+    DP_corr_f_minor=0.25,
+    DPUC_TruncM2_shared_weights=False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass_vals=None,
     integrate_dc="trapz",
     return_var=True,
+    gp_state=None,
     taper_kind = "sigmoid",   # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
 ):
@@ -1879,6 +2441,11 @@ def sel_bias_with_uncertainty_streaming_vjp(
       - logdiffexp_bk(bk, a, b)
       - jax, jnp, lax
     """
+
+    if gp_state is not None:
+        raise NotImplementedError(
+            "Streaming selection VJP does not accept GP state; use the legacy GP path."
+        )
 
     if interp_mass_vals is None:
         raise ValueError(
@@ -1965,6 +2532,22 @@ def sel_bias_with_uncertainty_streaming_vjp(
             K_dp=K_dp,
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
+            DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+            DP_corr_m1m2=DP_corr_m1m2,
+            DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+            DPUC_kernel=DPUC_kernel,
+            DPUC_kernel_rcut=DPUC_kernel_rcut,
+            DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+            DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
             interp_mass_vals=interp_mass_vals_,
             taper_kind = taper_kind,
             taper_p = taper_p,
@@ -2204,10 +2787,28 @@ def sel_bias_with_uncertainty(
     K_dp: int =30,
     DP_truncate=False,
     DP_m1_env=False,
+    DP_m1_env_form="powerlaw",
+    DP_m1_env_delta1=0.2,
+    DP_m1_env_delta2=0.2,
+    DP_q_env=False,
+    DPUC_Primary_q_norm="conditional",
+    DP_corr_m1m2=False,
+    DP_corr_eta_rho = 2.0,
+    DP_corr_f_minor = 0.25,
+    PL_DPUC_normalize_gmm = False,
+    DPUC_kernel="gaussian",
+    DPUC_kernel_rcut=4.0,
+    DPUC_kernel_dr=0.15,
+    DPUC_kernel_xcut=3.0,
+    DPUC_kernel_ycut=3.0,
+    DPUC_q_coord="logitq",
+    DPUC_TruncM2_shared_weights=False,
+    DPUC_TruncM2_secondary_coord="logm2",
     interp_mass_vals=None,
     integrate_dc = 'trapz',
     return_var = True,
     interp_mass = False,
+    gp_state=None,
     taper_kind = "sigmoid",   # or "power"
     taper_p = 12.0           # only used if taper_kind == "power"
 ):
@@ -2229,9 +2830,27 @@ def sel_bias_with_uncertainty(
             K_dp=K_dp, 
             DP_truncate=DP_truncate,
             DP_m1_env=DP_m1_env,
+            DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+            DP_corr_m1m2=DP_corr_m1m2,
+            DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+            PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+            DPUC_kernel=DPUC_kernel,
+            DPUC_kernel_rcut=DPUC_kernel_rcut,
+            DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+            DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
             interp_mass_vals=interp_mass_vals,
             integrate_dc = integrate_dc,
             return_var = return_var,
+            gp_state=gp_state,
             taper_kind = taper_kind,
             taper_p = taper_p,
             
@@ -2255,9 +2874,27 @@ def sel_bias_with_uncertainty(
                 K_dp=K_dp,
                 DP_truncate=DP_truncate,
                 DP_m1_env=DP_m1_env,
+                DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+                DP_corr_m1m2=DP_corr_m1m2,
+            DP_corr_eta_rho = DP_corr_eta_rho,
+            DP_corr_f_minor = DP_corr_f_minor,
+                PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+                DPUC_kernel=DPUC_kernel,
+                DPUC_kernel_rcut=DPUC_kernel_rcut,
+                DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+                DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
                 interp_mass_vals=interp_mass_vals,
                 integrate_dc = integrate_dc,
                 return_var = return_var,
+            gp_state=gp_state,
                 taper_kind = taper_kind,
                    taper_p = taper_p,
             )
@@ -2279,9 +2916,27 @@ def sel_bias_with_uncertainty(
                 K_dp=K_dp,
                 DP_truncate=DP_truncate,
                 DP_m1_env=DP_m1_env,
+                DP_m1_env_form=DP_m1_env_form,
+            DP_m1_env_delta1=DP_m1_env_delta1,
+            DP_m1_env_delta2=DP_m1_env_delta2,
+            DP_q_env=DP_q_env,
+            DPUC_Primary_q_norm=DPUC_Primary_q_norm,
+                DP_corr_m1m2=DP_corr_m1m2,
+                DP_corr_eta_rho = DP_corr_eta_rho,
+                DP_corr_f_minor = DP_corr_f_minor,
+                PL_DPUC_normalize_gmm = PL_DPUC_normalize_gmm,
+                DPUC_kernel=DPUC_kernel,
+                DPUC_kernel_rcut=DPUC_kernel_rcut,
+                DPUC_kernel_dr=DPUC_kernel_dr,
+        DPUC_kernel_xcut=DPUC_kernel_xcut,
+        DPUC_kernel_ycut=DPUC_kernel_ycut,
+        DPUC_q_coord=DPUC_q_coord,
+                DPUC_TruncM2_shared_weights=bool(DPUC_TruncM2_shared_weights),
+                DPUC_TruncM2_secondary_coord=DPUC_TruncM2_secondary_coord,
                 interp_mass_vals=interp_mass_vals,
                 integrate_dc = integrate_dc,
                 return_var = return_var,
+            gp_state=gp_state,
                 taper_kind = taper_kind,
                 taper_p = taper_p,
             )
@@ -2480,5 +3135,3 @@ def make_dL_to_z_cuvjp_uniform(*, bk, eps_interp=1e-12):
 
     inv_dL_to_z_uniform.defvjp(fwd, bwd)
     return inv_dL_to_z_uniform
-
-

@@ -12,7 +12,7 @@ from jax import lax
 import cosmology as cosmo
 from backends import JAXBackend
 
-from numerical_utils import safe_logsumexp_jax, logdiffexp as logdiffexp_bk
+from numerical_utils import safe_logsumexp_jax
 
 bk = JAXBackend()
 
@@ -182,6 +182,7 @@ class MarginalSampleData:
     taper_kind: str = "sigmoid" ,  # or "power"
     taper_p: float = 12.0           # only used if taper_kind == "power"
 
+    is_single_PE: bool = False
 
 
 
@@ -454,70 +455,142 @@ def _gw_terms_from_x(
 # factory: build core + loglik
 # -----------------------------
 
-def make_loglik_gauss(
-    core_fn: Callable,   #  _make_pop_and_sel_core(...) result 
+def make_loglik_gauss_components(
+    core_fn: Callable,
     data: LikDataGauss,
+    *,
+    include_eventwise: bool = False,
 ) -> Callable:
     """
-    Returns a jitted function:
-      loglik(Lambda, x) -> scalar
+    Official decomposed Gaussian-event likelihood.
+
+    Returns a jitted callable:
+        loglik_components(Lambda, x, lR0=0., gp_state=None) -> dict
+
+    This is for diagnostics/postprocessing. The sampler-facing
+    make_loglik_gauss below keeps the old fast `(ll, var_log_lik)` API.
     """
     Nobs = int(data.Nobs)
 
     @jax.jit
-    def loglik(Lambda: jnp.ndarray, x: jnp.ndarray, lR0=0.) -> jnp.ndarray:
+    def loglik_components(Lambda: jnp.ndarray, x: jnp.ndarray, lR0=0., gp_state=None):
         # GW terms from x
         m1det, m2det, dLdet, spins_evt, log_jac_evt, logd = _gw_terms_from_x(x, data)
 
-        # population + selection (log_mu scalar)
+        # population + selection
         logp_pop_evt, log_mu, log_var, var_log_lik_evs = core_fn(
             m1det, m2det, dLdet, spins_evt,
-            data.m1inj, data.m2inj, data.dLinj, data.spins_inj, data.log_p_draw, data.log_p_incl,
-            Lambda, data.Ndraw
+            data.m1inj, data.m2inj, data.dLinj, data.spins_inj,
+            data.log_p_draw, data.log_p_incl,
+            Lambda, data.Ndraw,
+            gp_state=gp_state,
         )
 
-        # PE prior correction (eventwise)
+        # PE-prior correction
         log_PE_prior_evt = _log_PE_prior_evt(dLdet, logd, data)
 
-        # jax.debug.print("log_PE_prior_evt = {}", log_PE_prior_evt)
-        # jax.debug.print("dLdet = {}", dLdet)
+        log_evt_terms = logp_pop_evt + log_jac_evt - log_PE_prior_evt
+        ll_evt = jnp.sum(log_evt_terms)
 
-        # sum event contributions
-        ll_evt = jnp.sum(logp_pop_evt + log_jac_evt - log_PE_prior_evt)
-
-        # selection normalization
         sel_term = lax.cond(
-                data.logr == -1,
-                lambda _: log_mu,
-                lambda _: jnp.logaddexp(log_mu, -data.logr ),
-                operand=None
-            )
+            data.logr == -1,
+            lambda _: log_mu,
+            lambda _: jnp.logaddexp(log_mu, -data.logr),
+            operand=None,
+        )
 
-        # jax.debug.print("logmu = {}", log_mu)
-        # jax.debug.print("sel_term = {}", sel_term)
-        
-        ll = ll_evt - (Nobs * sel_term)
+        Nobs_sel_term = Nobs * sel_term
+        ll = ll_evt - Nobs_sel_term
 
-        # optional R0*Tobs term (only if not marginal_R0)
         if not data.marginal_R0:
             ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
-            # missing: also correct var_log_lik_sel
 
         var_log_lik_sel = jnp.exp(log_var + 2.0 * data.logNobs)
         var_log_lik = lax.stop_gradient(var_log_lik_sel + var_log_lik_evs)
-        
-        return ll, var_log_lik
+
+        out = {
+            "ll": ll,
+            "ll_evt": ll_evt,
+            "log_mu": log_mu,
+            "sel_term": sel_term,
+            "Nobs_sel_term": Nobs_sel_term,
+            "log_var_sel_u": log_var,
+            "var_log_lik_sel": var_log_lik_sel,
+            "var_log_lik_evs": var_log_lik_evs,
+            "var_log_lik": var_log_lik,
+
+            # finite checks / summaries
+            "n_bad_logp_pop_evt": jnp.sum(~jnp.isfinite(logp_pop_evt)),
+            "n_bad_log_PE_prior_evt": jnp.sum(~jnp.isfinite(log_PE_prior_evt)),
+            "n_bad_log_jac_evt": jnp.sum(~jnp.isfinite(log_jac_evt)),
+            "min_logp_pop_evt": jnp.min(logp_pop_evt),
+            "max_logp_pop_evt": jnp.max(logp_pop_evt),
+            "min_log_PE_prior_evt": jnp.min(log_PE_prior_evt),
+            "max_log_PE_prior_evt": jnp.max(log_PE_prior_evt),
+            "min_log_jac_evt": jnp.min(log_jac_evt),
+            "max_log_jac_evt": jnp.max(log_jac_evt),
+        }
+
+        if include_eventwise:
+            out = {
+                **out,
+                "log_evt_terms": log_evt_terms,
+                "logp_pop_evt": logp_pop_evt,
+                "log_jac_evt": log_jac_evt,
+                "log_PE_prior_evt": log_PE_prior_evt,
+                "m1det": m1det,
+                "m2det": m2det,
+                "dLdet": dLdet,
+            }
+
+        return out
+
+    return loglik_components
+
+
+def make_loglik_gauss(
+    core_fn: Callable,
+    data: LikDataGauss,
+) -> Callable:
+    """
+    Fast sampler-facing likelihood.
+
+    Returns:
+        loglik(Lambda, x, lR0=0., gp_state=None) -> (ll, var_log_lik)
+    """
+    comp_fn = make_loglik_gauss_components(
+        core_fn,
+        data,
+        include_eventwise=False,
+    )
+
+    @jax.jit
+    def loglik(Lambda: jnp.ndarray, x: jnp.ndarray, lR0=0., gp_state=None):
+        c = comp_fn(Lambda, x, lR0=lR0, gp_state=gp_state)
+        return c["ll"], c["var_log_lik"]
 
     return loglik
 
 
 
+def make_loglik_marginal_samples_components(
+    core_fn: Callable,
+    data,
+    *,
+    include_eventwise: bool = False,
+) -> Callable:
+    """
+    Decomposed marginal-samples likelihood.
 
-def make_loglik_marginal_samples(core_fn, data):
+    Returns a jitted callable:
+        loglik_components(Lambda, lR0=0., gp_state=None) -> dict
+
+    Same likelihood math as make_loglik_marginal_samples.
+    """
     Nobs = int(data.Nobs)
 
     @jax.jit
-    def loglik(Lambda: jnp.ndarray, lR0=0.0):
+    def loglik_components(Lambda: jnp.ndarray, lR0=0.0, gp_state=None):
         log_evt, log_mu, log_var_sel_u, var_log_lik_evs = core_fn(
             data.m1det_pe, data.m2det_pe, data.dL_pe, data.spins_pe,
             data.m1inj, data.m2inj, data.dLinj, data.spins_inj,
@@ -526,6 +599,7 @@ def make_loglik_marginal_samples(core_fn, data):
             data.log_PE_prior_pe,
             data.event_id_pe,
             data.Nsamples_evt,
+            gp_state=gp_state,
         )
 
         ll_evt = jnp.sum(log_evt)
@@ -537,7 +611,8 @@ def make_loglik_marginal_samples(core_fn, data):
             operand=None,
         )
 
-        ll = ll_evt - (Nobs * sel_term)
+        Nobs_sel_term = Nobs * sel_term
+        ll = ll_evt - Nobs_sel_term
 
         if not data.marginal_R0:
             ll += jnp.sum(data.Nevs_per_chunk * jnp.log(data.allTobs)) + Nobs * lR0
@@ -545,9 +620,48 @@ def make_loglik_marginal_samples(core_fn, data):
         var_log_lik_sel = jnp.exp(log_var_sel_u + 2.0 * data.logNobs)
         var_log_lik = lax.stop_gradient(var_log_lik_sel + var_log_lik_evs)
 
-        return ll, var_log_lik
+        out = {
+            "ll": ll,
+            "ll_evt": ll_evt,
+            "log_mu": log_mu,
+            "sel_term": sel_term,
+            "Nobs_sel_term": Nobs_sel_term,
+            "log_var_sel_u": log_var_sel_u,
+            "var_log_lik_sel": var_log_lik_sel,
+            "var_log_lik_evs": var_log_lik_evs,
+            "var_log_lik": var_log_lik,
+        }
+
+        if include_eventwise:
+            out = {
+                **out,
+                "log_evt": log_evt,
+            }
+
+        return out
+
+    return loglik_components
+
+
+def make_loglik_marginal_samples(
+    core_fn: Callable,
+    data,
+) -> Callable:
+    """
+    Fast sampler-facing marginal-samples likelihood.
+
+    Returns:
+        loglik(Lambda, lR0=0., gp_state=None) -> (ll, var_log_lik)
+    """
+    comp_fn = make_loglik_marginal_samples_components(
+        core_fn,
+        data,
+        include_eventwise=False,
+    )
+
+    @jax.jit
+    def loglik(Lambda: jnp.ndarray, lR0=0.0, gp_state=None):
+        c = comp_fn(Lambda, lR0=lR0, gp_state=gp_state)
+        return c["ll"], c["var_log_lik"]
 
     return loglik
-
-
-
